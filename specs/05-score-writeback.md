@@ -81,8 +81,8 @@ When we register custom Signals (M2), the scorer is a Weave op with a proper `ru
 | Lint outcome | `weave_agent_signals.outcome.lint` |
 | Git outcome | `weave_agent_signals.outcome.git` |
 | Verified before done | `weave_agent_signals.outcome.verified_before_done` |
-| Turn frustration | `weave_agent_signals.implicit.frustration` |
-| Session frustration | `weave_agent_signals.implicit.session_frustration` |
+| Turn frustration | `weave_agent_signals.implicit.frustration` | *deferred to M2 — needs event classifier* |
+| Session frustration | `weave_agent_signals.implicit.session_frustration` | *deferred to M2* |
 | Abandonment | `weave_agent_signals.implicit.abandonment` |
 | Correction density | `weave_agent_signals.implicit.correction_density` |
 | Efficiency | `weave_agent_signals.efficiency` |

@@ -1,8 +1,10 @@
 # Spec 03: Implicit feedback
 
-Extracts human-feedback signals from observable user behavior — no explicit rating needed. The adapter already stamps three counters (`steering_count`, `denial_count`, `tool_error_count`) on turn roots; this layer adds semantic scoring and session-level aggregation.
+Extracts human-feedback signals from observable user behavior — no explicit rating needed. The adapter already stamps three counters (`steering_count`, `denial_count`, `tool_error_count`) on turn roots; this layer adds session-level aggregation over those facts.
 
 Ties to spec 01 (data flow), spec 04 (efficiency — related but distinct), routing gates (FUTURE.md — `high_frustration` gate).
+
+**M1 scope**: correction density and abandonment detection (both factual). Frustration scoring (weighted index over classified events) is deferred — it requires a micro-LLM classifier to distinguish corrections from additions/redirects; without that, raw counter sums overcount frustration. See "Deferred: frustration scoring" at the end.
 
 ---
 
@@ -208,3 +210,13 @@ The L4 RSI loop can later propose weight adjustments based on judge-agreement da
 - **Model choice**: Claude Opus vs Sonnet is a user decision, not a quality signal.
 
 These are **features** for L3 pattern analysis, not scores.
+
+---
+
+## Deferred: frustration scoring
+
+The frustration index, session frustration, and event classification sections above describe the *target design* but are **not implemented in M1**. The reason: raw steering/denial counts can't distinguish corrections (frustration) from additions/redirects (neutral). Without a micro-LLM classifier reading the actual event text, a weighted sum of raw counts overestimates frustration — every "also do X" steering event gets scored as if the user was correcting a mistake.
+
+**What M1 ships**: correction density (factual ratio) and abandonment (observable end-state). Raw counts are available as span attrs for downstream consumers.
+
+**What's needed for frustration scoring**: a Class 3 micro-LLM classifier that reads each steering/denial event's text and classifies it as `correction`/`addition`/`redirect` (steering) or `rejection`/`changed_mind`/`permission_hygiene` (denial). Only then can the frustration index weight fault-implying events correctly. This lands with the M2 judge infrastructure.

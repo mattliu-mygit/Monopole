@@ -7,7 +7,7 @@ name = "weave-agent-signals"
 version = "0.1.0"
 description = "Layered evaluation & weak RSI for Weave agent traces"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 license = "MIT"
 dependencies = [
     "weave>=0.52",
