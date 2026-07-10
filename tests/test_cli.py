@@ -16,6 +16,16 @@ def test_cli_help():
     assert "inspect" in result.stdout
 
 
+def test_main_module_help():
+    result = subprocess.run(
+        [sys.executable, "-m", "weave_agent_signals", "--help"],
+        capture_output=True, text=True,
+        env={"PYTHONPATH": "src", "PATH": ""},
+    )
+    assert result.returncode == 0
+    assert "score" in result.stdout
+
+
 def test_score_help():
     result = subprocess.run(
         [sys.executable, "-m", "weave_agent_signals.cli", "score", "--help"],
@@ -34,4 +44,16 @@ def test_backfill_help():
         env={"PYTHONPATH": "src", "PATH": ""},
     )
     assert result.returncode == 0
-    assert "--from" in result.stdout or "--start" in result.stdout
+    assert "--start" in result.stdout
+
+
+def test_inspect_help():
+    result = subprocess.run(
+        [sys.executable, "-m", "weave_agent_signals.cli", "inspect", "--help"],
+        capture_output=True, text=True,
+        env={"PYTHONPATH": "src", "PATH": ""},
+    )
+    assert result.returncode == 0
+    assert "--feedback" in result.stdout
+    assert "--recent" in result.stdout
+    assert "--session" in result.stdout

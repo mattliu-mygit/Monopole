@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from weave_agent_signals.models import SpanEvent, ToolSpan, TurnSpan
+from weave_agent_signals.models import SessionView, SpanEvent, SubagentSpan, ToolSpan, TurnSpan
 from weave_agent_signals.scorers.efficiency import (
     detect_error_loops,
     detect_repeated_reads,
     score_turn_efficiency,
+    score_session_efficiency,
+    token_efficiency,
 )
 
 
@@ -150,3 +152,97 @@ def test_wasteful_turn_scores_low():
     score = score_turn_efficiency(_turn(calls))
     assert score.value < 0.5
     assert "error_loop" in score.tags
+
+
+# --- Session-level efficiency ---
+
+def _session(turns):
+    return SessionView(
+        conversation_id="c1",
+        turns=turns,
+        config_version="abc",
+        git_branch="main",
+    )
+
+
+def test_session_efficiency_all_efficient():
+    t1 = _turn([
+        _tool("Read", '{"file_path": "a.py"}', "contents"),
+        _tool("Edit", '{"file_path": "a.py"}', "ok"),
+    ])
+    t2 = _turn([
+        _tool("Bash", '{"command": "pytest"}', "5 passed"),
+    ])
+    score = score_session_efficiency(_session([t1, t2]))
+    assert score.scorer == "efficiency.session"
+    assert score.value > 0.9
+    assert score.granularity == "session"
+    assert "efficient_session" in score.tags
+
+
+def test_session_efficiency_with_waste():
+    good = _turn([_tool("Bash", '{"command": "pytest"}', "ok")])
+    bad = _turn([
+        _tool("Bash", '{"command": "npm install"}', "err", "ERROR"),
+        _tool("Bash", '{"command": "npm install"}', "err", "ERROR"),
+        _tool("Bash", '{"command": "npm install"}', "err", "ERROR"),
+    ])
+    score = score_session_efficiency(_session([good, bad]))
+    assert score.value < 1.0
+    assert "has_error_loops" in score.tags
+    assert score.metadata["total_error_loops"] == 1
+
+
+def test_session_efficiency_empty():
+    score = score_session_efficiency(_session([]))
+    assert score.value == 1.0
+    assert score.granularity == "session"
+
+
+# --- Token efficiency ---
+
+def test_token_efficiency_normal():
+    t = _turn([], events=[])
+    ratio = token_efficiency(t)
+    # input=5000, output=1000 → ratio = 1000/5000 = 0.2
+    assert ratio == 0.2
+
+
+def test_token_efficiency_zero_input():
+    t = _turn([], events=[])
+    t.input_tokens = 0
+    ratio = token_efficiency(t)
+    assert ratio == 0.0
+
+
+def test_token_efficiency_in_score_metadata():
+    t = _turn([_tool("Bash", '{"command": "pytest"}', "ok")])
+    score = score_turn_efficiency(t)
+    assert "token_efficiency" in score.metadata
+
+
+# --- Subagent scope tracking ---
+
+def test_repeated_reads_across_scopes_not_flagged():
+    """Main turn and subagent both reading the same file is NOT waste."""
+    main_read = _tool("Read", '{"file_path": "/app/foo.py"}', "v1")
+    sub_read = _tool("Read", '{"file_path": "/app/foo.py"}', "v1")
+    subagent = SubagentSpan(span_id="sub-1", agent_type="Explore", tool_calls=[sub_read])
+
+    t = _turn([main_read])
+    t.subagents = [subagent]
+    score = score_turn_efficiency(t)
+    # Should NOT flag as repeated — different scopes
+    assert "repeated_reads" not in score.tags
+
+
+def test_repeated_reads_within_subagent_flagged():
+    """Same subagent reading the same file twice IS waste."""
+    r1 = _tool("Read", '{"file_path": "/app/foo.py"}', "v1")
+    r2 = _tool("Read", '{"file_path": "/app/foo.py"}', "v1")
+    subagent = SubagentSpan(span_id="sub-1", agent_type="Explore", tool_calls=[r1, r2])
+
+    t = _turn([])
+    t.subagents = [subagent]
+    score = score_turn_efficiency(t)
+    assert "repeated_reads" in score.tags

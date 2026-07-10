@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any
 
-from weave_agent_signals.models import Score, SpanEvent, ToolSpan, TurnSpan
+from weave_agent_signals.models import Score, SessionView, SpanEvent, ToolSpan, TurnSpan
 
 
 @dataclass
@@ -128,14 +128,25 @@ def detect_repeated_reads(
     ]
 
 
+def token_efficiency(turn: TurnSpan) -> float:
+    if turn.input_tokens == 0:
+        return 0.0
+    return round(turn.output_tokens / turn.input_tokens, 4)
+
+
 def score_turn_efficiency(turn: TurnSpan) -> Score:
     compaction_events = [e for e in turn.events if e.name == "compaction"]
+    # Per-scope detection: main turn + each subagent independently
     loops = detect_error_loops(turn.tool_calls)
     repeats = detect_repeated_reads(turn.tool_calls, compaction_events)
+    for sub in turn.subagents:
+        loops.extend(detect_error_loops(sub.tool_calls))
+        repeats.extend(detect_repeated_reads(sub.tool_calls))
 
+    all_tool_calls = turn.tool_calls + [tc for sub in turn.subagents for tc in sub.tool_calls]
     loop_waste = sum(l.attempt_count - 1 for l in loops)
     repeat_waste = sum(r.count - 1 for r in repeats)
-    total_calls = len(turn.tool_calls) or 1
+    total_calls = len(all_tool_calls) or 1
     waste_ratio = min((loop_waste + repeat_waste) / total_calls, 1.0)
 
     tags = []
@@ -146,6 +157,13 @@ def score_turn_efficiency(turn: TurnSpan) -> Score:
     if not tags:
         tags.append("efficient")
 
+    parts = []
+    if loops:
+        parts.append(f"{len(loops)} error loop(s)")
+    if repeats:
+        parts.append(f"{len(repeats)} repeated read(s)")
+    reason = "; ".join(parts) if parts else "no waste detected"
+
     return Score(
         scorer="efficiency",
         value=round(1.0 - waste_ratio, 3),
@@ -155,7 +173,47 @@ def score_turn_efficiency(turn: TurnSpan) -> Score:
             "error_loops": [l.to_dict() for l in loops],
             "repeated_reads": [r.to_dict() for r in repeats],
             "waste_ratio": round(waste_ratio, 3),
-            "tool_call_count": len(turn.tool_calls),
+            "tool_call_count": len(all_tool_calls),
+            "token_efficiency": token_efficiency(turn),
         },
         granularity="turn",
+        reason=reason,
+    )
+
+
+def score_session_efficiency(session: SessionView) -> Score:
+    turn_scores = [score_turn_efficiency(t) for t in session.turns]
+    avg_value = sum(s.value for s in turn_scores) / len(turn_scores) if turn_scores else 1.0
+
+    total_loops = sum(len(s.metadata["error_loops"]) for s in turn_scores)
+    total_repeats = sum(len(s.metadata["repeated_reads"]) for s in turn_scores)
+
+    tags = []
+    if total_loops > 0:
+        tags.append("has_error_loops")
+    if total_repeats > 0:
+        tags.append("has_repeated_reads")
+    if not tags:
+        tags.append("efficient_session")
+
+    parts = []
+    if total_loops > 0:
+        parts.append(f"{total_loops} error loop(s)")
+    if total_repeats > 0:
+        parts.append(f"{total_repeats} repeated read(s)")
+    reason = f"{len(session.turns)} turns, " + ("; ".join(parts) if parts else "no waste detected")
+
+    return Score(
+        scorer="efficiency.session",
+        value=round(avg_value, 3),
+        tags=tags,
+        confidence=0.85,
+        metadata={
+            "total_error_loops": total_loops,
+            "total_repeated_reads": total_repeats,
+            "turn_count": len(session.turns),
+            "avg_turn_efficiency": round(avg_value, 3),
+        },
+        granularity="session",
+        reason=reason,
     )

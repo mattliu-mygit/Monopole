@@ -89,6 +89,62 @@ class LintOutcome:
         }
 
 
+@dataclass
+@dataclass
+class InstallOutcome:
+    tool: str
+    command: str
+    exit_code: int | None
+    success: bool
+    error_message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool": self.tool,
+            "command": self.command,
+            "exit_code": self.exit_code,
+            "success": self.success,
+            "error_message": self.error_message,
+        }
+
+
+@dataclass
+class GitOutcome:
+    operation: str
+    command: str
+    exit_code: int | None
+    success: bool
+    files_changed: int | None = None
+    insertions: int | None = None
+    deletions: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "operation": self.operation,
+            "command": self.command,
+            "exit_code": self.exit_code,
+            "success": self.success,
+            "files_changed": self.files_changed,
+            "insertions": self.insertions,
+            "deletions": self.deletions,
+        }
+
+
+@dataclass
+class CommandOutcome:
+    """Generic fallback for bash commands not matched by specific classifiers."""
+    command: str
+    exit_code: int | None
+    success: bool | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "command": self.command,
+            "exit_code": self.exit_code,
+            "success": self.success,
+        }
+
+
 # --- Command classification ---
 
 _TEST_PATTERNS = [
@@ -124,7 +180,51 @@ _LINT_PATTERNS = [
     re.compile(r"\bclippy\b"),
     re.compile(r"\bgolangci-lint\b"),
     re.compile(r"\bpyright\b"),
+    re.compile(r"\bmypy\b"),
 ]
+
+_INSTALL_PATTERNS = [
+    re.compile(r"\bnpm\s+install\b"),
+    re.compile(r"\bnpm\s+ci\b"),
+    re.compile(r"\byarn\s+(?:install|add)\b"),
+    re.compile(r"\bpnpm\s+(?:install|add)\b"),
+    re.compile(r"\bpip\s+install\b"),
+    re.compile(r"\buv\s+(?:pip\s+install|add|sync)\b"),
+    re.compile(r"\bpoetry\s+install\b"),
+    re.compile(r"\bcargo\s+add\b"),
+    re.compile(r"\bgo\s+(?:get|mod\s+download)\b"),
+    re.compile(r"\bbundle\s+install\b"),
+]
+
+_GIT_MUTATING_OPS = {"commit", "push", "merge", "rebase", "cherry-pick", "revert", "reset", "stash"}
+
+_GIT_PATTERN = re.compile(r"\bgit\s+(\S+)")
+
+_EXPLORATION_COMMANDS = {
+    "ls", "ll", "cat", "head", "tail", "less", "more", "wc", "file",
+    "find", "grep", "rg", "ag", "ack", "sed", "awk",
+    "echo", "printf", "true", "false",
+    "pwd", "cd", "pushd", "popd",
+    "which", "where", "whereis", "type", "command",
+    "env", "printenv", "set", "export", "unset",
+    "date", "whoami", "hostname", "uname",
+    "ps", "top", "htop", "df", "du", "free",
+    "tree", "stat", "readlink", "realpath", "basename", "dirname",
+    "diff", "cmp", "md5sum", "sha256sum", "shasum",
+    "sort", "uniq", "cut", "tr", "tee", "xargs",
+    "touch", "mkdir", "cp", "mv", "ln",
+    "sleep", "wait",
+    "man", "help", "info",
+}
+
+
+def _mutating_git_op(cmd: str) -> str | None:
+    # a single Bash call often chains git verbs (`git add -A && git commit`);
+    # return the first mutating one rather than only inspecting the leading verb
+    for m in _GIT_PATTERN.finditer(cmd):
+        if m.group(1) in _GIT_MUTATING_OPS:
+            return m.group(1)
+    return None
 
 
 def _strip_prefixes(cmd: str) -> str:
@@ -153,14 +253,26 @@ def classify_command(raw_cmd: str) -> str | None:
     for pat in _BUILD_PATTERNS:
         if pat.search(cmd):
             return "build"
-    return None
+    for pat in _INSTALL_PATTERNS:
+        if pat.search(cmd):
+            return "install"
+    if _mutating_git_op(cmd):
+        return "git"
+    # read-only git is exploration
+    if re.match(r"\bgit\b", cmd):
+        return None
+    # check if the leading command is pure exploration
+    leading = re.match(r"(\S+)", cmd)
+    if leading and leading.group(1) in _EXPLORATION_COMMANDS:
+        return None
+    return "command"
 
 
 # --- Framework detection ---
 
 def _detect_test_framework(cmd: str) -> str:
     cmd_lower = cmd.lower()
-    if "pytest" in cmd_lower or "python" in cmd_lower and "pytest" in cmd_lower:
+    if "pytest" in cmd_lower:
         return "pytest"
     if "jest" in cmd_lower or "vitest" in cmd_lower:
         return "jest"
@@ -187,12 +299,33 @@ def _detect_build_tool(cmd: str) -> str:
         return "go"
     if "npm run build" in cmd_lower:
         return "npm"
-    if "pyright" in cmd_lower:
-        return "pyright"
     if re.search(r"\bg(?:cc|\+\+)\b", cmd):
         return "gcc"
     if "make" in cmd_lower:
         return "make"
+    return "unknown"
+
+
+def _detect_install_tool(cmd: str) -> str:
+    cmd_lower = cmd.lower()
+    if "uv " in cmd_lower:
+        return "uv"
+    if "pip install" in cmd_lower:
+        return "pip"
+    if "poetry" in cmd_lower:
+        return "poetry"
+    if "npm" in cmd_lower:
+        return "npm"
+    if "yarn" in cmd_lower:
+        return "yarn"
+    if "pnpm" in cmd_lower:
+        return "pnpm"
+    if "cargo add" in cmd_lower:
+        return "cargo"
+    if "go get" in cmd_lower or "go mod" in cmd_lower:
+        return "go"
+    if "bundle" in cmd_lower:
+        return "bundler"
     return "unknown"
 
 
@@ -214,6 +347,8 @@ def _detect_lint_tool(cmd: str) -> str:
         return "clippy"
     if "golangci-lint" in cmd_lower:
         return "golangci-lint"
+    if "mypy" in cmd_lower:
+        return "mypy"
     return "unknown"
 
 
@@ -325,27 +460,83 @@ def parse_lint_output(output: str, tool: str, exit_code: int | None = None) -> L
     )
 
 
+def parse_install_output(output: str, tool: str, exit_code: int | None = None) -> InstallOutcome:
+    success = exit_code == 0 if exit_code is not None else False
+    error_message = None
+
+    error_patterns = [
+        re.compile(r"(?:ERROR|error):?\s*(.+)", re.IGNORECASE),
+        re.compile(r"(?:WARN|warning):?\s*(.+)", re.IGNORECASE),
+        re.compile(r"Could not (?:find|resolve|install)\b.+"),
+        re.compile(r"No matching (?:version|distribution)\b.+"),
+        re.compile(r"ERESOLVE\b.+"),
+        re.compile(r"ResolutionImpossible\b"),
+    ]
+    for pat in error_patterns:
+        m = pat.search(output)
+        if m:
+            error_message = m.group(0)[:200]
+            break
+
+    return InstallOutcome(
+        tool=tool,
+        command="",
+        exit_code=exit_code,
+        success=success,
+        error_message=error_message,
+    )
+
+
+def parse_git_output(output: str, operation: str, exit_code: int | None = None) -> GitOutcome:
+    success = exit_code == 0 if exit_code is not None else False
+    files_changed = None
+    insertions = None
+    deletions = None
+
+    m = re.search(r"(\d+)\s+files?\s+changed", output)
+    if m:
+        files_changed = int(m.group(1))
+    m = re.search(r"(\d+)\s+insertions?\(\+\)", output)
+    if m:
+        insertions = int(m.group(1))
+    m = re.search(r"(\d+)\s+deletions?\(-\)", output)
+    if m:
+        deletions = int(m.group(1))
+
+    return GitOutcome(
+        operation=operation,
+        command="",
+        exit_code=exit_code,
+        success=success,
+        files_changed=files_changed,
+        insertions=insertions,
+        deletions=deletions,
+    )
+
+
 # --- Extraction from tool spans ---
 
 def _extract_command(span: ToolSpan) -> str | None:
     try:
         args = json.loads(span.arguments)
+        if not isinstance(args, dict):
+            return None
         return args.get("command")
     except (json.JSONDecodeError, TypeError):
         return None
 
 
 def _extract_exit_code(span: ToolSpan) -> int | None:
-    if span.status_code == "OK":
-        return 0
-    if span.status_code == "ERROR":
-        return 1
     try:
         result = json.loads(span.result)
         if isinstance(result, dict) and "exit_code" in result:
             return result["exit_code"]
     except (json.JSONDecodeError, TypeError):
         pass
+    if span.status_code == "OK":
+        return 0
+    if span.status_code == "ERROR":
+        return 1
     return None
 
 
@@ -381,6 +572,23 @@ def extract_outcomes(tool_calls: list[ToolSpan]) -> list:
             result = parse_lint_output(output, tool, exit_code)
             result.command = cmd
             outcomes.append(result)
+        elif kind == "install":
+            tool = _detect_install_tool(cmd)
+            result = parse_install_output(output, tool, exit_code)
+            result.command = cmd
+            outcomes.append(result)
+        elif kind == "git":
+            operation = _mutating_git_op(cmd) or "unknown"
+            result = parse_git_output(output, operation, exit_code)
+            result.command = cmd
+            outcomes.append(result)
+        elif kind == "command":
+            success = exit_code == 0 if exit_code is not None else None
+            outcomes.append(CommandOutcome(
+                command=cmd,
+                exit_code=exit_code,
+                success=success,
+            ))
 
     return outcomes
 
@@ -388,7 +596,8 @@ def extract_outcomes(tool_calls: list[ToolSpan]) -> list:
 # --- Turn-level scoring ---
 
 def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
-    outcomes = extract_outcomes(turn.tool_calls)
+    all_tool_calls = turn.tool_calls + [tc for sub in turn.subagents for tc in sub.tool_calls]
+    outcomes = extract_outcomes(all_tool_calls)
     if not outcomes:
         return []
 
@@ -399,6 +608,11 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
         all_passed = all(t.success for t in tests)
         total_passed = sum(t.passed or 0 for t in tests)
         total_failed = sum(t.failed or 0 for t in tests)
+        frameworks = ", ".join(sorted({t.framework for t in tests}))
+        if all_passed:
+            reason = f"{frameworks}: {total_passed} passed, {total_failed} failed"
+        else:
+            reason = f"{frameworks}: {total_failed} failed out of {total_passed + total_failed}"
         scores.append(Score(
             scorer="outcome.test",
             value=1.0 if all_passed else 0.0,
@@ -410,11 +624,14 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
                 "fail_count": total_failed,
             },
             granularity="turn",
+            reason=reason,
         ))
 
     builds = [o for o in outcomes if isinstance(o, BuildOutcome)]
     if builds:
         all_ok = all(b.success for b in builds)
+        tools = ", ".join(sorted({b.tool for b in builds}))
+        reason = f"{tools}: {'all passed' if all_ok else 'build failure'}"
         scores.append(Score(
             scorer="outcome.build",
             value=1.0 if all_ok else 0.0,
@@ -422,11 +639,15 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
             confidence=1.0,
             metadata={"outcomes": [b.to_dict() for b in builds]},
             granularity="turn",
+            reason=reason,
         ))
 
     lints = [o for o in outcomes if isinstance(o, LintOutcome)]
     if lints:
         all_clean = all(l.clean for l in lints)
+        tools = ", ".join(sorted({l.tool for l in lints}))
+        total_issues = sum(l.issue_count or 0 for l in lints)
+        reason = f"{tools}: {'clean' if all_clean else f'{total_issues} issues'}"
         scores.append(Score(
             scorer="outcome.lint",
             value=1.0 if all_clean else 0.0,
@@ -434,6 +655,56 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
             confidence=1.0,
             metadata={"outcomes": [l.to_dict() for l in lints]},
             granularity="turn",
+            reason=reason,
+        ))
+
+    installs = [o for o in outcomes if isinstance(o, InstallOutcome)]
+    if installs:
+        all_ok = all(i.success for i in installs)
+        tools = ", ".join(sorted({i.tool for i in installs}))
+        reason = f"{tools}: {'all succeeded' if all_ok else 'install failure'}"
+        scores.append(Score(
+            scorer="outcome.install",
+            value=1.0 if all_ok else 0.0,
+            tags=["install_success"] if all_ok else ["install_failure"],
+            confidence=1.0,
+            metadata={"outcomes": [i.to_dict() for i in installs]},
+            granularity="turn",
+            reason=reason,
+        ))
+
+    gits = [o for o in outcomes if isinstance(o, GitOutcome)]
+    if gits:
+        all_ok = all(g.success for g in gits)
+        ops = ", ".join(sorted({g.operation for g in gits}))
+        reason = f"git {ops}: {'all succeeded' if all_ok else 'failure'}"
+        scores.append(Score(
+            scorer="outcome.git",
+            value=1.0 if all_ok else 0.0,
+            tags=["git_success"] if all_ok else ["git_failure"],
+            confidence=1.0,
+            metadata={"outcomes": [g.to_dict() for g in gits]},
+            granularity="turn",
+            reason=reason,
+        ))
+
+    cmds = [o for o in outcomes if isinstance(o, CommandOutcome)]
+    failed_cmds = [c for c in cmds if c.success is False]
+    if failed_cmds:
+        reasons = [c.command.split()[0] for c in failed_cmds]
+        reason = f"{len(failed_cmds)} command failure(s): {', '.join(reasons[:5])}"
+        scores.append(Score(
+            scorer="outcome.command",
+            value=0.0,
+            tags=["command_failure"],
+            confidence=0.5,
+            metadata={
+                "outcomes": [c.to_dict() for c in failed_cmds],
+                "total_commands": len(cmds),
+                "failed_commands": len(failed_cmds),
+            },
+            granularity="turn",
+            reason=reason,
         ))
 
     return scores

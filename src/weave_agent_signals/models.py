@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Union
+from urllib.parse import quote
 
 
 ENTITY = "mliu-wandb-weights-biases"
@@ -70,9 +71,12 @@ class TurnSpan:
     chat_spans: list[ChatSpan]
     subagents: list[SubagentSpan]
 
+    def ref_for(self, entity: str = ENTITY, project: str = PROJECT) -> str:
+        return f"weave:///{entity}/{project}/agent_turn/{self.trace_id}"
+
     @property
     def ref(self) -> str:
-        return f"weave:///{ENTITY}/{PROJECT}/agent_turn/{self.trace_id}"
+        return self.ref_for()
 
 
 @dataclass
@@ -82,9 +86,13 @@ class SessionView:
     config_version: str | None
     git_branch: str | None
 
+    def ref_for(self, entity: str = ENTITY, project: str = PROJECT) -> str:
+        encoded_id = quote(self.conversation_id, safe="")
+        return f"weave:///{entity}/{project}/agent_conversation/{encoded_id}"
+
     @property
     def ref(self) -> str:
-        return f"weave:///{ENTITY}/{PROJECT}/agent_conversation/{self.conversation_id}"
+        return self.ref_for()
 
     @property
     def total_tokens(self) -> int:
@@ -99,6 +107,7 @@ class Score:
     confidence: float
     metadata: dict[str, Any]
     granularity: str
+    reason: str = ""
 
     def to_feedback_payload(self, ref: str, project_id: str) -> dict[str, Any]:
         rating = float(self.value) if isinstance(self.value, bool) else self.value
@@ -106,11 +115,14 @@ class Score:
             "project_id": project_id,
             "weave_ref": ref,
             "feedback_type": f"weave_agent_signals.{self.scorer}",
-            "payload": self.metadata,
-            "scorer_ratings": {"_rating_": rating},
-            "scorer_rating_reasons": {},
-            "scorer_rating_confidences": {"_rating_": self.confidence},
-            "scorer_tags": self.tags,
-            "scorer_tag_reasons": {},
-            "scorer_tag_confidences": {t: self.confidence for t in self.tags},
+            "payload": {
+                "scorer_version": "v1",
+                "scored_at": datetime.now(timezone.utc).isoformat(),
+                "rating": rating,
+                "confidence": self.confidence,
+                "tags": self.tags,
+                "reason": self.reason,
+                "granularity": self.granularity,
+                "details": self.metadata,
+            },
         }
