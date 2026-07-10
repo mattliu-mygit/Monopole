@@ -12,7 +12,7 @@ pytest
 ## Architecture
 
 - `specs/DESIGN.md` — start here for the full system overview
-- `specs/` — detailed specs per component (01–11)
+- `specs/` — detailed specs per component (01–06)
 - `src/weave_agent_signals/` — implementation
 - Weave entity: `mliu-wandb-weights-biases`, project: `agent-sessions`
 - All reads: `POST trace.wandb.ai/agents/spans/query` (custom_attr_columns required)
@@ -30,7 +30,7 @@ pytest -x                       # stop on first failure
 
 ## Conventions
 
-- Scorer names: `<category>.<subcategory>` (e.g. `outcome.test`, `implicit.frustration`)
+- Scorer names: `<category>.<subcategory>` (e.g. `outcome.test`, `implicit.correction_density`)
 - Feedback types: `weave_agent_signals.<scorer_name>`
 - Score values: 0.0–1.0 float or bool; `scorer_ratings["_rating_"]` is the primary
 - All scores include `scorer_version` in payload metadata

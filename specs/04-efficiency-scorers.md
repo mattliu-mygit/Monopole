@@ -92,29 +92,11 @@ def detect_repeated_reads(tool_calls: list[ToolSpan]) -> list[RepeatedRead]:
     ]
 ```
 
-### 3. Token efficiency ratio
+### 3. Token efficiency ratio (metadata only)
 
-High input tokens with low output tokens suggests the agent is reading more context than it needs. This is a soft signal — some tasks legitimately need heavy reading.
+High input tokens with low output tokens suggests the agent is reading more context than it needs. This is the weakest signal — some tasks legitimately need heavy reading.
 
-```python
-def token_efficiency(turn: TurnSpan) -> float | None:
-    if turn.input_tokens == 0:
-        return None
-
-    # Cache hit ratio — high is good (reusing context efficiently)
-    cache_ratio = turn.cache_read_tokens / turn.input_tokens if turn.input_tokens > 0 else 0
-
-    # Output-to-input ratio — very low suggests wasted reads
-    output_ratio = turn.output_tokens / turn.input_tokens
-
-    # Don't score turns with very few tokens (startup, simple queries)
-    if turn.input_tokens + turn.output_tokens < 1000:
-        return None
-
-    return min(output_ratio * 2 + cache_ratio * 0.5, 1.0)  # normalized 0-1
-```
-
-**Caveat**: token efficiency is the weakest signal. It's a feature for L3 pattern analysis more than a standalone score. Include in metadata but use low weight.
+**Not a standalone scorer.** Token efficiency is a feature for L3 pattern analysis, not a quality judgment. If computed, it goes in the efficiency score's `metadata` dict, not as its own feedback entry. Implementation is optional for M1.
 
 ---
 
@@ -161,7 +143,7 @@ def efficiency_score(turn: TurnSpan) -> Score:
 
 ---
 
-## Session-level aggregation
+## Session-level aggregation (M1)
 
 ```python
 def session_efficiency(session: SessionView) -> Score:

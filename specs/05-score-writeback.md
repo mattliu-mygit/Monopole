@@ -2,7 +2,7 @@
 
 How scores are persisted as Weave feedback on agent trace refs. The write path is the mirror of spec 01's read path.
 
-Ties to spec 01 (data flow — ref format), all scorer specs (02–04), future judge/gate scorers (FUTURE.md).
+Ties to spec 01 (data flow — ref format), all scorer specs (02–04).
 
 ---
 
@@ -74,20 +74,27 @@ When we register custom Signals (M2), the scorer is a Weave op with a proper `ru
 
 ### Scorer naming convention
 
-| Scorer | `feedback_type` |
-|---|---|
-| Test outcome | `weave_agent_signals.outcome.test` |
-| Build outcome | `weave_agent_signals.outcome.build` |
-| Lint outcome | `weave_agent_signals.outcome.lint` |
-| Git outcome | `weave_agent_signals.outcome.git` |
-| Verified before done | `weave_agent_signals.outcome.verified_before_done` |
-| Turn frustration | `weave_agent_signals.implicit.frustration` | *deferred to M2 — needs event classifier* |
-| Session frustration | `weave_agent_signals.implicit.session_frustration` | *deferred to M2* |
-| Abandonment | `weave_agent_signals.implicit.abandonment` |
-| Correction density | `weave_agent_signals.implicit.correction_density` |
-| Efficiency | `weave_agent_signals.efficiency` |
-| Session efficiency | `weave_agent_signals.efficiency.session` |
-| Routing gate | `weave_agent_signals.gate` |
+**M1 scorers:**
+
+| Scorer | `feedback_type` | Granularity |
+|---|---|---|
+| Test outcome | `weave_agent_signals.outcome.test` | turn |
+| Build outcome | `weave_agent_signals.outcome.build` | turn |
+| Lint outcome | `weave_agent_signals.outcome.lint` | turn |
+| Git outcome | `weave_agent_signals.outcome.git` | turn |
+| Efficiency | `weave_agent_signals.efficiency` | turn |
+| Session efficiency | `weave_agent_signals.efficiency.session` | session |
+| Abandonment | `weave_agent_signals.implicit.abandonment` | session |
+| Correction density | `weave_agent_signals.implicit.correction_density` | session |
+
+**Deferred (M2+):**
+
+| Scorer | `feedback_type` | Depends on |
+|---|---|---|
+| Verified before done | `weave_agent_signals.outcome.verified_before_done` | micro-LLM done-claim classifier |
+| Turn frustration | `weave_agent_signals.implicit.frustration` | micro-LLM event classifier |
+| Session frustration | `weave_agent_signals.implicit.session_frustration` | turn frustration |
+| Routing gate | `weave_agent_signals.gate` | L2 judge infrastructure |
 
 ---
 

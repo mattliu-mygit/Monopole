@@ -1,6 +1,6 @@
 # Spec 06: CLI
 
-Command-line interface for running scorers and backfilling history. Entry point: `weave-agent-signals` (installed via `pyproject.toml`). Future commands (`reflect`, `propose`, coach-agent query tools) are sketched in [FUTURE.md](FUTURE.md) and get specced with their milestones.
+Command-line interface for running scorers and backfilling history. Entry point: `weave-agent-signals` (installed via `pyproject.toml`). Future commands (`reflect`, `propose`, coach-agent query tools) get specced with their milestones.
 
 ---
 
@@ -11,16 +11,17 @@ Command-line interface for running scorers and backfilling history. Entry point:
 Score recent unscored turns and sessions.
 
 ```
-weave-agent-signals score [--since DATETIME] [--limit N] [--scorers NAMES] [--dry-run]
+weave-agent-signals score [--since DATETIME] [--limit N] [--dry-run] [--force]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `--since` | 24h ago | Score turns started after this time |
 | `--limit` | 100 | Max turns to score per run |
-| `--scorers` | all L1 | Comma-separated scorer names (e.g. `outcome.test,implicit.frustration`) |
 | `--dry-run` | false | Compute scores, print them, don't write feedback |
 | `--force` | false | Re-score even if feedback already exists |
+
+**Future**: `--scorers` flag for selecting specific scorers (e.g. `outcome.test,efficiency`). M1 runs all L1 scorers.
 
 Flow:
 1. Query recent turns via `agents/spans/query` (spec 01)
@@ -34,15 +35,15 @@ Flow:
 Score historical sessions in a date range.
 
 ```
-weave-agent-signals backfill --from DATE --to DATE [--scorers NAMES] [--batch-size N]
+weave-agent-signals backfill --start DATE [--end DATE] [--batch-size N] [--dry-run]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--from` | required | Start date (inclusive) |
-| `--to` | today | End date (inclusive) |
-| `--scorers` | all L1 | Which scorers to run |
+| `--start` | required | Start date (inclusive) |
+| `--end` | today | End date (inclusive) |
 | `--batch-size` | 50 | Feedback batch write size |
+| `--dry-run` | false | Compute scores, print them, don't write feedback |
 
 Polite backfill: page through sessions, sleep between batches. Uses `/feedback/batch/create` for efficiency.
 
@@ -58,9 +59,9 @@ weave-agent-signals inspect --recent [N]
 
 Prints: all feedback on the ref, formatted as a table.
 
-### `setup`
+### `setup` (future)
 
-One-time configuration.
+One-time configuration. Not M1 — entity/project are CLI flags with defaults for now.
 
 ```
 weave-agent-signals setup
@@ -72,19 +73,16 @@ Interactive: prompts for Weave entity/project, verifies API key, checks adapter 
 
 ## Configuration
 
-Config file: `~/.config/weave-agent-signals/config.toml` (XDG) or `~/.weave-agent-signals.toml`.
+M1 uses CLI flags with defaults (`--entity mliu-wandb-weights-biases`, `--project agent-sessions`). A config file is a future convenience:
 
 ```toml
+# ~/.config/weave-agent-signals/config.toml (future)
 [weave]
 entity = "mliu-wandb-weights-biases"
 project = "agent-sessions"
-
-[scoring]
-default_scorers = ["outcome", "implicit", "efficiency"]
-default_since_hours = 24
 ```
 
-Gate and judge config sections land with M2 (see FUTURE.md).
+Gate and judge config sections land with M2.
 
 ---
 

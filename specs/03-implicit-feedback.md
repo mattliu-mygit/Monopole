@@ -2,160 +2,23 @@
 
 Extracts human-feedback signals from observable user behavior — no explicit rating needed. The adapter already stamps three counters (`steering_count`, `denial_count`, `tool_error_count`) on turn roots; this layer adds session-level aggregation over those facts.
 
-Ties to spec 01 (data flow), spec 04 (efficiency — related but distinct), routing gates (FUTURE.md — `high_frustration` gate).
-
-**M1 scope**: correction density and abandonment detection (both factual). Frustration scoring (weighted index over classified events) is deferred — it requires a micro-LLM classifier to distinguish corrections from additions/redirects; without that, raw counter sums overcount frustration. See "Deferred: frustration scoring" at the end.
+Ties to spec 01 (data flow), spec 04 (efficiency — related but distinct: feedback measures *user* frustration, efficiency measures *agent* waste).
 
 ---
 
-## Signal taxonomy
+## M1 scope
 
-**Prior art to mirror**: Claude Code's own OTel telemetry enumerates the decision taxonomy — `tool_decision` with `accept|reject` and sources `config|hook|user_permanent|user_temporary|user_abort|user_reject`, plus `tool_result.error_type`. Keep our signal semantics aligned with those field meanings so scores stay comparable with anything built on CC's native telemetry.
+M1 ships two factual session-level scorers: **correction density** and **abandonment detection**. Both rely only on adapter-stamped counters and observable session end-state — no LLM, no prompt-text analysis.
 
-### Turn-level signals (from adapter attrs + span events)
-
-| Signal | Source | Weight | Notes |
-|---|---|---|---|
-| Steering count | `weave_agent_adapter.steering_count` attr | high | Direct correction — user interrupted the agent mid-turn |
-| Denial count | `weave_agent_adapter.denial_count` attr | high | User explicitly rejected a tool call |
-| Tool errors | `weave_agent_adapter.tool_error_count` attr | medium | Tool failures (may or may not be the agent's fault) |
-| Corrective follow-up | Next turn's prompt (heuristic) | high | User's next message contradicts/corrects this turn's output |
-| Quick re-prompt | Turn timing + prompt similarity | medium | User re-submits within seconds with modifications |
-
-### Session-level signals (aggregated)
+### Signal sources (M1)
 
 | Signal | Source | Notes |
 |---|---|---|
-| Session frustration | Weighted sum of turn signals | Overall session quality proxy |
-| Abandonment | Session end pattern | Session ends without visible completion marker |
-| Satisfaction proxy | Inverse of frustration + positive completion | Session completed with low friction |
-| Correction density | Corrections / total turns | How often the user had to intervene |
+| Steering count | `weave_agent_adapter.steering_count` attr | Raw count per turn |
+| Denial count | `weave_agent_adapter.denial_count` attr | Raw count per turn |
+| Tool errors | `weave_agent_adapter.tool_error_count` attr | Raw count per turn |
 
----
-
-## Turn-level scorers
-
-### Event classification (Class 3, micro-LLM)
-
-Raw counters can't distinguish "no! stop!" from "while you're at it, also add X" — both are one steering event, only one is frustration. So before weighting, classify each steering/denial *text* with a small model (single short message, structured output; fires only on turns that have steering/denials — a small fraction):
-
-| Event | Classes |
-|---|---|
-| Steering | `correction` (agent was doing the wrong thing) · `addition` (new/expanded ask, no fault) · `redirect` (priorities changed, no fault) |
-| Denial | `rejection` (wrong action proposed) · `changed_mind` / `permission_hygiene` (no fault) |
-
-Raw counts stay in metadata as Class-1 facts; the index below consumes only the fault-implying classes.
-
-### Frustration index
-
-Weighted combination over *classified* events:
-
-```python
-def frustration_index(turn: TurnSpan) -> float:
-    w_steer = 0.4   # corrections — user explicitly interrupted a wrong path
-    w_deny  = 0.3   # rejections — user refused a proposed action as wrong
-    w_error = 0.1   # errors matter less — often environmental, not agent fault
-    w_correct = 0.2 # corrective follow-up — agent got it wrong
-
-    score = 0.0
-    score += min(turn.steering_corrections * w_steer, w_steer * 3)  # cap at 3
-    score += min(turn.denial_rejections * w_deny, w_deny * 3)
-    score += min(turn.tool_error_count * w_error, w_error * 5)
-    if is_corrective_followup(turn, next_turn):
-        score += w_correct
-
-    return min(score, 1.0)
-```
-
-Output:
-
-```python
-Score(
-    scorer="implicit.frustration",
-    value=frustration_index,  # 0.0 = smooth, 1.0 = maximum frustration
-    tags=tags,                # e.g. ["steering_heavy", "denial"]
-    confidence=0.9,           # high for counter-based, lower for heuristics
-    metadata={
-        "steering_count": n,            # raw (Class 1)
-        "steering_corrections": n,      # classified (Class 3)
-        "denial_count": n,
-        "denial_rejections": n,
-        "tool_error_count": n,
-        "corrective_followup": bool,
-        "classifier_model": "...",
-    },
-    granularity="turn",
-)
-```
-
-### Corrective follow-up detection
-
-Heuristic: the user's *next* turn prompt references or contradicts this turn's output. Turns are already linked and ordered via `conversation_id` (SessionView), so finding the next turn is trivial. Prompt text is fully available on spans too — the adapter caps only tool *results* (32KB); `gen_ai.prompt.0.content` carries the full prompt, with only secret-pattern redaction applied. So text-similarity between consecutive prompts works from spans directly; local transcripts are only needed when tool-output fidelity matters. Signals, strongest first:
-
-0. **Prompt-text similarity/contradiction**: next prompt references or negates this turn's action ("no, ...", "don't ...", re-statement of the same ask with modifications)
-
-1. **Steering at turn start**: if the next turn has `steering_count > 0` in its first event, the user corrected course
-2. **Quick re-prompt**: if `next_turn.started_at - turn.ended_at < 30s` and the turn had tool errors or denials, likely a correction
-3. **Same-tool retry**: if the next turn re-invokes the same primary tool with different args, likely a correction
-
-This is intentionally conservative — false negatives are better than false positives for a frustration metric.
-
----
-
-## Session-level scorers
-
-### Abandonment detection
-
-A session is "abandoned" if it ends without a visible completion marker:
-
-```python
-def is_abandoned(session: SessionView) -> bool:
-    if not session.turns:
-        return True
-
-    last_turn = session.turns[-1]
-
-    # If the last turn has an outcome (test pass, git commit), not abandoned
-    if has_positive_outcome(last_turn):
-        return False
-
-    # If the session has very few turns (1-2), likely just exploration — not abandonment
-    if len(session.turns) <= 2:
-        return False
-
-    # If the last turn had high frustration, likely abandoned
-    if frustration_index(last_turn) > 0.5:
-        return True
-
-    # If the session was marked incomplete by the adapter
-    if last_turn.status_code == "ERROR":
-        return True
-
-    return False
-```
-
-### Session frustration (aggregate)
-
-```python
-def session_frustration(session: SessionView) -> float:
-    if not session.turns:
-        return 0.0
-
-    turn_scores = [frustration_index(t) for t in session.turns]
-
-    # Weighted: later turns matter more (frustration compounds)
-    weights = [1.0 + i * 0.1 for i in range(len(turn_scores))]
-    weighted = sum(s * w for s, w in zip(turn_scores, weights))
-    total_weight = sum(weights)
-
-    base = weighted / total_weight
-
-    # Abandonment penalty
-    if is_abandoned(session):
-        base = min(base + 0.2, 1.0)
-
-    return base
-```
+Raw counts are available as span attrs for downstream consumers (L3 features, routing gates). M1 does not interpret *what kind* of steering/denial occurred — only whether it happened.
 
 ### Correction density
 
@@ -169,18 +32,14 @@ def correction_density(session: SessionView) -> float:
     return corrections / len(session.turns)
 ```
 
-Output scores:
-
 ```python
 Score(
-    scorer="implicit.session_frustration",
-    value=session_frustration,
-    tags=tags,  # ["abandoned"] or ["smooth"] or ["high_friction"]
-    confidence=0.85,
+    scorer="implicit.correction_density",
+    value=density,
+    tags=[],
+    confidence=0.9,
     metadata={
         "turn_count": len(turns),
-        "correction_density": density,
-        "abandoned": is_abandoned,
         "total_steerings": sum(t.steering_count for t in turns),
         "total_denials": sum(t.denial_count for t in turns),
     },
@@ -188,21 +47,40 @@ Score(
 )
 ```
 
+### Abandonment detection
+
+A session is "abandoned" if it ends without a visible completion marker. M1 uses only observable end-state — no frustration scoring, no outcome checking.
+
+```python
+def is_abandoned(session: SessionView) -> bool:
+    if not session.turns:
+        return True
+
+    # Very few turns (1-2) = likely exploration, not abandonment
+    if len(session.turns) <= 2:
+        return False
+
+    # Last turn errored out
+    if session.turns[-1].status_code == "ERROR":
+        return True
+
+    return False
+```
+
+```python
+Score(
+    scorer="implicit.abandonment",
+    value=True/False,
+    tags=["abandoned"] or ["completed"],
+    confidence=0.8,
+    metadata={},
+    granularity="session",
+)
+```
+
 ---
 
-## Calibration
-
-These weights and thresholds are initial guesses. Calibration path:
-1. Backfill scores on ~50 recent sessions
-2. Manually review ~10 highest/lowest-frustration sessions
-3. Adjust weights until the ranking matches intuition
-4. Lock weights as v1; version in score metadata for A/B
-
-The L4 RSI loop can later propose weight adjustments based on judge-agreement data.
-
----
-
-## Anti-signals (explicitly NOT scored here)
+## Anti-signals (explicitly NOT scored)
 
 - **Turn count**: not a quality signal — complex tasks legitimately need many turns. Used as a denominator in efficiency (spec 04), not a score.
 - **Token count**: same — expensive turns aren't bad turns. Feature for L3 correlation, not a score.
@@ -211,12 +89,3 @@ The L4 RSI loop can later propose weight adjustments based on judge-agreement da
 
 These are **features** for L3 pattern analysis, not scores.
 
----
-
-## Deferred: frustration scoring
-
-The frustration index, session frustration, and event classification sections above describe the *target design* but are **not implemented in M1**. The reason: raw steering/denial counts can't distinguish corrections (frustration) from additions/redirects (neutral). Without a micro-LLM classifier reading the actual event text, a weighted sum of raw counts overestimates frustration — every "also do X" steering event gets scored as if the user was correcting a mistake.
-
-**What M1 ships**: correction density (factual ratio) and abandonment (observable end-state). Raw counts are available as span attrs for downstream consumers.
-
-**What's needed for frustration scoring**: a Class 3 micro-LLM classifier that reads each steering/denial event's text and classifies it as `correction`/`addition`/`redirect` (steering) or `rejection`/`changed_mind`/`permission_hygiene` (denial). Only then can the frustration index weight fault-implying events correctly. This lands with the M2 judge infrastructure.
