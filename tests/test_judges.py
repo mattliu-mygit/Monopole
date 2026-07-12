@@ -1,17 +1,16 @@
 """Tests for judge runner with mocked inference."""
+
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 from unittest.mock import patch
-import os
 
 import respx
 
-from weave_agent_signals.judges.inference import InferenceClient, INFERENCE_BASE, DEFAULT_ENTITY, DEFAULT_PROJECT
-from weave_agent_signals.judges.rubrics import VERIFICATION_DISCIPLINE, RUBRICS
-from weave_agent_signals.judges.runner import judge_turn, _run_rubric
-from weave_agent_signals.judges.digest import build_turn_digest
+from weave_agent_signals.judges.inference import INFERENCE_BASE, InferenceClient
+from weave_agent_signals.judges.rubrics import RUBRICS, VERIFICATION_DISCIPLINE
+from weave_agent_signals.judges.runner import judge_turn
 from weave_agent_signals.models import ToolSpan, TurnSpan
 
 
@@ -58,11 +57,13 @@ def _bash(cmd, result="", status="OK"):
 
 def _mock_judge_response(score: float, rationale: str = "test rationale"):
     return {
-        "choices": [{
-            "message": {
-                "content": json.dumps({"score": score, "rationale": rationale}),
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps({"score": score, "rationale": rationale}),
+                }
             }
-        }],
+        ],
         "model": "gpt-oss-20b",
         "usage": {"prompt_tokens": 100, "completion_tokens": 50},
     }
@@ -77,7 +78,8 @@ def test_judge_turn_returns_scores():
     turn = _turn(tool_calls=[_bash("pytest tests/", "5 passed")])
     client = InferenceClient(base_url=INFERENCE_BASE)
     scores = judge_turn(
-        turn, client,
+        turn,
+        client,
         rubrics=[VERIFICATION_DISCIPLINE],
         judge_candidates=["gpt-oss-20b"],
     )
@@ -101,7 +103,8 @@ def test_judge_turn_low_score_tags():
     turn = _turn()
     client = InferenceClient(base_url=INFERENCE_BASE)
     scores = judge_turn(
-        turn, client,
+        turn,
+        client,
         rubrics=[VERIFICATION_DISCIPLINE],
         judge_candidates=["gpt-oss-20b"],
     )
@@ -119,7 +122,8 @@ def test_judge_turn_excludes_agent_family():
     turn = _turn(model="claude-opus-4")
     client = InferenceClient(base_url=INFERENCE_BASE)
     scores = judge_turn(
-        turn, client,
+        turn,
+        client,
         rubrics=[VERIFICATION_DISCIPLINE],
         judge_candidates=["Llama-3.1-8B", "gpt-oss-20b"],
     )
@@ -136,7 +140,8 @@ def test_judge_turn_multiple_rubrics():
     turn = _turn(tool_calls=[_bash("pytest", "3 passed")])
     client = InferenceClient(base_url=INFERENCE_BASE)
     scores = judge_turn(
-        turn, client,
+        turn,
+        client,
         rubrics=list(RUBRICS.values()),
         judge_candidates=["gpt-oss-20b"],
     )
@@ -161,7 +166,8 @@ def test_judge_handles_bad_json():
     turn = _turn()
     client = InferenceClient(base_url=INFERENCE_BASE)
     scores = judge_turn(
-        turn, client,
+        turn,
+        client,
         rubrics=[VERIFICATION_DISCIPLINE],
         judge_candidates=["gpt-oss-20b"],
     )
@@ -177,7 +183,8 @@ def test_judge_clamps_score():
     turn = _turn()
     client = InferenceClient(base_url=INFERENCE_BASE)
     scores = judge_turn(
-        turn, client,
+        turn,
+        client,
         rubrics=[VERIFICATION_DISCIPLINE],
         judge_candidates=["gpt-oss-20b"],
     )
@@ -212,7 +219,8 @@ def test_judge_metadata_includes_families():
     turn = _turn(model="claude-opus-4")
     client = InferenceClient(base_url=INFERENCE_BASE)
     scores = judge_turn(
-        turn, client,
+        turn,
+        client,
         rubrics=[VERIFICATION_DISCIPLINE],
         judge_candidates=["gpt-oss-20b"],
     )

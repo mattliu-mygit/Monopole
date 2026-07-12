@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from weave_agent_signals.judges.digest import build_turn_digest, build_judge_messages
+from weave_agent_signals.judges.digest import build_judge_messages, build_turn_digest
 from weave_agent_signals.models import ToolSpan, TurnSpan
 
 

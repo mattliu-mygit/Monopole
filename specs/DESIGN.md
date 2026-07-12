@@ -71,7 +71,8 @@ Personal coding performance evaluation over Claude Code sessions at three granul
 │                                                          │
 │  ┌──────────────────────────────────────────────────┐    │
 │  │ CLI (spec 06)                                    │    │
-│  │ score · backfill · inspect · setup               │    │
+│  │ score · backfill · judge · analyze · reflect     │    │
+│  │ monitor · inspect                                │    │
 │  └──────────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────┘
 
@@ -190,14 +191,12 @@ A subagent Matt can converse with to understand what he's been doing and how, gr
 | Dependency | Role |
 |---|---|
 | `weave-agent-adapter` | Produces the traces (custom attrs: `config_version`, `steering_count`, `denial_count`, `tool_error_count`, `git_branch`, `effort_level`) |
-| `weave` SDK | Span queries, feedback write-back |
 | `httpx` | Direct Weave trace-server API calls (agents/spans/query, feedback/create) |
+| `python-dotenv` | Load `.env` for API keys |
 | `openai` (optional) | W&B Inference judge calls (OpenAI-compatible) |
 | `gepa` (optional) | L4 RSI loop |
-| `pandas` | L3 rollups |
-| `ccusage` (optional) | Cost axis join |
-| `agentevals` | Referenceless trajectory judge (L2) |
-| `openevals` | Judge primitives, pyright/code evaluators |
+| `ruff` (dev) | Linting and formatting |
+| `pytest` / `respx` (dev) | Testing with mocked HTTP |
 
 ## 6. Weave project
 
@@ -208,9 +207,13 @@ Entity: `mliu-wandb-weights-biases`, project: `agent-sessions` — same project 
 CLI-driven, schedulable via launchd:
 - **`score`**: score recent unscored turns/sessions (incremental)
 - **`backfill`**: score historical sessions in a date range
-- **`inspect`** / **`setup`**: debugging and one-time configuration
+- **`judge`**: run LLM judges (turn + session level, PoLL panels)
+- **`analyze`**: A/B leaderboard, trends, coaching summary
+- **`reflect`**: GEPA-based config proposals (dry-run + apply)
+- **`monitor`**: alert on significant regressions (trend + config)
+- **`inspect`**: debugging (recent turns, session detail, feedback)
 
-Typical cron: `score` every 30min (or on session-end hook). Future commands (`reflect`, `propose`) add their own cadences.
+Deployed: launchd plist in `deploy/` runs `score` then `monitor` hourly, logging to `~/Library/Logs/weave-agent-signals.log`.
 
 ## 8. Milestones
 
@@ -220,7 +223,7 @@ Typical cron: `score` every 30min (or on session-end hook). Future commands (`re
 4. **M4 — pattern + RSI**: emergent clustering + A/B leaderboards, coaching digest, GEPA diff proposer with validation + review gate, annotation-queue calibration. Exit: dry-run reflector on history, apply one diff → config_version flips → A/B populates.
 5. **M5 — monitoring & alerting**: sampled continuous scoring + regression/A-B degradation alerts on a schedule (see §Monitoring & alerting). Exit: a real regression in recent scores fires a significant, deduplicated alert.
 
-**Build status (2026-07-10)**: M1 implemented and validated on real data. M2/M3/M4 implemented and unit-tested, but judging runs through a **temporary local CLI backend** (`claude`/`codex` CLIs) pending W&B Inference billing, and the M3 exit criteria (digest validation vs hand-read sessions, disagreement rates) are **not yet met** — judge scores are unvalidated. M5 not started.
+**Build status (2026-07-12)**: M1 implemented and validated on real data. M2/M3/M4 implemented and unit-tested, but judging runs through a **temporary local CLI backend** (`claude`/`codex`/`gemini` CLIs) pending W&B Inference billing, and the M3 exit criteria (digest validation vs hand-read sessions, disagreement rates) are **not yet met** — judge scores are unvalidated. M5 implemented: hourly launchd job runs `score` then `monitor`, alerts on significant regressions (trend-down + config-regression), with webhook + dedup state.
 
 ## 9. Prior art & reuse
 

@@ -4,21 +4,18 @@ from datetime import datetime, timezone
 
 from weave_agent_signals.models import ToolSpan, TurnSpan
 from weave_agent_signals.scorers.outcome import (
-    TestRunOutcome,
-    BuildOutcome,
-    LintOutcome,
+    CommandOutcome,
     GitOutcome,
     InstallOutcome,
-    CommandOutcome,
-    _extract_exit_code,
     _extract_command,
+    _extract_exit_code,
     classify_command,
-    parse_test_output,
+    extract_outcomes,
     parse_build_output,
-    parse_lint_output,
     parse_git_output,
     parse_install_output,
-    extract_outcomes,
+    parse_lint_output,
+    parse_test_output,
     score_turn_outcomes,
 )
 
@@ -65,6 +62,7 @@ def _turn(tool_calls):
 
 
 # --- Command classification ---
+
 
 def test_classify_pytest():
     assert classify_command("pytest tests/") == "test"
@@ -132,6 +130,7 @@ def test_classify_unknown():
 
 # --- Pytest parsing ---
 
+
 def test_parse_pytest_all_passed():
     output = "===== 42 passed in 3.21s ====="
     result = parse_test_output(output, "pytest")
@@ -158,6 +157,7 @@ def test_parse_pytest_with_skips():
 
 # --- Jest parsing ---
 
+
 def test_parse_jest_passed():
     output = """Tests:       12 passed, 12 total
 Suites:      3 passed, 3 total"""
@@ -176,8 +176,12 @@ def test_parse_jest_with_failures():
 
 # --- Cargo test parsing ---
 
+
 def test_parse_cargo_test():
-    output = "test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.30s"
+    output = (
+        "test result: ok. 15 passed; 0 failed; 0 ignored;"
+        " 0 measured; 0 filtered out; finished in 2.30s"
+    )
     result = parse_test_output(output, "cargo")
     assert result.passed == 15
     assert result.failed == 0
@@ -192,6 +196,7 @@ def test_parse_cargo_test_failure():
 
 
 # --- Go test parsing ---
+
 
 def test_parse_go_test_ok():
     output = """ok  	github.com/user/pkg	0.003s
@@ -213,6 +218,7 @@ ok  	github.com/user/pkg/sub	0.005s"""
 
 # --- Exit code fallback ---
 
+
 def test_exit_code_fallback_pass():
     tc = _bash("./run_tests.sh", result='{"exit_code": 0}', status="OK")
     outcomes = extract_outcomes([tc])
@@ -231,6 +237,7 @@ def test_exit_code_on_known_command():
 
 # --- Build parsing ---
 
+
 def test_parse_tsc_errors():
     output = "Found 3 errors in 2 files."
     result = parse_build_output(output, "tsc")
@@ -246,6 +253,7 @@ def test_parse_tsc_clean():
 
 # --- Lint parsing ---
 
+
 def test_parse_ruff_clean():
     output = "All checks passed!"
     result = parse_lint_output(output, "ruff", exit_code=0)
@@ -260,6 +268,7 @@ def test_parse_ruff_issues():
 
 
 # --- Turn-level scoring ---
+
 
 def test_score_turn_all_pass():
     tc = _bash("pytest tests/", result="===== 10 passed in 1.0s =====")
@@ -280,8 +289,13 @@ def test_score_turn_with_failure():
 
 def test_score_turn_no_bash():
     tc = ToolSpan(
-        span_id="sp-1", tool_name="Read", arguments="{}", result="file contents",
-        status_code="OK", started_at=_ts(), ended_at=_ts(12, 1),
+        span_id="sp-1",
+        tool_name="Read",
+        arguments="{}",
+        result="file contents",
+        status_code="OK",
+        started_at=_ts(),
+        ended_at=_ts(12, 1),
     )
     scores = score_turn_outcomes(_turn([tc]))
     assert len(scores) == 0
@@ -297,6 +311,7 @@ def test_score_turn_multiple_types():
 
 
 # --- Git parsing ---
+
 
 def test_parse_git_commit():
     output = " 3 files changed, 42 insertions(+), 10 deletions(-)"
@@ -329,7 +344,10 @@ def test_classify_git_command():
 
 
 def test_extract_git_outcome():
-    tc = _bash("git commit -m 'fix'", result=" 2 files changed, 15 insertions(+), 3 deletions(-)")
+    tc = _bash(
+        "git commit -m 'fix'",
+        result=" 2 files changed, 15 insertions(+), 3 deletions(-)",
+    )
     outcomes = extract_outcomes([tc])
     assert len(outcomes) == 1
     assert isinstance(outcomes[0], GitOutcome)
@@ -346,6 +364,7 @@ def test_score_turn_git():
 
 
 # --- Edge cases ---
+
 
 def test_mixed_test_and_git_in_one_turn():
     t1 = _bash("pytest tests/", result="===== 3 passed in 0.5s =====")
@@ -372,7 +391,9 @@ def test_git_push_rejected():
 
 
 def test_git_rebase_success():
-    result = parse_git_output("Successfully rebased and updated refs/heads/main.", "rebase", exit_code=0)
+    result = parse_git_output(
+        "Successfully rebased and updated refs/heads/main.", "rebase", exit_code=0
+    )
     assert result.success is True
 
 
@@ -425,9 +446,13 @@ def test_extract_git_operation_picks_mutating_verb():
 
 def test_non_bash_tool_ignored():
     tc = ToolSpan(
-        span_id="sp-1", tool_name="Edit",
+        span_id="sp-1",
+        tool_name="Edit",
         arguments='{"file_path": "foo.py", "old_string": "a", "new_string": "b"}',
-        result="ok", status_code="OK", started_at=_ts(), ended_at=_ts(12, 1),
+        result="ok",
+        status_code="OK",
+        started_at=_ts(),
+        ended_at=_ts(12, 1),
     )
     outcomes = extract_outcomes([tc])
     assert len(outcomes) == 0
@@ -454,71 +479,87 @@ def test_multiple_test_runs_one_fails():
 
 def test_extract_exit_code_prefers_json_over_status():
     span = ToolSpan(
-        span_id="sp-1", tool_name="Bash",
+        span_id="sp-1",
+        tool_name="Bash",
         arguments='{"command": "pytest"}',
         result='{"exit_code": 2}',
         status_code="ERROR",
-        started_at=_ts(), ended_at=_ts(12, 1),
+        started_at=_ts(),
+        ended_at=_ts(12, 1),
     )
     assert _extract_exit_code(span) == 2
 
 
 def test_extract_exit_code_falls_back_to_status():
     span = ToolSpan(
-        span_id="sp-1", tool_name="Bash",
+        span_id="sp-1",
+        tool_name="Bash",
         arguments='{"command": "pytest"}',
         result="plain text output",
         status_code="ERROR",
-        started_at=_ts(), ended_at=_ts(12, 1),
+        started_at=_ts(),
+        ended_at=_ts(12, 1),
     )
     assert _extract_exit_code(span) == 1
 
 
 def test_extract_exit_code_ok_status():
     span = ToolSpan(
-        span_id="sp-1", tool_name="Bash",
+        span_id="sp-1",
+        tool_name="Bash",
         arguments='{"command": "pytest"}',
         result="",
         status_code="OK",
-        started_at=_ts(), ended_at=_ts(12, 1),
+        started_at=_ts(),
+        ended_at=_ts(12, 1),
     )
     assert _extract_exit_code(span) == 0
 
 
 def test_extract_exit_code_unset_no_result():
     span = ToolSpan(
-        span_id="sp-1", tool_name="Bash",
+        span_id="sp-1",
+        tool_name="Bash",
         arguments='{"command": "pytest"}',
         result="",
         status_code="UNSET",
-        started_at=_ts(), ended_at=_ts(12, 1),
+        started_at=_ts(),
+        ended_at=_ts(12, 1),
     )
     assert _extract_exit_code(span) is None
 
 
 # --- _extract_command hardening ---
 
+
 def test_extract_command_non_dict_json():
     span = ToolSpan(
-        span_id="sp-1", tool_name="Bash",
+        span_id="sp-1",
+        tool_name="Bash",
         arguments='"just a string"',
-        result="", status_code="OK",
-        started_at=_ts(), ended_at=_ts(12, 1),
+        result="",
+        status_code="OK",
+        started_at=_ts(),
+        ended_at=_ts(12, 1),
     )
     assert _extract_command(span) is None
 
 
 def test_extract_command_list_json():
     span = ToolSpan(
-        span_id="sp-1", tool_name="Bash",
+        span_id="sp-1",
+        tool_name="Bash",
         arguments='["a", "b"]',
-        result="", status_code="OK",
-        started_at=_ts(), ended_at=_ts(12, 1),
+        result="",
+        status_code="OK",
+        started_at=_ts(),
+        ended_at=_ts(12, 1),
     )
     assert _extract_command(span) is None
 
 
 # --- parse_git_output unknown exit code ---
+
 
 def test_parse_git_output_unknown_exit_defaults_false():
     result = parse_git_output("some output", "commit", exit_code=None)
@@ -562,6 +603,7 @@ def test_parse_git_output_merge_conflict_not_success():
 
 # --- Install classification ---
 
+
 def test_classify_npm_install():
     assert classify_command("npm install") == "install"
     assert classify_command("npm ci") == "install"
@@ -601,6 +643,7 @@ def test_classify_bundle_install():
 
 
 # --- Install output parsing ---
+
 
 def test_parse_install_success():
     result = parse_install_output("Successfully installed requests-2.31.0", "pip", exit_code=0)
@@ -649,8 +692,13 @@ def test_parse_install_infers_failure_over_success_when_no_exit_code():
 
 # --- Install scoring ---
 
+
 def test_score_turn_install_success():
-    tc = _bash("pip install requests", result="Successfully installed requests-2.31.0", status="OK")
+    tc = _bash(
+        "pip install requests",
+        result="Successfully installed requests-2.31.0",
+        status="OK",
+    )
     scores = score_turn_outcomes(_turn([tc]))
     install_scores = [s for s in scores if s.scorer == "outcome.install"]
     assert len(install_scores) == 1
@@ -677,12 +725,14 @@ def test_extract_install_outcome():
 
 # --- Mypy classification ---
 
+
 def test_classify_mypy():
     assert classify_command("mypy src/") == "lint"
     assert classify_command("mypy --strict src/app.py") == "lint"
 
 
 # --- Generic command fallback ---
+
 
 def test_classify_exploration_commands_none():
     assert classify_command("ls -la") is None
@@ -770,6 +820,7 @@ def test_score_turn_mixed_specific_and_generic():
 def test_extract_output_from_json_result():
     """Real Weave data wraps output in {"stdout": ..., "stderr": ...}."""
     from weave_agent_signals.scorers.outcome import _extract_output_text
+
     span = _bash("git commit -m fix", result='{"stdout": "[main abc1234] 3 files changed"}')
     text = _extract_output_text(span)
     assert "[main abc1234]" in text
@@ -778,7 +829,9 @@ def test_extract_output_from_json_result():
 def test_git_outcome_from_json_wrapped_result():
     tc = _bash(
         "git commit -m 'fix'",
-        result='{"stdout": "[main 12a51da] fix\\n 3 files changed, 42 insertions(+), 10 deletions(-)"}',
+        result=(
+            '{"stdout": "[main 12a51da] fix\\n 3 files changed, 42 insertions(+), 10 deletions(-)"}'
+        ),
         status="UNSET",
     )
     outcomes = extract_outcomes([tc])
@@ -791,6 +844,7 @@ def test_git_outcome_from_json_wrapped_result():
 def test_extract_output_empty_stdout_stderr_returns_empty():
     """Both fields empty → empty string, not the raw JSON wrapper."""
     from weave_agent_signals.scorers.outcome import _extract_output_text
+
     span = _bash("git status", result='{"stdout": "", "stderr": ""}')
     assert _extract_output_text(span) == ""
 
@@ -798,6 +852,7 @@ def test_extract_output_empty_stdout_stderr_returns_empty():
 def test_extract_exit_code_coerces_string():
     """A JSON exit_code serialized as a string must compare as an int."""
     from weave_agent_signals.scorers.outcome import _extract_exit_code
+
     span = _bash("pytest", result='{"stdout": "ok", "exit_code": "0"}', status="UNSET")
     assert _extract_exit_code(span) == 0
 
@@ -806,6 +861,7 @@ def test_extract_exit_code_explicit_null_is_unknown_not_status():
     """An explicit exit_code:null means unknown — must NOT fall through to
     status_code=OK and report success (which would mask a failed command)."""
     from weave_agent_signals.scorers.outcome import _extract_exit_code
+
     span = _bash("git push", result='{"exit_code": null, "stderr": "failed"}', status="OK")
     assert _extract_exit_code(span) is None
 

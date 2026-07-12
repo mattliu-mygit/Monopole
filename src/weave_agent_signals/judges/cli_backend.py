@@ -11,6 +11,7 @@ by the Codex (GPT) CLI and a GPT/Codex-family agent by the Claude CLI, so a mode
 never judges its own family. The exact CLI flags live in one place (``_build``)
 so they are easy to update as the CLIs evolve.
 """
+
 from __future__ import annotations
 
 import json
@@ -95,7 +96,11 @@ class CliJudgeClient:
         argv, stdin_text, mode = self._build(model, system, user)
 
         proc = self._run(
-            argv, input=stdin_text, capture_output=True, text=True, timeout=self._timeout,
+            argv,
+            input=stdin_text,
+            capture_output=True,
+            text=True,
+            timeout=self._timeout,
         )
         if getattr(proc, "returncode", 0) != 0:
             raise RuntimeError(
@@ -122,10 +127,14 @@ class CliJudgeClient:
             # --strict-mcp-config loads no MCP servers; --no-session-persistence
             # avoids writing session files. Prompt is piped on stdin.
             argv = [
-                "claude", "-p",
-                "--output-format", "json",
-                "--model", alias,
-                "--tools", "",
+                "claude",
+                "-p",
+                "--output-format",
+                "json",
+                "--model",
+                alias,
+                "--tools",
+                "",
                 "--strict-mcp-config",
                 "--no-session-persistence",
             ]

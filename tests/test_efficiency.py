@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from weave_agent_signals.models import SessionView, SpanEvent, SubagentSpan, ToolSpan, TurnSpan
+from weave_agent_signals.models import (
+    SessionView,
+    SpanEvent,
+    SubagentSpan,
+    ToolSpan,
+    TurnSpan,
+)
 from weave_agent_signals.scorers.efficiency import (
     detect_error_loops,
     detect_repeated_reads,
-    score_turn_efficiency,
     score_session_efficiency,
+    score_turn_efficiency,
     token_efficiency,
 )
 
@@ -30,20 +36,31 @@ def _tool(name="Bash", args="{}", result="ok", status="OK", t=None):
 
 def _turn(tool_calls, events=None):
     return TurnSpan(
-        trace_id="t1", conversation_id="c1",
-        started_at=_ts(), ended_at=_ts(12, 5),
+        trace_id="t1",
+        conversation_id="c1",
+        started_at=_ts(),
+        ended_at=_ts(12, 5),
         model="claude-opus-4",
-        input_tokens=5000, output_tokens=1000,
-        cache_read_tokens=2000, status_code="OK",
-        config_version="abc", git_branch="main",
-        effort_level="high", session_id="s1",
-        steering_count=0, denial_count=0, tool_error_count=0,
+        input_tokens=5000,
+        output_tokens=1000,
+        cache_read_tokens=2000,
+        status_code="OK",
+        config_version="abc",
+        git_branch="main",
+        effort_level="high",
+        session_id="s1",
+        steering_count=0,
+        denial_count=0,
+        tool_error_count=0,
         events=events or [],
-        tool_calls=tool_calls, chat_spans=[], subagents=[],
+        tool_calls=tool_calls,
+        chat_spans=[],
+        subagents=[],
     )
 
 
 # --- Error loop detection ---
+
 
 def test_error_loop_detected():
     calls = [
@@ -90,6 +107,7 @@ def test_loop_with_similar_args():
 
 # --- Repeated reads ---
 
+
 def test_repeated_reads_detected():
     calls = [
         _tool("Read", '{"file_path": "/app/foo.py"}', "contents"),
@@ -131,6 +149,7 @@ def test_different_files_not_repeated():
 
 # --- Turn-level scoring ---
 
+
 def test_efficient_turn_scores_high():
     calls = [
         _tool("Read", '{"file_path": "foo.py"}', "contents"),
@@ -156,6 +175,7 @@ def test_wasteful_turn_scores_low():
 
 # --- Session-level efficiency ---
 
+
 def _session(turns):
     return SessionView(
         conversation_id="c1",
@@ -166,13 +186,17 @@ def _session(turns):
 
 
 def test_session_efficiency_all_efficient():
-    t1 = _turn([
-        _tool("Read", '{"file_path": "a.py"}', "contents"),
-        _tool("Edit", '{"file_path": "a.py"}', "ok"),
-    ])
-    t2 = _turn([
-        _tool("Bash", '{"command": "pytest"}', "5 passed"),
-    ])
+    t1 = _turn(
+        [
+            _tool("Read", '{"file_path": "a.py"}', "contents"),
+            _tool("Edit", '{"file_path": "a.py"}', "ok"),
+        ]
+    )
+    t2 = _turn(
+        [
+            _tool("Bash", '{"command": "pytest"}', "5 passed"),
+        ]
+    )
     score = score_session_efficiency(_session([t1, t2]))
     assert score.scorer == "efficiency.session"
     assert score.value > 0.9
@@ -182,11 +206,13 @@ def test_session_efficiency_all_efficient():
 
 def test_session_efficiency_with_waste():
     good = _turn([_tool("Bash", '{"command": "pytest"}', "ok")])
-    bad = _turn([
-        _tool("Bash", '{"command": "npm install"}', "err", "ERROR"),
-        _tool("Bash", '{"command": "npm install"}', "err", "ERROR"),
-        _tool("Bash", '{"command": "npm install"}', "err", "ERROR"),
-    ])
+    bad = _turn(
+        [
+            _tool("Bash", '{"command": "npm install"}', "err", "ERROR"),
+            _tool("Bash", '{"command": "npm install"}', "err", "ERROR"),
+            _tool("Bash", '{"command": "npm install"}', "err", "ERROR"),
+        ]
+    )
     score = score_session_efficiency(_session([good, bad]))
     assert score.value < 1.0
     assert "has_error_loops" in score.tags
@@ -200,6 +226,7 @@ def test_session_efficiency_empty():
 
 
 # --- Token efficiency ---
+
 
 def test_token_efficiency_normal():
     t = _turn([], events=[])
@@ -222,6 +249,7 @@ def test_token_efficiency_in_score_metadata():
 
 
 # --- Subagent scope tracking ---
+
 
 def test_repeated_reads_across_scopes_not_flagged():
     """Main turn and subagent both reading the same file is NOT waste."""

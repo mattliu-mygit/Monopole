@@ -12,13 +12,17 @@ from typing import Sequence
 import httpx
 from dotenv import load_dotenv
 
+from weave_agent_signals import alerts
 from weave_agent_signals.client import WeaveClient
 from weave_agent_signals.judges.cli_backend import CliJudgeClient
 from weave_agent_signals.judges.inference import InferenceClient
 from weave_agent_signals.judges.rubrics import RUBRICS, SESSION_RUBRICS
-from weave_agent_signals.judges.runner import judge_default_model, judge_session, judge_turn
+from weave_agent_signals.judges.runner import (
+    judge_default_model,
+    judge_session,
+    judge_turn,
+)
 from weave_agent_signals.models import Score, SessionView
-from weave_agent_signals import alerts
 from weave_agent_signals.patterns import (
     ab_leaderboard,
     coaching_digest,
@@ -116,12 +120,14 @@ def _group_sessions(turns: list) -> list[SessionView]:
     sessions = []
     for conv_id, sess_turns in by_conv.items():
         ordered = sorted(sess_turns, key=lambda t: t.started_at)
-        sessions.append(SessionView(
-            conversation_id=conv_id,
-            turns=ordered,
-            config_version=ordered[0].config_version if ordered else None,
-            git_branch=ordered[0].git_branch if ordered else None,
-        ))
+        sessions.append(
+            SessionView(
+                conversation_id=conv_id,
+                turns=ordered,
+                config_version=ordered[0].config_version if ordered else None,
+                git_branch=ordered[0].git_branch if ordered else None,
+            )
+        )
     return sessions
 
 
@@ -139,12 +145,17 @@ def _score_sessions(
             run_time = session.turns[0].started_at if session.turns else None
             for s in score_session(session):
                 _stamp_metadata(
-                    s, config_version=session.config_version,
-                    git_branch=session.git_branch, run_time=run_time,
+                    s,
+                    config_version=session.config_version,
+                    git_branch=session.git_branch,
+                    run_time=run_time,
                 )
                 stats.write_score(
-                    client, s, sess_ref,
-                    dry_run=args.dry_run, force=args.force,
+                    client,
+                    s,
+                    sess_ref,
+                    dry_run=args.dry_run,
+                    force=args.force,
                     dry_run_label=f"→ {conv_id[:12]}",
                 )
         except Exception as e:
@@ -172,12 +183,17 @@ def cmd_score(args: argparse.Namespace) -> int:
                 turn_ref = turn.ref_for(args.entity, args.project)
                 for s in score_turn(turn):
                     _stamp_metadata(
-                        s, config_version=turn.config_version,
-                        git_branch=turn.git_branch, run_time=turn.started_at,
+                        s,
+                        config_version=turn.config_version,
+                        git_branch=turn.git_branch,
+                        run_time=turn.started_at,
                     )
                     stats.write_score(
-                        client, s, turn_ref,
-                        dry_run=args.dry_run, force=args.force,
+                        client,
+                        s,
+                        turn_ref,
+                        dry_run=args.dry_run,
+                        force=args.force,
                         dry_run_label=str(s.tags),
                     )
             except Exception as e:
@@ -186,7 +202,10 @@ def cmd_score(args: argparse.Namespace) -> int:
 
         sessions_scored = _score_sessions(client, turns, stats, args)
 
-    print(f"Scored {len(turns)} turns, {sessions_scored} sessions ({stats.total_scored} scores). Wrote {stats.total_written}.")
+    print(
+        f"Scored {len(turns)} turns, {sessions_scored} sessions"
+        f" ({stats.total_scored} scores). Wrote {stats.total_written}."
+    )
     if stats.errors:
         print(f"  Errors: {stats.errors} (use -v for details)")
     if stats.all_tags:
@@ -233,12 +252,17 @@ def cmd_backfill(args: argparse.Namespace) -> int:
                 turn_ref = turn.ref_for(args.entity, args.project)
                 for s in score_turn(turn):
                     _stamp_metadata(
-                        s, config_version=turn.config_version,
-                        git_branch=turn.git_branch, run_time=turn.started_at,
+                        s,
+                        config_version=turn.config_version,
+                        git_branch=turn.git_branch,
+                        run_time=turn.started_at,
                     )
                     stats.write_score(
-                        client, s, turn_ref,
-                        dry_run=args.dry_run, force=args.force,
+                        client,
+                        s,
+                        turn_ref,
+                        dry_run=args.dry_run,
+                        force=args.force,
                     )
             except Exception as e:
                 stats.errors += 1
@@ -253,7 +277,10 @@ def cmd_backfill(args: argparse.Namespace) -> int:
         return 0
 
     pct = (classified_bash / total_bash * 100) if total_bash else 0
-    print(f"Backfilled {stats.total_written} scores across {len(turns)} turns, {sessions_scored} sessions.")
+    print(
+        f"Backfilled {stats.total_written} scores across"
+        f" {len(turns)} turns, {sessions_scored} sessions."
+    )
     if stats.skipped:
         print(f"  Skipped: {stats.skipped} (existing, use --force to overwrite)")
     print(f"  Bash coverage: {classified_bash}/{total_bash} classified ({pct:.0f}%)")
@@ -283,16 +310,19 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             turns = client.query_turns(limit=args.recent)
             for turn in turns:
                 client.hydrate_turn_children(turn)
-                print(f"\n{'='*60}")
+                print(f"\n{'=' * 60}")
                 print(f"Turn {turn.trace_id[:12]}  [{turn.started_at}]")
-                print(f"  config={turn.config_version}  steering={turn.steering_count}  "
-                      f"denials={turn.denial_count}  errors={turn.tool_error_count}")
-                print(f"  tokens: in={turn.input_tokens} out={turn.output_tokens} "
-                      f"cache={turn.cache_read_tokens}")
+                print(
+                    f"  config={turn.config_version}  steering={turn.steering_count}  "
+                    f"denials={turn.denial_count}  errors={turn.tool_error_count}"
+                )
+                print(
+                    f"  tokens: in={turn.input_tokens} out={turn.output_tokens} "
+                    f"cache={turn.cache_read_tokens}"
+                )
                 print(f"  tools={len(turn.tool_calls)}  subagents={len(turn.subagents)}")
                 if args.feedback:
-                    feedback = client.query_all_feedback(
-                        turn.ref_for(args.entity, args.project))
+                    feedback = client.query_all_feedback(turn.ref_for(args.entity, args.project))
                     print("  Feedback:")
                     _print_feedback(feedback)
         elif args.session:
@@ -303,17 +333,17 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             print(f"  Turns: {len(session.turns)}")
             print(f"  Tokens: {session.total_tokens}")
             if args.feedback:
-                feedback = client.query_all_feedback(
-                    session.ref_for(args.entity, args.project))
+                feedback = client.query_all_feedback(session.ref_for(args.entity, args.project))
                 print("  Session feedback:")
                 _print_feedback(feedback)
             for i, t in enumerate(session.turns):
-                print(f"  [{i}] {t.trace_id[:12]}  steer={t.steering_count} "
-                      f"deny={t.denial_count} err={t.tool_error_count} "
-                      f"tools={len(t.tool_calls)} subagents={len(t.subagents)}")
+                print(
+                    f"  [{i}] {t.trace_id[:12]}  steer={t.steering_count} "
+                    f"deny={t.denial_count} err={t.tool_error_count} "
+                    f"tools={len(t.tool_calls)} subagents={len(t.subagents)}"
+                )
                 if args.feedback:
-                    feedback = client.query_all_feedback(
-                        t.ref_for(args.entity, args.project))
+                    feedback = client.query_all_feedback(t.ref_for(args.entity, args.project))
                     _print_feedback(feedback)
         else:
             print("Specify --recent N or --session CONVERSATION_ID")
@@ -340,7 +370,9 @@ def cmd_judge(args: argparse.Namespace) -> int:
             turn_rubrics = [RUBRICS[n] for n in rubric_names if n in RUBRICS]
             session_rubrics = [SESSION_RUBRICS[n] for n in rubric_names if n in SESSION_RUBRICS]
             if not turn_rubrics and not session_rubrics:
-                print(f"Unknown rubric(s): {args.rubric}. Available: {', '.join(all_rubrics.keys())}")
+                print(
+                    f"Unknown rubric(s): {args.rubric}. Available: {', '.join(all_rubrics.keys())}"
+                )
                 return 2
 
         run_turns = turn_rubrics is None or bool(turn_rubrics)
@@ -366,12 +398,17 @@ def cmd_judge(args: argparse.Namespace) -> int:
                     scores = judge_turn(turn, inference, rubrics=turn_rubrics or None)
                     for s in scores:
                         _stamp_metadata(
-                            s, config_version=turn.config_version,
-                            git_branch=turn.git_branch, run_time=turn.started_at,
+                            s,
+                            config_version=turn.config_version,
+                            git_branch=turn.git_branch,
+                            run_time=turn.started_at,
                         )
                         stats.write_score(
-                            client, s, turn_ref,
-                            dry_run=args.dry_run, force=args.force,
+                            client,
+                            s,
+                            turn_ref,
+                            dry_run=args.dry_run,
+                            force=args.force,
                             dry_run_label=s.reason,
                         )
                 except Exception as e:
@@ -384,19 +421,25 @@ def cmd_judge(args: argparse.Namespace) -> int:
                     run_time = session.turns[0].started_at if session.turns else None
                     try:
                         scores = judge_session(
-                            session, inference,
+                            session,
+                            inference,
                             rubrics=session_rubrics or None,
                             panel_size=args.panel_size,
                         )
                         sess_ref = session.ref_for(args.entity, args.project)
                         for s in scores:
                             _stamp_metadata(
-                                s, config_version=session.config_version,
-                                git_branch=session.git_branch, run_time=run_time,
+                                s,
+                                config_version=session.config_version,
+                                git_branch=session.git_branch,
+                                run_time=run_time,
                             )
                             stats.write_score(
-                                client, s, sess_ref,
-                                dry_run=args.dry_run, force=args.force,
+                                client,
+                                s,
+                                sess_ref,
+                                dry_run=args.dry_run,
+                                force=args.force,
                                 dry_run_label=f"→ {conv_id[:12]}  {s.reason}",
                             )
                     except Exception as e:
@@ -429,11 +472,15 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                     lo, hi = s.ci
                     flag = "" if s.confident else "  ⚠ low n"
                     if s.pass_rate is not None:
-                        print(f"    {scorer:35s} {s.pass_rate:.0%} pass  "
-                              f"(n={s.count}, CI {lo:.0%}–{hi:.0%}){flag}")
+                        print(
+                            f"    {scorer:35s} {s.pass_rate:.0%} pass  "
+                            f"(n={s.count}, CI {lo:.0%}–{hi:.0%}){flag}"
+                        )
                     else:
-                        print(f"    {scorer:35s} mean={s.mean:.2f}  "
-                              f"(n={s.count}, CI {lo:.2f}–{hi:.2f}){flag}")
+                        print(
+                            f"    {scorer:35s} mean={s.mean:.2f}  "
+                            f"(n={s.count}, CI {lo:.2f}–{hi:.2f}){flag}"
+                        )
                 print()
 
     if args.trends:
@@ -445,9 +492,11 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             for r in regressions:
                 arrow = "↓" if r["direction"] == "regression" else "↑"
                 mark = "" if r["significant"] else "  (tentative)"
-                print(f"  {arrow} {r['scorer']:35s} "
-                      f"{r['older_mean']:.2f} → {r['recent_mean']:.2f} "
-                      f"({r['delta']:+.2f}, n={r['sample_count']}){mark}")
+                print(
+                    f"  {arrow} {r['scorer']:35s} "
+                    f"{r['older_mean']:.2f} → {r['recent_mean']:.2f} "
+                    f"({r['delta']:+.2f}, n={r['sample_count']}){mark}"
+                )
 
     if args.coaching:
         print(coaching_digest(feedback))
@@ -474,15 +523,20 @@ def cmd_monitor(args: argparse.Namespace) -> int:
     sig_trend = [r for r in trend if r["significant"] and r["direction"] == "regression"]
     sig_config = [r for r in config if r["significant"]]
 
-    found = ([alerts.trend_alert(r) for r in sig_trend]
-             + [alerts.config_alert(r) for r in sig_config])
+    found = [alerts.trend_alert(r) for r in sig_trend] + [
+        alerts.config_alert(r) for r in sig_config
+    ]
     seen = alerts.load_seen(args.state_file)
     new = [a for a in found if a.key not in seen]
 
-    tentative = len([r for r in trend if not r["significant"]]) + len([r for r in config if not r["significant"]])
+    tentative = len([r for r in trend if not r["significant"]]) + len(
+        [r for r in config if not r["significant"]]
+    )
     if not new:
-        print(f"No new significant regressions "
-              f"({len(found)} already alerted, {tentative} tentative/low-confidence).")
+        print(
+            f"No new significant regressions "
+            f"({len(found)} already alerted, {tentative} tentative/low-confidence)."
+        )
         return 0
 
     if args.dry_run:
@@ -541,8 +595,10 @@ def cmd_reflect(args: argparse.Namespace) -> int:
                 max_iterations=args.iterations,
             )
     except ModuleNotFoundError as e:
-        print(f"Error: reflector dependencies missing ({e.name}). "
-              f"Install with: pip install 'weave-agent-signals[rsi]'")
+        print(
+            f"Error: reflector dependencies missing ({e.name}). "
+            f"Install with: pip install 'weave-agent-signals[rsi]'"
+        )
         return 2
 
     if proposal is None:
@@ -597,14 +653,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_judge = subs.add_parser("judge", help="Run LLM judges on recent turns")
     p_judge.add_argument("--since", type=_parse_datetime, default=None)
     p_judge.add_argument("--limit", type=int, default=10)
-    p_judge.add_argument("--rubric", type=str, default=None,
-                         help="Comma-separated rubric names (default: all)")
-    p_judge.add_argument("--judge-backend", type=str, default=None,
-                         help="Judge backend: openai, wandb, custom URL, or cli "
-                              "(local claude/codex CLIs, no credits — temporary) "
-                              "(default: JUDGE_BACKEND env or openai)")
-    p_judge.add_argument("--panel-size", type=int, default=1,
-                         help="Number of judges for session PoLL panel (default: 1)")
+    p_judge.add_argument(
+        "--rubric",
+        type=str,
+        default=None,
+        help="Comma-separated rubric names (default: all)",
+    )
+    p_judge.add_argument(
+        "--judge-backend",
+        type=str,
+        default=None,
+        help="Judge backend: openai, wandb, custom URL, or cli "
+        "(local claude/codex CLIs, no credits — temporary) "
+        "(default: JUDGE_BACKEND env or openai)",
+    )
+    p_judge.add_argument(
+        "--panel-size",
+        type=int,
+        default=1,
+        help="Number of judges for session PoLL panel (default: 1)",
+    )
     p_judge.add_argument("--dry-run", action="store_true")
     p_judge.add_argument("--force", action="store_true")
 
@@ -616,43 +684,85 @@ def build_parser() -> argparse.ArgumentParser:
 
     # analyze
     p_analyze = subs.add_parser("analyze", help="Analyze scored feedback patterns")
-    p_analyze.add_argument("--limit", type=int, default=1000,
-                           help="Max feedback records to query (default: 1000)")
-    p_analyze.add_argument("--ab", action="store_true",
-                           help="Show A/B leaderboard by config_version")
-    p_analyze.add_argument("--trends", action="store_true",
-                           help="Detect score regressions/improvements")
-    p_analyze.add_argument("--coaching", action="store_true",
-                           help="Generate coaching digest")
+    p_analyze.add_argument(
+        "--limit",
+        type=int,
+        default=1000,
+        help="Max feedback records to query (default: 1000)",
+    )
+    p_analyze.add_argument(
+        "--ab", action="store_true", help="Show A/B leaderboard by config_version"
+    )
+    p_analyze.add_argument(
+        "--trends", action="store_true", help="Detect score regressions/improvements"
+    )
+    p_analyze.add_argument("--coaching", action="store_true", help="Generate coaching digest")
 
     # monitor
     p_mon = subs.add_parser("monitor", help="Alert on significant score regressions")
-    p_mon.add_argument("--limit", type=int, default=1000,
-                       help="Max feedback records to query (default: 1000)")
-    p_mon.add_argument("--alert-webhook", type=str, default=None,
-                       help="POST alerts to this URL (e.g. a Slack incoming webhook)")
-    p_mon.add_argument("--state-file", type=str, default=None,
-                       help="JSON file to dedup alerts across scheduled runs")
-    p_mon.add_argument("--dry-run", action="store_true",
-                       help="Show alerts without sending to the webhook or updating state")
+    p_mon.add_argument(
+        "--limit",
+        type=int,
+        default=1000,
+        help="Max feedback records to query (default: 1000)",
+    )
+    p_mon.add_argument(
+        "--alert-webhook",
+        type=str,
+        default=None,
+        help="POST alerts to this URL (e.g. a Slack incoming webhook)",
+    )
+    p_mon.add_argument(
+        "--state-file",
+        type=str,
+        default=None,
+        help="JSON file to dedup alerts across scheduled runs",
+    )
+    p_mon.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show alerts without sending to the webhook or updating state",
+    )
 
     # reflect
-    p_reflect = subs.add_parser("reflect", help="GEPA reflector: propose CLAUDE.md edits from scores")
-    p_reflect.add_argument("--limit", type=int, default=500,
-                           help="Max feedback records to analyze (default: 500)")
-    p_reflect.add_argument("--model", type=str, default="gpt-4o",
-                           help="LLM model for GEPA reflection (default: gpt-4o)")
-    p_reflect.add_argument("--judge-backend", type=str, default=None,
-                           help="Backend for the artifact-quality judge: openai, wandb, "
-                                "custom URL, or cli (local, temporary)")
-    p_reflect.add_argument("--iterations", type=int, default=3,
-                           help="Max GEPA optimization iterations (default: 3)")
-    p_reflect.add_argument("--project-root", type=str, default=None,
-                           help="Project root to find CLAUDE.md (default: cwd)")
-    p_reflect.add_argument("--dry-run", action="store_true",
-                           help="Show proposed changes without writing")
-    p_reflect.add_argument("--apply", action="store_true",
-                           help="Write proposed changes to disk")
+    p_reflect = subs.add_parser(
+        "reflect", help="GEPA reflector: propose CLAUDE.md edits from scores"
+    )
+    p_reflect.add_argument(
+        "--limit",
+        type=int,
+        default=500,
+        help="Max feedback records to analyze (default: 500)",
+    )
+    p_reflect.add_argument(
+        "--model",
+        type=str,
+        default="gpt-4o",
+        help="LLM model for GEPA reflection (default: gpt-4o)",
+    )
+    p_reflect.add_argument(
+        "--judge-backend",
+        type=str,
+        default=None,
+        help="Backend for the artifact-quality judge: openai, wandb, "
+        "custom URL, or cli (local, temporary)",
+    )
+    p_reflect.add_argument(
+        "--iterations",
+        type=int,
+        default=3,
+        help="Max GEPA optimization iterations (default: 3)",
+    )
+    p_reflect.add_argument(
+        "--project-root",
+        type=str,
+        default=None,
+        help="Project root to find CLAUDE.md (default: cwd)",
+    )
+    p_reflect.add_argument(
+        "--dry-run", action="store_true", help="Show proposed changes without writing"
+    )
+    p_reflect.add_argument("--apply", action="store_true", help="Write proposed changes to disk")
 
     return parser
 

@@ -6,6 +6,7 @@ Backend selection via JUDGE_BACKEND env var or --judge-backend CLI flag:
   - "openai" → OpenAI API (api.openai.com), uses OPENAI_API_KEY
   - custom URL → any OpenAI-compatible endpoint, uses JUDGE_API_KEY
 """
+
 from __future__ import annotations
 
 import json
@@ -45,30 +46,40 @@ def _resolve_backend(
 
     if backend == "wandb":
         api_key = _get_api_key()
-        return INFERENCE_BASE, {
-            "Authorization": f"Bearer {api_key}",
-            "OpenAI-Project": f"{entity}/{project}",
-            "Content-Type": "application/json",
-        }, "wandb"
+        return (
+            INFERENCE_BASE,
+            {
+                "Authorization": f"Bearer {api_key}",
+                "OpenAI-Project": f"{entity}/{project}",
+                "Content-Type": "application/json",
+            },
+            "wandb",
+        )
 
     if backend == "openai":
         api_key = os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY not set. Export it or use --judge-backend=wandb"
-            )
-        return OPENAI_BASE, {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }, "openai"
+            raise RuntimeError("OPENAI_API_KEY not set. Export it or use --judge-backend=wandb")
+        return (
+            OPENAI_BASE,
+            {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            "openai",
+        )
 
     api_key = os.environ.get("JUDGE_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
     if not api_key:
         raise RuntimeError(f"JUDGE_API_KEY or OPENAI_API_KEY required for backend {backend}")
-    return backend, {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }, "custom"
+    return (
+        backend,
+        {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        "custom",
+    )
 
 
 class InferenceClient:
@@ -108,15 +119,19 @@ class InferenceClient:
         for attempt in range(max_retries + 1):
             resp = self._http.post(path, json=body)
             if resp.status_code == 429 and attempt < max_retries:
-                delay = base_delay * (2 ** attempt)
+                delay = base_delay * (2**attempt)
                 retry_after = resp.headers.get("retry-after")
                 if retry_after:
                     try:
                         delay = max(delay, float(retry_after))
                     except ValueError:
                         pass
-                log.info("Rate limited, retrying in %.1fs (attempt %d/%d)",
-                         delay, attempt + 1, max_retries)
+                log.info(
+                    "Rate limited, retrying in %.1fs (attempt %d/%d)",
+                    delay,
+                    attempt + 1,
+                    max_retries,
+                )
                 time.sleep(delay)
                 continue
             resp.raise_for_status()

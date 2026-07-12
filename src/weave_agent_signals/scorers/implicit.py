@@ -17,10 +17,7 @@ def is_abandoned(session: SessionView) -> bool:
 def correction_density(session: SessionView) -> float:
     if len(session.turns) <= 1:
         return 0.0
-    corrections = sum(
-        1 for t in session.turns
-        if t.steering_count > 0 or t.denial_count > 0
-    )
+    corrections = sum(1 for t in session.turns if t.steering_count > 0 or t.denial_count > 0)
     return corrections / len(session.turns)
 
 
@@ -31,11 +28,17 @@ def score_session_implicit(session: SessionView) -> list[Score]:
     total_steerings = sum(t.steering_count for t in session.turns)
     total_denials = sum(t.denial_count for t in session.turns)
     corrections = total_steerings + total_denials
-    density_reason = (f"{corrections} corrections across {len(session.turns)} turns"
-                      if corrections else f"no corrections in {len(session.turns)} turns")
+    density_reason = (
+        f"{corrections} corrections across {len(session.turns)} turns"
+        if corrections
+        else f"no corrections in {len(session.turns)} turns"
+    )
 
-    abandon_reason = ("session ended with error status" if abandoned
-                      else f"session completed normally ({len(session.turns)} turns)")
+    abandon_reason = (
+        "session ended with error status"
+        if abandoned
+        else f"session completed normally ({len(session.turns)} turns)"
+    )
 
     return [
         Score(

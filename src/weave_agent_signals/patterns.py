@@ -3,6 +3,7 @@
 Operates on feedback records queried from Weave. All analysis is pure
 computation — no API calls. The CLI orchestrates query → analyze → report.
 """
+
 from __future__ import annotations
 
 import math
@@ -77,7 +78,7 @@ class ABResult:
 def _extract_scorer(feedback: dict) -> str | None:
     ftype = feedback.get("feedback_type", "")
     if ftype.startswith(FEEDBACK_PREFIX):
-        return ftype[len(FEEDBACK_PREFIX):]
+        return ftype[len(FEEDBACK_PREFIX) :]
     return None
 
 
@@ -144,9 +145,7 @@ def _summarize(scorer: str, ratings: list[float], tags: list[list[str]]) -> Scor
 
 def aggregate_scores(feedback: list[dict]) -> dict[str, ScoreSummary]:
     """Group feedback by scorer and compute summary stats."""
-    by_scorer: dict[str, tuple[list[float], list[list[str]]]] = defaultdict(
-        lambda: ([], [])
-    )
+    by_scorer: dict[str, tuple[list[float], list[list[str]]]] = defaultdict(lambda: ([], []))
 
     for fb in feedback:
         scorer = _extract_scorer(fb)
@@ -175,12 +174,14 @@ def ab_leaderboard(feedback: list[dict]) -> list[ABResult]:
     results = []
     for config, config_feedback in sorted(by_config.items()):
         scores = aggregate_scores(config_feedback)
-        refs = {fb.get("weave_ref", "") for fb in config_feedback}
-        results.append(ABResult(
-            config_version=config,
-            turn_count=len(refs),
-            scores=scores,
-        ))
+        refs = {fb.get("weave_ref") for fb in config_feedback} - {None, ""}
+        results.append(
+            ABResult(
+                config_version=config,
+                turn_count=len(refs),
+                scores=scores,
+            )
+        )
 
     return results
 
@@ -263,15 +264,17 @@ def detect_regressions(
                 and len(older) >= MIN_CONFIDENT_SAMPLES
                 and len(recent) >= MIN_CONFIDENT_SAMPLES
             )
-            regressions.append({
-                "scorer": scorer,
-                "direction": "regression" if delta < 0 else "improvement",
-                "older_mean": round(older_mean, 3),
-                "recent_mean": round(recent_mean, 3),
-                "delta": round(delta, 3),
-                "sample_count": len(entries),
-                "significant": significant,
-            })
+            regressions.append(
+                {
+                    "scorer": scorer,
+                    "direction": "regression" if delta < 0 else "improvement",
+                    "older_mean": round(older_mean, 3),
+                    "recent_mean": round(recent_mean, 3),
+                    "delta": round(delta, 3),
+                    "sample_count": len(entries),
+                    "significant": significant,
+                }
+            )
 
     return regressions
 
@@ -321,16 +324,18 @@ def detect_config_regressions(
             continue
         disjoint = ns.ci[1] < ps.ci[0]  # new cohort's upper bound below prev's lower
         significant = disjoint and ns.count >= min_samples and ps.count >= min_samples
-        regressions.append({
-            "scorer": scorer,
-            "config": new_cfg,
-            "prev_config": prev_cfg,
-            "new_mean": round(ns.mean, 3),
-            "prev_mean": round(ps.mean, 3),
-            "delta": round(delta, 3),
-            "sample_count": ns.count,
-            "significant": significant,
-        })
+        regressions.append(
+            {
+                "scorer": scorer,
+                "config": new_cfg,
+                "prev_config": prev_cfg,
+                "new_mean": round(ns.mean, 3),
+                "prev_mean": round(ps.mean, 3),
+                "delta": round(delta, 3),
+                "sample_count": ns.count,
+                "significant": significant,
+            }
+        )
     return regressions
 
 
@@ -356,8 +361,7 @@ def coaching_digest(feedback: list[dict]) -> str:
             )
         else:
             lines.append(
-                f"- **{scorer}**: mean={s.mean:.2f} "
-                f"(n={s.count}, 95% CI {lo:.2f}–{hi:.2f}){low_n}"
+                f"- **{scorer}**: mean={s.mean:.2f} (n={s.count}, 95% CI {lo:.2f}–{hi:.2f}){low_n}"
             )
 
         top_tags = sorted(s.tag_counts.items(), key=lambda x: -x[1])[:5]

@@ -87,6 +87,8 @@ Add `--alert-webhook <url>` to the monitor line in that file to send alerts to S
 
 ```bash
 pytest                      # full suite; synthetic span data, no live Weave calls
+ruff check src/ tests/      # lint
+ruff format --check src/ tests/  # format
 ```
 
 ## Layout

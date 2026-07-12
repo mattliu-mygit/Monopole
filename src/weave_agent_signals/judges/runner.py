@@ -1,4 +1,5 @@
 """Judge runner — orchestrates rubric + digest + inference → Score."""
+
 from __future__ import annotations
 
 import logging
@@ -9,7 +10,11 @@ from weave_agent_signals.judges.digest import (
     build_session_digest,
     build_turn_digest,
 )
-from weave_agent_signals.judges.families import model_family, select_judges, select_panel
+from weave_agent_signals.judges.families import (
+    model_family,
+    select_judges,
+    select_panel,
+)
 from weave_agent_signals.judges.inference import InferenceClient
 from weave_agent_signals.judges.rubrics import RUBRICS, SESSION_RUBRICS, Rubric
 from weave_agent_signals.models import Score, SessionView, TurnSpan
@@ -103,8 +108,7 @@ def judge_turn(
             if score is not None:
                 scores.append(score)
         except Exception as e:
-            log.warning("Judge %s failed on rubric %s: %s",
-                        judge_model, rubric.scorer_name, e)
+            log.warning("Judge %s failed on rubric %s: %s", judge_model, rubric.scorer_name, e)
     return scores
 
 
@@ -148,7 +152,12 @@ def judge_session(
                 score = _run_session_rubric(client, judges[0], rubric, digest, session, agent_model)
             else:
                 score = _run_poll_panel(
-                    client, judges, rubric, digest, session, agent_model,
+                    client,
+                    judges,
+                    rubric,
+                    digest,
+                    session,
+                    agent_model,
                     escalation_model=roster["escalation"],
                 )
             if score is not None:
@@ -170,18 +179,24 @@ def _run_poll_panel(
 ) -> Score | None:
     """Run multiple judges and mean-pool their scores (PoLL, arXiv:2404.18796)."""
     messages = build_judge_messages(
-        rubric.system_prompt, rubric.criteria_text, digest, granularity="session",
+        rubric.system_prompt,
+        rubric.criteria_text,
+        digest,
+        granularity="session",
     )
     panel_scores: list[float] = []
-    panel_models: list[str] = []       # model as reported by the API
-    panel_requested: list[str] = []    # model as requested (for dedup)
+    panel_models: list[str] = []  # model as reported by the API
+    panel_requested: list[str] = []  # model as requested (for dedup)
     panel_rationales: list[str] = []
     panel_usage: list[dict] = []
 
     for judge_model in judges:
         try:
             parsed, resp = client.chat_json(
-                model=judge_model, messages=messages, temperature=0.0, max_tokens=512,
+                model=judge_model,
+                messages=messages,
+                temperature=0.0,
+                max_tokens=512,
             )
             raw_score = parsed.get("score")
             if raw_score is None:
@@ -206,7 +221,10 @@ def _run_poll_panel(
     if spread > ESCALATION_SPREAD_THRESHOLD and escalation_model not in panel_requested:
         try:
             parsed, resp = client.chat_json(
-                model=escalation_model, messages=messages, temperature=0.0, max_tokens=512,
+                model=escalation_model,
+                messages=messages,
+                temperature=0.0,
+                max_tokens=512,
             )
             raw_score = parsed.get("score")
             if raw_score is not None:
@@ -260,10 +278,16 @@ def _run_session_rubric(
 ) -> Score | None:
     """Run a single judge on a session rubric."""
     messages = build_judge_messages(
-        rubric.system_prompt, rubric.criteria_text, digest, granularity="session",
+        rubric.system_prompt,
+        rubric.criteria_text,
+        digest,
+        granularity="session",
     )
     parsed, resp = client.chat_json(
-        model=judge_model, messages=messages, temperature=0.0, max_tokens=512,
+        model=judge_model,
+        messages=messages,
+        temperature=0.0,
+        max_tokens=512,
     )
 
     raw_score = parsed.get("score")

@@ -1,4 +1,5 @@
 """Tests for session-level judging: digest, rubrics, PoLL panel."""
+
 from __future__ import annotations
 
 import json
@@ -8,8 +9,8 @@ from unittest.mock import patch
 import respx
 
 from weave_agent_signals.judges.digest import build_judge_messages, build_session_digest
-from weave_agent_signals.judges.inference import InferenceClient, INFERENCE_BASE
-from weave_agent_signals.judges.rubrics import SESSION_RUBRICS, SESSION_OUTCOME
+from weave_agent_signals.judges.inference import INFERENCE_BASE, InferenceClient
+from weave_agent_signals.judges.rubrics import SESSION_OUTCOME, SESSION_RUBRICS
 from weave_agent_signals.judges.runner import (
     POLL_JUDGE_CANDIDATES_OPENAI,
     POLL_JUDGE_CANDIDATES_WANDB,
@@ -29,8 +30,16 @@ def _ts(h=12, m=0):
     return datetime(2026, 7, 9, h, m, tzinfo=timezone.utc)
 
 
-def _turn(trace_id="t1", tool_calls=None, model="claude-opus-4",
-          h=12, m=0, steering=0, denials=0, errors=0):
+def _turn(
+    trace_id="t1",
+    tool_calls=None,
+    model="claude-opus-4",
+    h=12,
+    m=0,
+    steering=0,
+    denials=0,
+    errors=0,
+):
     return TurnSpan(
         trace_id=trace_id,
         conversation_id="c1",
@@ -79,11 +88,14 @@ def _session(turns=None):
 
 # --- Session digest tests ---
 
+
 def test_session_digest_includes_summary():
-    session = _session([
-        _turn("t1", h=12, m=0),
-        _turn("t2", h=12, m=10),
-    ])
+    session = _session(
+        [
+            _turn("t1", h=12, m=0),
+            _turn("t2", h=12, m=10),
+        ]
+    )
     digest = build_session_digest(session)
     assert "Session:" in digest
     assert "Turns: 2" in digest
@@ -91,10 +103,12 @@ def test_session_digest_includes_summary():
 
 
 def test_session_digest_aggregates_events():
-    session = _session([
-        _turn("t1", steering=2, denials=1, errors=0),
-        _turn("t2", steering=1, denials=0, errors=3),
-    ])
+    session = _session(
+        [
+            _turn("t1", steering=2, denials=1, errors=0),
+            _turn("t2", steering=1, denials=0, errors=3),
+        ]
+    )
     digest = build_session_digest(session)
     assert "steering=3" in digest
     assert "denials=1" in digest
@@ -102,10 +116,12 @@ def test_session_digest_aggregates_events():
 
 
 def test_session_digest_includes_turn_summaries():
-    session = _session([
-        _turn("t1", tool_calls=[_bash("pytest", "5 passed")]),
-        _turn("t2", tool_calls=[_bash("git commit -m fix", "")]),
-    ])
+    session = _session(
+        [
+            _turn("t1", tool_calls=[_bash("pytest", "5 passed")]),
+            _turn("t2", tool_calls=[_bash("git commit -m fix", "")]),
+        ]
+    )
     digest = build_session_digest(session)
     assert "Turn 1" in digest
     assert "Turn 2" in digest
@@ -122,12 +138,14 @@ def test_session_digest_limits_turn_detail():
 
 # --- Session rubric tests ---
 
+
 def test_session_rubrics_exist():
     assert "judge.session_outcome" in SESSION_RUBRICS
     assert SESSION_OUTCOME.scorer_name == "judge.session_outcome"
 
 
 # --- Judge message framing ---
+
 
 def test_build_judge_messages_session_framing():
     msgs = build_judge_messages("sys", "criteria", "digest", granularity="session")
@@ -142,6 +160,7 @@ def test_build_judge_messages_turn_framing_default():
 
 
 # --- Backend-aware model selection ---
+
 
 def test_roster_selects_wandb_models():
     roster = _roster(_StubClient("wandb"))
@@ -162,6 +181,7 @@ def test_roster_unknown_backend_defaults_to_openai():
 
 # --- PoLL panel tests ---
 
+
 def _mock_judge_response(score, rationale="test"):
     return {
         "choices": [{"message": {"content": json.dumps({"score": score, "rationale": rationale})}}],
@@ -176,12 +196,15 @@ def test_judge_session_returns_scores():
     respx.post(f"{INFERENCE_BASE}/chat/completions").respond(
         json=_mock_judge_response(0.8, "Good session outcome"),
     )
-    session = _session([
-        _turn("t1", tool_calls=[_bash("pytest", "5 passed")]),
-    ])
+    session = _session(
+        [
+            _turn("t1", tool_calls=[_bash("pytest", "5 passed")]),
+        ]
+    )
     client = InferenceClient(base_url=INFERENCE_BASE)
     scores = judge_session(
-        session, client,
+        session,
+        client,
         rubrics=[SESSION_OUTCOME],
         judge_candidates=["gpt-oss-20b"],
     )
@@ -219,7 +242,8 @@ def test_judge_session_poll_panel():
     session = _session([_turn("t1")])
     client = InferenceClient(base_url=INFERENCE_BASE)
     scores = judge_session(
-        session, client,
+        session,
+        client,
         rubrics=[SESSION_OUTCOME],
         judge_candidates=["gpt-oss-20b", "Llama-3.1-8B", "granite-4.1-8b"],
         panel_size=3,
@@ -253,7 +277,8 @@ def test_judge_session_poll_handles_failures():
     session = _session([_turn("t1")])
     client = InferenceClient(base_url=INFERENCE_BASE)
     scores = judge_session(
-        session, client,
+        session,
+        client,
         rubrics=[SESSION_OUTCOME],
         judge_candidates=["gpt-oss-20b", "Llama-3.1-8B", "granite-4.1-8b"],
         panel_size=3,
@@ -275,14 +300,17 @@ def test_judge_session_escalation_on_disagreement():
         model = body["model"]
         if "gpt-oss-120b" in model:
             return respx.MockResponse(
-                200, json=_mock_judge_response(0.7, "escalation tiebreaker"),
+                200,
+                json=_mock_judge_response(0.7, "escalation tiebreaker"),
             )
         if call_count == 1:
             return respx.MockResponse(
-                200, json=_mock_judge_response(0.9, "high"),
+                200,
+                json=_mock_judge_response(0.9, "high"),
             )
         return respx.MockResponse(
-            200, json=_mock_judge_response(0.4, "low"),
+            200,
+            json=_mock_judge_response(0.4, "low"),
         )
 
     respx.post(f"{INFERENCE_BASE}/chat/completions").mock(side_effect=side_effect)
@@ -290,7 +318,8 @@ def test_judge_session_escalation_on_disagreement():
     session = _session([_turn("t1")])
     client = InferenceClient(base_url=INFERENCE_BASE)
     scores = judge_session(
-        session, client,
+        session,
+        client,
         rubrics=[SESSION_OUTCOME],
         judge_candidates=["Llama-3.1-8B", "granite-4.1-8b"],
         panel_size=2,
@@ -313,7 +342,8 @@ def test_judge_session_no_escalation_when_agreed():
     session = _session([_turn("t1")])
     client = InferenceClient(base_url=INFERENCE_BASE)
     scores = judge_session(
-        session, client,
+        session,
+        client,
         rubrics=[SESSION_OUTCOME],
         judge_candidates=["Llama-3.1-8B", "granite-4.1-8b"],
         panel_size=2,

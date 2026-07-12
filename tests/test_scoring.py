@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from weave_agent_signals.models import SessionView, SubagentSpan, ToolSpan, TurnSpan
-from weave_agent_signals.scorers import score_turn, score_session
+from weave_agent_signals.scorers import score_session, score_turn
 
 
 def _ts(h=12, m=0):
@@ -24,23 +24,35 @@ def _bash(cmd, result="", status="OK"):
 
 def _turn(tool_calls, steering=0, denials=0, status="OK"):
     return TurnSpan(
-        trace_id="t1", conversation_id="c1",
-        started_at=_ts(), ended_at=_ts(12, 5),
+        trace_id="t1",
+        conversation_id="c1",
+        started_at=_ts(),
+        ended_at=_ts(12, 5),
         model="claude-opus-4",
-        input_tokens=1000, output_tokens=500,
-        cache_read_tokens=200, status_code=status,
-        config_version="abc", git_branch="main",
-        effort_level="high", session_id="s1",
-        steering_count=steering, denial_count=denials,
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read_tokens=200,
+        status_code=status,
+        config_version="abc",
+        git_branch="main",
+        effort_level="high",
+        session_id="s1",
+        steering_count=steering,
+        denial_count=denials,
         tool_error_count=0,
-        events=[], tool_calls=tool_calls, chat_spans=[], subagents=[],
+        events=[],
+        tool_calls=tool_calls,
+        chat_spans=[],
+        subagents=[],
     )
 
 
 def _session(turns):
     return SessionView(
-        conversation_id="c1", turns=turns,
-        config_version="abc", git_branch="main",
+        conversation_id="c1",
+        turns=turns,
+        config_version="abc",
+        git_branch="main",
     )
 
 

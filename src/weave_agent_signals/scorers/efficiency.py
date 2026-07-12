@@ -70,13 +70,15 @@ def detect_error_loops(calls: list[ToolSpan], threshold: int = 3) -> list[ErrorL
         if len(failed) / len(group) < 0.6:
             continue
 
-        loops.append(ErrorLoop(
-            tool_name=group[0].tool_name,
-            attempt_count=len(group),
-            similarity=avg_sim,
-            all_failed=len(failed) == len(group),
-            span_ids=[t.span_id for t in group],
-        ))
+        loops.append(
+            ErrorLoop(
+                tool_name=group[0].tool_name,
+                attempt_count=len(group),
+                similarity=avg_sim,
+                all_failed=len(failed) == len(group),
+                span_ids=[t.span_id for t in group],
+            )
+        )
     return loops
 
 
@@ -144,7 +146,7 @@ def score_turn_efficiency(turn: TurnSpan) -> Score:
         repeats.extend(detect_repeated_reads(sub.tool_calls))
 
     all_tool_calls = turn.tool_calls + [tc for sub in turn.subagents for tc in sub.tool_calls]
-    loop_waste = sum(l.attempt_count - 1 for l in loops)
+    loop_waste = sum(lp.attempt_count - 1 for lp in loops)
     repeat_waste = sum(r.count - 1 for r in repeats)
     total_calls = len(all_tool_calls) or 1
     waste_ratio = min((loop_waste + repeat_waste) / total_calls, 1.0)
@@ -170,7 +172,7 @@ def score_turn_efficiency(turn: TurnSpan) -> Score:
         tags=tags,
         confidence=0.9,
         metadata={
-            "error_loops": [l.to_dict() for l in loops],
+            "error_loops": [lp.to_dict() for lp in loops],
             "repeated_reads": [r.to_dict() for r in repeats],
             "waste_ratio": round(waste_ratio, 3),
             "tool_call_count": len(all_tool_calls),

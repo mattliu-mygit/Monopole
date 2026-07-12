@@ -1,4 +1,5 @@
 """Regression tests for cmd_judge orchestration (hydration, backend wiring)."""
+
 from __future__ import annotations
 
 import argparse
@@ -21,8 +22,17 @@ def _fake_turn(tid, conv="c1"):
 
 
 def _args(**over):
-    base = dict(entity="e", project="p", since=None, limit=10, rubric=None,
-                judge_backend="cli", panel_size=1, dry_run=True, force=False)
+    base = dict(
+        entity="e",
+        project="p",
+        since=None,
+        limit=10,
+        rubric=None,
+        judge_backend="cli",
+        panel_size=1,
+        dry_run=True,
+        force=False,
+    )
     base.update(over)
     return argparse.Namespace(**base)
 

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from weave_agent_signals.judges.families import model_family, select_judges, select_panel
+from weave_agent_signals.judges.families import (
+    model_family,
+    select_judges,
+    select_panel,
+)
 
 
 def test_model_family_claude():
@@ -72,12 +76,13 @@ def test_select_judges_none_agent():
 
 # --- select_panel: 1 same-family + >=2 non-same-family ---
 
+
 def test_select_panel_one_same_two_cross_for_claude_agent():
     candidates = ["claude-sonnet-5", "gpt-5.1", "gemini-2.5-pro"]
     panel = select_panel("claude-opus-4-8", candidates)
     fams = [model_family(m) for m in panel]
     assert len(panel) == 3
-    assert fams.count("anthropic") == 1          # exactly one same-family
+    assert fams.count("anthropic") == 1  # exactly one same-family
     assert set(fams) == {"anthropic", "openai", "google"}  # + two distinct cross
 
 
@@ -85,7 +90,7 @@ def test_select_panel_dedups_within_cross_family():
     candidates = ["claude-sonnet-5", "gpt-5.1", "gpt-4o", "gemini-2.5-pro"]
     panel = select_panel("claude-opus-4-8", candidates)
     fams = [model_family(m) for m in panel]
-    assert fams.count("openai") == 1             # only one openai despite two candidates
+    assert fams.count("openai") == 1  # only one openai despite two candidates
 
 
 def test_select_panel_pure_cross_family_when_no_same_available():

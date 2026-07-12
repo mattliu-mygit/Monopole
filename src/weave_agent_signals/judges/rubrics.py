@@ -3,6 +3,7 @@
 Each rubric defines a scoring dimension with a system prompt, scoring criteria,
 and output schema. Judges score 0.0–1.0 with a rationale.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -183,7 +184,4 @@ RUBRICS: dict[str, Rubric] = {
     for r in [VERIFICATION_DISCIPLINE, ERROR_RECOVERY, TOOL_CHOICE, TASK_COMPLETION]
 }
 
-SESSION_RUBRICS: dict[str, Rubric] = {
-    r.scorer_name: r
-    for r in [SESSION_OUTCOME, SESSION_AUTONOMY]
-}
+SESSION_RUBRICS: dict[str, Rubric] = {r.scorer_name: r for r in [SESSION_OUTCOME, SESSION_AUTONOMY]}

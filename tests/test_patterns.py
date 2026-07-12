@@ -1,10 +1,10 @@
 """Tests for pattern analysis: A/B leaderboards, trends, coaching digest."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import pytest
 
 from weave_agent_signals.patterns import (
-    ABResult,
     ScoreSummary,
     ab_leaderboard,
     aggregate_scores,
@@ -14,8 +14,14 @@ from weave_agent_signals.patterns import (
 )
 
 
-def _fb(scorer, rating, config_version="v1", tags=None, conversation_id="c1",
-        scored_at="2026-07-09T12:00:00"):
+def _fb(
+    scorer,
+    rating,
+    config_version="v1",
+    tags=None,
+    conversation_id="c1",
+    scored_at="2026-07-09T12:00:00",
+):
     return {
         "feedback_type": f"weave_agent_signals.{scorer}",
         "payload": {
@@ -35,6 +41,7 @@ def _fb(scorer, rating, config_version="v1", tags=None, conversation_id="c1",
 
 # --- aggregate_scores tests ---
 
+
 def test_aggregate_scores_basic():
     feedback = [
         _fb("outcome.test", 1.0),
@@ -45,7 +52,7 @@ def test_aggregate_scores_basic():
     result = aggregate_scores(feedback)
     assert "outcome.test" in result
     assert result["outcome.test"].count == 3
-    assert result["outcome.test"].mean == pytest.approx(2/3, abs=0.01)
+    assert result["outcome.test"].mean == pytest.approx(2 / 3, abs=0.01)
     assert result["outcome.build"].count == 1
 
 
@@ -60,6 +67,7 @@ def test_aggregate_scores_strips_prefix():
 
 
 # --- ab_leaderboard tests ---
+
 
 def test_ab_leaderboard_two_versions():
     feedback = [
@@ -87,6 +95,7 @@ def test_ab_leaderboard_missing_config():
 
 
 # --- detect_regressions tests ---
+
 
 def test_detect_regressions_flags_drop():
     feedback = [
@@ -133,11 +142,16 @@ def test_detect_regressions_orders_by_run_time_not_score_time():
 
 # --- detect_config_regressions (A/B safety net) ---
 
+
 def test_detect_config_regressions_flags_worse_new_config():
-    old = [_fb("outcome.test", 1.0, config_version="v_old", scored_at="2026-07-01T00:00:00")
-           for _ in range(6)]
-    new = [_fb("outcome.test", 0.0, config_version="v_new", scored_at="2026-07-09T00:00:00")
-           for _ in range(6)]
+    old = [
+        _fb("outcome.test", 1.0, config_version="v_old", scored_at="2026-07-01T00:00:00")
+        for _ in range(6)
+    ]
+    new = [
+        _fb("outcome.test", 0.0, config_version="v_new", scored_at="2026-07-09T00:00:00")
+        for _ in range(6)
+    ]
     regs = detect_config_regressions(old + new)
     assert len(regs) == 1
     r = regs[0]
@@ -154,23 +168,32 @@ def test_detect_config_regressions_needs_two_configs():
 def test_detect_config_regressions_skips_tie_in_run_time():
     # both configs stamped with the SAME time (e.g. one backfill) → can't tell
     # which is newer, so don't guess a direction.
-    a = [_fb("outcome.test", 1.0, config_version="v_a", scored_at="2026-07-01T00:00:00")
-         for _ in range(6)]
-    b = [_fb("outcome.test", 0.0, config_version="v_b", scored_at="2026-07-01T00:00:00")
-         for _ in range(6)]
+    a = [
+        _fb("outcome.test", 1.0, config_version="v_a", scored_at="2026-07-01T00:00:00")
+        for _ in range(6)
+    ]
+    b = [
+        _fb("outcome.test", 0.0, config_version="v_b", scored_at="2026-07-01T00:00:00")
+        for _ in range(6)
+    ]
     assert detect_config_regressions(a + b) == []
 
 
 def test_detect_config_regressions_ignores_improvement():
-    old = [_fb("outcome.test", 0.0, config_version="v_old", scored_at="2026-07-01T00:00:00")
-           for _ in range(6)]
-    new = [_fb("outcome.test", 1.0, config_version="v_new", scored_at="2026-07-09T00:00:00")
-           for _ in range(6)]
+    old = [
+        _fb("outcome.test", 0.0, config_version="v_old", scored_at="2026-07-01T00:00:00")
+        for _ in range(6)
+    ]
+    new = [
+        _fb("outcome.test", 1.0, config_version="v_new", scored_at="2026-07-09T00:00:00")
+        for _ in range(6)
+    ]
     # newer config is better — not a regression
     assert detect_config_regressions(old + new) == []
 
 
 # --- coaching_digest tests ---
+
 
 def test_coaching_digest_structure():
     feedback = [
@@ -192,17 +215,25 @@ def test_coaching_digest_empty():
 
 # --- pass_rate / robustness tests ---
 
+
 def test_pass_rate_binary_scorer():
-    s = ScoreSummary(scorer="outcome.test", count=4, mean=0.75,
-                     min_val=0.0, max_val=1.0, binary=True)
+    s = ScoreSummary(
+        scorer="outcome.test", count=4, mean=0.75, min_val=0.0, max_val=1.0, binary=True
+    )
     assert s.pass_rate == 0.75
 
 
 def test_pass_rate_continuous_scorer_with_extreme_values():
     # A continuous scorer whose observed values happen to span 0.0..1.0 must
     # NOT be reported as a pass rate.
-    s = ScoreSummary(scorer="judge.verification", count=3, mean=0.5,
-                     min_val=0.0, max_val=1.0, binary=False)
+    s = ScoreSummary(
+        scorer="judge.verification",
+        count=3,
+        mean=0.5,
+        min_val=0.0,
+        max_val=1.0,
+        binary=False,
+    )
     assert s.pass_rate is None
 
 
@@ -234,12 +265,13 @@ def test_aggregate_handles_null_payload():
 
 # --- statistical significance ---
 
+
 def test_single_sample_pass_rate_has_wide_ci():
     # "100% pass (n=1)" must not read as certain — the Wilson CI should be wide.
     feedback = [_fb("outcome.test", 1.0)]
     s = aggregate_scores(feedback)["outcome.test"]
     lo, hi = s.ci
-    assert lo < 0.3          # huge uncertainty on the low side
+    assert lo < 0.3  # huge uncertainty on the low side
     assert hi == 1.0
     assert s.confident is False
 
@@ -250,7 +282,7 @@ def test_large_sample_is_confident_with_tight_ci():
     s = aggregate_scores(feedback)["outcome.test"]
     lo, hi = s.ci
     assert s.confident is True
-    assert (hi - lo) < 0.25   # 80 samples → reasonably tight
+    assert (hi - lo) < 0.25  # 80 samples → reasonably tight
 
 
 def test_continuous_scorer_ci_from_spread():
@@ -258,15 +290,17 @@ def test_continuous_scorer_ci_from_spread():
     s = aggregate_scores(feedback)["efficiency"]
     lo, hi = s.ci
     assert lo <= s.mean <= hi
-    assert hi - lo < 0.1      # low variance → tight interval
+    assert hi - lo < 0.1  # low variance → tight interval
 
 
 def test_regression_marked_significant_only_with_evidence():
     # Clean, large drop → significant.
-    big = ([_fb("outcome.test", 1.0, scored_at=f"2026-07-0{i}T00:00:00") for i in range(1, 5)]
-           + [_fb("outcome.test", 0.0, scored_at=f"2026-07-0{i}T00:00:00") for i in range(5, 9)]
-           + [_fb("outcome.test", 1.0, scored_at=f"2026-07-0{i}T00:00:00") for i in range(1, 5)]
-           + [_fb("outcome.test", 0.0, scored_at=f"2026-07-0{i}T00:00:00") for i in range(5, 9)])
+    big = (
+        [_fb("outcome.test", 1.0, scored_at=f"2026-07-0{i}T00:00:00") for i in range(1, 5)]
+        + [_fb("outcome.test", 0.0, scored_at=f"2026-07-0{i}T00:00:00") for i in range(5, 9)]
+        + [_fb("outcome.test", 1.0, scored_at=f"2026-07-0{i}T00:00:00") for i in range(1, 5)]
+        + [_fb("outcome.test", 0.0, scored_at=f"2026-07-0{i}T00:00:00") for i in range(5, 9)]
+    )
     regs = detect_regressions(big, min_samples=4)
     assert len(regs) == 1
     assert regs[0]["significant"] is True
@@ -280,8 +314,5 @@ def test_tiny_regression_flagged_but_not_significant():
         _fb("outcome.test", 0.0, scored_at="2026-07-09T00:00:00"),
     ]
     regs = detect_regressions(feedback)
-    assert len(regs) == 1              # still surfaced for the human
-    assert regs[0]["significant"] is False   # but flagged as low-confidence
-
-
-import pytest
+    assert len(regs) == 1  # still surfaced for the human
+    assert regs[0]["significant"] is False  # but flagged as low-confidence

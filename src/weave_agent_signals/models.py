@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from typing import Any, Union
 from urllib.parse import quote
 
-
 ENTITY = "mliu-wandb-weights-biases"
 PROJECT = "agent-sessions"
 

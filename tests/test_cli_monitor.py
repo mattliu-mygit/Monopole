@@ -1,4 +1,5 @@
 """Tests for the monitor command: alert on a real regression, then dedup."""
+
 from __future__ import annotations
 
 import argparse
@@ -10,8 +11,11 @@ from weave_agent_signals import cli
 def _fb(scorer, rating, config, scored_at):
     return {
         "feedback_type": f"weave_agent_signals.{scorer}",
-        "payload": {"rating": rating, "tags": [],
-                    "details": {"config_version": config, "scored_at": scored_at}},
+        "payload": {
+            "rating": rating,
+            "tags": [],
+            "details": {"config_version": config, "scored_at": scored_at},
+        },
     }
 
 
@@ -34,14 +38,20 @@ def _capturing_send():
 
     def fake_send(found, webhook=None):
         sent.extend(found)
-        return found            # cmd_monitor dedups on what send() reports delivered
+        return found  # cmd_monitor dedups on what send() reports delivered
 
     return sent, fake_send
 
 
 def _args(**over):
-    base = dict(entity="e", project="p", limit=1000, alert_webhook=None,
-                state_file=None, dry_run=False)
+    base = dict(
+        entity="e",
+        project="p",
+        limit=1000,
+        alert_webhook=None,
+        state_file=None,
+        dry_run=False,
+    )
     base.update(over)
     return argparse.Namespace(**base)
 
@@ -65,7 +75,7 @@ def test_monitor_alerts_on_significant_regression_then_dedups(mock_wc, tmp_path,
     sent.clear()
     rc2 = cli.cmd_monitor(_args(state_file=state))
     assert rc2 == 0
-    assert sent == []                         # same regressions deduped on rerun
+    assert sent == []  # same regressions deduped on rerun
 
 
 @patch("weave_agent_signals.cli.WeaveClient")
@@ -80,6 +90,7 @@ def test_monitor_dry_run_does_not_persist_state(mock_wc, tmp_path, monkeypatch):
     cli.cmd_monitor(_args(state_file=state, dry_run=True))
     # dry run must not send or write the dedup state
     from pathlib import Path
+
     assert sent == []
     assert not Path(state).exists()
 
@@ -94,4 +105,4 @@ def test_monitor_does_not_alert_on_improvement(mock_wc, monkeypatch):
 
     rc = cli.cmd_monitor(_args())
     assert rc == 0
-    assert sent == []          # a significant improvement is not a regression
+    assert sent == []  # a significant improvement is not a regression

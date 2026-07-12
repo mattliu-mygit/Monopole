@@ -7,7 +7,8 @@ import sys
 def test_cli_help():
     result = subprocess.run(
         [sys.executable, "-m", "weave_agent_signals.cli", "--help"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
         env={"PYTHONPATH": "src", "PATH": ""},
     )
     assert result.returncode == 0
@@ -19,7 +20,8 @@ def test_cli_help():
 def test_main_module_help():
     result = subprocess.run(
         [sys.executable, "-m", "weave_agent_signals", "--help"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
         env={"PYTHONPATH": "src", "PATH": ""},
     )
     assert result.returncode == 0
@@ -29,7 +31,8 @@ def test_main_module_help():
 def test_score_help():
     result = subprocess.run(
         [sys.executable, "-m", "weave_agent_signals.cli", "score", "--help"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
         env={"PYTHONPATH": "src", "PATH": ""},
     )
     assert result.returncode == 0
@@ -40,7 +43,8 @@ def test_score_help():
 def test_backfill_help():
     result = subprocess.run(
         [sys.executable, "-m", "weave_agent_signals.cli", "backfill", "--help"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
         env={"PYTHONPATH": "src", "PATH": ""},
     )
     assert result.returncode == 0
@@ -50,7 +54,8 @@ def test_backfill_help():
 def test_inspect_help():
     result = subprocess.run(
         [sys.executable, "-m", "weave_agent_signals.cli", "inspect", "--help"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
         env={"PYTHONPATH": "src", "PATH": ""},
     )
     assert result.returncode == 0

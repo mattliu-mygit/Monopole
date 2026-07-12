@@ -1,4 +1,5 @@
 """End-to-end pipeline test: mock Weave API → score → verify output."""
+
 from __future__ import annotations
 
 import argparse
@@ -8,7 +9,7 @@ from unittest.mock import patch
 
 import respx
 
-from weave_agent_signals.cli import cmd_score, cmd_backfill, main
+from weave_agent_signals.cli import cmd_backfill, cmd_score, main
 from weave_agent_signals.client import TRACE_BASE
 
 
@@ -132,7 +133,10 @@ def test_force_deletes_before_write(_mock_key):
     assert purge_route.called
 
 
-@patch("weave_agent_signals.client._get_api_key", side_effect=RuntimeError("No W&B API key found"))
+@patch(
+    "weave_agent_signals.client._get_api_key",
+    side_effect=RuntimeError("No W&B API key found"),
+)
 def test_pipeline_config_error_returns_2(_mock_key):
     result = main(["score", "--dry-run"])
     assert result == 2
@@ -195,9 +199,13 @@ def _make_backfill_args(**kw):
 @patch("weave_agent_signals.client._get_api_key", return_value="test-key")
 def test_backfill_paginates(_mock_key, capsys):
     """Backfill fetches multiple pages when a page is full."""
-    page1 = [_fake_turn_span(
-        trace_id=f"tr-{i}", conv_id=f"conv-{i}",
-    ) for i in range(3)]
+    page1 = [
+        _fake_turn_span(
+            trace_id=f"tr-{i}",
+            conv_id=f"conv-{i}",
+        )
+        for i in range(3)
+    ]
     # Override started_at so page2 cursor works
     for i, t in enumerate(page1):
         t["started_at"] = f"2026-07-09T12:{i:02d}:00Z"

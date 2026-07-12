@@ -99,7 +99,12 @@ class WeaveClient:
             )
         if conversation_id:
             conditions.append(
-                {"$eq": [{"$getField": "conversation_id"}, {"$literal": conversation_id}]}
+                {
+                    "$eq": [
+                        {"$getField": "conversation_id"},
+                        {"$literal": conversation_id},
+                    ]
+                }
             )
 
         return {
@@ -137,11 +142,13 @@ class WeaveClient:
         if events_dump:
             try:
                 for ev in json.loads(events_dump):
-                    events.append(SpanEvent(
-                        name=ev.get("name", ""),
-                        timestamp=_parse_ts(ev.get("timestamp")),
-                        attributes=ev.get("attributes", {}),
-                    ))
+                    events.append(
+                        SpanEvent(
+                            name=ev.get("name", ""),
+                            timestamp=_parse_ts(ev.get("timestamp")),
+                            attributes=ev.get("attributes", {}),
+                        )
+                    )
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -242,7 +249,8 @@ class WeaveClient:
         # all-zero). Sum every chat span in the trace — main agent and subagents —
         # for the true turn total, and take the model from the first chat span.
         chat_children = [
-            c for c in children
+            c
+            for c in children
             if c.get("operation_name") == "chat" and c.get("trace_id") == turn.trace_id
         ]
         if chat_children:
@@ -364,16 +372,19 @@ class WeaveClient:
         resp.raise_for_status()
         return resp.json()
 
-    def query_existing_feedback(
-        self, ref: str, feedback_type: str
-    ) -> list[dict]:
+    def query_existing_feedback(self, ref: str, feedback_type: str) -> list[dict]:
         body = {
             "project_id": self.project_id,
             "query": {
                 "$expr": {
                     "$and": [
                         {"$eq": [{"$getField": "weave_ref"}, {"$literal": ref}]},
-                        {"$eq": [{"$getField": "feedback_type"}, {"$literal": feedback_type}]},
+                        {
+                            "$eq": [
+                                {"$getField": "feedback_type"},
+                                {"$literal": feedback_type},
+                            ]
+                        },
                     ]
                 }
             },
@@ -386,11 +397,7 @@ class WeaveClient:
     def delete_feedback(self, feedback_id: str) -> None:
         body = {
             "project_id": self.project_id,
-            "query": {
-                "$expr": {
-                    "$eq": [{"$getField": "id"}, {"$literal": feedback_id}]
-                }
-            },
+            "query": {"$expr": {"$eq": [{"$getField": "id"}, {"$literal": feedback_id}]}},
         }
         resp = self._http.post("/feedback/purge", json=body)
         resp.raise_for_status()
@@ -402,11 +409,7 @@ class WeaveClient:
     def query_all_feedback(self, ref: str) -> list[dict]:
         body = {
             "project_id": self.project_id,
-            "query": {
-                "$expr": {
-                    "$eq": [{"$getField": "weave_ref"}, {"$literal": ref}]
-                }
-            },
+            "query": {"$expr": {"$eq": [{"$getField": "weave_ref"}, {"$literal": ref}]}},
         }
         resp = self._http.post("/feedback/query", json=body)
         resp.raise_for_status()
@@ -442,8 +445,12 @@ def _custom_attrs(raw: dict[str, Any]) -> dict[str, Any]:
     # (custom_attrs_string / _int / _float / _bool), never as a single merged
     # dict. Flatten them so callers can look up by fully-qualified attr name.
     merged: dict[str, Any] = {}
-    for key in ("custom_attrs_string", "custom_attrs_int",
-                "custom_attrs_float", "custom_attrs_bool"):
+    for key in (
+        "custom_attrs_string",
+        "custom_attrs_int",
+        "custom_attrs_float",
+        "custom_attrs_bool",
+    ):
         m = raw.get(key)
         if isinstance(m, dict):
             merged.update(m)

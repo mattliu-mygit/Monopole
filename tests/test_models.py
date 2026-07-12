@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from weave_agent_signals.models import (
-    ChatSpan,
     Score,
     SessionView,
     ToolSpan,

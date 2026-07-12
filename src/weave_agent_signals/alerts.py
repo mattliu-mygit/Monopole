@@ -5,6 +5,7 @@ a log line and, optionally, a webhook (e.g. a Slack incoming webhook). A small
 state file dedups by a stable key so a scheduled run doesn't re-alert the same
 regression every time it fires.
 """
+
 from __future__ import annotations
 
 import json
@@ -19,16 +20,18 @@ log = logging.getLogger("weave_agent_signals.monitor")
 
 @dataclass
 class Alert:
-    key: str      # stable id, used to dedup across scheduled runs
-    text: str     # human-readable message
+    key: str  # stable id, used to dedup across scheduled runs
+    text: str  # human-readable message
 
 
 def trend_alert(reg: dict) -> Alert:
     """Build an alert from a detect_regressions() entry (drop over time)."""
     return Alert(
         key=f"trend:{reg['scorer']}:{reg['direction']}",
-        text=(f"trend down: {reg['scorer']} {reg['older_mean']:.2f} -> "
-              f"{reg['recent_mean']:.2f} (delta {reg['delta']:+.2f}, n={reg['sample_count']})"),
+        text=(
+            f"trend down: {reg['scorer']} {reg['older_mean']:.2f} -> "
+            f"{reg['recent_mean']:.2f} (delta {reg['delta']:+.2f}, n={reg['sample_count']})"
+        ),
     )
 
 
@@ -36,9 +39,11 @@ def config_alert(reg: dict) -> Alert:
     """Build an alert from a detect_config_regressions() entry (worse new config)."""
     return Alert(
         key=f"config:{reg['config']}:{reg['scorer']}",
-        text=(f"config {reg['config']} worse than {reg['prev_config']}: {reg['scorer']} "
-              f"{reg['prev_mean']:.2f} -> {reg['new_mean']:.2f} "
-              f"(delta {reg['delta']:+.2f}, n={reg['sample_count']})"),
+        text=(
+            f"config {reg['config']} worse than {reg['prev_config']}: {reg['scorer']} "
+            f"{reg['prev_mean']:.2f} -> {reg['new_mean']:.2f} "
+            f"(delta {reg['delta']:+.2f}, n={reg['sample_count']})"
+        ),
     )
 
 
@@ -55,7 +60,9 @@ def send(alerts: list[Alert], *, webhook: str | None = None) -> list[Alert]:
         if webhook:
             try:
                 resp = httpx.post(
-                    webhook, json={"text": f"[weave-agent-signals] {a.text}"}, timeout=10.0,
+                    webhook,
+                    json={"text": f"[weave-agent-signals] {a.text}"},
+                    timeout=10.0,
                 )
                 resp.raise_for_status()
             except Exception as e:  # a down webhook must not crash the monitor

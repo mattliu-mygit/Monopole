@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-import httpx
 import pytest
 import respx
 
@@ -101,6 +100,7 @@ def _fake_child_span(op="execute_tool", tool_name="Bash", **kw):
 
 # --- Hydration ---
 
+
 def test_hydrate_turn(client):
     raw = _fake_span()
     turn = client._hydrate_turn(raw)
@@ -182,6 +182,7 @@ def test_children_query_requests_details(client):
 
 # --- Request building ---
 
+
 def test_build_turn_query(client):
     q = client._build_turn_query(limit=50)
     assert q["project_id"] == "test-entity/test-project"
@@ -207,6 +208,7 @@ def test_build_feedback_body(client):
 
 
 # --- HTTP integration (respx) ---
+
 
 @pytest.fixture
 def mock_client():
@@ -251,8 +253,12 @@ def test_write_score_http(mock_client):
         json={"id": "fb-1"},
     )
     score = Score(
-        scorer="outcome.test", value=1.0, tags=["test_pass"],
-        confidence=1.0, metadata={"passed": 5}, granularity="turn",
+        scorer="outcome.test",
+        value=1.0,
+        tags=["test_pass"],
+        confidence=1.0,
+        metadata={"passed": 5},
+        granularity="turn",
     )
     ref = "weave:///test-entity/test-project/agent_turn/tr-1"
     result = mock_client.write_score(score, ref)
@@ -275,10 +281,12 @@ def test_query_existing_feedback_http(mock_client):
 @respx.mock
 def test_query_all_feedback_http(mock_client):
     respx.post(f"{TRACE_BASE}/feedback/query").respond(
-        json={"feedback": [
-            {"id": "fb-1", "feedback_type": "weave_agent_signals.outcome.test"},
-            {"id": "fb-2", "feedback_type": "weave_agent_signals.efficiency"},
-        ]},
+        json={
+            "feedback": [
+                {"id": "fb-1", "feedback_type": "weave_agent_signals.outcome.test"},
+                {"id": "fb-2", "feedback_type": "weave_agent_signals.efficiency"},
+            ]
+        },
     )
     ref = "weave:///test-entity/test-project/agent_turn/tr-1"
     results = mock_client.query_all_feedback(ref)
@@ -288,10 +296,12 @@ def test_query_all_feedback_http(mock_client):
 @respx.mock
 def test_query_session_http(mock_client):
     respx.post(f"{TRACE_BASE}/agents/spans/query").respond(
-        json={"spans": [
-            _fake_span(trace_id="tr-1", started_at="2026-07-09T12:00:00Z"),
-            _fake_span(trace_id="tr-2", started_at="2026-07-09T12:10:00Z"),
-        ]},
+        json={
+            "spans": [
+                _fake_span(trace_id="tr-1", started_at="2026-07-09T12:00:00Z"),
+                _fake_span(trace_id="tr-2", started_at="2026-07-09T12:10:00Z"),
+            ]
+        },
     )
     session = mock_client.query_session("conv-1")
     assert session.conversation_id == "conv-1"
@@ -405,10 +415,15 @@ def test_attach_children_aggregates_tokens_from_chat_spans(client):
     assert turn.input_tokens == 0  # root carries no tokens
 
     children = [
-        _fake_chat_span(span_id="c1", input_tokens=100, output_tokens=50,
-                        cache_read_input_tokens=200),
-        _fake_chat_span(span_id="c2", input_tokens=30, output_tokens=20,
-                        cache_read_input_tokens=10),
+        _fake_chat_span(
+            span_id="c1",
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_input_tokens=200,
+        ),
+        _fake_chat_span(
+            span_id="c2", input_tokens=30, output_tokens=20, cache_read_input_tokens=10
+        ),
     ]
     client._attach_children(turn, children)
     assert turn.input_tokens == 130

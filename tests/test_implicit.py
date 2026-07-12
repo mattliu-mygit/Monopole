@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 
 from weave_agent_signals.models import SessionView, TurnSpan
 from weave_agent_signals.scorers.implicit import (
-    is_abandoned,
     correction_density,
+    is_abandoned,
     score_session_implicit,
 )
 
@@ -16,7 +16,9 @@ def _ts(h=12, m=0, s=0):
 
 def _turn(
     trace_id="t1",
-    steering=0, denials=0, errors=0,
+    steering=0,
+    denials=0,
+    errors=0,
     status="OK",
 ):
     return TurnSpan(
@@ -25,13 +27,21 @@ def _turn(
         started_at=_ts(),
         ended_at=_ts(12, 5),
         model="claude-opus-4",
-        input_tokens=1000, output_tokens=500,
-        cache_read_tokens=200, status_code=status,
-        config_version="abc", git_branch="main",
-        effort_level="high", session_id="s1",
-        steering_count=steering, denial_count=denials,
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read_tokens=200,
+        status_code=status,
+        config_version="abc",
+        git_branch="main",
+        effort_level="high",
+        session_id="s1",
+        steering_count=steering,
+        denial_count=denials,
         tool_error_count=errors,
-        events=[], tool_calls=[], chat_spans=[], subagents=[],
+        events=[],
+        tool_calls=[],
+        chat_spans=[],
+        subagents=[],
     )
 
 
@@ -45,6 +55,7 @@ def _session(turns, conv_id="c1"):
 
 
 # --- Abandonment ---
+
 
 def test_abandoned_with_error_end():
     turns = [_turn("t1"), _turn("t2"), _turn("t3", status="ERROR")]
@@ -66,6 +77,7 @@ def test_abandoned_empty_session():
 
 # --- Correction density ---
 
+
 def test_correction_density_zero():
     turns = [_turn("t1"), _turn("t2"), _turn("t3")]
     assert correction_density(_session(turns)) == 0.0
@@ -81,6 +93,7 @@ def test_correction_density_single_turn():
 
 
 # --- Session scores ---
+
 
 def test_score_session_implicit_returns_scores():
     turns = [_turn("t1", steering=1), _turn("t2"), _turn("t3")]

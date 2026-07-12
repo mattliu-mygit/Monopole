@@ -1,7 +1,7 @@
 """Tests for the GEPA reflector: artifact extraction, feedback formatting, diff output."""
+
 from __future__ import annotations
 
-import textwrap
 from unittest.mock import MagicMock
 
 from weave_agent_signals.reflector import (
@@ -88,15 +88,21 @@ def test_render_proposal_no_change():
 
 # --- evaluator (candidate ranking signal) ---
 
+
 def test_artifact_evaluator_scores_candidate_via_judge():
     """The evaluator must score the PROPOSED candidate, not echo a constant."""
     client = MagicMock()
     resp = MagicMock()
-    client.chat_json.return_value = ({"score": 0.82, "rationale": "addresses test gaps"}, resp)
+    client.chat_json.return_value = (
+        {"score": 0.82, "rationale": "addresses test gaps"},
+        resp,
+    )
 
     evaluator = _make_artifact_evaluator(
-        judge_client=client, judge_model="gpt-4o",
-        coaching_text="test pass rate is low", baseline=0.4,
+        judge_client=client,
+        judge_model="gpt-4o",
+        coaching_text="test pass rate is low",
+        baseline=0.4,
     )
     score, side_info = evaluator({"CLAUDE.md": "Always run tests after editing."})
 
@@ -112,15 +118,19 @@ def test_artifact_evaluator_varies_with_candidate():
     """Different candidates must be able to receive different scores."""
     client = MagicMock()
     resp = MagicMock()
-    scores = iter([
-        ({"score": 0.3, "rationale": "weak"}, resp),
-        ({"score": 0.9, "rationale": "strong"}, resp),
-    ])
+    scores = iter(
+        [
+            ({"score": 0.3, "rationale": "weak"}, resp),
+            ({"score": 0.9, "rationale": "strong"}, resp),
+        ]
+    )
     client.chat_json.side_effect = lambda **kw: next(scores)
 
     evaluator = _make_artifact_evaluator(
-        judge_client=client, judge_model="gpt-4o",
-        coaching_text="x", baseline=0.5,
+        judge_client=client,
+        judge_model="gpt-4o",
+        coaching_text="x",
+        baseline=0.5,
     )
     s1, _ = evaluator({"CLAUDE.md": "weak version"})
     s2, _ = evaluator({"CLAUDE.md": "strong version"})
@@ -129,7 +139,10 @@ def test_artifact_evaluator_varies_with_candidate():
 
 def test_artifact_evaluator_without_judge_falls_back_to_baseline():
     evaluator = _make_artifact_evaluator(
-        judge_client=None, judge_model=None, coaching_text="x", baseline=0.42,
+        judge_client=None,
+        judge_model=None,
+        coaching_text="x",
+        baseline=0.42,
     )
     score, side_info = evaluator({"CLAUDE.md": "anything"})
     assert score == 0.42

@@ -3,6 +3,7 @@
 Agent is Claude → judges must be non-Anthropic. gpt-oss counts as OpenAI-family
 (shared training distribution, arXiv:2410.21819).
 """
+
 from __future__ import annotations
 
 import logging
@@ -67,7 +68,8 @@ def select_judges(
         log.warning(
             "No cross-family judge available for agent family %r; using "
             "same-family judge(s) %s (self-preference bias risk)",
-            exclude, selected,
+            exclude,
+            selected,
         )
     return selected
 
@@ -103,6 +105,9 @@ def select_panel(
         log.warning(
             "PoLL panel wants >=%d non-same-family judges but only %d available "
             "on this backend (%s); scoring with %d judge(s).",
-            min_cross, len(cross), list(cross), len(panel),
+            min_cross,
+            len(cross),
+            list(cross),
+            len(panel),
         )
     return panel

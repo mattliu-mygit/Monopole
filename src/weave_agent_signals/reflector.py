@@ -6,11 +6,11 @@ The reflector is the weak-RSI loop. It:
 3. Runs GEPA optimize_anything to propose edits
 4. Outputs diffs for human review (review gate)
 """
+
 from __future__ import annotations
 
 import difflib
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,11 +50,13 @@ def extract_artifacts(project_root: str) -> list[Artifact]:
                 try:
                     content = path.read_text(encoding="utf-8")
                     rel = str(path.relative_to(root))
-                    artifacts.append(Artifact(
-                        name=path.name,
-                        path=rel,
-                        content=content,
-                    ))
+                    artifacts.append(
+                        Artifact(
+                            name=path.name,
+                            path=rel,
+                            content=content,
+                        )
+                    )
                 except (OSError, UnicodeDecodeError) as e:
                     log.warning("Could not read %s: %s", path, e)
 
@@ -86,11 +88,13 @@ def format_evaluation_batch(feedback: list[dict]) -> list[dict[str, Any]]:
         if tags:
             feedback_text += f" [tags: {', '.join(tags)}]"
 
-        entries.append({
-            "score": float(rating),
-            "feedback": feedback_text,
-            "scorer": ftype.replace("weave_agent_signals.", ""),
-        })
+        entries.append(
+            {
+                "score": float(rating),
+                "feedback": feedback_text,
+                "scorer": ftype.replace("weave_agent_signals.", ""),
+            }
+        )
 
     return entries
 
@@ -124,12 +128,14 @@ def render_proposal_diff(
         new = proposed_map.get(path, "")
         if old == new:
             continue
-        diff_lines = list(difflib.unified_diff(
-            old.splitlines(keepends=True),
-            new.splitlines(keepends=True),
-            fromfile=f"a/{path}",
-            tofile=f"b/{path}",
-        ))
+        diff_lines = list(
+            difflib.unified_diff(
+                old.splitlines(keepends=True),
+                new.splitlines(keepends=True),
+                fromfile=f"a/{path}",
+                tofile=f"b/{path}",
+            )
+        )
         if diff_lines:
             diffs.append("".join(diff_lines))
 
@@ -195,10 +201,9 @@ def _make_artifact_evaluator(
     disables ranking — GEPA can still generate a single proposal but cannot
     choose between competing ones.
     """
+
     def evaluator(proposed: dict[str, str]) -> tuple[float, dict]:
-        artifact_text = "\n\n".join(
-            f"## {path}\n{content}" for path, content in proposed.items()
-        )
+        artifact_text = "\n\n".join(f"## {path}\n{content}" for path, content in proposed.items())
         if judge_client is None:
             return baseline, {
                 "ranking_enabled": False,
@@ -207,16 +212,22 @@ def _make_artifact_evaluator(
             }
         messages = [
             {"role": "system", "content": ARTIFACT_JUDGE_SYSTEM},
-            {"role": "user", "content": (
-                f"## Agent failure patterns\n\n{coaching_text}\n\n"
-                f"## Proposed CLAUDE.md\n\n{artifact_text}\n\n"
-                "## Instructions\n\nRespond with JSON:\n"
-                '{"score": <float 0.0-1.0>, "rationale": "<1-2 sentences>"}'
-            )},
+            {
+                "role": "user",
+                "content": (
+                    f"## Agent failure patterns\n\n{coaching_text}\n\n"
+                    f"## Proposed CLAUDE.md\n\n{artifact_text}\n\n"
+                    "## Instructions\n\nRespond with JSON:\n"
+                    '{"score": <float 0.0-1.0>, "rationale": "<1-2 sentences>"}'
+                ),
+            },
         ]
         try:
             parsed, _ = judge_client.chat_json(
-                model=judge_model, messages=messages, temperature=0.0, max_tokens=512,
+                model=judge_model,
+                messages=messages,
+                temperature=0.0,
+                max_tokens=512,
             )
             quality = max(0.0, min(1.0, float(parsed.get("score", baseline))))
             rationale = parsed.get("rationale", "")
@@ -249,7 +260,10 @@ def run_reflection(
     Proposal with suggested edits, or None if nothing to optimize.
     """
     from gepa.optimize_anything import (
-        EngineConfig, GEPAConfig, ReflectionConfig, optimize_anything,
+        EngineConfig,
+        GEPAConfig,
+        ReflectionConfig,
+        optimize_anything,
     )
 
     artifacts = extract_artifacts(project_root)
@@ -293,9 +307,13 @@ def run_reflection(
         return None
 
     if isinstance(best, str):
-        proposed_artifacts = [Artifact(
-            name="CLAUDE.md", path="CLAUDE.md", content=best,
-        )]
+        proposed_artifacts = [
+            Artifact(
+                name="CLAUDE.md",
+                path="CLAUDE.md",
+                content=best,
+            )
+        ]
     else:
         proposed_artifacts = _candidate_to_artifacts(best)
 

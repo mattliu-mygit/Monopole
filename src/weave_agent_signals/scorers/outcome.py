@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any
 
 from weave_agent_signals.models import Score, ToolSpan, TurnSpan
 
@@ -90,7 +90,6 @@ class LintOutcome:
 
 
 @dataclass
-@dataclass
 class InstallOutcome:
     tool: str
     command: str
@@ -133,6 +132,7 @@ class GitOutcome:
 @dataclass
 class CommandOutcome:
     """Generic fallback for bash commands not matched by specific classifiers."""
+
     command: str
     exit_code: int | None
     success: bool | None
@@ -196,25 +196,91 @@ _INSTALL_PATTERNS = [
     re.compile(r"\bbundle\s+install\b"),
 ]
 
-_GIT_MUTATING_OPS = {"commit", "push", "merge", "rebase", "cherry-pick", "revert", "reset", "stash"}
+_GIT_MUTATING_OPS = {
+    "commit",
+    "push",
+    "merge",
+    "rebase",
+    "cherry-pick",
+    "revert",
+    "reset",
+    "stash",
+}
 
 _GIT_PATTERN = re.compile(r"\bgit\s+(\S+)")
 
 _EXPLORATION_COMMANDS = {
-    "ls", "ll", "cat", "head", "tail", "less", "more", "wc", "file",
-    "find", "grep", "rg", "ag", "ack", "sed", "awk",
-    "echo", "printf", "true", "false",
-    "pwd", "cd", "pushd", "popd",
-    "which", "where", "whereis", "type", "command",
-    "env", "printenv", "set", "export", "unset",
-    "date", "whoami", "hostname", "uname",
-    "ps", "top", "htop", "df", "du", "free",
-    "tree", "stat", "readlink", "realpath", "basename", "dirname",
-    "diff", "cmp", "md5sum", "sha256sum", "shasum",
-    "sort", "uniq", "cut", "tr", "tee", "xargs",
-    "touch", "mkdir", "cp", "mv", "ln",
-    "sleep", "wait",
-    "man", "help", "info",
+    "ls",
+    "ll",
+    "cat",
+    "head",
+    "tail",
+    "less",
+    "more",
+    "wc",
+    "file",
+    "find",
+    "grep",
+    "rg",
+    "ag",
+    "ack",
+    "sed",
+    "awk",
+    "echo",
+    "printf",
+    "true",
+    "false",
+    "pwd",
+    "cd",
+    "pushd",
+    "popd",
+    "which",
+    "where",
+    "whereis",
+    "type",
+    "command",
+    "env",
+    "printenv",
+    "set",
+    "export",
+    "unset",
+    "date",
+    "whoami",
+    "hostname",
+    "uname",
+    "ps",
+    "top",
+    "htop",
+    "df",
+    "du",
+    "free",
+    "tree",
+    "stat",
+    "readlink",
+    "realpath",
+    "basename",
+    "dirname",
+    "diff",
+    "cmp",
+    "md5sum",
+    "sha256sum",
+    "shasum",
+    "sort",
+    "uniq",
+    "cut",
+    "tr",
+    "tee",
+    "xargs",
+    "touch",
+    "mkdir",
+    "cp",
+    "mv",
+    "ln",
+    "sleep",
+    "wait",
+    "man",
+    "help",
+    "info",
 }
 
 
@@ -261,6 +327,8 @@ def classify_command(raw_cmd: str) -> str | None:
     # read-only git is exploration
     if re.match(r"\bgit\b", cmd):
         return None
+    if not cmd:
+        return None
     # check if the leading command is pure exploration
     leading = re.match(r"(\S+)", cmd)
     if leading and leading.group(1) in _EXPLORATION_COMMANDS:
@@ -269,6 +337,7 @@ def classify_command(raw_cmd: str) -> str | None:
 
 
 # --- Framework detection ---
+
 
 def _detect_test_framework(cmd: str) -> str:
     cmd_lower = cmd.lower()
@@ -354,6 +423,7 @@ def _detect_lint_tool(cmd: str) -> str:
 
 # --- Output parsing ---
 
+
 def parse_test_output(output: str, framework: str) -> TestRunOutcome:
     result = TestRunOutcome(framework=framework, command="", exit_code=None)
 
@@ -420,6 +490,7 @@ def _parse_go(output: str, r: TestRunOutcome):
 
 # --- Build/lint output parsing ---
 
+
 def parse_build_output(output: str, tool: str, exit_code: int | None = None) -> BuildOutcome:
     error_count = None
     m = re.search(r"Found\s+(\d+)\s+error", output)
@@ -431,7 +502,9 @@ def parse_build_output(output: str, tool: str, exit_code: int | None = None) -> 
     if m:
         warning_count = int(m.group(1))
 
-    success = (exit_code == 0) if exit_code is not None else (error_count is None or error_count == 0)
+    success = (
+        (exit_code == 0) if exit_code is not None else (error_count is None or error_count == 0)
+    )
 
     return BuildOutcome(
         tool=tool,
@@ -519,13 +592,13 @@ def parse_install_output(output: str, tool: str, exit_code: int | None = None) -
 
 _GIT_SUCCESS_PATTERNS = [
     re.compile(r"\[[\w/.-]+\s+[0-9a-f]+\]"),  # [main abc1234] commit message
-    re.compile(r"\d+\s+files?\s+changed"),       # N files changed
+    re.compile(r"\d+\s+files?\s+changed"),  # N files changed
     re.compile(r"Already up to date"),
     re.compile(r"Fast-forward"),
     re.compile(r"Everything up-to-date"),
     re.compile(r"branch .+ set up to track"),
     re.compile(r"Switched to"),
-    re.compile(r"To [\w.:/]+"),                   # To github.com:... (push)
+    re.compile(r"To [\w.:/]+"),  # To github.com:... (push)
     re.compile(r"create mode|delete mode"),
 ]
 
@@ -578,6 +651,7 @@ def parse_git_output(output: str, operation: str, exit_code: int | None = None) 
 
 
 # --- Extraction from tool spans ---
+
 
 def _extract_command(span: ToolSpan) -> str | None:
     try:
@@ -678,16 +752,19 @@ def extract_outcomes(tool_calls: list[ToolSpan]) -> list:
             outcomes.append(result)
         elif kind == "command":
             success = exit_code == 0 if exit_code is not None else None
-            outcomes.append(CommandOutcome(
-                command=cmd,
-                exit_code=exit_code,
-                success=success,
-            ))
+            outcomes.append(
+                CommandOutcome(
+                    command=cmd,
+                    exit_code=exit_code,
+                    success=success,
+                )
+            )
 
     return outcomes
 
 
 # --- Turn-level scoring ---
+
 
 def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
     all_tool_calls = turn.tool_calls + [tc for sub in turn.subagents for tc in sub.tool_calls]
@@ -707,98 +784,110 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
             reason = f"{frameworks}: {total_passed} passed, {total_failed} failed"
         else:
             reason = f"{frameworks}: {total_failed} failed out of {total_passed + total_failed}"
-        scores.append(Score(
-            scorer="outcome.test",
-            value=1.0 if all_passed else 0.0,
-            tags=["test_pass"] if all_passed else ["test_failure"],
-            confidence=1.0,
-            metadata={
-                "outcomes": [t.to_dict() for t in tests],
-                "test_count": total_passed + total_failed,
-                "fail_count": total_failed,
-            },
-            granularity="turn",
-            reason=reason,
-        ))
+        scores.append(
+            Score(
+                scorer="outcome.test",
+                value=1.0 if all_passed else 0.0,
+                tags=["test_pass"] if all_passed else ["test_failure"],
+                confidence=1.0,
+                metadata={
+                    "outcomes": [t.to_dict() for t in tests],
+                    "test_count": total_passed + total_failed,
+                    "fail_count": total_failed,
+                },
+                granularity="turn",
+                reason=reason,
+            )
+        )
 
     builds = [o for o in outcomes if isinstance(o, BuildOutcome)]
     if builds:
         all_ok = all(b.success for b in builds)
         tools = ", ".join(sorted({b.tool for b in builds}))
         reason = f"{tools}: {'all passed' if all_ok else 'build failure'}"
-        scores.append(Score(
-            scorer="outcome.build",
-            value=1.0 if all_ok else 0.0,
-            tags=["build_pass"] if all_ok else ["build_failure"],
-            confidence=1.0,
-            metadata={"outcomes": [b.to_dict() for b in builds]},
-            granularity="turn",
-            reason=reason,
-        ))
+        scores.append(
+            Score(
+                scorer="outcome.build",
+                value=1.0 if all_ok else 0.0,
+                tags=["build_pass"] if all_ok else ["build_failure"],
+                confidence=1.0,
+                metadata={"outcomes": [b.to_dict() for b in builds]},
+                granularity="turn",
+                reason=reason,
+            )
+        )
 
     lints = [o for o in outcomes if isinstance(o, LintOutcome)]
     if lints:
-        all_clean = all(l.clean for l in lints)
-        tools = ", ".join(sorted({l.tool for l in lints}))
-        total_issues = sum(l.issue_count or 0 for l in lints)
+        all_clean = all(lo.clean for lo in lints)
+        tools = ", ".join(sorted({lo.tool for lo in lints}))
+        total_issues = sum(lo.issue_count or 0 for lo in lints)
         reason = f"{tools}: {'clean' if all_clean else f'{total_issues} issues'}"
-        scores.append(Score(
-            scorer="outcome.lint",
-            value=1.0 if all_clean else 0.0,
-            tags=["lint_clean"] if all_clean else ["lint_issues"],
-            confidence=1.0,
-            metadata={"outcomes": [l.to_dict() for l in lints]},
-            granularity="turn",
-            reason=reason,
-        ))
+        scores.append(
+            Score(
+                scorer="outcome.lint",
+                value=1.0 if all_clean else 0.0,
+                tags=["lint_clean"] if all_clean else ["lint_issues"],
+                confidence=1.0,
+                metadata={"outcomes": [lo.to_dict() for lo in lints]},
+                granularity="turn",
+                reason=reason,
+            )
+        )
 
     installs = [o for o in outcomes if isinstance(o, InstallOutcome)]
     if installs:
         all_ok = all(i.success for i in installs)
         tools = ", ".join(sorted({i.tool for i in installs}))
         reason = f"{tools}: {'all succeeded' if all_ok else 'install failure'}"
-        scores.append(Score(
-            scorer="outcome.install",
-            value=1.0 if all_ok else 0.0,
-            tags=["install_success"] if all_ok else ["install_failure"],
-            confidence=1.0,
-            metadata={"outcomes": [i.to_dict() for i in installs]},
-            granularity="turn",
-            reason=reason,
-        ))
+        scores.append(
+            Score(
+                scorer="outcome.install",
+                value=1.0 if all_ok else 0.0,
+                tags=["install_success"] if all_ok else ["install_failure"],
+                confidence=1.0,
+                metadata={"outcomes": [i.to_dict() for i in installs]},
+                granularity="turn",
+                reason=reason,
+            )
+        )
 
     gits = [o for o in outcomes if isinstance(o, GitOutcome)]
     if gits:
         all_ok = all(g.success for g in gits)
         ops = ", ".join(sorted({g.operation for g in gits}))
         reason = f"git {ops}: {'all succeeded' if all_ok else 'failure'}"
-        scores.append(Score(
-            scorer="outcome.git",
-            value=1.0 if all_ok else 0.0,
-            tags=["git_success"] if all_ok else ["git_failure"],
-            confidence=1.0,
-            metadata={"outcomes": [g.to_dict() for g in gits]},
-            granularity="turn",
-            reason=reason,
-        ))
+        scores.append(
+            Score(
+                scorer="outcome.git",
+                value=1.0 if all_ok else 0.0,
+                tags=["git_success"] if all_ok else ["git_failure"],
+                confidence=1.0,
+                metadata={"outcomes": [g.to_dict() for g in gits]},
+                granularity="turn",
+                reason=reason,
+            )
+        )
 
     cmds = [o for o in outcomes if isinstance(o, CommandOutcome)]
     failed_cmds = [c for c in cmds if c.success is False]
     if failed_cmds:
-        reasons = [c.command.split()[0] for c in failed_cmds]
+        reasons = [(c.command.split()[0] if c.command.strip() else "?") for c in failed_cmds]
         reason = f"{len(failed_cmds)} command failure(s): {', '.join(reasons[:5])}"
-        scores.append(Score(
-            scorer="outcome.command",
-            value=0.0,
-            tags=["command_failure"],
-            confidence=0.5,
-            metadata={
-                "outcomes": [c.to_dict() for c in failed_cmds],
-                "total_commands": len(cmds),
-                "failed_commands": len(failed_cmds),
-            },
-            granularity="turn",
-            reason=reason,
-        ))
+        scores.append(
+            Score(
+                scorer="outcome.command",
+                value=0.0,
+                tags=["command_failure"],
+                confidence=0.5,
+                metadata={
+                    "outcomes": [c.to_dict() for c in failed_cmds],
+                    "total_commands": len(cmds),
+                    "failed_commands": len(failed_cmds),
+                },
+                granularity="turn",
+                reason=reason,
+            )
+        )
 
     return scores
