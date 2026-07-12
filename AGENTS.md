@@ -49,7 +49,6 @@ weave-agent-signals backfill --start DATE [--end DATE] [--page-size N] [--dry-ru
 weave-agent-signals judge [--since DATE] [--limit N] [--rubric NAME,...] [--panel-size N] [--dry-run] [--force]
 weave-agent-signals analyze [--limit N] [--ab] [--trends] [--coaching]
 weave-agent-signals reflect [--limit N] [--model MODEL] [--iterations N] [--project-root DIR] [--dry-run] [--apply]
-weave-agent-signals monitor [--limit N] [--alert-webhook URL] [--state-file PATH] [--dry-run]
 weave-agent-signals inspect [--recent N] [--session ID] [--feedback]
 ```
 
@@ -60,7 +59,7 @@ Exit codes: 0 success, 1 partial failure, 2 config error, 3 API error.
 Tests use synthetic span data (no live Weave calls). HTTP interactions mocked with `respx`.
 
 ```bash
-pytest                          # full suite (275 tests)
+pytest                          # full suite (233 tests)
 pytest tests/test_outcome.py    # single module
 pytest -x                       # stop on first failure
 ```

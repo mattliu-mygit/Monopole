@@ -128,9 +128,11 @@ Two granularities with different judge strategies:
 
 **Turn-level (M2)**: Weave Signals fire on `turn_ended`, running small judges (`gpt-oss-20b`, `Llama-3.1-8B`, `granite-4.1-8b`) on process rubrics — verification discipline, error recovery, tool choice quality, user-prompt quality. Custom-attr filters (e.g. only judge turns with `tool_error_count > 0`) reduce cost. **Weave-native reality (verified 2026-07-09)**: turn-level judging infrastructure already ships — 13 preset classifier signals + 8 agent-signal templates, custom prompts, 0–1 sampling, W&B Inference judge picker. M2 = signal/rubric definitions published as code, not judging infrastructure. Also lands: micro-LLM classifiers for frustration scoring (spec 03) and verification-before-done (spec 02).
 
-**Session-level (M3)**: raw whole-trace judging catches ~11–22% of issues (TRAIL, arXiv:2505.08638). Fix: **digest builder** extracts ~10–20 chronological key moments + L1 scores into ~2K tokens, then a **3-family PoLL panel** (arXiv:2404.18796) judges the digest. Panel: `gpt-oss-120b` / `DeepSeek-V4` / `Qwen3-30B` (or `Llama-3.3-70B`), mean-pooled scores, max-pooled flags. Confidence-gated escalation (Trust-or-Escalate, arXiv:2407.18370) on low agreement. **Known risk**: the digest is load-bearing and lossy — whatever extraction rules miss, the panel never sees. Mitigations: anchor on L1 facts (anomalies always included); validate digests against ~10 hand-read sessions before trusting panel scores (M3 exit criterion). Session scope does NOT exist in Weave Signals (`conversation_ended` is a commented-out TODO) — build M3 externally, migrate onto the native trigger when it ships.
+**Session-level (M3)**: raw whole-trace judging catches ~11–22% of issues (TRAIL, arXiv:2505.08638). Fix: **digest builder** extracts ~10–20 chronological key moments + L1 scores into ~2K tokens, then a **PoLL panel** (arXiv:2404.18796) judges the digest — mean-pooled scores, max-pooled flags, confidence-gated escalation (Trust-or-Escalate, arXiv:2407.18370) on low agreement. **Known risk**: the digest is load-bearing and lossy — whatever extraction rules miss, the panel never sees. Mitigations: anchor on L1 facts (anomalies always included); validate digests against ~10 hand-read sessions before trusting panel scores (M3 exit criterion). Session scope does NOT exist in Weave Signals (`conversation_ended` is a commented-out TODO) — build M3 externally, migrate onto the native trigger when it ships.
 
-**Bias controls**: agent is Claude ⇒ non-Anthropic judges only; `gpt-oss` counts as OpenAI-family (shared training distribution, arXiv:2410.21819); decomposed multi-dim rubrics cut self-preference ~31.5% (arXiv:2604.22891); position-swap for pairwise comparisons only (meaningless for absolute rubric scoring).
+**Panel composition (updated 2026-07-10)**: minimum **3 judges = 1 same-family + ≥2 non-same-family**. This deliberately re-admits one same-family judge (for a Claude agent, an Anthropic model) as a strong, well-aligned reader, outvoted 2:1 by cross-family judges — a considered trade of some self-preference bias (arXiv:2410.21819) for capability, with decomposed rubrics (§Bias controls) as the mitigation. Selection targets this composition and **warns when a backend cannot seat it**. Backend reality: W&B Inference serves no Anthropic model (0 same-family); the temporary CLI backend has Claude but only one cross-family (Codex). Seating a full 1+2 panel therefore requires either more local CLIs (e.g. a Gemini CLI) or a mixed backend (CLI-Claude + W&B Inference cross-family). Prior default (`gpt-oss-120b` / `DeepSeek-V4` / `Qwen3-30B`, all non-Anthropic) remains valid as a pure-cross-family panel on W&B Inference.
+
+**Bias controls**: `gpt-oss` counts as OpenAI-family (shared training distribution, arXiv:2410.21819); the panel admits at most one same-family judge and requires ≥2 non-same-family (above); decomposed multi-dim rubrics cut self-preference ~31.5% (arXiv:2604.22891); position-swap for pairwise comparisons only (meaningless for absolute rubric scoring).
 
 All judges via **W&B Inference** (OpenAI-compatible, auth via W&B API key, no external keys).
 
@@ -169,6 +171,16 @@ Baseline: user currently has no global CLAUDE.md/skills/commands, only auto-memo
 
 **HiveMind reconciliation (required before M4 design is final)**: `hivemind insights list/apply` already ships a gated suggestions→context-file loop. It lacks outcome/score grounding, proposal validation, and A/B measurement — our L4 differentiation. Emit validated proposals INTO hivemind's suggestion lifecycle if its API allows external sources; at minimum adopt its `pending|applied|dismissed` lifecycle semantics.
 
+### Monitoring & alerting (M5)
+
+Continuous watch that samples incoming traces, scores them, and alerts on **statistically real** performance degradation — distinct from M4's on-demand analysis. Three parts, only the first of which needs Signals:
+
+1. **Sample + score** *(needs Weave Signals, or a sampled local run)*: score a fraction of incoming traces continuously. Weave Signals do this natively — server-side, 0–1 sampling, W&B Serverless Inference, no local compute — the target once inference billing is enabled. Until then, a sampled `score`/`judge` cron (`--sample <rate>`) approximates it locally.
+2. **Detect degradation** *(buildable now — source-agnostic over feedback)*: `detect_regressions` over run-time-ordered windows with Wilson-interval significance, so alerts fire only on real drops, not small-sample noise. Plus A/B: flag when a new `config_version` cohort measures worse than the prior (large effects only, per §L3).
+3. **Alert** *(buildable now)*: a pluggable sink — log / webhook / Slack / Weave annotation — carrying scorer, delta, 95% CI, sample size, and the offending `config_version`.
+
+**Key**: parts 2–3 consume feedback regardless of who wrote it, so the alerting layer is buildable today over trustworthy M1 scores and gains the judge/session signals once M2/M3 are validated and Signals-based sampling is on. Cadence: scheduled (launchd/cron), same as `score`. Guard against alert fatigue — only significant, sustained regressions notify.
+
 ### Stretch goal: coach agent
 
 A subagent Matt can converse with to understand what he's been doing and how, grounded in the pipeline's data. No new datastore — Weave holds scores + spans; hivemind holds searchable transcripts; local `~/.claude/projects` holds full-fidelity transcripts. Join key: adapter stamps `weave_agent_adapter.session_id` which matches hivemind's daemon session key. Useful from M1 scores alone; gets smarter with each layer. Can slot in any time after M1.
@@ -206,6 +218,9 @@ Typical cron: `score` every 30min (or on session-end hook). Future commands (`re
 2. **M2 — turn signals**: routing gates + preset/custom Weave Signals (process rubrics, small judges, sampling, custom-attr filters). Exit: live sessions → signals fire with tags/ratings.
 3. **M3 — session panel**: digest builder + 3-family PoLL + feedback on `agent_conversation` refs + confidence-gated escalation. Exit: backfill panel scores, verify disagreement rates.
 4. **M4 — pattern + RSI**: emergent clustering + A/B leaderboards, coaching digest, GEPA diff proposer with validation + review gate, annotation-queue calibration. Exit: dry-run reflector on history, apply one diff → config_version flips → A/B populates.
+5. **M5 — monitoring & alerting**: sampled continuous scoring + regression/A-B degradation alerts on a schedule (see §Monitoring & alerting). Exit: a real regression in recent scores fires a significant, deduplicated alert.
+
+**Build status (2026-07-10)**: M1 implemented and validated on real data. M2/M3/M4 implemented and unit-tested, but judging runs through a **temporary local CLI backend** (`claude`/`codex` CLIs) pending W&B Inference billing, and the M3 exit criteria (digest validation vs hand-read sessions, disagreement rates) are **not yet met** — judge scores are unvalidated. M5 not started.
 
 ## 9. Prior art & reuse
 

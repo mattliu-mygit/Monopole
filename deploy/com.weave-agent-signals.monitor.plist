@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Scheduled hourly job: score recent turns (M1), then check for regressions and alert.
+
+  Install (copy into place, then load):
+    cp deploy/com.weave-agent-signals.monitor.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.weave-agent-signals.monitor.plist
+
+  Check / run now / stop:
+    launchctl list | grep weave-agent-signals
+    launchctl kickstart -k gui/$(id -u)/com.weave-agent-signals.monitor
+    launchctl bootout gui/$(id -u)/com.weave-agent-signals.monitor
+
+  Logs: ~/Library/Logs/weave-agent-signals.log
+  To send alerts to Slack, add "--alert-webhook" and your webhook URL to the
+  monitor arguments in the shell line below.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.weave-agent-signals.monitor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>cd /Users/mliu/weave-agent-signals &amp;&amp; .venv/bin/python -m weave_agent_signals score &amp;&amp; .venv/bin/python -m weave_agent_signals monitor --state-file /Users/mliu/.weave-agent-signals-alerts.json</string>
+    </array>
+
+    <!-- run every hour (3600 seconds) -->
+    <key>StartInterval</key>
+    <integer>3600</integer>
+
+    <!-- also run once immediately when loaded, so you can confirm it works -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/mliu/Library/Logs/weave-agent-signals.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mliu/Library/Logs/weave-agent-signals.log</string>
+</dict>
+</plist>

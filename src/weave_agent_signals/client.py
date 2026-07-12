@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from weave_agent_signals.models import (
+    FEEDBACK_PREFIX,
     ChatSpan,
     Score,
     SessionView,
@@ -412,6 +413,29 @@ class WeaveClient:
         data = resp.json()
         return data.get("result") or data.get("feedback") or data.get("results") or []
 
+    def query_project_feedback(
+        self,
+        feedback_type_prefix: str = FEEDBACK_PREFIX,
+        limit: int = 1000,
+    ) -> list[dict]:
+        """Query all signals feedback for the project."""
+        body = {
+            "project_id": self.project_id,
+            "query": {
+                "$expr": {
+                    "$contains": {
+                        "input": {"$getField": "feedback_type"},
+                        "substr": {"$literal": feedback_type_prefix},
+                    }
+                }
+            },
+            "limit": limit,
+        }
+        resp = self._http.post("/feedback/query", json=body)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("result") or data.get("feedback") or data.get("results") or []
+
 
 def _custom_attrs(raw: dict[str, Any]) -> dict[str, Any]:
     # The spans API returns custom attributes split across typed maps
@@ -436,6 +460,9 @@ def _parse_ts(val: str | None) -> datetime | None:
     try:
         if val.endswith("Z"):
             val = val[:-1] + "+00:00"
-        return datetime.fromisoformat(val)
+        dt = datetime.fromisoformat(val)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except (ValueError, TypeError):
         return None

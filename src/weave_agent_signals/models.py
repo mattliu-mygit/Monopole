@@ -9,6 +9,9 @@ from urllib.parse import quote
 ENTITY = "mliu-wandb-weights-biases"
 PROJECT = "agent-sessions"
 
+# Prefix for every feedback type this system writes: weave_agent_signals.<scorer>
+FEEDBACK_PREFIX = "weave_agent_signals."
+
 
 @dataclass
 class ToolSpan:
@@ -114,7 +117,7 @@ class Score:
         return {
             "project_id": project_id,
             "weave_ref": ref,
-            "feedback_type": f"weave_agent_signals.{self.scorer}",
+            "feedback_type": f"{FEEDBACK_PREFIX}{self.scorer}",
             "payload": {
                 "scorer_version": "v1",
                 "scored_at": datetime.now(timezone.utc).isoformat(),
