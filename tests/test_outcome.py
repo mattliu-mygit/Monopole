@@ -525,6 +525,41 @@ def test_parse_git_output_unknown_exit_defaults_false():
     assert result.success is False
 
 
+def test_parse_git_output_infers_success_from_content():
+    output = "[main abc1234] fix: resolve issue\n 3 files changed, 42 insertions(+)"
+    result = parse_git_output(output, "commit", exit_code=None)
+    assert result.success is True
+    assert result.files_changed == 3
+
+
+def test_parse_git_output_infers_push_success():
+    result = parse_git_output("Everything up-to-date", "push", exit_code=None)
+    assert result.success is True
+
+
+def test_parse_git_output_infers_failure_from_error():
+    result = parse_git_output("fatal: not a git repository", "commit", exit_code=None)
+    assert result.success is False
+
+
+def test_parse_git_output_rejected_push_not_success():
+    # A rejected push prints "To github.com:..." before the rejection. The
+    # success heuristic must not treat that line as a successful push.
+    output = (
+        "To github.com:user/repo.git\n"
+        " ! [rejected]        main -> main (non-fast-forward)\n"
+        "error: failed to push some refs to 'github.com:user/repo.git'"
+    )
+    result = parse_git_output(output, "push", exit_code=None)
+    assert result.success is False
+
+
+def test_parse_git_output_merge_conflict_not_success():
+    output = "Auto-merging file.py\nCONFLICT (content): Merge conflict in file.py"
+    result = parse_git_output(output, "merge", exit_code=None)
+    assert result.success is False
+
+
 # --- Install classification ---
 
 def test_classify_npm_install():
@@ -590,6 +625,25 @@ def test_parse_install_npm_eresolve():
 
 def test_parse_install_unknown_exit_defaults_false():
     result = parse_install_output("some output", "pip", exit_code=None)
+    assert result.success is False
+
+
+def test_parse_install_infers_success_when_no_exit_code():
+    # Real Weave data usually has no exit code (status UNSET); a successful
+    # install must be inferred from its output, not defaulted to failure.
+    result = parse_install_output("added 142 packages in 3s", "npm", exit_code=None)
+    assert result.success is True
+
+
+def test_parse_install_infers_pip_success_when_no_exit_code():
+    result = parse_install_output("Successfully installed requests-2.31.0", "pip", exit_code=None)
+    assert result.success is True
+
+
+def test_parse_install_infers_failure_over_success_when_no_exit_code():
+    # Hard errors take precedence even if a success-ish word appears.
+    output = "installing...\nnpm ERR! code ERESOLVE\nnpm ERR! unable to resolve"
+    result = parse_install_output(output, "npm", exit_code=None)
     assert result.success is False
 
 
@@ -711,6 +765,49 @@ def test_score_turn_mixed_specific_and_generic():
     scorer_names = {s.scorer for s in scores}
     assert "outcome.test" in scorer_names
     assert "outcome.command" in scorer_names
+
+
+def test_extract_output_from_json_result():
+    """Real Weave data wraps output in {"stdout": ..., "stderr": ...}."""
+    from weave_agent_signals.scorers.outcome import _extract_output_text
+    span = _bash("git commit -m fix", result='{"stdout": "[main abc1234] 3 files changed"}')
+    text = _extract_output_text(span)
+    assert "[main abc1234]" in text
+
+
+def test_git_outcome_from_json_wrapped_result():
+    tc = _bash(
+        "git commit -m 'fix'",
+        result='{"stdout": "[main 12a51da] fix\\n 3 files changed, 42 insertions(+), 10 deletions(-)"}',
+        status="UNSET",
+    )
+    outcomes = extract_outcomes([tc])
+    assert len(outcomes) == 1
+    assert isinstance(outcomes[0], GitOutcome)
+    assert outcomes[0].success is True
+    assert outcomes[0].files_changed == 3
+
+
+def test_extract_output_empty_stdout_stderr_returns_empty():
+    """Both fields empty → empty string, not the raw JSON wrapper."""
+    from weave_agent_signals.scorers.outcome import _extract_output_text
+    span = _bash("git status", result='{"stdout": "", "stderr": ""}')
+    assert _extract_output_text(span) == ""
+
+
+def test_extract_exit_code_coerces_string():
+    """A JSON exit_code serialized as a string must compare as an int."""
+    from weave_agent_signals.scorers.outcome import _extract_exit_code
+    span = _bash("pytest", result='{"stdout": "ok", "exit_code": "0"}', status="UNSET")
+    assert _extract_exit_code(span) == 0
+
+
+def test_extract_exit_code_explicit_null_is_unknown_not_status():
+    """An explicit exit_code:null means unknown — must NOT fall through to
+    status_code=OK and report success (which would mask a failed command)."""
+    from weave_agent_signals.scorers.outcome import _extract_exit_code
+    span = _bash("git push", result='{"exit_code": null, "stderr": "failed"}', status="OK")
+    assert _extract_exit_code(span) is None
 
 
 def test_exploration_not_scored():

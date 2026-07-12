@@ -460,8 +460,38 @@ def parse_lint_output(output: str, tool: str, exit_code: int | None = None) -> L
     )
 
 
+_INSTALL_SUCCESS_PATTERNS = [
+    re.compile(r"Successfully installed"),
+    re.compile(r"added \d+ packages?"),
+    re.compile(r"changed \d+ packages?"),
+    re.compile(r"Installed \d+ packages?"),
+    re.compile(r"Resolved \d+ packages?"),
+    re.compile(r"audited \d+ packages?", re.IGNORECASE),
+    re.compile(r"up to date", re.IGNORECASE),
+    re.compile(r"Requirement already satisfied"),
+    re.compile(r"packages? in \d+"),
+]
+
+# Hard failures — distinct from the diagnostic error_patterns below, which also
+# match mere warnings that should not fail the install.
+_INSTALL_FAILURE_PATTERNS = [
+    re.compile(r"npm ERR!"),
+    re.compile(r"ERESOLVE"),
+    re.compile(r"ResolutionImpossible"),
+    re.compile(r"Could not (?:find|resolve|install)\b"),
+    re.compile(r"No matching (?:version|distribution)\b"),
+    re.compile(r"^ERROR:", re.MULTILINE),
+    re.compile(r"^error:", re.MULTILINE),
+]
+
+
 def parse_install_output(output: str, tool: str, exit_code: int | None = None) -> InstallOutcome:
-    success = exit_code == 0 if exit_code is not None else False
+    if exit_code is not None:
+        success = exit_code == 0
+    elif any(p.search(output) for p in _INSTALL_FAILURE_PATTERNS):
+        success = False
+    else:
+        success = any(p.search(output) for p in _INSTALL_SUCCESS_PATTERNS)
     error_message = None
 
     error_patterns = [
@@ -487,8 +517,41 @@ def parse_install_output(output: str, tool: str, exit_code: int | None = None) -
     )
 
 
+_GIT_SUCCESS_PATTERNS = [
+    re.compile(r"\[[\w/.-]+\s+[0-9a-f]+\]"),  # [main abc1234] commit message
+    re.compile(r"\d+\s+files?\s+changed"),       # N files changed
+    re.compile(r"Already up to date"),
+    re.compile(r"Fast-forward"),
+    re.compile(r"Everything up-to-date"),
+    re.compile(r"branch .+ set up to track"),
+    re.compile(r"Switched to"),
+    re.compile(r"To [\w.:/]+"),                   # To github.com:... (push)
+    re.compile(r"create mode|delete mode"),
+]
+
+# Failure markers take precedence over success patterns: a rejected push still
+# prints "To github.com:..." before the rejection, so pattern order alone is not
+# enough to tell success from failure.
+_GIT_FAILURE_PATTERNS = [
+    re.compile(r"! \[rejected\]"),
+    re.compile(r"\[remote rejected\]"),
+    re.compile(r"failed to push"),
+    re.compile(r"CONFLICT"),
+    re.compile(r"Merge conflict"),
+    re.compile(r"^error:", re.MULTILINE),
+    re.compile(r"^fatal:", re.MULTILINE),
+    re.compile(r"Automatic merge failed"),
+]
+
+
 def parse_git_output(output: str, operation: str, exit_code: int | None = None) -> GitOutcome:
-    success = exit_code == 0 if exit_code is not None else False
+    if exit_code is not None:
+        success = exit_code == 0
+    elif any(p.search(output) for p in _GIT_FAILURE_PATTERNS):
+        success = False
+    else:
+        success = any(p.search(output) for p in _GIT_SUCCESS_PATTERNS)
+
     files_changed = None
     insertions = None
     deletions = None
@@ -529,15 +592,46 @@ def _extract_command(span: ToolSpan) -> str | None:
 def _extract_exit_code(span: ToolSpan) -> int | None:
     try:
         result = json.loads(span.result)
-        if isinstance(result, dict) and "exit_code" in result:
-            return result["exit_code"]
     except (json.JSONDecodeError, TypeError):
-        pass
+        result = None
+    # An explicit exit_code field is authoritative — including an explicit null,
+    # which means "unknown" (let the parser infer from output) and must NOT fall
+    # through to the coarser span status_code (which reports the tool call, not
+    # the command). Only a missing field falls back to status_code.
+    if isinstance(result, dict) and "exit_code" in result:
+        ec = result["exit_code"]
+        if ec is None:
+            return None
+        try:
+            return int(ec)
+        except (TypeError, ValueError):
+            return None
     if span.status_code == "OK":
         return 0
     if span.status_code == "ERROR":
         return 1
     return None
+
+
+def _extract_output_text(span: ToolSpan) -> str:
+    """Extract human-readable output from a tool result.
+
+    The result may be plain text or JSON with stdout/stderr fields.
+    """
+    raw = span.result or ""
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return raw
+    if isinstance(parsed, dict):
+        # A tool result with stdout/stderr keys is unwrapped even when both are
+        # empty — returning the raw JSON blob would feed "{...}" to the parsers.
+        if "stdout" in parsed or "stderr" in parsed:
+            parts = [str(parsed.get(k) or "") for k in ("stdout", "stderr")]
+            return "\n".join(p for p in parts if p)
+        if "output" in parsed:
+            return str(parsed.get("output") or "")
+    return raw
 
 
 def extract_outcomes(tool_calls: list[ToolSpan]) -> list:
@@ -554,7 +648,7 @@ def extract_outcomes(tool_calls: list[ToolSpan]) -> list:
             continue
 
         exit_code = _extract_exit_code(tc)
-        output = tc.result or ""
+        output = _extract_output_text(tc)
 
         if kind == "test":
             framework = _detect_test_framework(cmd)
