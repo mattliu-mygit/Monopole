@@ -11,5 +11,8 @@ Detailed specs behind [`DESIGN.md`](DESIGN.md). Each is self-contained; `DESIGN.
 | 04 | [Efficiency scorers](04-efficiency-scorers.md): error loops, repeated reads, waste ratio | M1 | draft |
 | 05 | [Score write-back](05-score-writeback.md): feedback API, ref types, dedup, batch | M1 | draft |
 | 06 | [CLI](06-cli.md): score/backfill/inspect, scheduling | M1 | draft |
+| 07 | [REST API](07-api.md): FastAPI server wrapping CLI operations | M1 | draft |
+| 08 | [Frontend](08-frontend.md): React SPA for viewing and triggering operations | M1 | draft |
+| 09 | [Evaluation runs](09-evaluation-runs.md): unified run pipeline replacing separate score/judge/reflect pages | M2 | draft |
 
-Convention: specs describe *intended* behavior for their milestone. Items marked **OPEN** need verification against live APIs or real session data. M2+ designs live in `DESIGN.md` sections L2–L4 and get promoted to numbered specs when their milestone starts.
+Convention: keep specs lean. They give context for agents reading the repository — *what* and *why*, not implementation details (code examples, exact signatures, JSON shapes) readable from the source itself. `DESIGN.md` is the high-level map.

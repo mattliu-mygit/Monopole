@@ -79,26 +79,16 @@ Personal coding performance evaluation over Claude Code sessions at three granul
 Stretch goal: coach agent (see L4 section below).
 ```
 
+**Evaluation runs** (spec 09): the CLI and its REST/frontend wrappers (specs 06–08) originally exposed scoring, judging, and reflecting as independent operations, each free to read whatever data happened to match its own `since`/`limit` params — stale, cross-config-version data could silently leak into reflection proposals, with no way to inspect what fed a given suggestion. Runs make data selection a first-class, versioned step: a run pins a date range + session set once, and scoring → judging → reflecting all execute against that same pinned selection, with every step's result inspectable against the others. The frontend's separate Scoring/Judging/Reflect pages were replaced by a single Runs page built around this pipeline; see spec 09.
+
 ## 3. Score model
 
-Every scorer produces a `Score`:
-
-```python
-@dataclass
-class Score:
-    scorer: str           # e.g. "outcome.test", "implicit.correction_density"
-    value: float | bool   # 0–1 continuous or binary
-    tags: list[str]       # categorical labels, e.g. ["test_failure", "lint_clean"]
-    confidence: float     # 0–1, used for routing and cascade
-    metadata: dict        # scorer-specific detail (counts, commands, etc.)
-    granularity: str      # "turn" | "session"
-```
+Every scorer produces a `Score`: a scorer name, a 0–1 (or binary) value, categorical tags, a confidence (0–1, used for routing and cascade), scorer-specific metadata, and a granularity (`turn` | `session`).
 
 Scores are written as Weave feedback:
 - **Turn scores** → `agent_turn/{trace_id}` ref
 - **Session scores** → `agent_conversation/{conversation_id}` ref
-- **Feedback type**: custom (`weave_agent_signals.<scorer>`) for M1 deterministic; `wandb.agent_monitor` for Signals-native L2 judges (requires `runnable_ref`/`call_ref`/`trigger_ref`)
-- **Typed columns**: `scorer_ratings` for continuous, `scorer_tags` for categorical, with `_reasons` and `_confidences` maps
+- **Feedback type**: custom (`weave_agent_signals.<scorer>`) for every scorer here, since Weave's native `wandb.agent_monitor` type requires `runnable_ref`/`call_ref`/`trigger_ref` — refs to registered Signals infrastructure that only exist once a scorer is itself a registered Weave Signal, not a CLI/API-driven one. Custom-type feedback stores rating/confidence/tags/detail in a flat `payload`, not the typed `scorer_ratings`/`scorer_tags` columns (those are gated behind the same Signals infrastructure and only apply to `wandb.agent_monitor`).
 - **Dedup**: skip if feedback with same scorer+ref already exists (idempotent backfill)
 
 ## 4. Layers
