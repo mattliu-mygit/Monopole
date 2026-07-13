@@ -90,15 +90,6 @@ export function submitJob(
   })
 }
 
-export function applyReflection(
-  jobId: string,
-): Promise<{ applied: string[] }> {
-  return apiFetch('/api/jobs/reflect/apply', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ job_id: jobId }),
-  })
-}
 
 export function getModels(): Promise<
   Record<string, { default: string[]; poll: string[]; escalation: string }>
