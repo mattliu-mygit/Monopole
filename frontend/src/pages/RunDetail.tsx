@@ -292,7 +292,7 @@ function SelectionSection({
   expanded: boolean
   onToggle: () => void
   onSave: (selection: DataSelection) => void
-  onStart: () => void
+  onStart: (params: Record<string, unknown>) => void
   saving: boolean
   saveError: Error | null
   starting: boolean
@@ -302,6 +302,8 @@ function SelectionSection({
   const [since, setSince] = useState(toDateInputValue(sel?.since) || defaultSinceInput())
   const [until, setUntil] = useState(toDateInputValue(sel?.until))
   const [excluded, setExcluded] = useState<Set<string>>(new Set(sel?.excluded_session_ids ?? []))
+  const [dryRun, setDryRun] = useState(false)
+  const [force, setForce] = useState(false)
 
   const sessionsQuery = useQuery({
     queryKey: ['sessions-for-run', since],
@@ -397,7 +399,7 @@ function SelectionSection({
             )}
           </div>
 
-          <div className="mt-4 flex items-center gap-3">
+          <div className="mt-4 flex items-center gap-3 flex-wrap">
             <button
               type="button"
               className={secondaryBtn}
@@ -413,12 +415,20 @@ function SelectionSection({
             >
               {saving ? 'Saving...' : 'Save Selection'}
             </button>
+            <label className="flex items-center gap-1.5 text-sm text-gray-700">
+              <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
+              Dry run
+            </label>
+            <label className="flex items-center gap-1.5 text-sm text-gray-700">
+              <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
+              Force re-score
+            </label>
             <button
               type="button"
               className={primaryBtn}
               disabled={starting || !run.data_selection}
               title={!run.data_selection ? 'Save a selection first' : undefined}
-              onClick={onStart}
+              onClick={() => onStart({ dry_run: dryRun, force })}
             >
               {starting ? 'Starting...' : 'Start Scoring'}
             </button>
@@ -988,7 +998,7 @@ export default function RunDetail() {
           expanded={isExpanded('selection', selectionState)}
           onToggle={() => toggleExpanded('selection', selectionState)}
           onSave={(selection) => selectionMutation.mutate(selection)}
-          onStart={() => advanceMutation.mutate({})}
+          onStart={(params) => advanceMutation.mutate(params)}
           saving={selectionMutation.isPending}
           saveError={selectionMutation.error as Error | null}
           starting={advanceMutation.isPending}
