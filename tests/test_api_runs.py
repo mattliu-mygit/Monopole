@@ -326,6 +326,20 @@ def test_select_turns_for_run_excluded_sessions_applied_after_whitelist():
     assert {t.conversation_id for t in result} == {"c1", "c3"}
 
 
+def test_select_turns_for_run_exclusion_overrides_whitelist_on_conflict():
+    """session_ids and excluded_session_ids both set, with overlap: exclusion
+    wins. This is the brief's literal wording ("filter to session_ids if set,
+    AND exclude excluded_session_ids") applied unconditionally, not an
+    either/or choice between the two filters."""
+    turns = [_turn("t1", "c1", _dt(1)), _turn("t2", "c2", _dt(2)), _turn("t3", "c3", _dt(3))]
+    fake_client = MagicMock()
+    fake_client.query_turns_paginated.return_value = turns
+
+    selection = DataSelection(session_ids=["c1", "c2"], excluded_session_ids=["c2"])
+    result = api_mod._select_turns_for_run(fake_client, selection)
+    assert {t.conversation_id for t in result} == {"c1"}
+
+
 # ---------------------------------------------------------------------------
 # _run_scoring_step / _run_judging_step / _run_reflecting_step
 # ---------------------------------------------------------------------------
