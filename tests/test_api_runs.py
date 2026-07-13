@@ -607,3 +607,67 @@ def test_run_reflecting_step_happy_path_stores_proposal(tmp_path):
         assert result["rationale"] == "because reasons"
         assert result["score_delta"] == 0.2
         assert "new content" in result["diff"]
+
+
+# ---------------------------------------------------------------------------
+# Apply endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_apply_run_reflection_404_for_missing_run(client):
+    resp = client.post("/api/runs/run-nonexistent/apply")
+    assert resp.status_code == 404
+
+
+def test_apply_run_reflection_400_without_artifacts(client):
+    run = client.post("/api/runs").json()
+    resp = client.post(f"/api/runs/{run['run_id']}/apply")
+    assert resp.status_code == 400
+    assert "no reflection artifacts" in resp.json()["detail"].lower()
+
+
+def _advance_to_reflecting(store, run_id):
+    """Walk the run through the lifecycle to reach reflecting status."""
+    store.set_selection(run_id, since="2026-07-01")
+    store.update(run_id, status="scoring")
+    store.update(run_id, status="judging")
+    store.update(run_id, status="reflecting")
+
+
+def test_apply_run_reflection_writes_files(client, tmp_path):
+    run = client.post("/api/runs").json()
+    run_id = run["run_id"]
+    store = api_mod._run_store
+    _advance_to_reflecting(store, run_id)
+    store.update(
+        run_id,
+        reflecting_result={
+            "artifacts": [
+                {"name": "test.txt", "path": "test.txt", "content": "hello world"},
+            ],
+        },
+    )
+    with patch.object(api_mod, "PROJECT_ROOT", str(tmp_path)):
+        resp = client.post(f"/api/runs/{run_id}/apply")
+    assert resp.status_code == 200
+    assert resp.json()["applied"] == ["test.txt"]
+    assert (tmp_path / "test.txt").read_text() == "hello world"
+
+
+def test_apply_run_reflection_rejects_path_escape(client, tmp_path):
+    run = client.post("/api/runs").json()
+    run_id = run["run_id"]
+    store = api_mod._run_store
+    _advance_to_reflecting(store, run_id)
+    store.update(
+        run_id,
+        reflecting_result={
+            "artifacts": [
+                {"name": "evil", "path": "../../etc/evil", "content": "bad"},
+            ],
+        },
+    )
+    with patch.object(api_mod, "PROJECT_ROOT", str(tmp_path)):
+        resp = client.post(f"/api/runs/{run_id}/apply")
+    assert resp.status_code == 400
+    assert "escapes project root" in resp.json()["detail"]

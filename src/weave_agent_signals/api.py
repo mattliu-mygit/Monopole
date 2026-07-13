@@ -1263,6 +1263,28 @@ def _run_reflecting_step(run_id: str, req: AdvanceRequest) -> None:
     )
 
 
+@app.post("/api/runs/{run_id}/apply")
+def apply_run_reflection(run_id: str):
+    run = _run_store.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    result = run.reflecting_result
+    if not result or not result.get("artifacts"):
+        raise HTTPException(status_code=400, detail="Run has no reflection artifacts to apply")
+
+    for artifact in result["artifacts"]:
+        path = os.path.realpath(os.path.join(PROJECT_ROOT, artifact["path"]))
+        if not path.startswith(os.path.realpath(PROJECT_ROOT) + os.sep):
+            raise HTTPException(
+                status_code=400, detail=f"Artifact path escapes project root: {artifact['path']}"
+            )
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as f:
+            f.write(artifact["content"])
+
+    return {"applied": [a["path"] for a in result["artifacts"]]}
+
+
 # ---------------------------------------------------------------------------
 # Static file serving (production: serves frontend/dist/)
 # ---------------------------------------------------------------------------
