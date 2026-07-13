@@ -164,6 +164,9 @@ class RunStore:
             excluded_session_ids=excluded_session_ids or [],
         )
         with self._lock:
+            row = self._conn.execute("SELECT 1 FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"Run {run_id} not found")
             self._conn.execute(
                 "UPDATE runs SET data_selection = ? WHERE run_id = ?",
                 (json.dumps(asdict(selection)), run_id),
@@ -176,6 +179,9 @@ class RunStore:
             raise ValueError(f"Unknown field(s) for update: {', '.join(sorted(unknown))}")
 
         with self._lock:
+            row = self._conn.execute("SELECT 1 FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"Run {run_id} not found")
             if "status" in fields:
                 fields["status"] = self._check_transition_locked(run_id, fields["status"])
 

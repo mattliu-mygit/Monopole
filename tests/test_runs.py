@@ -136,3 +136,13 @@ def test_concurrent_create_is_thread_safe(store):
     assert errors == []
     assert len(store.list(limit=100)) == 20
     assert len({run.run_id for run in store.list(limit=100)}) == 20
+
+
+def test_update_nonexistent_raises(store):
+    with pytest.raises(ValueError, match="not found"):
+        store.update("run-nonexistent", error="boom")
+
+
+def test_set_selection_nonexistent_raises(store):
+    with pytest.raises(ValueError, match="not found"):
+        store.set_selection("run-nonexistent", since="2026-07-01")
