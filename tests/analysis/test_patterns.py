@@ -39,24 +39,14 @@ def _fb(
     }
 
 
-def _diagnostic_fb(scorer, rating, **kwargs):
-    feedback = _fb(scorer, rating, **kwargs)
-    feedback["payload"]["details"].update(
-        {
-            "evaluation_unit": "episode",
-            "selection_kind": "deterministic_trigger",
-            "selection_reasons": ["tool_error"],
-        }
-    )
-    return feedback
-
-
 def _session_judge_fb(
     scorer,
     rating,
     *,
     review_status,
     context_overrides=None,
+    behavioral_feedback=None,
+    evidence_ids=None,
     **kwargs,
 ):
     feedback = _fb(scorer, rating, **kwargs)
@@ -71,6 +61,8 @@ def _session_judge_fb(
             "review_policy_version": "2",
             "second_opinion_margin": 0.1,
             "requested_judge_models": ["judge-a", "judge-b", "judge-c"],
+            "behavioral_feedback": behavioral_feedback or [],
+            "evidence_trace_ids": evidence_ids or [],
         }
     )
     feedback["payload"]["details"].update(context_overrides or {})
@@ -125,17 +117,6 @@ def test_coaching_digest_counts_only_strict_numeric_ratings():
     summary_line = next(line for line in digest.splitlines() if "outcome.test" in line)
     assert "mean=0.75" in summary_line
     assert "n=1" in summary_line
-
-
-def test_population_summary_excludes_trigger_selected_episode_diagnostics():
-    result = aggregate_scores(
-        [
-            _fb("outcome.test", 1.0),
-            _diagnostic_fb("judge.verification", 0.25),
-        ]
-    )
-
-    assert set(result) == {"outcome.test"}
 
 
 def test_population_summary_excludes_noncomplete_session_judgments():
@@ -372,16 +353,6 @@ def test_detect_regressions_no_change():
     assert detect_regressions(feedback) == []
 
 
-def test_trigger_selected_episode_scores_are_not_used_as_population_trends():
-    feedback = [
-        _diagnostic_fb("judge.error_recovery", 1.0, scored_at="2026-07-01T00:00:00"),
-        _diagnostic_fb("judge.error_recovery", 1.0, scored_at="2026-07-02T00:00:00"),
-        _diagnostic_fb("judge.error_recovery", 0.0, scored_at="2026-07-08T00:00:00"),
-        _diagnostic_fb("judge.error_recovery", 0.0, scored_at="2026-07-09T00:00:00"),
-    ]
-    assert detect_regressions(feedback) == []
-
-
 def test_session_trends_do_not_compare_different_evaluation_contexts():
     older = [
         _session_judge_fb(
@@ -480,23 +451,6 @@ def test_detect_config_regressions_ignores_improvement():
     assert detect_config_regressions(old + new) == []
 
 
-def test_trigger_selected_episode_scores_are_not_used_for_ab_regression():
-    old = [
-        _diagnostic_fb(
-            "judge.verification", 1.0, config_version="v_old", scored_at="2026-07-01T00:00:00"
-        )
-        for _ in range(6)
-    ]
-    new = [
-        _diagnostic_fb(
-            "judge.verification", 0.0, config_version="v_new", scored_at="2026-07-09T00:00:00"
-        )
-        for _ in range(6)
-    ]
-    assert detect_config_regressions(old + new) == []
-    assert ab_leaderboard(old + new) == []
-
-
 def test_config_regression_does_not_compare_different_session_evaluation_contexts():
     old = [
         _session_judge_fb(
@@ -586,19 +540,129 @@ def test_coaching_digest_empty():
     assert "No scores" in digest
 
 
-def test_coaching_digest_labels_trigger_selected_scores_as_diagnostics():
+def test_coaching_digest_includes_bounded_low_score_behavioral_feedback():
     digest = coaching_digest(
         [
-            _fb("outcome.test", 1.0),
-            _diagnostic_fb("judge.verification", 0.25),
+            _session_judge_fb(
+                "judge.verification",
+                0.25,
+                review_status="complete",
+                conversation_id="session-1",
+                behavioral_feedback=[
+                    {
+                        "success": "It changed approach after the failure.",
+                        "problem": "Completion was claimed before the final check.",
+                        "desired_behavior": "Run relevant checks after the final change.",
+                    }
+                ],
+                evidence_ids=["trace-7"],
+            ),
         ]
     )
 
-    assert "Selected episode diagnostics" in digest
-    assert "not a population estimate" in digest
-    assert "judge.verification" in digest
-    diagnostic_line = next(line for line in digest.splitlines() if "judge.verification" in line)
-    assert "95% CI" not in diagnostic_line
+    assert "## Behavioral feedback" in digest
+    assert "Completion was claimed before the final check." in digest
+    assert "Run relevant checks after the final change." in digest
+    assert "It changed approach after the failure." in digest
+    assert "session-1" in digest
+    assert "trace-7" in digest
+
+
+def test_behavioral_feedback_is_complete_low_scoring_bounded_and_deterministic():
+    examples = []
+    for index, rating in enumerate((0.4, 0.1, 0.1, 0.2, 0.0), start=1):
+        examples.append(
+            _session_judge_fb(
+                "judge.verification",
+                rating,
+                review_status="complete",
+                conversation_id=f"session-{index}",
+                scored_at=f"2026-07-0{index}T00:00:00",
+                behavioral_feedback=[
+                    {
+                        "success": None,
+                        "problem": f"problem-{index} " + "x" * 1000,
+                        "desired_behavior": f"desired-{index} " + "y" * 1000,
+                    }
+                ],
+                evidence_ids=[f"trace-{index}", "z" * 1000],
+            )
+        )
+    examples.extend(
+        [
+            _session_judge_fb(
+                "judge.verification",
+                0.0,
+                review_status=status,
+                conversation_id=f"excluded-{status}",
+                behavioral_feedback=[
+                    {
+                        "success": None,
+                        "problem": f"excluded {status}",
+                        "desired_behavior": "excluded desired",
+                    }
+                ],
+            )
+            for status in ("unresolved", "degraded")
+        ]
+    )
+    examples.append(
+        _session_judge_fb(
+            "judge.verification",
+            0.6,
+            review_status="complete",
+            conversation_id="above-pinned-threshold",
+            behavioral_feedback=[
+                {
+                    "success": None,
+                    "problem": "high score problem",
+                    "desired_behavior": "high score desired",
+                }
+            ],
+        )
+    )
+    digest = coaching_digest(examples)
+
+    assert digest.index("session-5") < digest.index("session-2") < digest.index("session-3")
+    assert "session-4" not in digest
+    assert "session-1" not in digest
+    assert "excluded unresolved" not in digest
+    assert "excluded degraded" not in digest
+    assert "above-pinned-threshold" not in digest
+    assert "x" * 500 not in digest
+    assert "z" * 500 not in digest
+
+
+def test_behavioral_feedback_uses_only_merged_fields_not_raw_or_findings():
+    feedback = _session_judge_fb(
+        "judge.verification",
+        0.2,
+        review_status="complete",
+        behavioral_feedback=[
+            {
+                "success": "   ",
+                "problem": "  missed   verification  ",
+                "desired_behavior": " rerun   checks ",
+            },
+            {
+                "success": None,
+                "problem": "missed verification",
+                "desired_behavior": "rerun checks",
+            },
+        ],
+        evidence_ids=["trace-1"],
+    )
+    feedback["payload"]["reason"] = "RAW CONVERSATION SECRET"
+    feedback["payload"]["details"]["attempts"] = [{"steps": [{"findings": "RAW WINDOW FINDING"}]}]
+
+    digest = coaching_digest([feedback])
+
+    assert "Problem: missed verification" in digest
+    assert "Desired behavior: rerun checks" in digest
+    assert digest.count("Problem: missed verification") == 1
+    assert "Success:" not in digest
+    assert "RAW CONVERSATION SECRET" not in digest
+    assert "RAW WINDOW FINDING" not in digest
 
 
 def test_coaching_digest_does_not_merge_session_evaluation_contexts():

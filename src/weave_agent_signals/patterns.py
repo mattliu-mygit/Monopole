@@ -11,6 +11,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import unquote
 
 from weave_agent_signals.models import FEEDBACK_PREFIX
 
@@ -25,6 +26,11 @@ _SESSION_EVALUATION_CONTEXT_FIELDS = (
     "second_opinion_margin",
     "requested_judge_models",
 )
+_MAX_BEHAVIORAL_EXAMPLES = 3
+_MAX_EVIDENCE_IDS = 5
+_MAX_ID_CHARS = 160
+_MAX_SUCCESS_CHARS = 300
+_MAX_BEHAVIOR_CHARS = 500
 
 
 def _wilson_ci(k: float, n: int, z: float = _Z_95) -> tuple[float, float]:
@@ -97,15 +103,6 @@ def _payload(feedback: dict) -> dict:
 
 def _details(feedback: dict) -> dict:
     return _payload(feedback).get("details") or {}
-
-
-def _is_trigger_selected_diagnostic(feedback: dict) -> bool:
-    """Whether a score came from a non-random, high-information episode."""
-    details = _details(feedback)
-    return (
-        details.get("selection_kind") == "deterministic_trigger"
-        and details.get("evaluation_unit") == "episode"
-    )
 
 
 def _is_session_judgment(feedback: dict) -> bool:
@@ -219,9 +216,7 @@ def _is_audit_only_session_judgment(feedback: dict) -> bool:
 
 
 def _is_ordinary_analytics_score(feedback: dict) -> bool:
-    return not (
-        _is_trigger_selected_diagnostic(feedback) or _is_audit_only_session_judgment(feedback)
-    )
+    return not _is_audit_only_session_judgment(feedback)
 
 
 def _extract_rating(feedback: dict) -> float | None:
@@ -276,21 +271,14 @@ def _summarize(scorer: str, ratings: list[float], tags: list[list[str]]) -> Scor
     )
 
 
-def aggregate_scores(
-    feedback: list[dict],
-    *,
-    include_trigger_selected: bool = False,
-) -> dict[str, ScoreSummary]:
+def aggregate_scores(feedback: list[dict]) -> dict[str, ScoreSummary]:
     """Group representative feedback by scorer and compute summary stats.
 
-    Deterministically trigger-selected episode judgments are excluded by
-    default because their sampling process cannot support population summaries.
+    Incomplete session judgments are audit records, not comparable scores.
     """
     by_scorer: dict[str, tuple[list[float], list[list[str]]]] = defaultdict(lambda: ([], []))
 
     for fb in feedback:
-        if _is_trigger_selected_diagnostic(fb) and not include_trigger_selected:
-            continue
         if _is_audit_only_session_judgment(fb):
             continue
         scorer = _analytics_scorer(fb)
@@ -493,16 +481,110 @@ def detect_config_regressions(
     return regressions
 
 
+def _bounded_text(value: object, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.split())
+    if not normalized:
+        return None
+    return normalized[:limit]
+
+
+def _session_id(feedback: dict) -> str:
+    weave_ref = feedback.get("weave_ref")
+    if not isinstance(weave_ref, str):
+        return "unknown"
+    identifier = unquote(weave_ref.rstrip("/").rsplit("/", 1)[-1])
+    return _bounded_text(identifier.replace("`", "'"), _MAX_ID_CHARS) or "unknown"
+
+
+def _bounded_id(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return _bounded_text(value.replace("`", "'"), _MAX_ID_CHARS)
+
+
+def _behavior_values(details: dict, field: str, limit: int) -> list[str]:
+    values: list[str] = []
+    raw_feedback = details.get("behavioral_feedback")
+    if not isinstance(raw_feedback, list):
+        return values
+    for item in raw_feedback:
+        if not isinstance(item, dict):
+            continue
+        value = _bounded_text(item.get(field), limit)
+        if value is not None and value not in values:
+            values.append(value)
+    return values
+
+
+def _behavioral_examples(feedback: list[dict]) -> dict[str, list[dict[str, object]]]:
+    by_rubric: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for item in feedback:
+        if not _is_session_judgment(item) or _is_audit_only_session_judgment(item):
+            continue
+        scorer = _extract_scorer(item)
+        rating = _extract_rating(item)
+        details = _details(item)
+        threshold = details.get("rubric_threshold")
+        if (
+            scorer is None
+            or rating is None
+            or isinstance(threshold, bool)
+            or not isinstance(threshold, (int, float))
+            or not math.isfinite(float(threshold))
+            or rating >= float(threshold)
+        ):
+            continue
+        problems = _behavior_values(details, "problem", _MAX_BEHAVIOR_CHARS)
+        desired = _behavior_values(details, "desired_behavior", _MAX_BEHAVIOR_CHARS)
+        if not problems and not desired:
+            continue
+        successes = [
+            value
+            for value in _behavior_values(details, "success", _MAX_SUCCESS_CHARS)
+            if value not in problems and value not in desired
+        ]
+        evidence: list[str] = []
+        raw_evidence = details.get("evidence_trace_ids")
+        if isinstance(raw_evidence, list):
+            for raw_id in raw_evidence:
+                value = _bounded_id(raw_id)
+                if value is not None and value not in evidence:
+                    evidence.append(value)
+                if len(evidence) == _MAX_EVIDENCE_IDS:
+                    break
+        by_rubric[scorer].append(
+            {
+                "rating": rating,
+                "run_time": _extract_run_time(item),
+                "session_id": _session_id(item),
+                "evidence_ids": evidence,
+                "successes": successes,
+                "problems": problems,
+                "desired": desired,
+            }
+        )
+    for examples in by_rubric.values():
+        examples.sort(
+            key=lambda value: (
+                value["rating"],
+                value["run_time"],
+                value["session_id"],
+            )
+        )
+        del examples[_MAX_BEHAVIORAL_EXAMPLES:]
+    return dict(by_rubric)
+
+
 def coaching_digest(feedback: list[dict]) -> str:
     """Build a human-readable coaching digest from scored feedback."""
     if not feedback:
         return "No scores found."
 
     representative = [fb for fb in feedback if _is_ordinary_analytics_score(fb)]
-    diagnostics = [fb for fb in feedback if _is_trigger_selected_diagnostic(fb)]
     summaries = aggregate_scores(representative)
-    diagnostic_summaries = aggregate_scores(diagnostics, include_trigger_selected=True)
-    if not summaries and not diagnostic_summaries:
+    if not summaries:
         return "No scores found."
 
     lines = ["# Coaching Digest", "", "## Summary", ""]
@@ -526,23 +608,31 @@ def coaching_digest(feedback: list[dict]) -> str:
             tag_str = ", ".join(f"{t}={c}" for t, c in top_tags)
             lines.append(f"  Tags: {tag_str}")
 
-    if diagnostic_summaries:
-        lines.extend(
-            [
-                "",
-                "## Selected episode diagnostics",
-                "",
-                (
-                    "These are trigger-selected examples, not a population estimate "
-                    "or prevalence rate."
-                ),
-                "",
-            ]
-        )
-        for scorer, summary in sorted(diagnostic_summaries.items()):
-            lines.append(
-                f"- **{scorer}**: diagnostic mean={summary.mean:.2f} (selected n={summary.count})"
-            )
+    examples = _behavioral_examples(representative)
+    if examples:
+        lines.extend(["", "## Behavioral feedback", ""])
+        for scorer, rubric_examples in sorted(examples.items()):
+            lines.append(f"### {scorer}")
+            for example in rubric_examples:
+                evidence = example["evidence_ids"]
+                evidence_text = (
+                    ", ".join(f"`{value}`" for value in evidence)
+                    if isinstance(evidence, list) and evidence
+                    else "none"
+                )
+                lines.append(
+                    f"- Session `{example['session_id']}` · score {example['rating']:.2f} "
+                    f"· evidence {evidence_text}"
+                )
+                for label, field in (
+                    ("Success", "successes"),
+                    ("Problem", "problems"),
+                    ("Desired behavior", "desired"),
+                ):
+                    values = example[field]
+                    if isinstance(values, list):
+                        for value in values:
+                            lines.append(f"  - {label}: {value}")
 
     regressions = detect_regressions(representative)
     if regressions:

@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
+from weave_agent_signals.patterns import coaching_digest
 from weave_agent_signals.run_config import RunConfig, resolve_run_config
 from weave_agent_signals.runs.bundles import ScopeDescriptor, bundle_from_content_map
 from weave_agent_signals.runs.promotion import (
@@ -131,6 +132,36 @@ def _feedback() -> dict[str, Any]:
         "feedback_type": "weave_agent_signals.judge.verification",
         "payload": {"rating": 0.3, "details": {"rationale": "No tests."}},
     }
+
+
+def _session_feedback() -> dict[str, Any]:
+    feedback = _feedback()
+    feedback["weave_ref"] = "weave:///session-1"
+    feedback["payload"] = {
+        "rating": 0.3,
+        "reason": "Problem: No tests. | Next: Verify before completion.",
+        "granularity": "session",
+        "details": {
+            "evaluation_unit": "session",
+            "review_status": "complete",
+            "rubric_version": "4",
+            "rubric_threshold": 0.5,
+            "review_depth": "selective",
+            "review_policy_version": "2",
+            "second_opinion_margin": 0.1,
+            "requested_judge_models": ["judge-a", "judge-b"],
+            "turn_started_at": "2026-07-14T00:00:00+00:00",
+            "behavioral_feedback": [
+                {
+                    "success": None,
+                    "problem": "No tests were run after the final change.",
+                    "desired_behavior": "Run relevant tests before claiming completion.",
+                }
+            ],
+            "evidence_trace_ids": ["turn-1"],
+        },
+    }
+    return feedback
 
 
 class WeaveClient:
@@ -316,10 +347,10 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
     adapter = Adapter(baseline)
     weave = WeaveClient(
         [
-            _feedback(),
-            {**_feedback(), "id": "ignored", "weave_ref": "weave:///other"},
+            _session_feedback(),
+            {**_session_feedback(), "id": "ignored", "weave_ref": "weave:///other"},
             {
-                **_feedback(),
+                **_session_feedback(),
                 "id": "foreign",
                 "feedback_type": "other.product.score",
             },
@@ -360,7 +391,7 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
         adapter_factory=lambda: adapter,
         writer_client_factory=lambda descriptor: nullcontext(writer_client),
         evaluator_client_factory=lambda descriptor: nullcontext(evaluator_client),
-        coaching_digest=lambda feedback: f"digest for {len(feedback)} signal",
+        coaching_digest=coaching_digest,
         reflect=reflect,
         clock=lambda: datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc),
     )
@@ -381,7 +412,10 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
     assert calls[0]["writer_client"] is writer_client
     assert calls[0]["evaluator_client"] is evaluator_client
     assert calls[0]["candidate_budget"] == config.candidate_budget
-    assert calls[0]["feedback"] == [_feedback()]
+    assert calls[0]["feedback"] == [_session_feedback()]
+    assert "## Behavioral feedback" in calls[0]["coaching_text"]
+    assert "No tests were run after the final change." in calls[0]["coaching_text"]
+    assert "Run relevant tests before claiming completion." in calls[0]["coaching_text"]
     assert calls[0]["scope_policy"] == adapter.contract_manifest()
     assert calls[0]["build_candidate"] == adapter.bundle_from_content_map
     assert writer_client.cancel is not None
@@ -392,7 +426,7 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
     assert updated.reflection_input["feedback_count"] == 1
     assert updated.reflection_input["feedback"][0] == {
         "id": "feedback-1",
-        "weave_ref": "weave:///turn-1",
+        "weave_ref": "weave:///session-1",
         "feedback_type": "weave_agent_signals.judge.verification",
         "digest": updated.reflection_input["feedback"][0]["digest"],
     }
