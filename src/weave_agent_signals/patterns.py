@@ -107,13 +107,9 @@ def _details(feedback: dict) -> dict:
     return _payload(feedback).get("details") or {}
 
 
-def _is_session_judgment(feedback: dict) -> bool:
+def _is_judgment(feedback: dict) -> bool:
     scorer = _extract_scorer(feedback)
-    if scorer is None or not scorer.startswith("judge."):
-        return False
-    details_unit = _details(feedback).get("evaluation_unit")
-    granularity = _payload(feedback).get("granularity")
-    return details_unit == "session" or granularity == "session"
+    return scorer is not None and scorer.startswith("judge.")
 
 
 def _evaluation_context_value(details: dict, field: str) -> object:
@@ -125,8 +121,8 @@ def _evaluation_context_value(details: dict, field: str) -> object:
 
 
 def _has_complete_session_evaluation_context(feedback: dict) -> bool:
-    if not _is_session_judgment(feedback):
-        return True
+    if not _is_judgment(feedback):
+        return False
     details = _details(feedback)
     if any(field not in details for field in _SESSION_EVALUATION_CONTEXT_FIELDS):
         return False
@@ -177,10 +173,18 @@ def _has_complete_session_evaluation_context(feedback: dict) -> bool:
     )
 
 
+def _is_complete_session_judgment(feedback: dict) -> bool:
+    return (
+        _is_judgment(feedback)
+        and _details(feedback).get("review_status") == "complete"
+        and _has_complete_session_evaluation_context(feedback)
+    )
+
+
 def _evaluation_context_identity(feedback: dict) -> str | None:
     """Readable session-judge configuration identity used by every analysis."""
 
-    if not _is_session_judgment(feedback) or not _has_complete_session_evaluation_context(feedback):
+    if not _is_complete_session_judgment(feedback):
         return None
     details = _details(feedback)
     context = {
@@ -215,24 +219,14 @@ def _analytics_scorer(feedback: dict) -> str | None:
     scorer = _extract_scorer(feedback)
     if scorer is None:
         return None
-    if _is_session_judgment(feedback) and not _has_complete_session_evaluation_context(feedback):
+    if _is_judgment(feedback) and not _is_complete_session_judgment(feedback):
         return None
     context = _evaluation_context_identity(feedback)
     return scorer if context is None else f"{scorer} [{context}]"
 
 
-def _is_audit_only_session_judgment(feedback: dict) -> bool:
-    """Whether a session judgment lacks a complete, comparable evaluation."""
-
-    details = _details(feedback)
-    return _is_session_judgment(feedback) and (
-        details.get("review_status") != "complete"
-        or not _has_complete_session_evaluation_context(feedback)
-    )
-
-
 def _is_ordinary_analytics_score(feedback: dict) -> bool:
-    return not _is_audit_only_session_judgment(feedback)
+    return not _is_judgment(feedback) or _is_complete_session_judgment(feedback)
 
 
 def _extract_rating(feedback: dict) -> float | None:
@@ -290,12 +284,12 @@ def _summarize(scorer: str, ratings: list[float], tags: list[list[str]]) -> Scor
 def aggregate_scores(feedback: list[dict]) -> dict[str, ScoreSummary]:
     """Group representative feedback by scorer and compute summary stats.
 
-    Incomplete session judgments are audit records, not comparable scores.
+    Only complete current session judgments are comparable judge scores.
     """
     by_scorer: dict[str, tuple[list[float], list[list[str]]]] = defaultdict(lambda: ([], []))
 
     for fb in feedback:
-        if _is_audit_only_session_judgment(fb):
+        if not _is_ordinary_analytics_score(fb):
             continue
         scorer = _analytics_scorer(fb)
         rating = _extract_rating(fb)
@@ -578,7 +572,7 @@ def _execution_sort_key(feedback: dict) -> tuple[int, datetime, str, str]:
 def _behavioral_examples(feedback: list[dict]) -> dict[str, list[dict[str, object]]]:
     by_rubric: dict[str, list[dict[str, object]]] = defaultdict(list)
     for item in feedback:
-        if not _is_session_judgment(item) or _is_audit_only_session_judgment(item):
+        if not _is_complete_session_judgment(item):
             continue
         scorer = _extract_scorer(item)
         rating = _extract_rating(item)

@@ -69,6 +69,18 @@ def _session_judge_fb(
     return feedback
 
 
+def _legacy_episode_judge_fb(scorer, rating, **kwargs):
+    feedback = _fb(scorer, rating, **kwargs)
+    feedback["payload"]["details"].update(
+        {
+            "evaluation_unit": "episode",
+            "selection_kind": "deterministic_trigger",
+            "selection_reasons": ["tool_error"],
+        }
+    )
+    return feedback
+
+
 # --- aggregate_scores tests ---
 
 
@@ -232,6 +244,67 @@ def test_session_judge_without_review_status_is_audit_only():
     incomplete["payload"]["granularity"] = "session"
 
     assert aggregate_scores([incomplete]) == {}
+
+
+@pytest.mark.parametrize(
+    ("granularity", "evaluation_unit"),
+    [
+        ("turn", "episode"),
+        ("turn", "turn"),
+        ("turn", None),
+        (None, None),
+    ],
+)
+def test_non_session_judge_records_are_audit_only(granularity, evaluation_unit):
+    feedback = _fb("judge.verification", 1.0)
+    if granularity is None:
+        del feedback["payload"]["granularity"]
+    else:
+        feedback["payload"]["granularity"] = granularity
+    if evaluation_unit is not None:
+        feedback["payload"]["details"]["evaluation_unit"] = evaluation_unit
+
+    assert aggregate_scores([feedback]) == {}
+
+
+def test_legacy_episode_judgments_do_not_enter_any_ordinary_analytics():
+    current = _session_judge_fb(
+        "judge.verification",
+        0.8,
+        review_status="complete",
+        config_version="current",
+        tags=["current-only"],
+        scored_at="2026-07-01T00:00:00",
+    )
+    legacy = [
+        _legacy_episode_judge_fb(
+            "judge.verification",
+            rating,
+            config_version=config,
+            tags=["legacy-only"],
+            conversation_id=f"legacy-{index}",
+            scored_at=scored_at,
+        )
+        for index, (rating, config, scored_at) in enumerate(
+            (
+                (1.0, "legacy-old", "2026-07-02T00:00:00"),
+                (1.0, "legacy-old", "2026-07-03T00:00:00"),
+                (0.0, "legacy-new", "2026-07-10T00:00:00"),
+                (0.0, "legacy-new", "2026-07-11T00:00:00"),
+            )
+        )
+    ]
+    feedback = [current, *legacy]
+
+    summaries = aggregate_scores(feedback)
+    assert len(summaries) == 1
+    assert next(iter(summaries.values())).mean == 0.8
+    assert [result.config_version for result in ab_leaderboard(feedback)] == ["current"]
+    assert detect_regressions(feedback) == []
+    assert detect_config_regressions(feedback, min_samples=2) == []
+    digest = coaching_digest(feedback)
+    assert "current-only" in digest
+    assert "legacy-only" not in digest
 
 
 @pytest.mark.parametrize(
@@ -586,8 +659,10 @@ def test_coaching_digest_structure():
     feedback = [
         _fb("outcome.test", 1.0, tags=["pass"]),
         _fb("outcome.test", 0.0, tags=["fail", "timeout"]),
-        _fb("judge.verification", 0.8, tags=["verified"]),
-        _fb("judge.verification", 0.2, tags=["no_verification"]),
+        _session_judge_fb("judge.verification", 0.8, review_status="complete", tags=["verified"]),
+        _session_judge_fb(
+            "judge.verification", 0.2, review_status="complete", tags=["no_verification"]
+        ),
     ]
     digest = coaching_digest(feedback)
     assert "Summary" in digest
@@ -847,13 +922,14 @@ def test_pass_rate_continuous_scorer_with_extreme_values():
 
 def test_aggregate_marks_continuous_scorer_non_binary():
     feedback = [
-        _fb("judge.verification", 0.0),
-        _fb("judge.verification", 0.5),
-        _fb("judge.verification", 1.0),
+        _session_judge_fb("judge.verification", 0.0, review_status="complete"),
+        _session_judge_fb("judge.verification", 0.5, review_status="complete"),
+        _session_judge_fb("judge.verification", 1.0, review_status="complete"),
     ]
     result = aggregate_scores(feedback)
-    assert result["judge.verification"].binary is False
-    assert result["judge.verification"].pass_rate is None
+    summary = next(iter(result.values()))
+    assert summary.binary is False
+    assert summary.pass_rate is None
 
 
 def test_aggregate_marks_binary_scorer():
