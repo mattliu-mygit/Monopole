@@ -11,6 +11,7 @@ from weave_agent_signals.patterns import (
     coaching_digest,
     detect_config_regressions,
     detect_regressions,
+    is_evaluation_feedback_eligible,
 )
 
 
@@ -129,6 +130,37 @@ def test_coaching_digest_counts_only_strict_numeric_ratings():
     summary_line = next(line for line in digest.splitlines() if "outcome.test" in line)
     assert "mean=0.75" in summary_line
     assert "n=1" in summary_line
+
+
+def test_evaluation_feedback_eligibility_is_shared_by_deterministic_and_judge_scores():
+    deterministic = _fb("outcome.test", 0.75)
+    current_judge = _session_judge_fb(
+        "judge.session_outcome",
+        0.25,
+        review_status="complete",
+    )
+    invalid_deterministic = _fb("outcome.test", float("nan"))
+    legacy_judge = _legacy_episode_judge_fb("judge.session_outcome", 1.0)
+
+    assert is_evaluation_feedback_eligible(deterministic)
+    assert is_evaluation_feedback_eligible(current_judge)
+    assert not is_evaluation_feedback_eligible(invalid_deterministic)
+    assert not is_evaluation_feedback_eligible(legacy_judge)
+
+
+@pytest.mark.parametrize(
+    "feedback",
+    [
+        {"feedback_type": 7, "payload": {"rating": 1.0}},
+        {"feedback_type": "weave_agent_signals.outcome.test", "payload": "invalid"},
+        {
+            "feedback_type": "weave_agent_signals.judge.session_outcome",
+            "payload": {"rating": 1.0, "details": "invalid"},
+        },
+    ],
+)
+def test_evaluation_feedback_eligibility_rejects_malformed_records(feedback):
+    assert not is_evaluation_feedback_eligible(feedback)
 
 
 def test_population_summary_excludes_noncomplete_session_judgments():

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import threading
 from contextlib import nullcontext
 from datetime import datetime, timezone
@@ -129,7 +130,7 @@ def _feedback() -> dict[str, Any]:
     return {
         "id": "feedback-1",
         "weave_ref": "weave:///turn-1",
-        "feedback_type": "weave_agent_signals.judge.verification",
+        "feedback_type": "weave_agent_signals.outcome.test",
         "payload": {"rating": 0.3, "details": {"rationale": "No tests."}},
     }
 
@@ -137,6 +138,7 @@ def _feedback() -> dict[str, Any]:
 def _session_feedback() -> dict[str, Any]:
     feedback = _feedback()
     feedback["weave_ref"] = "weave:///session-1"
+    feedback["feedback_type"] = "weave_agent_signals.judge.verification"
     feedback["payload"] = {
         "rating": 0.3,
         "reason": "Problem: No tests. | Next: Verify before completion.",
@@ -161,6 +163,31 @@ def _session_feedback() -> dict[str, Any]:
             "evidence_trace_ids": ["turn-1"],
         },
     }
+    return feedback
+
+
+def _deterministic_feedback() -> dict[str, Any]:
+    feedback = _feedback()
+    feedback["id"] = "deterministic-1"
+    feedback["feedback_type"] = "weave_agent_signals.outcome.test"
+    return feedback
+
+
+def _audit_only_judge_feedback(kind: str) -> dict[str, Any]:
+    feedback = copy.deepcopy(_session_feedback())
+    feedback["id"] = f"audit-{kind}"
+    details = feedback["payload"]["details"]
+    if kind == "legacy_episode":
+        feedback["payload"]["granularity"] = "turn"
+        details["evaluation_unit"] = "episode"
+    elif kind == "missing_context":
+        del details["rubric_version"]
+    elif kind == "conflicting_unit":
+        details["evaluation_unit"] = "episode"
+    elif kind == "noncomplete":
+        details["review_status"] = "degraded"
+    else:
+        raise ValueError(f"unknown audit-only feedback kind: {kind}")
     return feedback
 
 
@@ -841,6 +868,124 @@ def test_stage_records_no_feedback_without_opening_model_clients(store):
         "reason": "No evaluation feedback was found for the pinned cohort.",
     }
     assert updated.reflection_review is None
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["legacy_episode", "missing_context", "conflicting_unit", "noncomplete"],
+)
+def test_stage_treats_audit_only_judge_feedback_as_no_reflection_evidence(store, kind):
+    run, config = _reflecting_run(store)
+    baseline = bundle_from_content_map({"CLAUDE.md": "old"}, scope=SCOPE)
+    opened: list[str] = []
+    digest_calls: list[list[dict[str, Any]]] = []
+    dependencies = ReflectionDependencies(
+        store=store,
+        client_factory=lambda: WeaveClient([_audit_only_judge_feedback(kind)]),
+        adapter_factory=lambda: Adapter(baseline),
+        writer_client_factory=lambda _descriptor: opened.append("writer"),
+        evaluator_client_factory=lambda _descriptor: opened.append("evaluator"),
+        coaching_digest=lambda feedback: digest_calls.append(feedback) or "digest",
+        reflect=lambda **_kwargs: pytest.fail("reflection should not start"),
+    )
+
+    run_reflection_stage(run, config, threading.Event(), dependencies=dependencies)
+
+    updated = store.get(run.run_id)
+    assert opened == []
+    assert digest_calls == []
+    assert updated.reflection_input["feedback_count"] == 0
+    assert updated.reflection_input["feedback"] == []
+    assert updated.reflecting_result == {
+        "candidates": [],
+        "reason": "No evaluation feedback was found for the pinned cohort.",
+    }
+
+
+def test_stage_pins_and_passes_only_eligible_reflection_feedback(store):
+    run, config = _reflecting_run(store)
+    baseline = bundle_from_content_map({"CLAUDE.md": "old"}, scope=SCOPE)
+    eligible = [_deterministic_feedback(), _session_feedback()]
+    records = [
+        _audit_only_judge_feedback("legacy_episode"),
+        eligible[1],
+        _audit_only_judge_feedback("missing_context"),
+        eligible[0],
+        _audit_only_judge_feedback("noncomplete"),
+    ]
+    reflected: list[list[dict[str, Any]]] = []
+    digested: list[list[dict[str, Any]]] = []
+
+    def reflect(**kwargs):
+        reflected.append(kwargs["feedback"])
+        return _result(kwargs["baseline"], config)
+
+    dependencies = ReflectionDependencies(
+        store=store,
+        client_factory=lambda: WeaveClient(records),
+        adapter_factory=lambda: Adapter(baseline),
+        writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
+        evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
+        coaching_digest=lambda feedback: digested.append(feedback) or "digest",
+        reflect=reflect,
+    )
+
+    run_reflection_stage(run, config, threading.Event(), dependencies=dependencies)
+
+    selected = [eligible[1], eligible[0]]
+    assert reflected == [selected]
+    assert digested == [selected]
+    pinned = store.get(run.run_id).reflection_input
+    assert pinned["feedback_count"] == 2
+    assert [(item["id"], item["feedback_type"]) for item in pinned["feedback"]] == [
+        ("feedback-1", "weave_agent_signals.judge.verification"),
+        ("deterministic-1", "weave_agent_signals.outcome.test"),
+    ]
+
+
+def test_resume_ignores_changes_to_unusable_judge_audit_rows(store):
+    run, config = _reflecting_run(store)
+    baseline = bundle_from_content_map({"CLAUDE.md": "old"}, scope=SCOPE)
+    records = [_deterministic_feedback(), _audit_only_judge_feedback("legacy_episode")]
+
+    first = ReflectionDependencies(
+        store=store,
+        client_factory=lambda: WeaveClient(records),
+        adapter_factory=lambda: Adapter(baseline),
+        writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
+        evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
+        coaching_digest=lambda _feedback: "digest",
+        reflect=lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("interrupted")),
+    )
+    with pytest.raises(ReflectionStageError, match="failed unexpectedly"):
+        run_reflection_stage(run, config, threading.Event(), dependencies=first)
+
+    changed_audit = _audit_only_judge_feedback("conflicting_unit")
+    changed_audit["id"] = "new-audit-row"
+    reflected: list[list[dict[str, Any]]] = []
+    second = ReflectionDependencies(
+        store=store,
+        client_factory=lambda: WeaveClient([changed_audit, _deterministic_feedback()]),
+        adapter_factory=lambda: Adapter(baseline),
+        writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
+        evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
+        coaching_digest=lambda _feedback: "digest",
+        reflect=lambda **kwargs: (
+            reflected.append(kwargs["feedback"]) or _result(kwargs["baseline"], config)
+        ),
+    )
+
+    run_reflection_stage(
+        store.get(run.run_id),
+        config,
+        threading.Event(),
+        dependencies=second,
+    )
+
+    assert reflected == [[_deterministic_feedback()]]
+    assert [item["id"] for item in store.get(run.run_id).reflection_input["feedback"]] == [
+        "deterministic-1"
+    ]
 
 
 def test_stage_finalizes_persisted_evidence_without_rerunning_inference(store):

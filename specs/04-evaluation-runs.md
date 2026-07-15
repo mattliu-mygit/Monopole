@@ -29,8 +29,10 @@ Later stages re-query only the pinned traces and restore their stored order.
 Missing or identity-changed evidence fails the run. Newly recorded turns cannot
 enter an active cohort. Before inference, judging separately pins complete raw
 session coverage, each reviewer's bounded window plan, and the exact
-digest/window/merge protocol. Reflection pins the exact feedback records it
-consumes and an exact baseline bundle before generating proposals.
+digest/window/merge protocol. Reflection applies the same evidence-eligibility
+boundary as analysis, then pins the exact eligible feedback records it consumes
+and an exact baseline bundle before generating proposals. Audit-only judgment
+rows are neither pinned as reflection evidence nor sent to proposal models.
 
 Each stage has an explicit success marker distinct from the presence of a
 partial result. Manual continuation requires that marker. Automatic handoff
@@ -124,11 +126,13 @@ rationale; generation attempts retain writer identity, outcome, usage, changed
 paths, and safe rejection evidence.
 
 The recommended revision is recomputed from persisted scores. Ties keep the
-earliest revision, so B wins a tie. When feedback or managed targets are empty,
-reflection performs no model calls and records why it did not run. When every
-proposal is invalid, the product still shows evaluated B and the failed-attempt
-audit. When B beats every valid C, alternatives remain read-only evidence and no
-promotion review is created.
+earliest revision, so B wins a tie. When eligible feedback or managed targets
+are empty, reflection performs no model calls and records why it did not run.
+Valid deterministic scores are eligible; model judgments are eligible only as
+complete current session judgments with fully identified comparison context.
+When every proposal is invalid, the product still shows evaluated B and the
+failed-attempt audit. When B beats every valid C, alternatives remain read-only
+evidence and no promotion review is created.
 
 ## B, C, and D
 

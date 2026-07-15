@@ -12,7 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from itertools import islice
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import unquote
 
 from weave_agent_signals.models import FEEDBACK_PREFIX
@@ -93,18 +93,20 @@ class ABResult:
 
 def _extract_scorer(feedback: dict) -> str | None:
     ftype = feedback.get("feedback_type", "")
-    if ftype.startswith(FEEDBACK_PREFIX):
+    if isinstance(ftype, str) and ftype.startswith(FEEDBACK_PREFIX):
         return ftype[len(FEEDBACK_PREFIX) :]
     return None
 
 
 def _payload(feedback: dict) -> dict:
     # `.get("payload", {})` is not enough: the API can return an explicit null.
-    return feedback.get("payload") or {}
+    payload = feedback.get("payload")
+    return payload if isinstance(payload, dict) else {}
 
 
 def _details(feedback: dict) -> dict:
-    return _payload(feedback).get("details") or {}
+    details = _payload(feedback).get("details")
+    return details if isinstance(details, dict) else {}
 
 
 def _is_judgment(feedback: dict) -> bool:
@@ -216,17 +218,13 @@ def _evaluation_context_identity(feedback: dict) -> str | None:
 
 
 def _analytics_scorer(feedback: dict) -> str | None:
+    if not is_evaluation_feedback_eligible(feedback):
+        return None
     scorer = _extract_scorer(feedback)
     if scorer is None:
         return None
-    if _is_judgment(feedback) and not _is_complete_session_judgment(feedback):
-        return None
     context = _evaluation_context_identity(feedback)
     return scorer if context is None else f"{scorer} [{context}]"
-
-
-def _is_ordinary_analytics_score(feedback: dict) -> bool:
-    return not _is_judgment(feedback) or _is_complete_session_judgment(feedback)
 
 
 def _extract_rating(feedback: dict) -> float | None:
@@ -237,6 +235,21 @@ def _extract_rating(feedback: dict) -> float | None:
     if not math.isfinite(value) or not 0.0 <= value <= 1.0:
         return None
     return value
+
+
+def is_evaluation_feedback_eligible(feedback: Mapping[str, Any]) -> bool:
+    """Whether a score is valid evidence for analytics and reflection.
+
+    Deterministic scores need a project feedback type and a valid rating.
+    Model judgments additionally need the exact complete, comparable current
+    session contract; legacy and audit-only judgment rows remain inspectable
+    but cannot influence analysis or instruction reflection.
+    """
+
+    scorer = _extract_scorer(feedback)
+    if scorer is None or _extract_rating(feedback) is None:
+        return False
+    return not scorer.startswith("judge.") or _is_complete_session_judgment(feedback)
 
 
 def _extract_config(feedback: dict) -> str:
@@ -289,7 +302,7 @@ def aggregate_scores(feedback: list[dict]) -> dict[str, ScoreSummary]:
     by_scorer: dict[str, tuple[list[float], list[list[str]]]] = defaultdict(lambda: ([], []))
 
     for fb in feedback:
-        if not _is_ordinary_analytics_score(fb):
+        if not is_evaluation_feedback_eligible(fb):
             continue
         scorer = _analytics_scorer(fb)
         rating = _extract_rating(fb)
@@ -311,7 +324,7 @@ def ab_leaderboard(feedback: list[dict]) -> list[ABResult]:
     by_config: dict[str, list[dict]] = defaultdict(list)
 
     for fb in feedback:
-        if not _is_ordinary_analytics_score(fb):
+        if not is_evaluation_feedback_eligible(fb):
             continue
         config = _extract_config(fb)
         by_config[config].append(fb)
@@ -381,7 +394,7 @@ def detect_regressions(
     by_scorer: dict[str, list[tuple[datetime, float]]] = defaultdict(list)
 
     for fb in feedback:
-        if not _is_ordinary_analytics_score(fb):
+        if not is_evaluation_feedback_eligible(fb):
             continue
         scorer = _analytics_scorer(fb)
         rating = _extract_rating(fb)
@@ -444,7 +457,7 @@ def detect_config_regressions(
     by_scorer: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
     latest: dict[str, dict[str, datetime]] = defaultdict(dict)
     for fb in feedback:
-        if not _is_ordinary_analytics_score(fb):
+        if not is_evaluation_feedback_eligible(fb):
             continue
         scorer = _analytics_scorer(fb)
         cfg = _extract_config(fb)
@@ -572,7 +585,7 @@ def _execution_sort_key(feedback: dict) -> tuple[int, datetime, str, str]:
 def _behavioral_examples(feedback: list[dict]) -> dict[str, list[dict[str, object]]]:
     by_rubric: dict[str, list[dict[str, object]]] = defaultdict(list)
     for item in feedback:
-        if not _is_complete_session_judgment(item):
+        if not is_evaluation_feedback_eligible(item) or not _is_judgment(item):
             continue
         scorer = _extract_scorer(item)
         rating = _extract_rating(item)
@@ -634,7 +647,7 @@ def coaching_digest(feedback: list[dict]) -> str:
     if not feedback:
         return "No scores found."
 
-    representative = [fb for fb in feedback if _is_ordinary_analytics_score(fb)]
+    representative = [fb for fb in feedback if is_evaluation_feedback_eligible(fb)]
     summaries = aggregate_scores(representative)
     if not summaries:
         return "No scores found."
