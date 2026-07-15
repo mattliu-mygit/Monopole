@@ -216,6 +216,7 @@ def _reviewer(
         cohort_id="cohort",
         rubrics=build_rubric_catalog().rubrics,
         review_depth="primary",
+        second_opinion_margin=None,
         judge_models=(active_judge,),
         context_policy=active_policy,
     )
@@ -573,6 +574,7 @@ def test_reviewer_rejects_tampered_plan_before_inference() -> None:
         cohort_id="cohort",
         rubrics=build_rubric_catalog().rubrics,
         review_depth="primary",
+        second_opinion_margin=None,
         judge_models=(_judge(),),
         context_policy=_policy(),
     )
@@ -603,6 +605,7 @@ def test_reviewer_authenticates_exact_ordinal_against_the_full_plan() -> None:
         cohort_id="cohort",
         rubrics=build_rubric_catalog().rubrics,
         review_depth="primary",
+        second_opinion_margin=None,
         judge_models=(_judge(),),
         context_policy=_policy(),
     )

@@ -57,12 +57,21 @@ def _judge(model_id: str, position: int, limit: int = 128_000) -> PositionedJudg
     )
 
 
-def _plan(*, sessions=(_session(),), judges=(_judge("judge-1", 1),)):
+def _plan(
+    *,
+    sessions=(_session(),),
+    judges=(_judge("judge-1", 1),),
+    second_opinion_margin=None,
+):
+    depth = "primary" if len(judges) == 1 else "selective"
     return build_judging_plan(
         sessions,
         cohort_id="cohort-1",
         rubrics=build_rubric_catalog().rubrics,
-        review_depth="primary" if len(judges) == 1 else "selective",
+        review_depth=depth,
+        second_opinion_margin=(
+            0.1 if depth == "selective" and second_opinion_margin is None else second_opinion_margin
+        ),
         judge_models=judges,
         context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
     )
@@ -79,6 +88,7 @@ def test_plan_is_session_only_and_covers_every_turn() -> None:
     assert [reviewer["judge"]["position"] for reviewer in session["reviewers"]] == [1, 2]
     assert all(reviewer["window_plan"]["windows"] for reviewer in session["reviewers"])
     assert plan["input_policy"] == DEFAULT_JUDGING_CONTEXT_POLICY.model_dump(mode="json")
+    assert plan["second_opinion_margin"] == 0.1
 
 
 def test_plan_id_authenticates_reviewer_ordinal_and_model_limit() -> None:
@@ -86,6 +96,11 @@ def test_plan_id_authenticates_reviewer_ordinal_and_model_limit() -> None:
     reordered = _plan(judges=(_judge("judge-2", 1), _judge("judge-1", 2)))
     limited = _plan(judges=(_judge("judge-1", 1, 120_000), _judge("judge-2", 2)))
     assert len({base["plan_id"], reordered["plan_id"], limited["plan_id"]}) == 3
+    changed_margin = _plan(
+        judges=(_judge("judge-1", 1), _judge("judge-2", 2)),
+        second_opinion_margin=0.2,
+    )
+    assert changed_margin["plan_id"] != base["plan_id"]
 
 
 def test_plan_rejects_non_session_or_stale_rubrics() -> None:
@@ -97,6 +112,7 @@ def test_plan_rejects_non_session_or_stale_rubrics() -> None:
             cohort_id="cohort-1",
             rubrics=(stale,),
             review_depth="primary",
+            second_opinion_margin=None,
             judge_models=(_judge("judge-1", 1),),
             context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
         )

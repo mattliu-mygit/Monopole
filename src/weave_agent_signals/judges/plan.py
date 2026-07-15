@@ -53,6 +53,7 @@ def build_judging_plan(
     cohort_id: str,
     rubrics: Sequence[RubricDescriptor],
     review_depth: ReviewDepth,
+    second_opinion_margin: float | None,
     judge_models: Sequence[PositionedJudge],
     context_policy: JudgingContextPolicy,
 ) -> dict[str, Any]:
@@ -66,7 +67,7 @@ def build_judging_plan(
     ReviewPolicy(
         depth=review_depth,
         judges=judges,
-        second_opinion_margin=0.1 if review_depth == "selective" else None,
+        second_opinion_margin=second_opinion_margin,
     )
     requested = tuple(rubrics)
     if not requested:
@@ -138,6 +139,7 @@ def build_judging_plan(
         "schema_version": PLAN_SCHEMA_VERSION,
         "cohort_id": cohort_id,
         "review_depth": review_depth,
+        "second_opinion_margin": second_opinion_margin,
         "requested_rubrics": [value.model_dump(mode="json") for value in requested],
         "input_policy": context_policy.model_dump(mode="json"),
         "protocol": sliding_protocol_contract_manifest(),

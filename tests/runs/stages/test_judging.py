@@ -416,6 +416,7 @@ def test_resumed_artifact_progress_is_reconstructed_and_not_double_counted(store
         cohort_id="cohort",
         rubrics=effective.rubrics,
         review_depth=effective.review_depth,
+        second_opinion_margin=effective.second_opinion_margin,
         judge_models=effective.models.judges,
         context_policy=effective.judging_context,
     )

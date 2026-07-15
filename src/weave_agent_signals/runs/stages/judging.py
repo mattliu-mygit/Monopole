@@ -489,6 +489,7 @@ def run_judging_stage(
         cohort_id=current.turn_cohort["cohort_id"],
         rubrics=config.rubrics,
         review_depth=config.review_depth,
+        second_opinion_margin=config.second_opinion_margin,
         judge_models=config.models.judges,
         context_policy=config.judging_context,
     )

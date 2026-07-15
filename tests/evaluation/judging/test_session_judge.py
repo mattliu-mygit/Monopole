@@ -91,6 +91,7 @@ def _run(monkeypatch, outcomes, *, judges=None, rubrics=None, depth="primary", m
         cohort_id="cohort",
         rubrics=rubrics,
         review_depth=depth,
+        second_opinion_margin=margin,
         judge_models=judges,
         context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
     )
@@ -177,6 +178,7 @@ def test_runner_rejects_detached_rubric_selection(monkeypatch) -> None:
         cohort_id="cohort",
         rubrics=rubrics,
         review_depth="primary",
+        second_opinion_margin=None,
         judge_models=judges,
         context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
     )
@@ -204,6 +206,7 @@ def test_runner_rejects_alternate_later_judge_before_reviewer_instantiation(monk
         cohort_id="cohort",
         rubrics=rubrics,
         review_depth="selective",
+        second_opinion_margin=0.1,
         judge_models=pinned,
         context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
     )
@@ -218,6 +221,37 @@ def test_runner_rejects_alternate_later_judge_before_reviewer_instantiation(monk
             judges=alternate,
             review_depth="selective",
             second_opinion_margin=0.1,
+            judging_plan=plan,
+            context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
+            artifact_loader=lambda _: None,
+            artifact_recorder=lambda *_: None,
+        )
+    assert created == []
+
+
+def test_runner_rejects_unpinned_second_opinion_margin_before_inference(monkeypatch) -> None:
+    session = _session()
+    judges = (_judge("judge-1", 1), _judge("judge-2", 2))
+    rubrics = build_rubric_catalog().rubrics[:1]
+    plan = build_judging_plan(
+        [session],
+        cohort_id="cohort",
+        rubrics=rubrics,
+        review_depth="selective",
+        second_opinion_margin=0.1,
+        judge_models=judges,
+        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
+    )
+    created = []
+    monkeypatch.setattr(runner, "SlidingReviewer", lambda **kwargs: created.append(kwargs))
+    with pytest.raises(ValueError, match="second opinion margin"):
+        judge_session(
+            session,
+            object(),
+            rubrics=rubrics,
+            judges=judges,
+            review_depth="selective",
+            second_opinion_margin=0.2,
             judging_plan=plan,
             context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
             artifact_loader=lambda _: None,

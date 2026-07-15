@@ -456,6 +456,7 @@ def cmd_judge(args: argparse.Namespace) -> int:
             cohort_id=cohort_id,
             rubrics=selected_rubrics,
             review_depth=policy.depth,
+            second_opinion_margin=policy.second_opinion_margin,
             judge_models=policy.judges,
             context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
         )

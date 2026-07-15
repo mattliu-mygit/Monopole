@@ -6,7 +6,8 @@ Implemented the session-only sliding-window judging replacement.
 
 - Judging plans now use schema version 2 and pin the complete session cohort, six v4
   session rubric descriptors, context policy, sliding protocol, per-positioned-reviewer
-  model identity, exact window manifests, raw coverage, and reviewer work bounds.
+  model identity, exact window manifests, raw coverage, reviewer work bounds, and the
+  selective-review second-opinion margin.
 - `SlidingReviewer` authenticates the full content-derived judging plan before resolving
   the exact reviewer ordinal and rebuilding its pinned window manifest from current
   evidence.
@@ -37,8 +38,8 @@ Implemented the session-only sliding-window judging replacement.
 
 ## Verification
 
-- Review-fix focused judging/CLI/stage/store suite: 93 passed.
-- Final backend suite: 797 passed, one existing Starlette deprecation warning.
+- Review-fix focused judging/CLI/stage/store suite: 94 passed.
+- Final backend suite: 798 passed, one existing Starlette deprecation warning.
 - `ruff check src/ tests/`: passed.
 - `ruff format --check src/ tests/`: passed.
 - `git diff --check`: passed.
@@ -49,7 +50,8 @@ Implemented the session-only sliding-window judging replacement.
   output layout exclusively to sliding phase schemas and prompts.
 - Made direct CLI writes fail closed across the complete selected session/rubric scope.
 - Added pre-inference runner authentication for plan digest/schema, review depth,
-  ordered positioned judges, context policy, exact rubric rows, and attempt bounds.
+  second-opinion margin, ordered positioned judges, context policy, exact rubric rows,
+  and attempt bounds.
 - Persist phase progress after each immutable artifact commit, reconstruct unique phase
   counts on resume, and use artifact identity rather than attempt audits as the
   authoritative completed-work source.
@@ -61,3 +63,6 @@ Implemented the session-only sliding-window judging replacement.
 - Restored session-only safety coverage for cancellation, durable cancellation/write
   races, fail-closed buffering, force replacement ordering, write and cleanup failure
   behavior, bounded audits/failures, and monotonic resumed artifact progress.
+- Made the selective-review margin part of the schema-v2 plan digest, validated it
+  strictly on persistence, and required the runner to authenticate it before creating
+  any reviewer. Primary and full-panel plans canonically pin a null margin.

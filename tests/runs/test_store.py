@@ -212,6 +212,7 @@ def _judging_plan() -> dict:
         cohort_id="cohort-test",
         rubrics=effective.rubrics,
         review_depth=effective.review_depth,
+        second_opinion_margin=effective.second_opinion_margin,
         judge_models=effective.models.judges,
         context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
     )
@@ -931,6 +932,11 @@ def test_judging_plan_and_reflection_input_are_validated_and_write_once(store):
     inconsistent = _rehash_plan(inconsistent)
     with pytest.raises(ValueError, match="totals"):
         store.pin_judging_plan(started.run_id, inconsistent)
+
+    inconsistent = json.loads(json.dumps(plan))
+    inconsistent["second_opinion_margin"] = None
+    with pytest.raises(ValueError, match="second_opinion_margin"):
+        store.pin_judging_plan(started.run_id, _rehash_plan(inconsistent))
 
     inconsistent = json.loads(json.dumps(plan))
     inconsistent["sessions"][0]["rubrics"][0]["label"] = "detached"

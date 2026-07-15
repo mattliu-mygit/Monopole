@@ -324,6 +324,7 @@ def _encode_judging_plan(judging_plan: Mapping[str, Any]) -> str:
         "schema_version",
         "cohort_id",
         "review_depth",
+        "second_opinion_margin",
         "requested_rubrics",
         "input_policy",
         "protocol",
@@ -413,6 +414,16 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
     depth = value.get("review_depth")
     if depth not in {"primary", "selective", "full_panel"}:
         raise ValueError("judging plan review_depth is invalid")
+    margin = value.get("second_opinion_margin")
+    if depth == "selective":
+        if (
+            isinstance(margin, bool)
+            or not isinstance(margin, (int, float))
+            or not 0 <= margin <= 0.5
+        ):
+            raise ValueError("judging plan second_opinion_margin is invalid")
+    elif margin is not None:
+        raise ValueError("judging plan second_opinion_margin must be null")
     input_policy = _exact_keys(
         value.get("input_policy"),
         {

@@ -39,6 +39,7 @@ def _authenticate_plan_policy(
     rubrics: Sequence[RubricDescriptor],
     judges: Sequence[PositionedJudge],
     review_depth: ReviewDepth,
+    second_opinion_margin: float | None,
     context_policy: JudgingContextPolicy,
 ) -> Mapping[str, object]:
     body = {key: value for key, value in plan.items() if key != "plan_id"}
@@ -46,6 +47,8 @@ def _authenticate_plan_policy(
         raise ValueError("judging plan schema or content digest is invalid")
     if plan.get("review_depth") != review_depth:
         raise ValueError("review depth does not match the pinned judging plan")
+    if plan.get("second_opinion_margin") != second_opinion_margin:
+        raise ValueError("second opinion margin does not match the pinned judging plan")
     if plan.get("input_policy") != context_policy.model_dump(mode="json"):
         raise ValueError("context policy does not match the pinned judging plan")
     sessions = plan.get("sessions")
@@ -214,6 +217,7 @@ def judge_session(
         rubrics=rubrics,
         judges=judges,
         review_depth=review_depth,
+        second_opinion_margin=second_opinion_margin,
         context_policy=context_policy,
     )
 
