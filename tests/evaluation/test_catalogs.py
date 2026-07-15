@@ -13,7 +13,7 @@ from weave_agent_signals.catalogs import (
     build_model_catalog,
     build_rubric_catalog,
 )
-from weave_agent_signals.judges.rubrics import RUBRICS, SESSION_RUBRICS
+from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.run_config import ModelDescriptor
 
 
@@ -135,10 +135,7 @@ def test_rubric_catalog_is_stable_and_descriptors_have_exact_shape():
     _assert_sha256_version(first.catalog_version)
     data = first.model_dump(mode="json")
     assert set(data) == {"catalog_version", "rubrics"}
-    assert {descriptor["id"] for descriptor in data["rubrics"]} == {
-        *RUBRICS,
-        *SESSION_RUBRICS,
-    }
+    assert {descriptor["id"] for descriptor in data["rubrics"]} == set(SESSION_RUBRICS)
     for descriptor in data["rubrics"]:
         assert set(descriptor) == {
             "id",
@@ -148,13 +145,13 @@ def test_rubric_catalog_is_stable_and_descriptors_have_exact_shape():
             "content_digest",
             "pass_threshold",
         }
-        assert descriptor["evaluation_unit"] in {"episode", "session"}
-        assert descriptor["version"] == "v3"
+        assert descriptor["evaluation_unit"] == "session"
+        assert descriptor["version"] == "v4"
         _assert_sha256_version(descriptor["content_digest"])
 
 
 def test_rubric_and_catalog_digests_track_content_and_version_deterministically():
-    rubrics = [*RUBRICS.values(), *SESSION_RUBRICS.values()]
+    rubrics = list(SESSION_RUBRICS.values())
     base = build_rubric_catalog(rubrics=rubrics)
     repeated = build_rubric_catalog(rubrics=rubrics)
     threshold_changed = build_rubric_catalog(

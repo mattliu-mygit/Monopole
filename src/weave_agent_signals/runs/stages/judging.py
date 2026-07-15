@@ -11,15 +11,11 @@ from typing import Any
 
 from weave_agent_signals.client import WeaveClient
 from weave_agent_signals.judges.inference import ChatClient
-from weave_agent_signals.judges.plan import (
-    build_judging_plan,
-    session_evidence_trace_ids,
-)
+from weave_agent_signals.judges.plan import build_judging_plan
 from weave_agent_signals.judges.runner import (
     JudgeExecutionError,
     JudgeFailure,
     judge_session,
-    judge_turn,
 )
 from weave_agent_signals.models import Score, SessionView, TurnSpan
 from weave_agent_signals.run_config import EffectiveRunConfig, RubricDescriptor
@@ -38,7 +34,7 @@ _MAX_USAGE_FIELDS = 20
 _MAX_EVIDENCE_IDS = 100
 _SUMMARY_TEXT_LIMIT = 500
 
-_Target = TurnSpan | SessionView
+_Target = SessionView
 
 
 @dataclass(frozen=True)
@@ -57,8 +53,14 @@ class _State:
     planned_rubrics: int
     minimum_reviewer_attempts: int
     maximum_reviewer_attempts: int
+    maximum_digest_steps: int
+    maximum_window_steps: int
+    maximum_merge_steps: int
     rubrics_completed: int = 0
     reviewer_attempts_completed: int = 0
+    digest_steps_completed: int = 0
+    window_steps_completed: int = 0
+    merge_steps_completed: int = 0
     scores_written: int = 0
     write_failure_count: int = 0
     scores: list[Score] = field(default_factory=list)
@@ -68,6 +70,7 @@ class _State:
     attempt_summary_count: int = 0
     failure_details: list[dict[str, Any]] = field(default_factory=list)
     failure_detail_count: int = 0
+    completed_artifact_ids: set[str] = field(default_factory=set)
 
     def payload(
         self,
@@ -84,6 +87,12 @@ class _State:
             "minimum_reviewer_attempts": self.minimum_reviewer_attempts,
             "maximum_reviewer_attempts": self.maximum_reviewer_attempts,
             "reviewer_attempts_completed": self.reviewer_attempts_completed,
+            "digest_steps_completed": self.digest_steps_completed,
+            "maximum_digest_steps": self.maximum_digest_steps,
+            "window_steps_completed": self.window_steps_completed,
+            "maximum_window_steps": self.maximum_window_steps,
+            "merge_steps_completed": self.merge_steps_completed,
+            "maximum_merge_steps": self.maximum_merge_steps,
             "scores_written": self.scores_written,
             "failure_count": len(self.failures),
             "write_failure_count": self.write_failure_count,
@@ -200,6 +209,12 @@ def _attempts(values: object) -> list[dict[str, Any]]:
             raw_output_digest=_text(value.get("raw_output_digest")),
             error_type=_text(value.get("error_type")),
             message=_text(value.get("message")),
+            behavioral_feedback=(
+                dict(value["behavioral_feedback"])
+                if isinstance(value.get("behavioral_feedback"), Mapping)
+                else None
+            ),
+            steps=[dict(step) for step in value.get("steps", []) if isinstance(step, Mapping)],
         )
         records.append(record)
     return records
@@ -226,6 +241,49 @@ def _record_score(
     conversation_id: str,
 ) -> None:
     attempts = _attempts(score.metadata.get("attempts"))
+    _record_steps(state, score.metadata.get("attempts", []))
+    _record_score_summary(
+        state,
+        score,
+        attempts,
+        unit=unit,
+        trace_id=trace_id,
+        conversation_id=conversation_id,
+    )
+
+
+def _record_steps(state: _State, attempts: object) -> None:
+    if not isinstance(attempts, (list, tuple)):
+        return
+    for attempt in attempts:
+        if isinstance(attempt, Mapping):
+            for step in attempt.get("steps", []):
+                if isinstance(step, Mapping):
+                    phase = step.get("phase")
+                    artifact_id = step.get("artifact_id")
+                    if (
+                        not isinstance(artifact_id, str)
+                        or artifact_id in state.completed_artifact_ids
+                    ):
+                        continue
+                    state.completed_artifact_ids.add(artifact_id)
+                    if phase == "digest":
+                        state.digest_steps_completed += 1
+                    elif phase == "window":
+                        state.window_steps_completed += 1
+                    elif phase == "merge":
+                        state.merge_steps_completed += 1
+
+
+def _record_score_summary(
+    state: _State,
+    score: Score,
+    attempts: list[dict[str, Any]],
+    *,
+    unit: str,
+    trace_id: str | None,
+    conversation_id: str,
+) -> None:
     state.scores.append(score)
     state.reviewer_attempts_completed += len(attempts)
     state.attempt_summary_count += 1
@@ -253,6 +311,7 @@ def _record_failure(
     conversation_id: str,
 ) -> None:
     attempts = _attempts(failure.attempts)
+    _record_steps(state, failure.attempts)
     state.failures.append(failure)
     state.reviewer_attempts_completed += len(attempts)
     state.attempt_summary_count += 1
@@ -385,7 +444,7 @@ def _applicable(
     descriptors: Mapping[str, RubricDescriptor],
 ) -> list[RubricDescriptor]:
     try:
-        return [descriptors[row["id"]] for row in rows if row["applicability"] == "applicable"]
+        return [descriptors[row["id"]] for row in rows]
     except KeyError as error:
         raise RuntimeError("Pinned judging plan does not match configured rubrics") from error
 
@@ -400,14 +459,8 @@ def _stamp(
     *,
     plan_id: str,
     evidence_trace_ids: Sequence[str],
-    episode: Mapping[str, Any] | None = None,
 ) -> None:
-    if isinstance(target, TurnSpan):
-        run_time = target.started_at
-        unit = "episode"
-    else:
-        run_time = target.turns[0].started_at if target.turns else None
-        unit = "session"
+    run_time = target.turns[0].started_at if target.turns else None
     score.stamp(
         config_version=target.config_version,
         git_branch=target.git_branch,
@@ -415,15 +468,9 @@ def _stamp(
     )
     score.metadata.update(
         plan_id=plan_id,
-        evaluation_unit=unit,
+        evaluation_unit="session",
         evidence_trace_ids=list(evidence_trace_ids),
-        applicability="applicable",
     )
-    if episode is not None:
-        score.metadata.update(
-            selection_kind=episode["selection_kind"],
-            selection_reasons=list(episode["selection_reasons"]),
-        )
 
 
 def run_judging_stage(
@@ -447,7 +494,8 @@ def run_judging_stage(
         cohort_id=current.turn_cohort["cohort_id"],
         rubrics=config.rubrics,
         review_depth=config.review_depth,
-        judge_count=len(config.models.judges),
+        judge_models=config.models.judges,
+        context_policy=config.judging_context,
     )
     try:
         current = dependencies.store.pin_judging_plan(run_id, built_plan)
@@ -460,14 +508,14 @@ def run_judging_stage(
     _active(dependencies.store, run_id, cancel)
 
     descriptors = {descriptor.id: descriptor for descriptor in config.rubrics}
-    turns_by_id = {turn.trace_id: turn for turn in turns}
-    if len(turns_by_id) != len(turns):
-        raise RuntimeError("Hydrated judging cohort contains duplicate trace IDs")
     totals = plan["totals"]
     state = _State(
         planned_rubrics=totals["planned_rubrics"],
         minimum_reviewer_attempts=totals["minimum_reviewer_attempts"],
         maximum_reviewer_attempts=totals["maximum_reviewer_attempts"],
+        maximum_digest_steps=totals["maximum_digest_calls"],
+        maximum_window_steps=totals["maximum_window_calls"],
+        maximum_merge_steps=totals["maximum_merge_calls"],
     )
 
     def progress(message: str, *, coverage_complete: bool = False) -> None:
@@ -497,58 +545,19 @@ def run_judging_stage(
             session = sessions.get(conversation_id)
             if session is None:
                 raise RuntimeError(f"Pinned judging session is missing: {conversation_id}")
-            for episode in session_plan["selected_episodes"]:
-                expected = _applicable(episode["rubrics"], descriptors)
-                if not expected:
-                    continue
-                _active(dependencies.store, run_id, cancel)
-                trace_id = episode["trace_id"]
-                evidence_ids = episode["evidence_trace_ids"]
-                turn = turns_by_id.get(trace_id)
-                if turn is None or turn.conversation_id != conversation_id:
-                    raise RuntimeError(f"Pinned judging turn is missing: {trace_id}")
-                try:
-                    evidence = [turns_by_id[item] for item in evidence_ids]
-                except KeyError as error:
-                    raise RuntimeError(
-                        f"Pinned judging evidence is missing: {error.args[0]}"
-                    ) from error
-                if any(item.conversation_id != conversation_id for item in evidence):
-                    raise RuntimeError(f"Pinned judging evidence changed for {trace_id}")
-                accepted = _run_unit(
-                    state,
-                    expected,
-                    lambda: judge_turn(
-                        turn,
-                        chat_client,
-                        rubrics=expected,
-                        judges=config.models.judges,
-                        review_depth=config.review_depth,
-                        second_opinion_margin=config.second_opinion_margin,
-                        prior_turns=[item for item in evidence if item.trace_id != trace_id],
-                    ),
-                    unit="episode",
-                    trace_id=trace_id,
-                    conversation_id=conversation_id,
-                )
-                for score in accepted:
-                    _stamp(
-                        score,
-                        turn,
-                        plan_id=plan["plan_id"],
-                        evidence_trace_ids=evidence_ids,
-                        episode=episode,
-                    )
-                    state.pending.append((score, turn))
-                progress(
-                    f"Judged {state.rubrics_completed} of {state.planned_rubrics} planned rubrics"
-                )
-
-            expected = _applicable(session_plan["session_rubrics"], descriptors)
+            expected = _applicable(session_plan["rubrics"], descriptors)
             if not expected:
                 continue
             _active(dependencies.store, run_id, cancel)
-            evidence_ids = session_evidence_trace_ids(session_plan)
+            evidence_ids = list(session_plan["raw_coverage_trace_ids"])
+
+            def load_artifact(artifact_id: str) -> Mapping[str, Any] | None:
+                active = _active(dependencies.store, run_id, cancel)
+                return (active.judging_artifacts or {}).get(artifact_id)
+
+            def record_artifact(artifact_id: str, artifact: Mapping[str, Any]) -> object:
+                return dependencies.store.record_judging_artifact(run_id, artifact_id, artifact)
+
             accepted = _run_unit(
                 state,
                 expected,
@@ -559,7 +568,11 @@ def run_judging_stage(
                     judges=config.models.judges,
                     review_depth=config.review_depth,
                     second_opinion_margin=config.second_opinion_margin,
-                    evidence_trace_ids=evidence_ids,
+                    judging_plan=plan,
+                    context_policy=config.judging_context,
+                    artifact_loader=load_artifact,
+                    artifact_recorder=record_artifact,
+                    cancel_requested=lambda: cancel.is_set(),
                 ),
                 unit="session",
                 trace_id=None,

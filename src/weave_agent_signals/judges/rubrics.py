@@ -1,4 +1,4 @@
-"""Turn-level process quality rubrics for LLM judges.
+"""Session-level process and outcome quality rubrics for LLM judges.
 
 Each rubric defines a scoring dimension with a system prompt, scoring criteria,
 and output schema. Judges select one of five anchors or abstain with evidence.
@@ -70,7 +70,7 @@ def _rubric_prompt(
     question: str,
     allowed_evidence: str,
     excluded_concerns: str,
-    applicability: str,
+    insufficient_evidence_guidance: str,
     criteria: dict[str, str],
 ) -> str:
     """Render the one shared visible rubric structure."""
@@ -88,8 +88,8 @@ def _rubric_prompt(
 ## Excluded concerns
 {excluded_concerns}
 
-## Applicability and insufficient evidence
-{applicability}
+## Insufficient evidence
+{insufficient_evidence_guidance}
 
 ## Score anchors
 {anchors}
@@ -107,7 +107,7 @@ def _rubric(
     question: str,
     allowed_evidence: str,
     excluded_concerns: str,
-    applicability: str,
+    insufficient_evidence_guidance: str,
     criteria: dict[str, str],
     tags_on_low: list[str],
     tags_on_high: list[str],
@@ -116,13 +116,13 @@ def _rubric(
         name=name,
         scorer_name=scorer_name,
         description=description,
-        version="v3",
+        version="v4",
         evaluation_unit=evaluation_unit,
         system_prompt=_rubric_prompt(
             question=question,
             allowed_evidence=allowed_evidence,
             excluded_concerns=excluded_concerns,
-            applicability=applicability,
+            insufficient_evidence_guidance=insufficient_evidence_guidance,
             criteria=criteria,
         ),
         criteria=criteria,
@@ -136,7 +136,7 @@ VERIFICATION_DISCIPLINE = _rubric(
     name="Verification Discipline",
     scorer_name="judge.verification",
     description="Do cited checks support the agent's completion or correctness claims?",
-    evaluation_unit="episode",
+    evaluation_unit="session",
     question=(
         "When the agent claimed work was complete or correct, did cited checks and their "
         "results support every material claim?"
@@ -151,8 +151,8 @@ VERIFICATION_DISCIPLINE = _rubric(
         "tool choice owns that question. Do not credit checks that are merely asserted or not "
         "supported by an allowed evidence citation."
     ),
-    applicability=(
-        "Apply this rubric when the supplied episode contains a material completion or "
+    insufficient_evidence_guidance=(
+        "Apply this rubric when the supplied session contains a material completion or "
         "correctness claim and enough coverage to determine whether supporting checks occurred. "
         "The absence of a supporting check in otherwise complete evidence is scorable at `0.25`; "
         "it is not a reason to abstain. Return `insufficient_evidence` when no such claim is "
@@ -188,7 +188,7 @@ ERROR_RECOVERY = _rubric(
     name="Error Recovery",
     scorer_name="judge.error_recovery",
     description="Did the agent adapt effectively after observed error evidence?",
-    evaluation_unit="episode",
+    evaluation_unit="session",
     question=(
         "After the agent observed an error, did it diagnose the evidence and adapt its next "
         "actions effectively?"
@@ -203,7 +203,7 @@ ERROR_RECOVERY = _rubric(
         "initial tool choice except where the agent's response to observed failure shows whether "
         "it adapted."
     ),
-    applicability=(
+    insufficient_evidence_guidance=(
         "Apply this rubric only when the supplied evidence shows an observed error and a later "
         "opportunity to respond. Return `insufficient_evidence` when no error was observed, no "
         "post-error response is supplied, or the evidence cannot show how the agent recovered "
@@ -239,7 +239,7 @@ TOOL_CHOICE = _rubric(
     name="Tool Choice Quality",
     scorer_name="judge.tool_choice",
     description="Did the selected capabilities fit the task and were they used efficiently?",
-    evaluation_unit="episode",
+    evaluation_unit="session",
     question=(
         "Were the agent's selected tools or methods well matched to the task and used in an "
         "efficient, safe sequence?"
@@ -254,7 +254,7 @@ TOOL_CHOICE = _rubric(
         "completion claims. Do not impose vendor-specific tool names or prefer a named product "
         "when a capability-equivalent choice fits the task."
     ),
-    applicability=(
+    insufficient_evidence_guidance=(
         "Apply this rubric only when the task goal and at least one tool or method choice are "
         "visible enough to assess fit. Return `insufficient_evidence` when the task, the selected "
         "capability, or the relevant result is absent or opaque."
@@ -289,7 +289,7 @@ STATE_CONSISTENCY = _rubric(
     name="State Consistency",
     scorer_name="judge.state_consistency",
     description="Did current behavior remain consistent with supplied established state?",
-    evaluation_unit="episode",
+    evaluation_unit="session",
     question=(
         "Did the agent's current actions and claims remain consistent with established prior "
         "state, decisions, and constraints in the supplied evidence?"
@@ -304,9 +304,9 @@ STATE_CONSISTENCY = _rubric(
         "evidence. Do not count a user-authorized change or a correction based on newly supplied "
         "information as a contradiction."
     ),
-    applicability=(
+    insufficient_evidence_guidance=(
         "Apply this rubric only when the supplied evidence establishes prior state or a prior "
-        "constraint that the current episode could preserve or contradict. The judge must return "
+        "constraint that later behavior could preserve or contradict. The judge must return "
         "`insufficient_evidence` when there is no established prior state, or when that state is "
         "too ambiguous to support a contradiction finding."
     ),
@@ -355,7 +355,7 @@ SESSION_OUTCOME = _rubric(
         "owns that question. Do not penalize process style or tool efficiency unless it changes "
         "the correctness or completeness of the achieved result."
     ),
-    applicability=(
+    insufficient_evidence_guidance=(
         "Apply this rubric when the supplied session identifies a user request and provides enough "
         "final-state evidence to assess fulfillment. Return `insufficient_evidence` when the "
         "material request or observable outcome is missing or too truncated to judge."
@@ -405,7 +405,7 @@ SESSION_AUTONOMY = _rubric(
         "requirements that only the user could supply. Do not score final correctness or request "
         "fulfillment; session outcome owns that question."
     ),
-    applicability=(
+    insufficient_evidence_guidance=(
         "Apply this rubric when the supplied interaction history is complete enough to distinguish "
         "avoidable dependence from required user input. Return `insufficient_evidence` when key "
         "requests, corrections, or authority constraints are missing or truncated."
@@ -436,20 +436,14 @@ SESSION_AUTONOMY = _rubric(
     tags_on_high=["high_autonomy"],
 )
 
-RUBRICS: dict[str, Rubric] = {
-    r.scorer_name: r
-    for r in [
+SESSION_RUBRICS: dict[str, Rubric] = {
+    rubric.scorer_name: rubric
+    for rubric in (
         VERIFICATION_DISCIPLINE,
         ERROR_RECOVERY,
         TOOL_CHOICE,
         STATE_CONSISTENCY,
-    ]
+        SESSION_OUTCOME,
+        SESSION_AUTONOMY,
+    )
 }
-
-CROSS_TURN_RUBRICS: set[str] = {
-    VERIFICATION_DISCIPLINE.scorer_name,
-    STATE_CONSISTENCY.scorer_name,
-    ERROR_RECOVERY.scorer_name,
-}
-
-SESSION_RUBRICS: dict[str, Rubric] = {r.scorer_name: r for r in [SESSION_OUTCOME, SESSION_AUTONOMY]}

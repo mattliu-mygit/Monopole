@@ -4,11 +4,18 @@ import hashlib
 import json
 import sqlite3
 import threading
+from datetime import datetime, timezone
 
 import pytest
 
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
-from weave_agent_signals.run_config import RunConfig, resolve_run_config
+from weave_agent_signals.judges.plan import build_judging_plan
+from weave_agent_signals.models import SessionView, TurnSpan
+from weave_agent_signals.run_config import (
+    DEFAULT_JUDGING_CONTEXT_POLICY,
+    RunConfig,
+    resolve_run_config,
+)
 from weave_agent_signals.runs.store import (
     RUN_DB_SCHEMA_VERSION,
     DataSelection,
@@ -174,57 +181,40 @@ def _artifact(
 
 
 def _judging_plan() -> dict:
-    session_rubric = next(
-        rubric for rubric in build_rubric_catalog().rubrics if rubric.evaluation_unit == "session"
+    _, effective = _run_inputs()
+    now = datetime(2026, 7, 1, 12, tzinfo=timezone.utc)
+    turn = TurnSpan(
+        "turn-1",
+        "conv-1",
+        now,
+        now,
+        None,
+        1,
+        1,
+        0,
+        "OK",
+        None,
+        None,
+        None,
+        None,
+        0,
+        0,
+        0,
+        [],
+        [],
+        [],
+        [],
+        "request",
+        "response",
     )
-    body = {
-        "schema_version": "1",
-        "cohort_id": "cohort-test",
-        "requested_rubrics": [session_rubric.model_dump(mode="json")],
-        "review_depth": "selective",
-        "judge_count": 2,
-        "max_episodes_per_session": 8,
-        "sessions": [
-            {
-                "conversation_id": "conv-1",
-                "turn_count": 1,
-                "omitted_turn_count": 0,
-                "session_rubrics": [
-                    {
-                        **session_rubric.model_dump(mode="json"),
-                        "applicability": "applicable",
-                        "minimum_reviewer_attempts": 1,
-                        "maximum_reviewer_attempts": 2,
-                    }
-                ],
-                "selected_episodes": [
-                    {
-                        "trace_id": "turn-1",
-                        "turn_index": 0,
-                        "selection_kind": "deterministic_trigger",
-                        "selection_reasons": ["terminal"],
-                        "evidence_trace_ids": ["turn-1"],
-                        "rubrics": [],
-                    }
-                ],
-            }
-        ],
-        "totals": {
-            "turns_considered": 1,
-            "episodes_selected": 1,
-            "planned_episode_rubrics": 0,
-            "planned_session_rubrics": 1,
-            "planned_rubrics": 1,
-            "minimum_episode_reviewer_attempts": 0,
-            "maximum_episode_reviewer_attempts": 0,
-            "minimum_session_reviewer_attempts": 1,
-            "maximum_session_reviewer_attempts": 2,
-            "minimum_reviewer_attempts": 1,
-            "maximum_reviewer_attempts": 2,
-        },
-    }
-    canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
-    return {"plan_id": f"sha256:{hashlib.sha256(canonical).hexdigest()}", **body}
+    return build_judging_plan(
+        [SessionView("conv-1", [turn], None, None)],
+        cohort_id="cohort-test",
+        rubrics=effective.rubrics,
+        review_depth=effective.review_depth,
+        judge_models=effective.models.judges,
+        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
+    )
 
 
 def _reflection_evidence() -> dict:
@@ -905,7 +895,7 @@ def test_judging_plan_and_reflection_input_are_validated_and_write_once(store):
     assert planned.judging_plan == plan
     assert store.pin_judging_plan(started.run_id, plan).judging_plan == plan
     changed_plan = {**plan, "schema_version": "changed"}
-    with pytest.raises(ValueError, match="plan ID"):
+    with pytest.raises(ValueError, match="schema_version"):
         store.pin_judging_plan(started.run_id, changed_plan)
 
     store.record_stage_result(

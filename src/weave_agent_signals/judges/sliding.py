@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from weave_agent_signals.catalogs import build_rubric_catalog
 from weave_agent_signals.judges.inference import ChatClient, InferenceCancelled, JsonSchemaSpec
 from weave_agent_signals.judges.review import AttemptObservation, InferenceStepAudit
-from weave_agent_signals.judges.rubrics import RUBRICS, SESSION_RUBRICS, Rubric
+from weave_agent_signals.judges.rubrics import SESSION_RUBRICS, Rubric
 from weave_agent_signals.judges.sliding_contracts import (
     CHUNK_DIGEST_SCHEMA,
     MERGED_VERDICT_SCHEMA,
@@ -266,7 +266,7 @@ class SlidingReviewer:
         *,
         session: SessionView,
         judge: PositionedJudge,
-        window_plan: Mapping[str, object],
+        judging_plan: Mapping[str, object],
         context_policy: JudgingContextPolicy,
         client: ChatClient,
         load_artifact: ArtifactLoader,
@@ -279,6 +279,43 @@ class SlidingReviewer:
             raise TypeError("judge must be a PositionedJudge")
         if not isinstance(context_policy, JudgingContextPolicy):
             raise TypeError("context_policy must be a JudgingContextPolicy")
+        plan = dict(judging_plan)
+        plan_id = plan.get("plan_id")
+        body = {key: value for key, value in plan.items() if key != "plan_id"}
+        if plan_id != _sha256(body):
+            raise ValueError("pinned judging plan ID does not match its full content")
+        if plan.get("schema_version") != "2":
+            raise ValueError("pinned judging plan schema is unsupported")
+        if plan.get("input_policy") != context_policy.model_dump(mode="json"):
+            raise ValueError("pinned judging context policy does not match")
+        if plan.get("protocol") != sliding_protocol_contract_manifest():
+            raise ValueError("pinned sliding protocol does not match")
+        sessions = plan.get("sessions")
+        if not isinstance(sessions, list):
+            raise ValueError("pinned judging plan sessions are invalid")
+        matching_sessions = [
+            value
+            for value in sessions
+            if isinstance(value, Mapping)
+            and value.get("conversation_id") == session.conversation_id
+        ]
+        if len(matching_sessions) != 1:
+            raise ValueError("session is not an exact member of the pinned judging plan")
+        reviewer_rows = matching_sessions[0].get("reviewers")
+        if not isinstance(reviewer_rows, list):
+            raise ValueError("pinned reviewer manifest is invalid")
+        if any(not isinstance(value, Mapping) for value in reviewer_rows) or [
+            value.get("ordinal") for value in reviewer_rows
+        ] != list(range(1, len(reviewer_rows) + 1)):
+            raise ValueError("pinned reviewer ordinals are invalid")
+        if judge.position > len(reviewer_rows):
+            raise ValueError("reviewer ordinal is absent from the pinned judging plan")
+        reviewer_row = reviewer_rows[judge.position - 1]
+        if reviewer_row.get("judge") != judge.model_dump(mode="json"):
+            raise ValueError("reviewer is not the exact pinned plan member at this ordinal")
+        window_plan = reviewer_row.get("window_plan")
+        if not isinstance(window_plan, Mapping):
+            raise ValueError("pinned reviewer window plan is invalid")
         expected_plan = build_window_plan(session, context_policy, judge.max_input_tokens)
         if dict(window_plan) != expected_plan:
             raise ValueError(
@@ -340,7 +377,7 @@ class SlidingReviewer:
             raise TypeError("rubric must be a RubricDescriptor")
         try:
             current = build_rubric_catalog().rubric(descriptor.id)
-            rubric = {**RUBRICS, **SESSION_RUBRICS}[descriptor.id]
+            rubric = SESSION_RUBRICS[descriptor.id]
         except KeyError as error:
             raise ValueError(f"unknown pinned rubric: {descriptor.id}") from error
         if descriptor != current:

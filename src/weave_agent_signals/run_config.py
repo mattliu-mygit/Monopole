@@ -25,7 +25,7 @@ MAX_CANDIDATE_BUDGET = 10
 
 ModelRole = Literal["proposal_writer", "judge", "proposal_evaluator"]
 ReviewDepth = Literal["primary", "selective", "full_panel"]
-EvaluationUnit = Literal["episode", "session"]
+EvaluationUnit = Literal["session"]
 
 
 def _require_nonblank(value: str, field_name: str) -> str:

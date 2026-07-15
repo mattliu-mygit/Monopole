@@ -20,12 +20,9 @@ from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catal
 from weave_agent_signals.client import WeaveClient
 from weave_agent_signals.judges.cli_backend import CliJudgeClient
 from weave_agent_signals.judges.inference import InferenceClient
-from weave_agent_signals.judges.plan import (
-    build_judging_plan,
-    session_evidence_trace_ids,
-)
+from weave_agent_signals.judges.plan import build_judging_plan
 from weave_agent_signals.judges.review import ReviewPolicy
-from weave_agent_signals.judges.runner import judge_session, judge_turn
+from weave_agent_signals.judges.runner import judge_session
 from weave_agent_signals.models import Score, SessionView
 from weave_agent_signals.patterns import (
     ab_leaderboard,
@@ -33,7 +30,11 @@ from weave_agent_signals.patterns import (
     detect_config_regressions,
     detect_regressions,
 )
-from weave_agent_signals.run_config import ModelDescriptor, PositionedJudge
+from weave_agent_signals.run_config import (
+    DEFAULT_JUDGING_CONTEXT_POLICY,
+    ModelDescriptor,
+    PositionedJudge,
+)
 from weave_agent_signals.runs.bundles import BundleSnapshot, compare_bundles
 from weave_agent_signals.runs.promotion import ProjectFileAdapter
 from weave_agent_signals.runs.reflection import run_reflection
@@ -432,12 +433,6 @@ def cmd_judge(args: argparse.Namespace) -> int:
         selected_rubrics = tuple(descriptors[name] for name in requested_ids)
     else:
         selected_rubrics = rubric_catalog.rubrics
-    turn_rubrics = tuple(
-        rubric for rubric in selected_rubrics if rubric.evaluation_unit == "episode"
-    )
-    session_rubrics = tuple(
-        rubric for rubric in selected_rubrics if rubric.evaluation_unit == "session"
-    )
 
     with WeaveClient(entity=args.entity, project=args.project) as client:
         turns = client.query_turns(limit=args.limit, since=since)
@@ -454,12 +449,6 @@ def cmd_judge(args: argparse.Namespace) -> int:
         # call, so a partial trace cannot produce durable feedback.
         client.hydrate_turns_batch(turns)
 
-        turns_by_session: dict[str, list] = {}
-        for t in turns:
-            turns_by_session.setdefault(t.conversation_id, []).append(t)
-        for ts in turns_by_session.values():
-            ts.sort(key=lambda t: t.started_at)
-
         sessions = _group_sessions(turns)
         cohort_id = "cli-direct:" + ",".join(sorted(turn.trace_id for turn in turns))
         judging_plan = build_judging_plan(
@@ -467,116 +456,50 @@ def cmd_judge(args: argparse.Namespace) -> int:
             cohort_id=cohort_id,
             rubrics=selected_rubrics,
             review_depth=policy.depth,
-            judge_count=len(policy.judges),
+            judge_models=policy.judges,
+            context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
         )
-        planned_episodes = {
-            episode["trace_id"]: episode
-            for session_plan in judging_plan["sessions"]
-            for episode in session_plan["selected_episodes"]
-        }
-        planned_sessions = {
-            session_plan["conversation_id"]: session_plan
-            for session_plan in judging_plan["sessions"]
-        }
-
         with _make_model_client(args, policy.judges[0].model) as inference:
-            for turn in turns if turn_rubrics else []:
-                episode = planned_episodes.get(turn.trace_id)
-                applicable_ids = (
-                    [
-                        rubric["id"]
-                        for rubric in episode["rubrics"]
-                        if rubric["applicability"] == "applicable"
-                    ]
-                    if episode is not None
-                    else []
-                )
-                if not applicable_ids:
-                    continue
+            artifacts: dict[str, dict] = {}
+
+            def record_artifact(key: str, value: dict) -> None:
+                normalized = dict(value)
+                existing = artifacts.setdefault(key, normalized)
+                if existing != normalized:
+                    raise ValueError(f"judging artifact conflict: {key}")
+
+            for session in sessions:
+                conv_id = session.conversation_id
+                run_time = session.turns[0].started_at if session.turns else None
                 try:
-                    turn_ref = turn.ref_for(args.entity, args.project)
-                    sess_turns = turns_by_session.get(turn.conversation_id, [])
-                    turn_idx = next(
-                        (j for j, t in enumerate(sess_turns) if t.trace_id == turn.trace_id),
-                        0,
-                    )
-                    evidence_ids = set(episode["evidence_trace_ids"])
-                    prior = [
-                        candidate
-                        for candidate in sess_turns[:turn_idx]
-                        if candidate.trace_id in evidence_ids
-                    ]
-                    scores = judge_turn(
-                        turn,
+                    scores = judge_session(
+                        session,
                         inference,
-                        rubrics=[descriptors[name] for name in applicable_ids],
+                        rubrics=selected_rubrics,
                         judges=policy.judges,
                         review_depth=policy.depth,
                         second_opinion_margin=policy.second_opinion_margin,
-                        prior_turns=prior,
+                        judging_plan=judging_plan,
+                        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
+                        artifact_loader=artifacts.get,
+                        artifact_recorder=record_artifact,
                     )
-                    for s in scores:
-                        s.stamp(
-                            config_version=turn.config_version,
-                            git_branch=turn.git_branch,
-                            run_time=turn.started_at,
+                    sess_ref = session.ref_for(args.entity, args.project)
+                    for score in scores:
+                        score.stamp(
+                            config_version=session.config_version,
+                            git_branch=session.git_branch,
+                            run_time=run_time,
                         )
-                        s.metadata.setdefault("evaluation_unit", "episode")
-                        s.metadata.setdefault("selection_kind", episode["selection_kind"])
-                        s.metadata.setdefault("selection_reasons", episode["selection_reasons"])
-                        s.metadata.setdefault("applicability", "applicable")
-                        s.metadata.setdefault("evidence_trace_ids", episode["evidence_trace_ids"])
-                        s.metadata.setdefault("plan_id", judging_plan["plan_id"])
-                        stats.write_score(
-                            client,
-                            s,
-                            turn_ref,
-                            force=args.force,
-                        )
-                except Exception as e:
+                        stats.write_score(client, score, sess_ref, force=args.force)
+                except Exception as error:
                     stats.errors += 1
-                    log.warning("Error judging turn %s: %s", turn.trace_id[:12], e)
-
-            if session_rubrics:
-                for session in sessions:
-                    conv_id = session.conversation_id
-                    run_time = session.turns[0].started_at if session.turns else None
-                    session_plan = planned_sessions[conv_id]
-                    evidence_trace_ids = session_evidence_trace_ids(session_plan)
-                    try:
-                        scores = judge_session(
-                            session,
-                            inference,
-                            rubrics=session_rubrics,
-                            judges=policy.judges,
-                            review_depth=policy.depth,
-                            second_opinion_margin=policy.second_opinion_margin,
-                            evidence_trace_ids=evidence_trace_ids,
-                        )
-                        sess_ref = session.ref_for(args.entity, args.project)
-                        for s in scores:
-                            s.stamp(
-                                config_version=session.config_version,
-                                git_branch=session.git_branch,
-                                run_time=run_time,
-                            )
-                            s.metadata.setdefault("evaluation_unit", "session")
-                            s.metadata.setdefault("selection_kind", "whole_session")
-                            s.metadata.setdefault("evidence_trace_ids", evidence_trace_ids)
-                            s.metadata.setdefault("plan_id", judging_plan["plan_id"])
-                            stats.write_score(
-                                client,
-                                s,
-                                sess_ref,
-                                force=args.force,
-                            )
-                    except Exception as e:
-                        stats.errors += 1
-                        log.warning("Error judging session %s: %s", conv_id[:12], e)
+                    log.warning("Error judging session %s: %s", conv_id[:12], error)
 
     print(
-        f"Selected {judging_plan['totals']['episodes_selected']} episodes from "
-        f"{len(turns)} turns ({stats.total_scored} scores). Wrote {stats.total_written}."
+        f"Judged {judging_plan['totals']['sessions_planned']} sessions across "
+        f"{judging_plan['totals']['windows_planned']} reviewer windows "
+        f"({stats.total_scored} rubric scores). Wrote {stats.total_written}."
     )
     if stats.errors:
         print(f"  Errors: {stats.errors} (use -v for details)")

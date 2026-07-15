@@ -319,10 +319,21 @@ def _encode_judging_plan(judging_plan: Mapping[str, Any]) -> str:
     if not isinstance(judging_plan, Mapping):
         raise ValueError("judging plan must be a JSON object")
     value = dict(judging_plan)
-    required = {"plan_id", "schema_version", "cohort_id", "sessions", "totals"}
-    missing = sorted(required - value.keys())
-    if missing:
-        raise ValueError("judging plan is missing: " + ", ".join(missing))
+    required = {
+        "plan_id",
+        "schema_version",
+        "cohort_id",
+        "review_depth",
+        "requested_rubrics",
+        "input_policy",
+        "protocol",
+        "sessions",
+        "totals",
+    }
+    if set(value) != required:
+        raise ValueError("judging plan fields do not match schema version 2")
+    if value["schema_version"] != "2":
+        raise ValueError("judging plan schema_version must be '2'")
     if not isinstance(value["plan_id"], str) or not value["plan_id"]:
         raise ValueError("judging plan must have a plan_id")
     if not isinstance(value["cohort_id"], str) or not value["cohort_id"]:
@@ -338,16 +349,19 @@ def _encode_judging_plan(judging_plan: Mapping[str, Any]) -> str:
         if not isinstance(session, dict):
             raise ValueError("judging plan sessions must contain objects")
         turn_count = session.get("turn_count")
-        episodes = session.get("selected_episodes")
-        session_rubrics = session.get("session_rubrics")
+        coverage = session.get("raw_coverage_trace_ids")
+        session_rubrics = session.get("rubrics")
+        reviewers = session.get("reviewers")
         if type(turn_count) is not int or turn_count < 0:
             raise ValueError("judging plan session turn_count must be non-negative")
-        if not isinstance(episodes, list) or not isinstance(session_rubrics, list):
-            raise ValueError("judging plan session selections and rubrics must be lists")
+        if not all(isinstance(item, list) for item in (coverage, session_rubrics, reviewers)):
+            raise ValueError("judging plan session coverage, rubrics, and reviewers must be lists")
 
     body = {key: item for key, item in value.items() if key != "plan_id"}
     try:
-        canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
+        canonical = json.dumps(
+            body, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        )
     except (TypeError, ValueError) as exc:
         raise ValueError("judging plan must be JSON serializable") from exc
     expected_plan_id = f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
@@ -510,26 +524,38 @@ def _judging_plan_matches_cohort(
         ):
             return False
         planned_session_ids.add(conversation_id)
-        episodes = session.get("selected_episodes")
-        if not isinstance(episodes, list):
+        coverage = session.get("raw_coverage_trace_ids")
+        reviewers = session.get("reviewers")
+        if not isinstance(coverage, list) or not isinstance(reviewers, list):
             return False
-        if session.get("omitted_turn_count") != session["turn_count"] - len(episodes):
+        expected_coverage = [
+            trace_id for trace_id, owner in turn_sessions.items() if owner == conversation_id
+        ]
+        if coverage != expected_coverage or len(coverage) != session["turn_count"]:
             return False
-        selected_trace_ids: set[str] = set()
-        for episode in episodes:
-            if not isinstance(episode, dict):
+        ordinals: list[int] = []
+        for reviewer in reviewers:
+            if not isinstance(reviewer, dict):
                 return False
-            trace_id = episode.get("trace_id")
-            evidence_trace_ids = episode.get("evidence_trace_ids")
+            ordinal = reviewer.get("ordinal")
+            judge = reviewer.get("judge")
+            window_plan = reviewer.get("window_plan")
             if (
-                not isinstance(trace_id, str)
-                or trace_id in selected_trace_ids
-                or turn_sessions.get(trace_id) != conversation_id
-                or not isinstance(evidence_trace_ids, list)
-                or any(turn_sessions.get(item) != conversation_id for item in evidence_trace_ids)
+                type(ordinal) is not int
+                or not isinstance(judge, dict)
+                or not isinstance(window_plan, dict)
             ):
                 return False
-            selected_trace_ids.add(trace_id)
+            if (
+                judge.get("position") != ordinal
+                or window_plan.get("conversation_id") != conversation_id
+            ):
+                return False
+            if window_plan.get("raw_coverage_trace_ids") != coverage:
+                return False
+            ordinals.append(ordinal)
+        if ordinals != list(range(1, len(reviewers) + 1)):
+            return False
     return planned_session_ids == set(session_turn_counts)
 
 

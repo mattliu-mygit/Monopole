@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from types import MappingProxyType
 
 from weave_agent_signals.judges.families import model_family
-from weave_agent_signals.judges.rubrics import RUBRICS, SESSION_RUBRICS, Rubric
+from weave_agent_signals.judges.rubrics import SESSION_RUBRICS, Rubric
 from weave_agent_signals.run_config import (
     MODEL_CATALOG_SCHEMA_VERSION,
     RUBRIC_CATALOG_SCHEMA_VERSION,
@@ -430,7 +430,7 @@ def build_rubric_catalog(
     """Build descriptors from the rubric objects that remain the prompt source."""
 
     if rubrics is None:
-        source = [*RUBRICS.values(), *SESSION_RUBRICS.values()]
+        source = list(SESSION_RUBRICS.values())
     elif isinstance(rubrics, Mapping):
         source = list(rubrics.values())
     else:
@@ -441,7 +441,7 @@ def build_rubric_catalog(
     for rubric in source:
         if rubric.scorer_name in seen:
             raise ValueError(f"duplicate rubric ID: {rubric.scorer_name}")
-        if rubric.evaluation_unit not in {"episode", "session"}:
+        if rubric.evaluation_unit != "session":
             raise ValueError(
                 f"rubric {rubric.scorer_name} has invalid evaluation unit: {rubric.evaluation_unit}"
             )

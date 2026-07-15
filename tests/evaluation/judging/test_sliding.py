@@ -17,6 +17,7 @@ from weave_agent_signals.judges.inference import (
     JsonSchemaSpec,
     JudgeResponse,
 )
+from weave_agent_signals.judges.plan import build_judging_plan
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.judges.sliding import (
     SlidingReviewer,
@@ -210,6 +211,14 @@ def _reviewer(
     active_policy = policy or _policy()
     active_judge = judge or _judge()
     plan = build_window_plan(session, active_policy, active_judge.max_input_tokens)
+    judging_plan = build_judging_plan(
+        [session],
+        cohort_id="cohort",
+        rubrics=build_rubric_catalog().rubrics,
+        review_depth="primary",
+        judge_models=(active_judge,),
+        context_policy=active_policy,
+    )
     assert len(plan["windows"]) == 2
     stored = {} if artifacts is None else artifacts
     scripted = client or _ScriptedClient()
@@ -223,7 +232,7 @@ def _reviewer(
         SlidingReviewer(
             session=session,
             judge=active_judge,
-            window_plan=plan,
+            judging_plan=judging_plan,
             context_policy=active_policy,
             client=scripted,
             load_artifact=stored.get,
@@ -546,17 +555,60 @@ def test_reviewer_rejects_tampered_plan_before_inference() -> None:
         "config-1",
         "main",
     )
-    tampered = dict(plan)
+    judging_plan = build_judging_plan(
+        [session],
+        cohort_id="cohort",
+        rubrics=build_rubric_catalog().rubrics,
+        review_depth="primary",
+        judge_models=(_judge(),),
+        context_policy=_policy(),
+    )
+    tampered = dict(judging_plan)
     tampered["plan_id"] = "sha256:" + "0" * 64
 
-    with pytest.raises(ValueError, match="pinned window plan"):
+    with pytest.raises(ValueError, match="full content"):
         SlidingReviewer(
             session=session,
             judge=_judge(),
-            window_plan=tampered,
+            judging_plan=tampered,
             context_policy=_policy(),
             client=client,
             load_artifact=artifacts.get,
+            record_artifact=lambda _id, _artifact: None,
+        )
+
+
+def test_reviewer_authenticates_exact_ordinal_against_the_full_plan() -> None:
+    session = SessionView(
+        "session-1",
+        [_turn(f"trace-{index}", index) for index in range(1, 5)],
+        "config-1",
+        "main",
+    )
+    plan = build_judging_plan(
+        [session],
+        cohort_id="cohort",
+        rubrics=build_rubric_catalog().rubrics,
+        review_depth="primary",
+        judge_models=(_judge(),),
+        context_policy=_policy(),
+    )
+    tampered = json.loads(json.dumps(plan))
+    tampered["sessions"][0]["reviewers"][0]["ordinal"] = 2
+    body = {key: value for key, value in tampered.items() if key != "plan_id"}
+    canonical = json.dumps(
+        body, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+    tampered["plan_id"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+
+    with pytest.raises(ValueError, match="ordinals"):
+        SlidingReviewer(
+            session=session,
+            judge=_judge(),
+            judging_plan=tampered,
+            context_policy=_policy(),
+            client=_ScriptedClient(),
+            load_artifact=lambda _id: None,
             record_artifact=lambda _id, _artifact: None,
         )
 

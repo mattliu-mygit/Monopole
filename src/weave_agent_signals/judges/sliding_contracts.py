@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from typing import Literal
@@ -10,13 +11,13 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr
 
 from weave_agent_signals.judges.inference import JsonSchemaSpec
-from weave_agent_signals.judges.verdicts import _validation_data, validate_score_anchor
 from weave_agent_signals.judges.windowing import estimate_tokens
 
 SLIDING_CONTRACT_SCHEMA_VERSION = 1
 MAX_WINDOW_FINDINGS = 4
 MAX_FINDING_OBSERVATION_CHARACTERS = 350
 MAX_BEHAVIORAL_FEEDBACK_CHARACTERS = 500
+SCORE_ANCHORS = (0.0, 0.25, 0.5, 0.75, 1.0)
 
 _MANAGED_FILE_PATTERN = re.compile(
     r"\b(?:agents\.md|claude\.md|skill\.md|instruction\s+files?|prompt\s+files?)\b",
@@ -31,6 +32,30 @@ _IMPERATIVE_FILE_EDIT_PATTERN = re.compile(
 
 class _ClosedModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+def _validation_data(value: object) -> object:
+    if isinstance(value, BaseModel):
+        data = dict(vars(value))
+        if value.__pydantic_extra__:
+            data.update(value.__pydantic_extra__)
+        return {key: _validation_data(item) for key, item in data.items()}
+    if isinstance(value, Mapping):
+        return {key: _validation_data(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_validation_data(item) for item in value)
+    if isinstance(value, list):
+        return [_validation_data(item) for item in value]
+    return value
+
+
+def _validate_score_anchor(value: object, *, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be one of {SCORE_ANCHORS}")
+    score = float(value)
+    if not math.isfinite(score) or score not in SCORE_ANCHORS:
+        raise ValueError(f"{field} must be one of {SCORE_ANCHORS}")
+    return score
 
 
 class ChunkDigest(_ClosedModel):
@@ -299,7 +324,7 @@ def parse_merged_verdict(
 
     if verdict.score is None:
         raise ValueError("scored verdict requires a score")
-    validate_score_anchor(verdict.score, field="scored verdict score")
+    _validate_score_anchor(verdict.score, field="scored verdict score")
     evidence_ids = _validated_evidence_ids(
         verdict.evidence_ids,
         allowed_ids=allowed_ids,
