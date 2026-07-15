@@ -17,10 +17,10 @@ from pydantic import (
     model_validator,
 )
 
-PIPELINE_VERSION = "3"
-MODEL_CATALOG_SCHEMA_VERSION = "1"
+PIPELINE_VERSION = "4"
+MODEL_CATALOG_SCHEMA_VERSION = "2"
 RUBRIC_CATALOG_SCHEMA_VERSION = "1"
-EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION = "1"
+EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION = "2"
 MAX_CANDIDATE_BUDGET = 10
 
 ModelRole = Literal["proposal_writer", "judge", "proposal_evaluator"]
@@ -45,12 +45,42 @@ class StrictFrozenModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class JudgingContextPolicy(StrictFrozenModel):
+    contract_version: Literal["1"] = "1"
+    target_input_tokens: Annotated[int, Field(strict=True, ge=1)] = 100_000
+    prompt_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 6_000
+    output_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 4_000
+    safety_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 8_000
+    digest_max_tokens: Annotated[int, Field(strict=True, ge=1)] = 1_000
+    finding_max_tokens: Annotated[int, Field(strict=True, ge=1)] = 750
+    overlap_turns: Literal[1] = 1
+    max_chunks: Annotated[int, Field(strict=True, ge=1)] = 40
+    token_estimator: Literal["utf8_bytes_div_3"] = "utf8_bytes_div_3"
+
+    @model_validator(mode="after")
+    def validate_raw_capacity(self) -> JudgingContextPolicy:
+        reserved_tokens = (
+            self.prompt_reserve_tokens
+            + self.output_reserve_tokens
+            + self.safety_reserve_tokens
+            + self.digest_max_tokens
+            + self.finding_max_tokens
+        )
+        if reserved_tokens >= self.target_input_tokens:
+            raise ValueError("judging context reserves must leave raw input capacity")
+        return self
+
+
+DEFAULT_JUDGING_CONTEXT_POLICY = JudgingContextPolicy()
+
+
 class ModelDescriptor(StrictFrozenModel):
     id: StrictStr
     label: StrictStr
     family: StrictStr
     backend: StrictStr
     supported_roles: tuple[ModelRole, ...]
+    max_input_tokens: int = 128_000
 
     @model_validator(mode="after")
     def validate_descriptor(self) -> ModelDescriptor:
@@ -311,7 +341,7 @@ class EffectiveModelSelection(StrictFrozenModel):
 
 
 class EffectiveRunConfig(StrictFrozenModel):
-    schema_version: Literal["1"] = "1"
+    schema_version: Literal["2"] = "2"
     pipeline_version: StrictStr
     model_catalog_version: StrictStr
     rubric_catalog_version: StrictStr
@@ -321,6 +351,7 @@ class EffectiveRunConfig(StrictFrozenModel):
     models: EffectiveModelSelection
     rubrics: tuple[RubricDescriptor, ...]
     selection_warnings: tuple[SelectionWarning, ...]
+    judging_context: JudgingContextPolicy
     candidate_budget: Annotated[
         int,
         Field(strict=True, ge=1, le=MAX_CANDIDATE_BUDGET),
@@ -533,6 +564,7 @@ def resolve_run_config(
         ),
         rubrics=tuple(selected_rubrics),
         selection_warnings=warnings,
+        judging_context=DEFAULT_JUDGING_CONTEXT_POLICY,
         candidate_budget=requested.candidate_budget,
         force=requested.force,
     )

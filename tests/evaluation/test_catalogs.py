@@ -57,7 +57,14 @@ def test_model_catalog_is_stable_role_oriented_and_immutable():
         if "proposal_evaluator" in model["supported_roles"]
     }
     for model in data["proposal"]["available_models"]:
-        assert set(model) == {"id", "label", "family", "backend", "supported_roles"}
+        assert set(model) == {
+            "id",
+            "label",
+            "family",
+            "backend",
+            "supported_roles",
+            "max_input_tokens",
+        }
         assert "proposal_writer" in model["supported_roles"]
 
     with pytest.raises(ValidationError):
@@ -87,6 +94,20 @@ def test_model_catalog_version_tracks_local_availability():
         all_available.model_dump(mode="json")["judge_backends"]["wandb"]["available_models"]
         == none_available.model_dump(mode="json")["judge_backends"]["wandb"]["available_models"]
     )
+
+
+def test_every_model_declares_enough_input_context():
+    catalog = build_model_catalog(which=lambda _name: "/usr/bin/model")
+    models = [
+        *catalog.proposal.available_models,
+        *(
+            model
+            for backend in catalog.judge_backends.values()
+            for model in backend.available_models
+        ),
+    ]
+    assert models
+    assert all(model.max_input_tokens >= 128_000 for model in models)
 
 
 def test_model_catalog_version_tracks_recommendations_and_evaluator_order():
@@ -194,4 +215,5 @@ def test_model_descriptor_serializes_only_its_public_fields():
         "family": "example-family",
         "backend": "example-backend",
         "supported_roles": ["judge"],
+        "max_input_tokens": 128_000,
     }
