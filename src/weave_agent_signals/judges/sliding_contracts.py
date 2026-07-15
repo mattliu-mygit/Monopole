@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping, Sequence
 from typing import Literal
@@ -87,6 +88,17 @@ MERGED_VERDICT_SCHEMA = JsonSchemaSpec(
     name="merged_verdict",
     schema=MergedVerdict.model_json_schema(),
 )
+
+
+def render_window_findings(value: WindowFindings) -> str:
+    """Render normalized window findings as deterministic merge-input JSON."""
+
+    return json.dumps(
+        value.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _normalized_text(value: str, *, field: str, max_characters: int | None = None) -> str:
@@ -196,10 +208,13 @@ def parse_window_findings(
     value: Mapping[str, object] | WindowFindings,
     *,
     allowed_evidence_ids: Sequence[str],
+    max_tokens: int,
     expected_window_id: str | None = None,
 ) -> WindowFindings:
     """Validate one window response containing no more than four unique findings."""
 
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+        raise ValueError("max_tokens must be a positive integer")
     parsed = WindowFindings.model_validate(_validation_data(value))
     window_id = _nonblank_id(parsed.window_id, field="window ID")
     if expected_window_id is not None and window_id != _nonblank_id(
@@ -214,11 +229,15 @@ def parse_window_findings(
     if len(finding_ids) != len(set(finding_ids)):
         raise ValueError("finding IDs must be unique within a window")
     finding_keys = [
-        (finding.polarity, finding.observation, finding.evidence_ids) for finding in findings
+        (finding.polarity, finding.observation, tuple(sorted(finding.evidence_ids)))
+        for finding in findings
     ]
     if len(finding_keys) != len(set(finding_keys)):
         raise ValueError("duplicate findings are not allowed within a window")
-    return parsed.model_copy(update={"window_id": window_id, "findings": findings})
+    normalized = parsed.model_copy(update={"window_id": window_id, "findings": findings})
+    if estimate_tokens(render_window_findings(normalized)) > max_tokens:
+        raise ValueError("complete window findings artifact exceeds the configured token limit")
+    return normalized
 
 
 def parse_behavioral_feedback(

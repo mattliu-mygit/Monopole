@@ -20,6 +20,7 @@ from weave_agent_signals.judges.sliding_contracts import (
     parse_merged_verdict,
     parse_window_finding,
     parse_window_findings,
+    render_window_findings,
 )
 
 
@@ -161,11 +162,94 @@ def test_window_findings_rejects_duplicate_or_excess_findings():
         "findings": [_valid_finding(), _valid_finding()],
     }
     with pytest.raises(ValueError, match="finding IDs must be unique"):
-        parse_window_findings(payload, allowed_evidence_ids=("trace-1",))
+        parse_window_findings(
+            payload,
+            allowed_evidence_ids=("trace-1",),
+            max_tokens=750,
+        )
 
     payload["findings"] = [_valid_finding(finding_id=f"finding-{index}") for index in range(5)]
     with pytest.raises(ValueError, match="at most 4"):
-        parse_window_findings(payload, allowed_evidence_ids=("trace-1",))
+        parse_window_findings(
+            payload,
+            allowed_evidence_ids=("trace-1",),
+            max_tokens=750,
+        )
+
+
+def test_window_findings_rejects_duplicates_with_reversed_citation_order():
+    payload = {
+        "schema_version": 1,
+        "window_id": "window-1",
+        "findings": [
+            _valid_finding(
+                finding_id="finding-1",
+                evidence_ids=["trace-1", "trace-2"],
+            ),
+            _valid_finding(
+                finding_id="finding-2",
+                evidence_ids=["trace-2", "trace-1"],
+            ),
+        ],
+    }
+
+    with pytest.raises(ValueError, match="duplicate findings"):
+        parse_window_findings(
+            payload,
+            allowed_evidence_ids=("trace-1", "trace-2"),
+            max_tokens=750,
+        )
+
+
+def test_window_findings_rejects_complete_canonical_artifact_over_token_limit():
+    evidence_ids = tuple(f"evidence-{index}-{'x' * 48}" for index in range(20))
+    payload = {
+        "schema_version": 1,
+        "window_id": f"window-{'w' * 120}",
+        "findings": [
+            _valid_finding(
+                finding_id=f"finding-{index}-{'f' * 80}",
+                observation=f"{index} {'o' * 340}",
+                evidence_ids=list(evidence_ids),
+            )
+            for index in range(4)
+        ],
+    }
+
+    with pytest.raises(ValueError, match="complete window findings artifact.*token limit"):
+        parse_window_findings(
+            payload,
+            allowed_evidence_ids=evidence_ids,
+            max_tokens=750,
+        )
+
+
+@pytest.mark.parametrize("max_tokens", [True, 0, -1, 1.5])
+def test_window_findings_requires_strict_positive_token_limit(max_tokens: object):
+    with pytest.raises(ValueError, match="max_tokens must be a positive integer"):
+        parse_window_findings(
+            {"schema_version": 1, "window_id": "window-1", "findings": []},
+            allowed_evidence_ids=("trace-1",),
+            max_tokens=max_tokens,  # type: ignore[arg-type]
+        )
+
+
+def test_window_findings_canonical_render_is_normalized_and_deterministic():
+    parsed = parse_window_findings(
+        {
+            "schema_version": 1,
+            "window_id": "window-1",
+            "findings": [_valid_finding(observation="Observed   behavior.")],
+        },
+        allowed_evidence_ids=("trace-1",),
+        max_tokens=750,
+    )
+
+    assert render_window_findings(parsed) == (
+        '{"findings":[{"evidence_ids":["trace-1"],"finding_id":"finding-1",'
+        '"observation":"Observed behavior.","polarity":"negative"}],'
+        '"schema_version":1,"window_id":"window-1"}'
+    )
 
 
 def test_window_findings_requires_expected_window_and_rejects_extra_fields():
@@ -173,6 +257,7 @@ def test_window_findings_requires_expected_window_and_rejects_extra_fields():
     parsed = parse_window_findings(
         payload,
         allowed_evidence_ids=("trace-1",),
+        max_tokens=750,
         expected_window_id="window-1",
     )
     assert isinstance(parsed, WindowFindings)
@@ -181,12 +266,14 @@ def test_window_findings_requires_expected_window_and_rejects_extra_fields():
         parse_window_findings(
             payload,
             allowed_evidence_ids=("trace-1",),
+            max_tokens=750,
             expected_window_id="window-2",
         )
     with pytest.raises(ValueError, match="Extra inputs"):
         parse_window_findings(
             {**payload, "extra": True},
             allowed_evidence_ids=("trace-1",),
+            max_tokens=750,
         )
 
 
