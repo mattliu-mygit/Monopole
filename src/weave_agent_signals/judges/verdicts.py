@@ -52,6 +52,21 @@ def _validation_data(value: object) -> object:
     return value
 
 
+def validate_score_anchor(value: object, *, field: str = "score") -> float:
+    """Return one finite score on the shared five-anchor judge scale."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"{field} must be one of " + ", ".join(str(anchor) for anchor in JUDGE_SCORE_ANCHORS)
+        )
+    score = float(value)
+    if not math.isfinite(score) or score not in JUDGE_SCORE_ANCHORS:
+        raise ValueError(
+            f"{field} must be one of " + ", ".join(str(anchor) for anchor in JUDGE_SCORE_ANCHORS)
+        )
+    return score
+
+
 def parse_judge_verdict(
     value: Mapping[str, object] | JudgeVerdict,
     evidence_ids: Sequence[str],
@@ -91,12 +106,7 @@ def parse_judge_verdict(
 
     if verdict.score is None:
         raise ValueError("scored verdict requires a score")
-    score = float(verdict.score)
-    if not math.isfinite(score) or score not in JUDGE_SCORE_ANCHORS:
-        raise ValueError(
-            "scored verdict score must be one of "
-            + ", ".join(str(anchor) for anchor in JUDGE_SCORE_ANCHORS)
-        )
+    validate_score_anchor(verdict.score, field="scored verdict score")
     if not verdict.evidence:
         raise ValueError("scored verdict requires at least one evidence citation")
     return verdict
