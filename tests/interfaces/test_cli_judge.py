@@ -53,6 +53,17 @@ def test_default_policy_resolves_catalog_recommendations(monkeypatch):
     assert policy.depth == backend.recommended_review_depth
 
 
+def test_group_sessions_breaks_equal_timestamp_ties_by_trace_id():
+    turn_b = _turn()
+    turn_b.trace_id = "turn-b"
+    turn_a = _turn()
+    turn_a.trace_id = "turn-a"
+
+    sessions = cli._group_sessions([turn_b, turn_a])
+
+    assert [turn.trace_id for turn in sessions[0].turns] == ["turn-a", "turn-b"]
+
+
 def test_direct_cli_uses_one_session_plan_runner_and_in_memory_artifacts(monkeypatch, capsys):
     turn = _turn()
     session = SessionView(
@@ -105,7 +116,7 @@ def test_direct_cli_discovers_conversations_then_judges_complete_hydrated_sessio
 
     session_one = SessionView(
         conversation_id="session-1",
-        turns=[older_one, recent_one],
+        turns=[older_one, duplicate_one, recent_one],
         config_version="cfg",
         git_branch="main",
     )
@@ -152,6 +163,7 @@ def test_direct_cli_discovers_conversations_then_judges_complete_hydrated_sessio
     hydrated = weave.hydrate_turns_batch.call_args.args[0]
     assert [turn.trace_id for turn in hydrated] == [
         "session-1-older",
+        "session-1-other-recent",
         "session-1-recent",
         "session-2-recent",
     ]
@@ -159,9 +171,40 @@ def test_direct_cli_discovers_conversations_then_judges_complete_hydrated_sessio
     assert judge.call_args_list[0].args[0] is session_one
     assert [turn.trace_id for turn in judge.call_args_list[0].args[0].turns] == [
         "session-1-older",
+        "session-1-other-recent",
         "session-1-recent",
     ]
     assert weave.write_score.call_count == 1
+
+
+def test_direct_cli_fails_when_complete_session_omits_a_discovery_root(monkeypatch):
+    discovered = _turn()
+    reloaded = _turn()
+    reloaded.trace_id = "different-root"
+    session = SessionView(
+        conversation_id="session-1",
+        turns=[reloaded],
+        config_version="cfg",
+        git_branch="main",
+    )
+    weave = MagicMock()
+    weave.query_turns.return_value = [discovered]
+    weave.query_session.return_value = session
+    weave.__enter__.return_value = weave
+    build_plan = MagicMock(side_effect=AssertionError("must not plan partial discovery"))
+    make_client = MagicMock()
+    monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
+    monkeypatch.setattr(cli, "build_model_catalog", _catalog)
+    monkeypatch.setattr(cli, "build_judging_plan", build_plan)
+    monkeypatch.setattr(cli, "_make_model_client", make_client)
+
+    with pytest.raises(RuntimeError, match="missing discovered root"):
+        cli.cmd_judge(_args(rubric="judge.session_outcome"))
+
+    weave.hydrate_turns_batch.assert_not_called()
+    build_plan.assert_not_called()
+    make_client.assert_not_called()
+    weave.write_score.assert_not_called()
 
 
 def test_direct_cli_rejects_unknown_rubric_before_reading_weave(monkeypatch, capsys):

@@ -719,6 +719,19 @@ def test_query_session_uses_paginated_root_query(mock_client, monkeypatch):
     assert [turn.trace_id for turn in session.turns] == ["tr-1", "tr-2"]
 
 
+def test_query_session_breaks_equal_timestamp_ties_by_trace_id(mock_client, monkeypatch):
+    timestamp = "2026-07-09T12:00:00Z"
+    turns = [
+        mock_client._hydrate_turn(_fake_span(trace_id="tr-b", started_at=timestamp)),
+        mock_client._hydrate_turn(_fake_span(trace_id="tr-a", started_at=timestamp)),
+    ]
+    monkeypatch.setattr(mock_client, "query_turns_paginated", lambda **_kwargs: turns)
+
+    session = mock_client.query_session("conv-1")
+
+    assert [turn.trace_id for turn in session.turns] == ["tr-a", "tr-b"]
+
+
 @respx.mock
 def test_delete_feedback_http(mock_client):
     route = respx.post(f"{TRACE_BASE}/feedback/purge").respond(json={"deleted": 1})

@@ -186,7 +186,7 @@ def _group_sessions(turns: list) -> list[SessionView]:
 
     sessions = []
     for conv_id, sess_turns in by_conv.items():
-        ordered = sorted(sess_turns, key=lambda t: t.started_at)
+        ordered = sorted(sess_turns, key=lambda t: (t.started_at, t.trace_id))
         sessions.append(
             SessionView(
                 conversation_id=conv_id,
@@ -443,12 +443,26 @@ def cmd_judge(args: argparse.Namespace) -> int:
 
         stats = _WriteStats()
 
-        conversation_ids = sorted({turn.conversation_id for turn in discovery_turns})
+        discovered_by_conversation: dict[str, set[str]] = {}
+        for turn in discovery_turns:
+            discovered_by_conversation.setdefault(turn.conversation_id, set()).add(turn.trace_id)
+        conversation_ids = sorted(discovered_by_conversation)
         if not conversation_ids or any(not conversation_id for conversation_id in conversation_ids):
             raise RuntimeError("Discovered turns require nonblank conversation IDs")
         sessions = [client.query_session(conversation_id) for conversation_id in conversation_ids]
         if any(not session.turns for session in sessions):
             raise RuntimeError("Discovered conversation has no complete session turns")
+        for conversation_id, session in zip(conversation_ids, sessions, strict=True):
+            if session.conversation_id != conversation_id:
+                raise RuntimeError("Complete session query returned a mismatched conversation")
+            missing = sorted(
+                discovered_by_conversation[conversation_id]
+                - {turn.trace_id for turn in session.turns}
+            )
+            if missing:
+                raise RuntimeError(
+                    "Complete session is missing discovered root trace IDs: " + ", ".join(missing)
+                )
         if any(
             turn.conversation_id != session.conversation_id
             for session in sessions
