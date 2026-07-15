@@ -149,6 +149,49 @@ def _captured_text(value: str | None) -> bool:
     return bool(value and value.strip())
 
 
+def _missing_assistant_summary(turn: TurnSpan) -> str:
+    output_state = "null" if turn.assistant_output is None else "blank"
+    if turn.tool_calls:
+        call_count = len(turn.tool_calls)
+        call_label = "tool call was" if call_count == 1 else "tool calls were"
+        tool_names = ", ".join(dict.fromkeys(tool.tool_name for tool in turn.tool_calls))
+        return (
+            f"Tool-execution turn: {call_count} {call_label} captured ({tool_names}), but no "
+            f"assistant message was captured (assistant_output was {output_state})."
+        )
+
+    model_tokens = turn.input_tokens + turn.output_tokens
+    if model_tokens:
+        token_label = "model token was" if model_tokens == 1 else "model tokens were"
+        return (
+            f"Model-activity-only turn: {model_tokens} {token_label} captured, but no assistant "
+            f"message was captured (assistant_output was {output_state})."
+        )
+
+    if _captured_text(turn.user_input):
+        return (
+            "User-only turn: user input was captured, but no assistant message, tool calls, or "
+            f"model-token activity was captured (assistant_output was {output_state})."
+        )
+
+    return (
+        "Capture-empty turn: no assistant message, tool calls, model-token activity, or user "
+        f"input was captured (assistant_output was {output_state})."
+    )
+
+
+def _missing_prior_state_summary(turn: TurnSpan) -> str:
+    if _captured_text(turn.user_input):
+        return (
+            "User-only prior turn: user input was captured, but no assistant message, tool "
+            "calls, or model-token activity was captured."
+        )
+    return (
+        "Capture-empty prior turn: no assistant message, tool calls, model-token activity, or "
+        "user input was captured."
+    )
+
+
 def _missing_evidence_reason(
     turns: list[TurnSpan],
     index: int,
@@ -157,8 +200,9 @@ def _missing_evidence_reason(
     turn = turns[index]
     if rubric_id == "judge.verification" and not _captured_text(turn.assistant_output):
         return (
-            "Assistant output was not captured, so there was no completion or correctness "
-            "claim to verify."
+            f"{_missing_assistant_summary(turn)} The verification rubric requires an assistant "
+            "completion or correctness claim to compare with the verification activity, so "
+            "this rubric was skipped."
         )
     if rubric_id == "judge.state_consistency" and index > 0:
         prior = turns[index - 1]
@@ -169,8 +213,9 @@ def _missing_evidence_reason(
             or prior.output_tokens
         ):
             return (
-                "The prior turn contained no captured assistant output, tool activity, or "
-                "model tokens to establish prior state."
+                f"{_missing_prior_state_summary(prior)} The state consistency rubric requires "
+                "observable prior assistant state to compare with the current turn, so this "
+                "rubric was skipped."
             )
     return None
 

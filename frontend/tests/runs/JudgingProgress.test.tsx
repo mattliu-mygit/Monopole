@@ -214,7 +214,7 @@ describe('JudgingProgress', () => {
             applicability: 'not_applicable',
             minimum_reviewer_attempts: 0,
             maximum_reviewer_attempts: 0,
-            skip_reason: 'Assistant output was not captured, so there was no completion or correctness claim to verify.',
+            skip_reason: 'Tool-execution turn: 2 tool calls were captured (Edit, Bash), but no assistant message was captured (assistant_output was null). The verification rubric requires an assistant completion or correctness claim to compare with the verification activity, so this rubric was skipped.',
           }],
         }],
       }],
@@ -224,7 +224,7 @@ describe('JudgingProgress', () => {
 
     expect(screen.getByText('Skipped rubric checks')).not.toBeNull()
     expect(screen.getByText('judge.verification')).not.toBeNull()
-    expect(screen.getByText(/assistant output was not captured/i)).not.toBeNull()
+    expect(screen.getByText(/tool-execution turn: 2 tool calls were captured \(edit, bash\)/i)).not.toBeNull()
     expect(screen.getByText(/trace trace-bare/i)).not.toBeNull()
   })
 

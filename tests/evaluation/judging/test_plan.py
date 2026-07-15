@@ -362,8 +362,32 @@ def test_verification_is_skipped_when_assistant_output_was_not_captured() -> Non
     assert record["minimum_reviewer_attempts"] == 0
     assert record["maximum_reviewer_attempts"] == 0
     assert record["skip_reason"] == (
-        "Assistant output was not captured, so there was no completion or correctness claim "
-        "to verify."
+        "Tool-execution turn: 2 tool calls were captured (Edit, Bash), but no assistant "
+        "message was captured (assistant_output was null). The verification rubric requires "
+        "an assistant completion or correctness claim to compare with the verification "
+        "activity, so this rubric was skipped."
+    )
+
+
+def test_verification_skip_reason_distinguishes_blank_assistant_output() -> None:
+    turn = _turn(
+        "blank-verification",
+        0,
+        tools=[
+            _tool("Edit", '{"path":"app.py"}', "updated"),
+            _tool("Bash", '{"command":"pytest"}', "passed"),
+        ],
+        assistant_output="   ",
+    )
+
+    plan = _plan([_session([turn])], rubrics=_rubrics("judge.verification"))
+    record = plan["sessions"][0]["selected_episodes"][0]["rubrics"][0]
+
+    assert record["skip_reason"] == (
+        "Tool-execution turn: 2 tool calls were captured (Edit, Bash), but no assistant "
+        "message was captured (assistant_output was blank). The verification rubric requires "
+        "an assistant completion or correctness claim to compare with the verification "
+        "activity, so this rubric was skipped."
     )
 
 
@@ -390,8 +414,9 @@ def test_state_consistency_is_skipped_without_captured_prior_state() -> None:
     assert record["minimum_reviewer_attempts"] == 0
     assert record["maximum_reviewer_attempts"] == 0
     assert record["skip_reason"] == (
-        "The prior turn contained no captured assistant output, tool activity, or model "
-        "tokens to establish prior state."
+        "Capture-empty prior turn: no assistant message, tool calls, model-token activity, "
+        "or user input was captured. The state consistency rubric requires observable prior "
+        "assistant state to compare with the current turn, so this rubric was skipped."
     )
 
 

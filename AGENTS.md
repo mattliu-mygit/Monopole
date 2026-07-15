@@ -12,6 +12,21 @@ For direct questions, answer concisely—usually one or two sentences plus only
 the minimum useful elaboration. Let follow-up questions drive deeper
 explanation instead of preemptively expanding into a full walkthrough.
 
+## Engineering proportionality
+
+Optimize guarantees and architecture for the service's actual product goals and
+risk level. A service does not need to be perfect when the implementation,
+operational, or maintenance cost of stronger guarantees is substantially larger
+than their practical benefit. For meaningful design choices, compare the
+benefits, costs, failure modes, and reversibility explicitly, then choose the
+simplest design whose tradeoffs are acceptable. Do not preserve complexity only
+because it provides a theoretically stronger guarantee.
+
+Match planning and documentation effort to the size of the change. Small,
+localized changes normally need only a concise implementation outline in the
+task; do not create standalone design or plan documents unless the behavior,
+architecture, or tradeoffs are genuinely complex or the user requests one.
+
 ## Setup
 
 Python 3.11 or newer is required. Use the lockfiles rather than ad hoc installs:
