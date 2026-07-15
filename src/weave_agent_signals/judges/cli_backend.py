@@ -1,27 +1,32 @@
-"""TEMPORARY judge backend: shells out to a local coding-agent CLI.
+"""Confined local-CLI implementation of the judge chat interface.
 
-Route B judging with no metered inference. Uses the installed ``claude`` /
-``codex`` CLIs (subscription auth) as one-shot LLM judges, so the judge layer
-runs while W&B Inference billing is pending. This is a LOCAL developer-machine
-stopgap, NOT the production backend — the real path is an HTTP inference backend
-with credits (see inference.py) or Weave signals server-side.
-
-Cross-family by construction (see families.py): a Claude-family agent is judged
-by the Codex (GPT) CLI and a GPT/Codex-family agent by the Claude CLI, so a model
-never judges its own family. The exact CLI flags live in one place (``_build``)
-so they are easy to update as the CLIs evolve.
+The configured model determines whether the installed ``claude`` or ``codex``
+CLI is invoked. Model selection happens before this transport boundary; this
+module only executes the exact requested model with a restricted environment.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
+import tempfile
+import threading
+import time
 from typing import Any, Callable
 
 from weave_agent_signals.judges.families import model_family
-from weave_agent_signals.judges.inference import JudgeResponse
+from weave_agent_signals.judges.inference import (
+    InferenceCancelled,
+    JsonSchemaSpec,
+    JudgeResponse,
+    _explicit_schema_rejection_reason,
+    _parse_exact_json_object,
+    _raw_output_digest,
+)
+from weave_agent_signals.judges.process import CODEX_CONFINED_ARGS, prepare_cli_subprocess
 
 log = logging.getLogger("weave_agent_signals.judges")
 
@@ -70,62 +75,486 @@ def _extract_json(text: str) -> dict:
     return best if best is not None else {}
 
 
-class CliJudgeClient:
-    """Judge client that invokes a local coding-agent CLI. TEMPORARY (see module docstring).
+_HOME = os.path.expanduser("~")
+_JUDGE_CODEX_HOME = os.path.join(_HOME, ".codex-judge")
+_JUDGE_CWD = os.path.join(_HOME, ".codex-judge", "sandbox")
 
-    Drop-in for InferenceClient: exposes ``chat_json(model, messages) ->
-    (dict, JudgeResponse)`` and is a context manager, so the runner is agnostic
-    to whether judging goes over HTTP or a local CLI.
+_RETRYABLE_PATTERNS = [
+    "at capacity",
+    "rate limit",
+    "too many requests",
+    "overloaded",
+    "503",
+    "429",
+]
+
+MAX_CLI_RETRIES = 2
+RETRY_BASE_DELAY = 5.0
+
+
+def _is_retryable(output: str) -> bool:
+    lower = output.lower()
+    return any(p in lower for p in _RETRYABLE_PATTERNS)
+
+
+def _process_error_category(
+    output: str,
+    response_schema: JsonSchemaSpec | None,
+) -> str:
+    if response_schema is not None and _explicit_schema_rejection_reason(output):
+        return "schema_output_unsupported"
+    if response_schema is not None and any(
+        marker in output.lower()
+        for marker in (
+            "validation failed",
+            "validation error",
+            "unsupported property",
+            "property type is not supported",
+        )
+    ):
+        return "schema_validation_error"
+    if _is_retryable(output):
+        return "retryable_process_error"
+    return "process_error"
+
+
+def _build_env(model: str) -> dict[str, str]:
+    return prepare_cli_subprocess(
+        home=_HOME,
+        codex_home=_JUDGE_CODEX_HOME,
+        cwd=_JUDGE_CWD,
+        family=model_family(model),
+    )
+
+
+class _SchemaOutputUnsupported(RuntimeError):
+    def __init__(self, reason: str, request_count: int) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.request_count = request_count
+
+
+class CliJudgeClient:
+    """Judge client that invokes a confined local coding-agent CLI.
+
+    It exposes the same ``chat_json`` boundary as the HTTP client and is a
+    context manager, so judge execution is transport-independent.
     """
 
     backend = "cli"
 
-    def __init__(self, timeout: float = 180.0, runner: Callable[..., Any] = subprocess.run):
+    def __init__(self, timeout: float = 360.0, runner: Callable[..., Any] | None = None):
         self._timeout = timeout
-        self._run = runner  # injectable for tests
+        self._runner = runner
+        self._procs: set[subprocess.Popen] = set()
+        self._procs_lock = threading.Lock()
+        self._cancel: threading.Event | None = None
+
+    def set_cancel(self, cancel: threading.Event) -> None:
+        self._cancel = cancel
+
+    def abort(self) -> None:
+        with self._procs_lock:
+            procs = list(self._procs)
+        for proc in procs:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
 
     def chat_json(
         self,
+        *,
         model: str,
         messages: list[dict[str, str]],
         temperature: float = 0.0,
         max_tokens: int = 1024,
+        response_schema: JsonSchemaSpec | None = None,
     ) -> tuple[dict[str, Any], JudgeResponse]:
         system = "\n\n".join(m["content"] for m in messages if m.get("role") == "system")
         user = "\n\n".join(m["content"] for m in messages if m.get("role") == "user")
-        argv, stdin_text, mode = self._build(model, system, user)
-
-        proc = self._run(
-            argv,
-            input=stdin_text,
-            capture_output=True,
-            text=True,
-            timeout=self._timeout,
-        )
-        if getattr(proc, "returncode", 0) != 0:
+        family = model_family(model)
+        if family == "google":
             raise RuntimeError(
-                f"{argv[0]} judge exited {proc.returncode}: {(proc.stderr or '')[:200]}"
+                "Google local CLI judges are disabled until Gemini has a verified confined mode"
             )
+        if family not in {"anthropic", "openai"}:
+            raise RuntimeError(
+                "The local CLI judge backend supports only Anthropic and OpenAI families"
+            )
+        env = _build_env(model)
+        schema_path: str | None = None
+        if response_schema is not None and family == "openai":
+            schema_path = self._write_schema_file(response_schema)
 
-        text = self._extract_text(proc.stdout or "", mode)
-        parsed = _extract_json(text)
-        return parsed, JudgeResponse(content=text, model=model, usage={})
+        try:
+            try:
+                parsed, content, raw_output, request_count = self._invoke(
+                    model=model,
+                    system=system,
+                    user=user,
+                    env=env,
+                    response_schema=response_schema,
+                    schema_path=schema_path,
+                )
+                output_mode = "json_schema" if response_schema is not None else "json_object"
+                fallback_reason = None
+            except _SchemaOutputUnsupported as error:
+                if response_schema is None:
+                    raise
+                parsed, content, raw_output, fallback_count = self._invoke(
+                    model=model,
+                    system=system,
+                    user=user,
+                    env=env,
+                    response_schema=None,
+                    schema_path=None,
+                )
+                request_count = error.request_count + fallback_count
+                output_mode = "json_object_fallback"
+                fallback_reason = error.reason
 
-    def _build(self, model: str, system: str, user: str) -> tuple[list[str], str, str]:
+            return parsed, JudgeResponse(
+                content=content,
+                model=model,
+                usage={},
+                output_mode=output_mode,
+                schema_name=response_schema.name if response_schema is not None else None,
+                schema_fallback_reason=fallback_reason,
+                transport_request_count=request_count,
+                raw_output_digest=_raw_output_digest(raw_output),
+            )
+        finally:
+            if schema_path is not None:
+                try:
+                    os.remove(schema_path)
+                except FileNotFoundError:
+                    pass
+
+    def _write_schema_file(self, response_schema: JsonSchemaSpec) -> str:
+        """Write a Codex output schema inside the confined workspace."""
+        schema_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix=".judge-output-schema-",
+            suffix=".json",
+            dir=_JUDGE_CWD,
+            delete=False,
+        )
+        try:
+            with schema_file:
+                json.dump(response_schema.schema, schema_file)
+        except Exception:
+            try:
+                os.remove(schema_file.name)
+            except FileNotFoundError:
+                pass
+            raise
+        return schema_file.name
+
+    def _invoke(
+        self,
+        *,
+        model: str,
+        system: str,
+        user: str,
+        env: dict[str, str],
+        response_schema: JsonSchemaSpec | None,
+        schema_path: str | None,
+    ) -> tuple[dict[str, Any], str, str, int]:
+        argv, stdin_text, mode = self._build(
+            model,
+            system,
+            user,
+            response_schema=response_schema,
+            schema_path=schema_path,
+        )
+        log.info(
+            "CLI judge started: backend=cli model=%s family=%s prompt_len=%d output_mode=%s",
+            model,
+            model_family(model),
+            len(stdin_text),
+            "json_schema" if response_schema is not None else "json_object",
+        )
+
+        if self._runner:
+            proc = self._runner(
+                argv,
+                input=stdin_text,
+                capture_output=True,
+                text=True,
+                timeout=self._timeout,
+                env=env,
+                cwd=_JUDGE_CWD,
+            )
+            stdout = proc.stdout or ""
+            stderr = proc.stderr or ""
+            if getattr(proc, "returncode", 0) != 0:
+                self._log_process_failure(
+                    model=model,
+                    returncode=proc.returncode,
+                    elapsed=None,
+                    stdout=stdout,
+                    stderr=stderr,
+                    attempt=1,
+                    response_schema=response_schema,
+                )
+                self._raise_process_error(
+                    argv,
+                    proc.returncode,
+                    stdout,
+                    stderr,
+                    response_schema=response_schema,
+                    request_count=1,
+                )
+            parsed, content = self._decode_output(
+                stdout,
+                mode,
+                strict=response_schema is not None,
+            )
+            log.info(
+                "CLI judge completed: backend=cli model=%s exit=0 output_len=%d "
+                "output_sha256=%s output_mode=%s request_count=1",
+                model,
+                len(stdout),
+                _raw_output_digest(stdout),
+                "json_schema" if response_schema is not None else "json_object",
+            )
+            return parsed, content, stdout, 1
+
+        last_err: RuntimeError | None = None
+        for attempt in range(MAX_CLI_RETRIES + 1):
+            t0 = time.monotonic()
+            stdout, stderr, returncode = self._run_with_cancel(
+                argv,
+                stdin_text,
+                env,
+            )
+            elapsed = time.monotonic() - t0
+
+            if returncode == 0:
+                parsed, content = self._decode_output(
+                    stdout,
+                    mode,
+                    strict=response_schema is not None,
+                )
+                log.info(
+                    "CLI judge completed: backend=cli model=%s exit=0 elapsed=%.1fs "
+                    "output_len=%d output_sha256=%s output_mode=%s request_count=%d",
+                    model,
+                    elapsed,
+                    len(stdout),
+                    _raw_output_digest(stdout),
+                    "json_schema" if response_schema is not None else "json_object",
+                    attempt + 1,
+                )
+                return parsed, content, stdout, attempt + 1
+
+            combined = (stderr or "") + (stdout or "")
+            self._log_process_failure(
+                model=model,
+                returncode=returncode,
+                elapsed=elapsed,
+                stdout=stdout,
+                stderr=stderr,
+                attempt=attempt + 1,
+                response_schema=response_schema,
+            )
+            try:
+                self._raise_process_error(
+                    argv,
+                    returncode,
+                    stdout,
+                    stderr,
+                    response_schema=response_schema,
+                    request_count=attempt + 1,
+                )
+            except _SchemaOutputUnsupported:
+                raise
+            except RuntimeError as error:
+                last_err = error
+            if attempt < MAX_CLI_RETRIES and _is_retryable(combined):
+                delay = RETRY_BASE_DELAY * (2**attempt)
+                log.info("Retryable error for %s, waiting %.0fs...", model, delay)
+                time.sleep(delay)
+                continue
+            break
+
+        raise last_err  # type: ignore[misc]
+
+    def _log_process_failure(
+        self,
+        *,
+        model: str,
+        returncode: int,
+        elapsed: float | None,
+        stdout: str,
+        stderr: str,
+        attempt: int,
+        response_schema: JsonSchemaSpec | None,
+    ) -> None:
+        combined = (stderr or "") + (stdout or "")
+        category = _process_error_category(combined, response_schema)
+        elapsed_text = "unknown" if elapsed is None else f"{elapsed:.1f}s"
+        log.warning(
+            "CLI judge failed: backend=cli model=%s exit=%d elapsed=%s "
+            "stdout_len=%d stderr_len=%d output_sha256=%s output_mode=%s "
+            "request_count=%d error_category=%s",
+            model,
+            returncode,
+            elapsed_text,
+            len(stdout or ""),
+            len(stderr or ""),
+            _raw_output_digest(combined),
+            "json_schema" if response_schema is not None else "json_object",
+            attempt,
+            category,
+        )
+
+    def _raise_process_error(
+        self,
+        argv: list[str],
+        returncode: int,
+        stdout: str,
+        stderr: str,
+        *,
+        response_schema: JsonSchemaSpec | None,
+        request_count: int,
+    ) -> None:
+        combined = (stderr or "") + (stdout or "")
+        if response_schema is not None:
+            reason = _explicit_schema_rejection_reason(combined)
+            if reason is not None:
+                raise _SchemaOutputUnsupported(
+                    "structured output is not supported by the local CLI",
+                    request_count,
+                )
+        raise RuntimeError(
+            f"{argv[0]} judge exited {returncode}: "
+            f"error_category={_process_error_category(combined, response_schema)} "
+            f"process_output_sha256={_raw_output_digest(combined)}"
+        )
+
+    def _decode_output(self, stdout: str, mode: str, *, strict: bool) -> tuple[dict, str]:
+        if strict and mode == "claude":
+            try:
+                envelope = json.loads(stdout)
+            except json.JSONDecodeError:
+                return {}, stdout
+            if not isinstance(envelope, dict) or "structured_output" not in envelope:
+                return {}, stdout
+            structured = envelope["structured_output"]
+            if isinstance(structured, str):
+                content = structured
+            else:
+                content = json.dumps(structured, ensure_ascii=False)
+            return _parse_exact_json_object(content), content
+
+        content = self._extract_text(stdout, mode)
+        if strict:
+            return _parse_exact_json_object(content), content
+        return _extract_json(content), content
+
+    def _run_with_cancel(
+        self, argv: list[str], stdin_text: str, env: dict[str, str]
+    ) -> tuple[str, str, int]:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            cwd=_JUDGE_CWD,
+        )
+        with self._procs_lock:
+            self._procs.add(proc)
+        try:
+
+            def _feed_stdin():
+                try:
+                    if stdin_text:
+                        proc.stdin.write(stdin_text)
+                    proc.stdin.close()
+                except (BrokenPipeError, OSError):
+                    pass
+
+            stdout_chunks: list[str] = []
+            stderr_chunks: list[str] = []
+
+            def _drain(pipe, chunks):
+                try:
+                    for chunk in iter(lambda: pipe.read(8192), ""):
+                        chunks.append(chunk)
+                except (ValueError, OSError):
+                    pass
+
+            writer = threading.Thread(target=_feed_stdin, daemon=True)
+            reader_out = threading.Thread(
+                target=_drain,
+                args=(proc.stdout, stdout_chunks),
+                daemon=True,
+            )
+            reader_err = threading.Thread(
+                target=_drain,
+                args=(proc.stderr, stderr_chunks),
+                daemon=True,
+            )
+            writer.start()
+            reader_out.start()
+            reader_err.start()
+
+            deadline = time.monotonic() + self._timeout
+            while proc.poll() is None:
+                if self._cancel and self._cancel.is_set():
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    raise InferenceCancelled("cancelled")
+                if time.monotonic() > deadline:
+                    proc.kill()
+                    raise subprocess.TimeoutExpired(argv, self._timeout)
+                time.sleep(0.5)
+
+            writer.join(timeout=5)
+            reader_out.join(timeout=5)
+            reader_err.join(timeout=5)
+            stdout = "".join(stdout_chunks)
+            stderr = "".join(stderr_chunks)
+            return stdout, stderr, proc.returncode
+        except InferenceCancelled:
+            raise
+        except Exception:
+            if proc.poll() is None:
+                proc.kill()
+            raise
+        finally:
+            with self._procs_lock:
+                self._procs.discard(proc)
+
+    def _build(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        *,
+        response_schema: JsonSchemaSpec | None = None,
+        schema_path: str | None = None,
+    ) -> tuple[list[str], str, str]:
         """Build (argv, stdin_text, mode) for the given judge model.
 
-        Routes by family: anthropic → `claude`, google → `gemini`, else → `codex`.
-        ``mode`` is "claude" (answer is inside a --output-format json envelope) or
-        "plain" (codex/gemini print the answer directly). The prompt is passed on
-        stdin in every case, to avoid OS argument-length limits on big digests.
+        Anthropic routes to ``claude`` and OpenAI routes to ``codex``. Other local
+        families fail closed. ``mode`` is "claude" (answer is inside a JSON
+        envelope) or "plain" (Codex prints the answer directly). The prompt is
+        passed on stdin to avoid OS argument-length limits on big digests.
         """
         fam = model_family(model)
         if fam == "anthropic":
             alias = _CLAUDE_MODEL_ALIASES.get(model, model)
-            # `--tools ""` is the definitive no-tools switch; --system-prompt
-            # replaces Claude Code's agent prompt with the pure judge prompt;
-            # --strict-mcp-config loads no MCP servers; --no-session-persistence
-            # avoids writing session files. Prompt is piped on stdin.
             argv = [
                 "claude",
                 "-p",
@@ -137,36 +566,50 @@ class CliJudgeClient:
                 "",
                 "--strict-mcp-config",
                 "--no-session-persistence",
+                "--safe-mode",
+                "--disable-slash-commands",
+                "--no-chrome",
             ]
+            if response_schema is not None:
+                argv += [
+                    "--json-schema",
+                    json.dumps(response_schema.schema, separators=(",", ":")),
+                ]
             if system:
                 argv += ["--system-prompt", system]
             return argv, user, "claude"
 
         if fam == "google":
-            # Gemini CLI. Prompt goes on stdin (Gemini reads it in non-TTY/headless
-            # mode) rather than as a -p argument, so a large digest can't hit the
-            # OS arg-length limit. No system-prompt flag (prepend it) and no
-            # "disable tools" flag, but default headless mode cannot auto-run tools
-            # unless --yolo is passed, which we never do. Plain-text output is just
-            # the answer (--output-format json has version-specific bugs).
-            prompt = f"{system}\n\n{user}" if system else user
-            argv = ["gemini", "-m", model]
-            return argv, prompt, "plain"
+            raise RuntimeError(
+                "Google local CLI judges are disabled until Gemini has a verified confined mode"
+            )
 
-        # openai / other → Codex CLI. Codex has no "disable tools" flag;
-        # --sandbox read-only is the guarantee it can't write or run anything.
-        # `-` makes `codex exec` read the prompt from stdin. Model is left to
-        # Codex's configured default to avoid model-id mismatches.
-        argv = ["codex", "exec", "--sandbox", "read-only", "-"]
+        if fam != "openai":
+            raise RuntimeError(
+                "The local CLI judge backend supports only Anthropic and OpenAI families"
+            )
+
+        argv = [
+            "codex",
+            "exec",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            *CODEX_CONFINED_ARGS,
+            "--model",
+            model,
+        ]
+        if response_schema is not None:
+            if schema_path is None:
+                raise ValueError("Codex schema mode requires an output schema file")
+            argv += ["--output-schema", schema_path]
+        argv += ["-C", _JUDGE_CWD, "-"]
         prompt = f"{system}\n\n{user}" if system else user
         return argv, prompt, "plain"
 
     def _extract_text(self, stdout: str, mode: str) -> str:
-        """Unwrap the assistant text from the CLI's stdout.
-
-        ``claude`` wraps the answer in a ``--output-format json`` envelope under
-        ``result``; ``plain`` (codex/gemini) prints the answer verbatim.
-        """
+        """Unwrap the assistant text from the CLI's stdout."""
         if mode == "claude":
             try:
                 env = json.loads(stdout)
@@ -177,7 +620,7 @@ class CliJudgeClient:
         return stdout
 
     def close(self) -> None:
-        pass
+        self.abort()
 
     def __enter__(self) -> "CliJudgeClient":
         return self

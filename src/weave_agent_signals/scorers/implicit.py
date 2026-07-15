@@ -24,6 +24,7 @@ def correction_density(session: SessionView) -> float:
 def score_session_implicit(session: SessionView) -> list[Score]:
     abandoned = is_abandoned(session)
     density = correction_density(session)
+    correction_free_rate = 1.0 - density
 
     total_steerings = sum(t.steering_count for t in session.turns)
     total_denials = sum(t.denial_count for t in session.turns)
@@ -42,24 +43,25 @@ def score_session_implicit(session: SessionView) -> list[Score]:
 
     return [
         Score(
-            scorer="implicit.correction_density",
-            value=round(density, 4),
+            scorer="implicit.correction_free_rate",
+            value=round(correction_free_rate, 4),
             tags=[],
             confidence=0.9,
             metadata={
                 "turn_count": len(session.turns),
                 "total_steerings": total_steerings,
                 "total_denials": total_denials,
+                "correction_density": density,
             },
             granularity="session",
             reason=density_reason,
         ),
         Score(
-            scorer="implicit.abandonment",
-            value=abandoned,
+            scorer="implicit.completion",
+            value=not abandoned,
             tags=["abandoned"] if abandoned else ["completed"],
             confidence=0.8,
-            metadata={},
+            metadata={"is_abandoned": abandoned},
             granularity="session",
             reason=abandon_reason,
         ),

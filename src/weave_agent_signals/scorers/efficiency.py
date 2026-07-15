@@ -14,7 +14,6 @@ class ErrorLoop:
     attempt_count: int
     similarity: float
     all_failed: bool
-    span_ids: list[str]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -29,7 +28,6 @@ class ErrorLoop:
 class RepeatedRead:
     path: str
     count: int
-    span_ids: list[str]
 
     def to_dict(self) -> dict[str, Any]:
         return {"path": self.path, "count": self.count}
@@ -76,7 +74,6 @@ def detect_error_loops(calls: list[ToolSpan], threshold: int = 3) -> list[ErrorL
                 attempt_count=len(group),
                 similarity=avg_sim,
                 all_failed=len(failed) == len(group),
-                span_ids=[t.span_id for t in group],
             )
         )
     return loops
@@ -124,7 +121,7 @@ def detect_repeated_reads(
                 reads.pop(path, None)
 
     return [
-        RepeatedRead(path=path, count=len(spans), span_ids=[s.span_id for s in spans])
+        RepeatedRead(path=path, count=len(spans))
         for path, spans in reads.items()
         if len(spans) >= 2
     ]

@@ -1,926 +1,309 @@
-"""FastAPI REST API wrapping the CLI operations (spec 07).
-
-Thin layer: every endpoint delegates to the same functions the CLI calls.
-Long-running ops run as background tasks with status polling.
-"""
+"""FastAPI composition root for evaluation runs and read-only inspection."""
 
 from __future__ import annotations
 
-import asyncio
-import logging
 import os
-from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+import threading
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager, asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
-from weave_agent_signals import alerts
+from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
 from weave_agent_signals.client import WeaveClient
-from weave_agent_signals.jobstore import JobStore
 from weave_agent_signals.judges.cli_backend import CliJudgeClient
-from weave_agent_signals.judges.inference import InferenceClient
-from weave_agent_signals.judges.rubrics import RUBRICS, SESSION_RUBRICS
-from weave_agent_signals.judges.runner import (
-    _BACKEND_ROSTERS,
-    judge_default_model,
-    judge_session,
-    judge_turn,
+from weave_agent_signals.judges.inference import ChatClient, InferenceClient
+from weave_agent_signals.patterns import coaching_digest
+from weave_agent_signals.routes.catalogs import create_catalogs_router
+from weave_agent_signals.routes.inspection import create_inspection_router
+from weave_agent_signals.routes.reviews import create_reviews_router
+from weave_agent_signals.routes.runs import create_runs_router
+from weave_agent_signals.run_config import EffectiveRunConfig, ModelDescriptor
+from weave_agent_signals.runs.cohort import discover_turn_cohort, hydrate_turn_cohort
+from weave_agent_signals.runs.promotion import ProjectFileAdapter
+from weave_agent_signals.runs.review import ReviewService
+from weave_agent_signals.runs.service import RunService
+from weave_agent_signals.runs.stages.judging import JudgingDependencies, run_judging_stage
+from weave_agent_signals.runs.stages.reflection import (
+    ReflectionDependencies,
+    run_reflection_stage,
 )
-from weave_agent_signals.models import Score, SessionView, TurnSpan
-from weave_agent_signals.patterns import (
-    ab_leaderboard,
-    aggregate_scores,
-    coaching_digest,
-    detect_regressions,
-)
-from weave_agent_signals.reflector import (
-    extract_artifacts,
-    make_cli_lm,
-    render_proposal_diff,
-    run_reflection,
-)
-from weave_agent_signals.runs import DataSelection, Run, RunStatus, RunStore
-from weave_agent_signals.scorers import score_session, score_turn
-
-log = logging.getLogger("weave_agent_signals.api")
+from weave_agent_signals.runs.stages.scoring import ScoringDependencies, run_scoring_stage
+from weave_agent_signals.runs.store import Run, RunStore
 
 load_dotenv()
 
-ENTITY = os.environ.get("WANDB_ENTITY", "mliu-wandb-weights-biases")
-PROJECT = os.environ.get("WANDB_PROJECT", "agent-sessions")
-PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.getcwd())
-
-# ---------------------------------------------------------------------------
-# Job store + Run store (SQLite-backed, persist across restarts)
-# ---------------------------------------------------------------------------
-
-_job_store = JobStore()
-_run_store = RunStore()
+_DEFAULT_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ApiDependencies:
+    """Application-owned services and their shared external client factory."""
+
+    run_service: RunService
+    review_service: ReviewService
+    client_factory: Callable[[], WeaveClient]
+    close: Callable[[], None]
 
 
-def _make_client() -> WeaveClient:
-    return WeaveClient(entity=ENTITY, project=PROJECT)
+class _LazyReference:
+    """Bind default services at startup so module import does not touch SQLite."""
+
+    def __init__(self) -> None:
+        self._value: object | None = None
+
+    def bind(self, value: object) -> None:
+        self._value = value
+
+    def clear(self) -> None:
+        self._value = None
+
+    def __getattr__(self, name: str) -> Any:
+        if self._value is None:
+            raise RuntimeError("API dependencies are not initialized")
+        return getattr(self._value, name)
 
 
-def _make_judge_client(backend: str | None):
+def _chat_client(
+    backend: str,
+    *,
+    entity: str,
+    project: str,
+) -> AbstractContextManager[ChatClient]:
     if backend == "cli":
         return CliJudgeClient()
-    return InferenceClient(entity=ENTITY, project=PROJECT, backend=backend)
+    return InferenceClient(entity=entity, project=project, backend=backend)
 
 
-def _turn_to_dict(turn: TurnSpan, *, include_children: bool = False) -> dict:
-    d = {
-        "trace_id": turn.trace_id,
-        "conversation_id": turn.conversation_id,
-        "started_at": turn.started_at.isoformat() if turn.started_at else None,
-        "ended_at": turn.ended_at.isoformat() if turn.ended_at else None,
-        "model": turn.model,
-        "input_tokens": turn.input_tokens,
-        "output_tokens": turn.output_tokens,
-        "cache_read_tokens": turn.cache_read_tokens,
-        "status_code": turn.status_code,
-        "config_version": turn.config_version,
-        "git_branch": turn.git_branch,
-        "effort_level": turn.effort_level,
-        "session_id": turn.session_id,
-        "steering_count": turn.steering_count,
-        "denial_count": turn.denial_count,
-        "tool_error_count": turn.tool_error_count,
-        "tool_call_count": len(turn.tool_calls),
-        "chat_span_count": len(turn.chat_spans),
-        "subagent_count": len(turn.subagents),
-        "user_input": turn.user_input,
-    }
-    if include_children:
-        d["tool_calls"] = [
-            {
-                "span_id": tc.span_id,
-                "tool_name": tc.tool_name,
-                "arguments": tc.arguments or "",
-                "result": tc.result or "",
-                "status_code": tc.status_code,
-                "started_at": tc.started_at.isoformat() if tc.started_at else None,
-                "ended_at": tc.ended_at.isoformat() if tc.ended_at else None,
-            }
-            for tc in turn.tool_calls
-        ]
-        d["chat_spans"] = [
-            {
-                "span_id": cs.span_id,
-                "model": cs.model,
-                "input_tokens": cs.input_tokens,
-                "output_tokens": cs.output_tokens,
-                "cache_read_tokens": cs.cache_read_tokens,
-                "finish_reason": cs.finish_reason,
-            }
-            for cs in turn.chat_spans
-        ]
-        d["subagents"] = [
-            {
-                "span_id": sa.span_id,
-                "agent_type": sa.agent_type,
-                "tool_call_count": len(sa.tool_calls),
-            }
-            for sa in turn.subagents
-        ]
-    return d
+def _build_default_dependencies(
+    *,
+    entity: str,
+    project: str,
+    project_root: Path,
+    db_path: str | Path | None,
+) -> ApiDependencies:
+    """Build production services once during application startup."""
+
+    store = RunStore(db_path)
+    executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="evaluation-run")
+
+    def client_factory() -> WeaveClient:
+        return WeaveClient(entity=entity, project=project)
+
+    def hydrate(cohort):
+        return hydrate_turn_cohort(cohort, client_factory=client_factory)
+
+    scoring_dependencies = ScoringDependencies(
+        store=store,
+        client_factory=client_factory,
+        hydrate_cohort=hydrate,
+    )
+
+    def scoring_stage(
+        run: Run,
+        config: EffectiveRunConfig,
+        cancel: threading.Event,
+    ) -> None:
+        run_scoring_stage(
+            run,
+            config,
+            cancel,
+            dependencies=scoring_dependencies,
+        )
+
+    def judging_stage(
+        run: Run,
+        config: EffectiveRunConfig,
+        cancel: threading.Event,
+    ) -> None:
+        run_judging_stage(
+            run,
+            config,
+            cancel,
+            dependencies=JudgingDependencies(
+                store=store,
+                client_factory=client_factory,
+                chat_client_factory=lambda: _chat_client(
+                    config.judge_backend,
+                    entity=entity,
+                    project=project,
+                ),
+                hydrate_cohort=hydrate,
+            ),
+        )
+
+    def model_client(
+        descriptor: ModelDescriptor,
+    ) -> AbstractContextManager[ChatClient]:
+        return _chat_client(
+            descriptor.backend,
+            entity=entity,
+            project=project,
+        )
+
+    reflection_dependencies = ReflectionDependencies(
+        store=store,
+        client_factory=client_factory,
+        adapter_factory=lambda: ProjectFileAdapter(project_root),
+        writer_client_factory=model_client,
+        evaluator_client_factory=model_client,
+        coaching_digest=coaching_digest,
+    )
+
+    def reflection_stage(
+        run: Run,
+        config: EffectiveRunConfig,
+        cancel: threading.Event,
+    ) -> None:
+        run_reflection_stage(
+            run,
+            config,
+            cancel,
+            dependencies=reflection_dependencies,
+        )
+
+    run_service = RunService(
+        store=store,
+        build_model_catalog=build_model_catalog,
+        build_rubric_catalog=build_rubric_catalog,
+        discover_cohort=lambda selection: discover_turn_cohort(
+            selection,
+            client_factory=client_factory,
+            entity=entity,
+            project=project,
+        ),
+        scoring_stage=scoring_stage,
+        judging_stage=judging_stage,
+        reflection_stage=reflection_stage,
+        executor=executor,
+    )
+    review_service = ReviewService(
+        store=store,
+        adapter_factory=lambda: ProjectFileAdapter(project_root),
+    )
+
+    def close() -> None:
+        executor.shutdown(wait=True, cancel_futures=True)
+        store.close()
+
+    return ApiDependencies(
+        run_service=run_service,
+        review_service=review_service,
+        client_factory=client_factory,
+        close=close,
+    )
 
 
-def _session_summary(conv_id: str, turns: list[TurnSpan]) -> dict:
-    ordered = sorted(turns, key=lambda t: t.started_at)
-    first = ordered[0] if ordered else None
-    last = ordered[-1] if ordered else None
-    models = sorted({t.model for t in ordered if t.model})
-    first_input = first.user_input if first else None
-    return {
-        "conversation_id": conv_id,
-        "session_id": first.session_id if first else None,
-        "turn_count": len(ordered),
-        "started_at": first.started_at.isoformat() if first else None,
-        "ended_at": last.ended_at.isoformat() if last and last.ended_at else None,
-        "model": models[0] if len(models) == 1 else ", ".join(models) if models else None,
-        "effort_level": first.effort_level if first else None,
-        "config_version": first.config_version if first else None,
-        "git_branch": first.git_branch if first else None,
-        "total_tokens": sum(t.input_tokens + t.output_tokens for t in ordered),
-        "total_tool_calls": sum(t.tool_error_count for t in ordered),
-        "input_preview": first_input,
-    }
+def _register_frontend(application: FastAPI, frontend_dist: Path) -> None:
+    if not frontend_dist.is_dir():
+        return
+    resolved_dist = frontend_dist.resolve()
+    assets = resolved_dist / "assets"
+    if assets.is_dir():
+        application.mount("/assets", StaticFiles(directory=assets), name="assets")
 
-
-def _group_turns_by_session(turns: list[TurnSpan]) -> dict[str, list[TurnSpan]]:
-    by_conv: dict[str, list[TurnSpan]] = {}
-    for t in turns:
-        by_conv.setdefault(t.conversation_id, []).append(t)
-    return by_conv
-
-
-def _stamp_metadata(score: Score, *, config_version, git_branch, run_time) -> None:
-    score.metadata.setdefault("config_version", config_version)
-    score.metadata.setdefault("git_branch", git_branch)
-    if run_time is not None:
-        score.metadata.setdefault("turn_started_at", run_time.isoformat())
-
-
-# ---------------------------------------------------------------------------
-# Request models
-# ---------------------------------------------------------------------------
-
-
-class MonitorRequest(BaseModel):
-    limit: int = 1000
-    alert_webhook: str | None = None
-    dry_run: bool = False
-
-
-class SelectionRequest(BaseModel):
-    since: str | None = None
-    until: str | None = None
-    session_ids: list[str] | None = None
-    excluded_session_ids: list[str] | None = None
-
-
-class AdvanceRequest(BaseModel):
-    judge_backend: str = "cli"
-    panel_size: int = 1
-    rubrics: list[str] | None = None
-    model: str = "gpt-4o"
-    iterations: int = 3
-    dry_run: bool = False
-    force: bool = False
-
-
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
-
-app = FastAPI(title="weave-agent-signals", version="0.1.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ---------------------------------------------------------------------------
-# Read-only endpoints
-# ---------------------------------------------------------------------------
-
-
-def _parse_dt(s: str | None) -> datetime | None:
-    if not s:
-        return None
-    try:
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except ValueError:
-        pass
-    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
+    @application.get("/{full_path:path}", include_in_schema=False)
+    def serve_spa(full_path: str) -> FileResponse:
+        requested = (resolved_dist / full_path).resolve()
         try:
-            dt = datetime.strptime(s, fmt)
-            return dt.replace(tzinfo=timezone.utc)
+            requested.relative_to(resolved_dist)
         except ValueError:
-            continue
-    raise HTTPException(400, f"Cannot parse datetime: {s}")
-
-
-@app.get("/api/turns")
-def get_turns(since: str | None = None, limit: int = Query(default=100, le=500)):
-    since_dt = _parse_dt(since) or (datetime.now(timezone.utc) - timedelta(hours=72))
-    with _make_client() as client:
-        turns = client.query_turns(limit=limit, since=since_dt)
-        for t in turns:
-            client.hydrate_turn_children(t)
-    return {"turns": [_turn_to_dict(t) for t in turns]}
-
-
-@app.get("/api/turns/{trace_id}")
-def get_turn(trace_id: str):
-    with _make_client() as client:
-        turns = client.query_turns(limit=500, include_details=True)
-        match = [t for t in turns if t.trace_id == trace_id]
-        if not match:
-            raise HTTPException(404, f"Turn {trace_id} not found")
-        turn = match[0]
-        client.hydrate_turn_children(turn)
-        feedback = client.query_all_feedback(turn.ref_for(ENTITY, PROJECT))
-    result = _turn_to_dict(turn, include_children=True)
-    result["feedback"] = feedback
-    return result
-
-
-@app.get("/api/sessions")
-def get_sessions(since: str | None = None, limit: int = Query(default=20, le=100)):
-    since_dt = _parse_dt(since) or (datetime.now(timezone.utc) - timedelta(hours=168))
-    with _make_client() as client:
-        turns = client.query_turns(limit=500, since=since_dt)
-    by_conv = _group_turns_by_session(turns)
-    sessions = [_session_summary(cid, ts) for cid, ts in by_conv.items()]
-    sessions.sort(key=lambda s: s["started_at"] or "", reverse=True)
-    return {"sessions": sessions[:limit]}
-
-
-@app.get("/api/sessions/{conversation_id}")
-def get_session(conversation_id: str):
-    with _make_client() as client:
-        session = client.query_session(conversation_id)
-        for t in session.turns:
-            client.hydrate_turn_children(t)
-        sess_feedback = client.query_all_feedback(session.ref_for(ENTITY, PROJECT))
-        turn_feedback = {}
-        for t in session.turns:
-            fb = client.query_all_feedback(t.ref_for(ENTITY, PROJECT))
-            if fb:
-                turn_feedback[t.trace_id] = fb
-    return {
-        "conversation_id": session.conversation_id,
-        "config_version": session.config_version,
-        "git_branch": session.git_branch,
-        "total_tokens": session.total_tokens,
-        "turn_count": len(session.turns),
-        "turns": [_turn_to_dict(t, include_children=True) for t in session.turns],
-        "session_feedback": sess_feedback,
-        "turn_feedback": turn_feedback,
-    }
-
-
-@app.get("/api/feedback")
-def get_feedback(
-    trace_id: str | None = None,
-    ref: str | None = None,
-    type_prefix: str = "weave_agent_signals.",
-):
-    if not trace_id and not ref:
-        raise HTTPException(400, "Provide trace_id or ref")
-    if not ref and trace_id:
-        ref = f"weave:///{ENTITY}/{PROJECT}/agent_turn/{trace_id}"
-    with _make_client() as client:
-        feedback = client.query_all_feedback(ref)
-    if type_prefix:
-        feedback = [f for f in feedback if f.get("feedback_type", "").startswith(type_prefix)]
-    return {"feedback": feedback}
-
-
-@app.get("/api/analyze")
-def get_analysis(limit: int = Query(default=1000, le=5000)):
-    with _make_client() as client:
-        feedback = client.query_project_feedback(limit=limit)
-    if not feedback:
-        return {"summary": [], "ab_leaderboard": [], "trends": [], "coaching_markdown": ""}
-
-    summaries = aggregate_scores(feedback)
-    summary_list = []
-    for scorer, s in sorted(summaries.items()):
-        summary_list.append(
-            {
-                "scorer": scorer,
-                "count": s.count,
-                "mean": round(s.mean, 4),
-                "ci": [round(s.ci[0], 4), round(s.ci[1], 4)],
-                "binary": s.binary,
-                "pass_rate": round(s.pass_rate, 4) if s.pass_rate is not None else None,
-                "tag_counts": dict(s.tag_counts),
-                "confident": s.confident,
-            }
-        )
-
-    ab = ab_leaderboard(feedback)
-    ab_list = []
-    for r in ab:
-        scores_dict = {}
-        for sc_name, sc in r.scores.items():
-            scores_dict[sc_name] = {"mean": round(sc.mean, 4), "count": sc.count}
-        ab_list.append(
-            {
-                "config_version": r.config_version,
-                "turn_count": r.turn_count,
-                "scores": scores_dict,
-            }
-        )
-
-    trends = detect_regressions(feedback)
-    trend_list = [
-        {
-            "scorer": r["scorer"],
-            "direction": r["direction"],
-            "older_mean": round(r["older_mean"], 4),
-            "recent_mean": round(r["recent_mean"], 4),
-            "delta": round(r["delta"], 4),
-            "sample_count": r["sample_count"],
-            "significant": r["significant"],
-        }
-        for r in trends
-    ]
-
-    coaching = coaching_digest(feedback)
-
-    return {
-        "summary": summary_list,
-        "ab_leaderboard": ab_list,
-        "trends": trend_list,
-        "coaching_markdown": coaching,
-    }
-
-
-@app.get("/api/artifacts")
-def get_artifacts():
-    arts = extract_artifacts(PROJECT_ROOT)
-    return {"artifacts": [{"name": a.name, "path": a.path, "content": a.content} for a in arts]}
-
-
-@app.get("/api/rubrics")
-def get_rubrics():
-    all_rubrics = {**RUBRICS, **SESSION_RUBRICS}
-    return {
-        "rubrics": [
-            {
-                "name": name,
-                "scorer_name": r.scorer_name,
-                "description": r.description,
-                "criteria": dict(r.criteria),
-                "granularity": "session" if name in SESSION_RUBRICS else "turn",
-            }
-            for name, r in all_rubrics.items()
-        ]
-    }
-
-
-@app.get("/api/models")
-def get_models():
-    data = {
-        backend: {
-            "default": roster["default"],
-            "poll": roster["poll"],
-            "escalation": roster["escalation"],
-        }
-        for backend, roster in _BACKEND_ROSTERS.items()
-    }
-    return JSONResponse(
-        content=data,
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-_MONITOR_STATE_FILE = str(Path.home() / ".weave-agent-signals" / "monitor_seen.json")
-
-
-@app.get("/api/monitor/state")
-def get_monitor_state():
-    seen = alerts.load_seen(_MONITOR_STATE_FILE)
-    return {"seen_keys": sorted(seen), "count": len(seen)}
-
-
-# ---------------------------------------------------------------------------
-# Job endpoints
-# ---------------------------------------------------------------------------
-
-
-@app.get("/api/jobs")
-def list_jobs():
-    return {"jobs": _job_store.list(50)}
-
-
-@app.get("/api/jobs/{job_id}")
-def get_job(job_id: str):
-    job = _job_store.get(job_id)
-    if not job:
-        raise HTTPException(404, f"Job {job_id} not found")
-    return job
-
-
-@app.post("/api/jobs/monitor")
-async def submit_monitor(req: MonitorRequest):
-    job = _job_store.create("monitor")
-    asyncio.get_running_loop().run_in_executor(None, _run_monitor_job, job["job_id"], req)
-    return {"job_id": job["job_id"], "status": "running"}
-
-
-# ---------------------------------------------------------------------------
-# Run endpoints and pipeline execution (spec 09)
-#
-# A run moves through a fixed lifecycle: created -> scoring -> judging ->
-# reflecting -> complete (see runs.py). Each step's work runs the same
-# scorer/judge/reflector logic as the _run_score_job/_run_judge_job/
-# _run_reflect_job job handlers above, but reads its data from the run's
-# `data_selection` (date range + included/excluded session ids) instead of
-# `since`/`limit` request params, and reports progress/results onto the run
-# instead of a job.
-# ---------------------------------------------------------------------------
-
-# Linear pipeline order. Shared by the advance endpoint (compute the next
-# step) and _execute_run_step's auto-run cascade (compute what comes after a
-# step that just finished). COMPLETE/FAILED have no entry: both are terminal.
-_NEXT_STATUS: dict[RunStatus, RunStatus] = {
-    RunStatus.CREATED: RunStatus.SCORING,
-    RunStatus.SCORING: RunStatus.JUDGING,
-    RunStatus.JUDGING: RunStatus.REFLECTING,
-    RunStatus.REFLECTING: RunStatus.COMPLETE,
-}
-
-# Statuses whose entry triggers background work, as opposed to COMPLETE, which
-# is just a terminal marker set after reflecting has already produced a result.
-_EXECUTABLE_STATUSES = (RunStatus.SCORING, RunStatus.JUDGING, RunStatus.REFLECTING)
-
-
-def _serialize_run(run: Run) -> dict:
-    d = asdict(run)  # recursively converts the nested DataSelection too
-    d["status"] = run.status.value
-    return d
-
-
-@app.post("/api/runs")
-def create_run():
-    run = _run_store.create()
-    return _serialize_run(run)
-
-
-@app.get("/api/runs")
-def list_runs():
-    return {"runs": [_serialize_run(r) for r in _run_store.list()]}
-
-
-@app.get("/api/runs/{run_id}")
-def get_run(run_id: str):
-    run = _run_store.get(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    return _serialize_run(run)
-
-
-@app.put("/api/runs/{run_id}/selection")
-def set_run_selection(run_id: str, req: SelectionRequest):
-    run = _run_store.get(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    _run_store.set_selection(
-        run_id,
-        since=req.since,
-        until=req.until,
-        session_ids=req.session_ids,
-        excluded_session_ids=req.excluded_session_ids,
-    )
-    return _serialize_run(_run_store.get(run_id))
-
-
-@app.post("/api/runs/{run_id}/advance")
-async def advance_run(run_id: str, req: AdvanceRequest | None = None):
-    run = _run_store.get(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    if req is None:
-        req = AdvanceRequest()
-
-    next_status = _NEXT_STATUS.get(run.status)
-    if next_status is None:
-        raise HTTPException(status_code=400, detail=f"Cannot advance from {run.status.value}")
-
-    if run.status == RunStatus.CREATED and run.data_selection is None:
-        raise HTTPException(status_code=400, detail="Data selection required before advancing")
-
-    try:
-        _run_store.update(run_id, status=next_status)
-    except ValueError as exc:
-        # RunStore's transition check is atomic (see runs.py), so this only
-        # fires when a concurrent advance on the same run already moved its
-        # status between our `get()` above and this `update()` — a real race,
-        # not a bug. Surface it as a conflict instead of an unhandled 500.
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if next_status in _EXECUTABLE_STATUSES:
-        loop = asyncio.get_running_loop()
-        loop.run_in_executor(None, _execute_run_step, run_id, next_status, req)
-
-    return _serialize_run(_run_store.get(run_id))
-
-
-def _execute_run_step(run_id: str, step_status: RunStatus, req: AdvanceRequest) -> None:
-    try:
-        if step_status == RunStatus.SCORING:
-            _run_scoring_step(run_id, req)
-        elif step_status == RunStatus.JUDGING:
-            _run_judging_step(run_id, req)
-        elif step_status == RunStatus.REFLECTING:
-            _run_reflecting_step(run_id, req)
-
-        # Auto-advance: recurse into the next step until one fails or the
-        # pipeline reaches a non-executable status (COMPLETE).
-        run = _run_store.get(run_id)
-        if run and run.auto_run and run.status != RunStatus.FAILED:
-            next_next = _NEXT_STATUS.get(run.status)
-            if next_next:
-                _run_store.update(run_id, status=next_next)
-                if next_next in _EXECUTABLE_STATUSES:
-                    _execute_run_step(run_id, next_next, req)
-    except Exception as exc:
-        log.warning("Run %s step %s failed: %s", run_id, step_status.value, exc)
-        _run_store.update(run_id, status=RunStatus.FAILED, error=str(exc))
-
-
-def _select_turns_for_run(client: WeaveClient, selection: DataSelection) -> list[TurnSpan]:
-    """Fetch + filter turns per a run's data selection.
-
-    A run's scope is defined entirely by the selection (date range, explicit
-    session id include/exclude) rather than a page `limit`, so this paginates
-    to completion instead of capping at a single page. `until` and session id
-    filtering both happen client-side: the spans query has no `until` bound
-    and no multi-id filter (see client.py).
-    """
-    since_dt = _parse_dt(selection.since)
-    until_dt = _parse_dt(selection.until)
-    turns = client.query_turns_paginated(page_size=500, since=since_dt)
-    if until_dt:
-        turns = [t for t in turns if t.started_at <= until_dt]
-    if selection.session_ids:
-        wanted = set(selection.session_ids)
-        turns = [t for t in turns if t.conversation_id in wanted]
-    if selection.excluded_session_ids:
-        excluded = set(selection.excluded_session_ids)
-        turns = [t for t in turns if t.conversation_id not in excluded]
-    return turns
-
-
-def _sessions_for_run(turns: list[TurnSpan]) -> dict[str, SessionView]:
-    """Group a run's selected turns into per-conversation SessionViews."""
-    sessions: dict[str, SessionView] = {}
-    for conv_id, sess_turns in _group_turns_by_session(turns).items():
-        ordered = sorted(sess_turns, key=lambda t: t.started_at)
-        sessions[conv_id] = SessionView(
-            conversation_id=conv_id,
-            turns=ordered,
-            config_version=ordered[0].config_version if ordered else None,
-            git_branch=ordered[0].git_branch if ordered else None,
-        )
-    return sessions
-
-
-def _run_data_selection(run_id: str) -> DataSelection:
-    run = _run_store.get(run_id)
-    if run is None or run.data_selection is None:
-        raise ValueError(f"Run {run_id} has no data selection")
-    return run.data_selection
-
-
-def _run_scoring_step(run_id: str, req: AdvanceRequest) -> None:
-    selection = _run_data_selection(run_id)
-    with _make_client() as client:
-        turns = _select_turns_for_run(client, selection)
-        sessions = _sessions_for_run(turns)
-        _run_store.update(run_id, scoring_progress={"total": len(turns), "scored": 0, "written": 0})
-
-        if not turns:
-            _run_store.update(
-                run_id,
-                scoring_result={
-                    "turns_scored": 0,
-                    "sessions_scored": 0,
-                    "scores_written": 0,
-                    "errors": 0,
-                    "dry_run": req.dry_run,
-                },
+            requested = resolved_dist / "index.html"
+        if requested.is_file():
+            return FileResponse(requested)
+        return FileResponse(resolved_dist / "index.html")
+
+
+def create_app(
+    *,
+    dependencies: ApiDependencies | None = None,
+    entity: str | None = None,
+    project: str | None = None,
+    project_root: str | Path | None = None,
+    db_path: str | Path | None = None,
+    frontend_dist: str | Path | None = None,
+) -> FastAPI:
+    """Create an app with injected services or lazily built production services."""
+
+    resolved_entity = entity or os.environ.get("WANDB_ENTITY", "weave-team")
+    resolved_project = project or os.environ.get("WANDB_PROJECT", "agent-sessions")
+    resolved_root = Path(project_root or os.environ.get("PROJECT_ROOT", os.getcwd())).expanduser()
+    resolved_db = db_path or os.environ.get("WEAVE_AGENT_SIGNALS_RUN_DB")
+
+    run_reference = _LazyReference()
+    review_reference = _LazyReference()
+    client_reference = _LazyReference()
+    if dependencies is not None:
+        run_reference.bind(dependencies.run_service)
+        review_reference.bind(dependencies.review_service)
+        client_reference.bind(dependencies.client_factory)
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        active = dependencies
+        if active is None:
+            active = _build_default_dependencies(
+                entity=resolved_entity,
+                project=resolved_project,
+                project_root=resolved_root,
+                db_path=resolved_db,
             )
-            return
+            run_reference.bind(active.run_service)
+            review_reference.bind(active.review_service)
+            client_reference.bind(active.client_factory)
+        application.state.dependencies = active
+        try:
+            active.run_service.recover_interrupted_runs()
+            yield
+        finally:
+            active.close()
+            run_reference.clear()
+            review_reference.clear()
+            client_reference.clear()
 
-        written = 0
-        errors = 0
-        for i, turn in enumerate(turns):
-            try:
-                client.hydrate_turn_children(turn)
-                turn_ref = turn.ref_for(ENTITY, PROJECT)
-                for s in score_turn(turn):
-                    _stamp_metadata(
-                        s,
-                        config_version=turn.config_version,
-                        git_branch=turn.git_branch,
-                        run_time=turn.started_at,
-                    )
-                    if not req.dry_run:
-                        ft = f"weave_agent_signals.{s.scorer}"
-                        existing = client.query_existing_feedback(turn_ref, ft)
-                        if existing and not req.force:
-                            continue
-                        if existing and req.force:
-                            client.delete_feedback_ids(existing)
-                        client.write_score(s, turn_ref)
-                        written += 1
-            except Exception as e:
-                errors += 1
-                log.warning("Run %s score error on %s: %s", run_id, turn.trace_id[:12], e)
-            _run_store.update(
-                run_id,
-                scoring_progress={"total": len(turns), "scored": i + 1, "written": written},
-            )
-
-        for session in sessions.values():
-            try:
-                sess_ref = session.ref_for(ENTITY, PROJECT)
-                run_time = session.turns[0].started_at if session.turns else None
-                for s in score_session(session):
-                    _stamp_metadata(
-                        s,
-                        config_version=session.config_version,
-                        git_branch=session.git_branch,
-                        run_time=run_time,
-                    )
-                    if not req.dry_run:
-                        ft = f"weave_agent_signals.{s.scorer}"
-                        existing = client.query_existing_feedback(sess_ref, ft)
-                        if existing and not req.force:
-                            continue
-                        if existing and req.force:
-                            client.delete_feedback_ids(existing)
-                        client.write_score(s, sess_ref)
-                        written += 1
-            except Exception:
-                errors += 1
-
-    _run_store.update(
-        run_id,
-        scoring_result={
-            "turns_scored": len(turns),
-            "sessions_scored": len(sessions),
-            "scores_written": written,
-            "errors": errors,
-            "dry_run": req.dry_run,
-        },
+    application = FastAPI(
+        title="weave-agent-signals",
+        version="0.1.0",
+        lifespan=lifespan,
     )
-
-
-def _run_judging_step(run_id: str, req: AdvanceRequest) -> None:
-    selection = _run_data_selection(run_id)
-    with _make_client() as client:
-        turns = _select_turns_for_run(client, selection)
-        sessions = _sessions_for_run(turns)
-        _run_store.update(run_id, judging_progress={"total": len(turns), "judged": 0, "written": 0})
-
-        if not turns:
-            _run_store.update(
-                run_id,
-                judging_result={
-                    "turns_judged": 0,
-                    "scores_written": 0,
-                    "errors": 0,
-                    "dry_run": req.dry_run,
-                },
-            )
-            return
-
-        for t in turns:
-            try:
-                client.hydrate_turn_children(t)
-            except Exception:
-                pass
-
-        turn_rubrics = None
-        session_rubrics = None
-        if req.rubrics:
-            turn_rubrics = [RUBRICS[n] for n in req.rubrics if n in RUBRICS]
-            session_rubrics = [SESSION_RUBRICS[n] for n in req.rubrics if n in SESSION_RUBRICS]
-
-        written = 0
-        errors = 0
-
-        with _make_judge_client(req.judge_backend) as inference:
-            for i, turn in enumerate(turns):
-                try:
-                    turn_ref = turn.ref_for(ENTITY, PROJECT)
-                    scores = judge_turn(turn, inference, rubrics=turn_rubrics or None)
-                    for s in scores:
-                        _stamp_metadata(
-                            s,
-                            config_version=turn.config_version,
-                            git_branch=turn.git_branch,
-                            run_time=turn.started_at,
-                        )
-                        if not req.dry_run:
-                            ft = f"weave_agent_signals.{s.scorer}"
-                            existing = client.query_existing_feedback(turn_ref, ft)
-                            if existing and not req.force:
-                                continue
-                            if existing and req.force:
-                                client.delete_feedback_ids(existing)
-                            client.write_score(s, turn_ref)
-                            written += 1
-                except Exception as e:
-                    errors += 1
-                    log.warning("Run %s judge error on %s: %s", run_id, turn.trace_id[:12], e)
-                _run_store.update(
-                    run_id,
-                    judging_progress={"total": len(turns), "judged": i + 1, "written": written},
-                )
-
-            for session in sessions.values():
-                try:
-                    scores = judge_session(
-                        session,
-                        inference,
-                        rubrics=session_rubrics or None,
-                        panel_size=req.panel_size,
-                    )
-                    sess_ref = session.ref_for(ENTITY, PROJECT)
-                    run_time = session.turns[0].started_at if session.turns else None
-                    for s in scores:
-                        _stamp_metadata(
-                            s,
-                            config_version=session.config_version,
-                            git_branch=session.git_branch,
-                            run_time=run_time,
-                        )
-                        if not req.dry_run:
-                            ft = f"weave_agent_signals.{s.scorer}"
-                            existing = client.query_existing_feedback(sess_ref, ft)
-                            if existing and not req.force:
-                                continue
-                            if existing and req.force:
-                                client.delete_feedback_ids(existing)
-                            client.write_score(s, sess_ref)
-                            written += 1
-                except Exception:
-                    errors += 1
-
-    _run_store.update(
-        run_id,
-        judging_result={
-            "turns_judged": len(turns),
-            "scores_written": written,
-            "errors": errors,
-            "dry_run": req.dry_run,
-        },
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:5173"],
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
-
-
-# A run's scope is bounded by its data selection, not a feedback page size.
-# Fetch generously and filter down to this run's turn/session refs
-# client-side, since the feedback API has no way to scope a query to a set
-# of refs.
-_REFLECT_FEEDBACK_LIMIT = 5000
-
-
-def _run_reflecting_step(run_id: str, req: AdvanceRequest) -> None:
-    selection = _run_data_selection(run_id)
-    with _make_client() as client:
-        turns = _select_turns_for_run(client, selection)
-        sessions = _sessions_for_run(turns)
-        valid_refs = {t.ref_for(ENTITY, PROJECT) for t in turns}
-        valid_refs |= {s.ref_for(ENTITY, PROJECT) for s in sessions.values()}
-        all_feedback = client.query_project_feedback(limit=_REFLECT_FEEDBACK_LIMIT)
-
-    feedback = [fb for fb in all_feedback if fb.get("weave_ref") in valid_refs]
-
-    if not feedback:
-        _run_store.update(
-            run_id, reflecting_result={"proposal": None, "reason": "No feedback found"}
+    application.include_router(
+        create_catalogs_router(
+            build_model_catalog=build_model_catalog,
+            build_rubric_catalog=build_rubric_catalog,
         )
-        return
-
-    coaching = coaching_digest(feedback)
-    originals = extract_artifacts(PROJECT_ROOT)
-    if not originals:
-        _run_store.update(
-            run_id, reflecting_result={"proposal": None, "reason": "No artifacts found"}
-        )
-        return
-
-    if req.dry_run:
-        _run_store.update(
-            run_id,
-            reflecting_result={
-                "proposal": None,
-                "reason": "Dry run — skipping reflection",
-                "coaching_markdown": coaching,
-                "artifact_count": len(originals),
-                "feedback_count": len(feedback),
-                "dry_run": True,
-            },
-        )
-        return
-
-    _run_store.update(
-        run_id, reflecting_progress={"phase": "reflecting", "iterations": req.iterations}
     )
-
-    cli_lm = make_cli_lm() if req.judge_backend == "cli" else None
-    with _make_judge_client(req.judge_backend) as judge:
-        proposal = run_reflection(
-            project_root=PROJECT_ROOT,
-            feedback=feedback,
-            coaching_text=coaching,
-            judge_client=judge,
-            judge_model=judge_default_model(judge),
-            model=req.model,
-            max_iterations=req.iterations,
-            reflection_lm=cli_lm,
+    application.include_router(
+        create_runs_router(
+            cast(RunService, run_reference),
+            cast(ReviewService, review_reference),
         )
-
-    if proposal is None:
-        _run_store.update(
-            run_id, reflecting_result={"proposal": None, "reason": "No improvements proposed"}
-        )
-        return
-
-    diff = render_proposal_diff(originals, proposal)
-    _run_store.update(
-        run_id,
-        reflecting_result={
-            "diff": diff,
-            "rationale": proposal.rationale,
-            "score_delta": proposal.score_delta,
-            "artifacts": [
-                {"name": a.name, "path": a.path, "content": a.content} for a in proposal.artifacts
-            ],
-            "coaching_markdown": coaching,
-        },
     )
+    application.include_router(create_reviews_router(cast(ReviewService, review_reference)))
+
+    def client_factory() -> WeaveClient:
+        return cast(Callable[[], WeaveClient], client_reference._value)()
+
+    application.include_router(create_inspection_router(client_factory))
+    _register_frontend(
+        application,
+        Path(frontend_dist) if frontend_dist is not None else _DEFAULT_FRONTEND_DIST,
+    )
+    return application
 
 
-@app.post("/api/runs/{run_id}/apply")
-def apply_run_reflection(run_id: str):
-    run = _run_store.get(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    result = run.reflecting_result
-    if not result or not result.get("artifacts"):
-        raise HTTPException(status_code=400, detail="Run has no reflection artifacts to apply")
-
-    for artifact in result["artifacts"]:
-        path = os.path.realpath(os.path.join(PROJECT_ROOT, artifact["path"]))
-        if not path.startswith(os.path.realpath(PROJECT_ROOT) + os.sep):
-            raise HTTPException(
-                status_code=400, detail=f"Artifact path escapes project root: {artifact['path']}"
-            )
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w") as f:
-            f.write(artifact["content"])
-
-    return {"applied": [a["path"] for a in result["artifacts"]]}
-
-
-# ---------------------------------------------------------------------------
-# Static file serving (production: serves frontend/dist/)
-# ---------------------------------------------------------------------------
-
-_frontend_dist = Path(__file__).parent.parent.parent / "frontend" / "dist"
-if _frontend_dist.is_dir():
-    app.mount("/assets", StaticFiles(directory=_frontend_dist / "assets"), name="assets")
-
-    @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
-        file_path = (_frontend_dist / full_path).resolve()
-        if not str(file_path).startswith(str(_frontend_dist.resolve())):
-            return FileResponse(_frontend_dist / "index.html")
-        if file_path.is_file():
-            return FileResponse(file_path)
-        return FileResponse(_frontend_dist / "index.html")
+# Default resources are intentionally created by the lifespan, not by import.
+app = create_app()

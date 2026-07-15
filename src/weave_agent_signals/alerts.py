@@ -2,8 +2,8 @@
 
 Turns significant regressions (from patterns.py) into messages and sends them to
 a log line and, optionally, a webhook (e.g. a Slack incoming webhook). A small
-state file dedups by a stable key so a scheduled run doesn't re-alert the same
-regression every time it fires.
+state file tracks active alert keys so a scheduled run does not repeat an
+ongoing regression but can alert again after recovery.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ log = logging.getLogger("weave_agent_signals.monitor")
 
 @dataclass
 class Alert:
-    key: str  # stable id, used to dedup across scheduled runs
+    key: str  # stable id for one active regression class
     text: str  # human-readable message
 
 
@@ -72,20 +72,22 @@ def send(alerts: list[Alert], *, webhook: str | None = None) -> list[Alert]:
     return delivered
 
 
-def load_seen(path: str | None) -> set[str]:
+def load_active(path: str | None) -> set[str]:
     if not path or not Path(path).exists():
         return set()
     try:
         data = json.loads(Path(path).read_text())
     except (OSError, ValueError, TypeError):  # ValueError covers JSON + UTF-8 decode
         return set()
-    return set(data) if isinstance(data, list) else set()
+    if not isinstance(data, list) or any(not isinstance(item, str) for item in data):
+        return set()
+    return set(data)
 
 
-def save_seen(path: str, seen: set[str]) -> None:
+def save_active(path: str, active: set[str]) -> None:
     try:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(sorted(seen)))
+        p.write_text(json.dumps(sorted(active)))
     except OSError as e:  # a bad state path must not crash the monitor after alerting
         log.warning("Could not persist alert state to %s: %s", path, e)

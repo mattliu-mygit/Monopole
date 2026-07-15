@@ -22,7 +22,6 @@ class TestRunOutcome:
     skipped: int | None = None
     total: int | None = None
     duration_s: float | None = None
-    raw_summary: str = ""
 
     @property
     def success(self) -> bool:
@@ -339,86 +338,81 @@ def classify_command(raw_cmd: str) -> str | None:
 # --- Framework detection ---
 
 
-def _detect_test_framework(cmd: str) -> str:
-    cmd_lower = cmd.lower()
-    if "pytest" in cmd_lower:
-        return "pytest"
-    if "jest" in cmd_lower or "vitest" in cmd_lower:
-        return "jest"
-    if "cargo test" in cmd_lower:
-        return "cargo"
-    if "go test" in cmd_lower:
-        return "go"
-    if "rspec" in cmd_lower:
-        return "rspec"
-    if "unittest" in cmd_lower:
-        return "unittest"
-    if "npm test" in cmd_lower:
-        return "jest"
+_TEST_FRAMEWORK_MATCHERS: tuple[tuple[str | re.Pattern[str], str], ...] = (
+    ("pytest", "pytest"),
+    ("jest", "jest"),
+    ("vitest", "jest"),
+    ("cargo test", "cargo"),
+    ("go test", "go"),
+    ("rspec", "rspec"),
+    ("unittest", "unittest"),
+    ("npm test", "jest"),
+)
+
+_BUILD_TOOL_MATCHERS: tuple[tuple[str | re.Pattern[str], str], ...] = (
+    ("tsc", "tsc"),
+    ("cargo build", "cargo"),
+    ("go build", "go"),
+    ("npm run build", "npm"),
+    (re.compile(r"\bg(?:cc|\+\+)\b"), "gcc"),
+    ("make", "make"),
+)
+
+_INSTALL_TOOL_MATCHERS: tuple[tuple[str | re.Pattern[str], str], ...] = (
+    ("uv ", "uv"),
+    ("pip install", "pip"),
+    ("poetry", "poetry"),
+    ("pnpm", "pnpm"),
+    ("npm", "npm"),
+    ("yarn", "yarn"),
+    ("cargo add", "cargo"),
+    ("go get", "go"),
+    ("go mod", "go"),
+    ("bundle", "bundler"),
+)
+
+_LINT_TOOL_MATCHERS: tuple[tuple[str | re.Pattern[str], str], ...] = (
+    ("ruff", "ruff"),
+    ("eslint", "eslint"),
+    ("black", "black"),
+    ("prettier", "prettier"),
+    ("flake8", "flake8"),
+    ("pylint", "pylint"),
+    ("clippy", "clippy"),
+    ("golangci-lint", "golangci-lint"),
+    ("pyright", "pyright"),
+    ("mypy", "mypy"),
+)
+
+
+def _first_match(
+    command: str,
+    ordered_matchers: tuple[tuple[str | re.Pattern[str], str], ...],
+) -> str:
+    command_lower = command.lower()
+    for matcher, label in ordered_matchers:
+        if isinstance(matcher, str):
+            if matcher in command_lower:
+                return label
+        elif matcher.search(command):
+            return label
     return "unknown"
+
+
+def _detect_test_framework(cmd: str) -> str:
+    return _first_match(cmd, _TEST_FRAMEWORK_MATCHERS)
 
 
 def _detect_build_tool(cmd: str) -> str:
-    cmd_lower = cmd.lower()
-    if "tsc" in cmd_lower:
-        return "tsc"
-    if "cargo build" in cmd_lower:
-        return "cargo"
-    if "go build" in cmd_lower:
-        return "go"
-    if "npm run build" in cmd_lower:
-        return "npm"
-    if re.search(r"\bg(?:cc|\+\+)\b", cmd):
-        return "gcc"
-    if "make" in cmd_lower:
-        return "make"
-    return "unknown"
+    return _first_match(cmd, _BUILD_TOOL_MATCHERS)
 
 
 def _detect_install_tool(cmd: str) -> str:
-    cmd_lower = cmd.lower()
-    if "uv " in cmd_lower:
-        return "uv"
-    if "pip install" in cmd_lower:
-        return "pip"
-    if "poetry" in cmd_lower:
-        return "poetry"
-    if "npm" in cmd_lower:
-        return "npm"
-    if "yarn" in cmd_lower:
-        return "yarn"
-    if "pnpm" in cmd_lower:
-        return "pnpm"
-    if "cargo add" in cmd_lower:
-        return "cargo"
-    if "go get" in cmd_lower or "go mod" in cmd_lower:
-        return "go"
-    if "bundle" in cmd_lower:
-        return "bundler"
-    return "unknown"
+    return _first_match(cmd, _INSTALL_TOOL_MATCHERS)
 
 
 def _detect_lint_tool(cmd: str) -> str:
-    cmd_lower = cmd.lower()
-    if "ruff" in cmd_lower:
-        return "ruff"
-    if "eslint" in cmd_lower:
-        return "eslint"
-    if "black" in cmd_lower:
-        return "black"
-    if "prettier" in cmd_lower:
-        return "prettier"
-    if "flake8" in cmd_lower:
-        return "flake8"
-    if "pylint" in cmd_lower:
-        return "pylint"
-    if "clippy" in cmd_lower:
-        return "clippy"
-    if "golangci-lint" in cmd_lower:
-        return "golangci-lint"
-    if "mypy" in cmd_lower:
-        return "mypy"
-    return "unknown"
+    return _first_match(cmd, _LINT_TOOL_MATCHERS)
 
 
 # --- Output parsing ---
@@ -455,10 +449,6 @@ def _parse_pytest(output: str, r: TestRunOutcome):
     r.skipped = int(m_skipped.group(1)) if m_skipped else 0
     r.duration_s = float(m_dur.group(1)) if m_dur else None
     r.total = (r.passed or 0) + (r.failed or 0) + (r.errors or 0) + (r.skipped or 0)
-    for line in output.splitlines():
-        if "passed" in line or "failed" in line:
-            r.raw_summary = line.strip()
-            break
 
 
 def _parse_jest(output: str, r: TestRunOutcome):
@@ -477,7 +467,6 @@ def _parse_cargo(output: str, r: TestRunOutcome):
         r.passed = int(m.group(2))
         r.failed = int(m.group(3))
         r.total = r.passed + r.failed
-        r.raw_summary = m.group(0)
 
 
 def _parse_go(output: str, r: TestRunOutcome):
