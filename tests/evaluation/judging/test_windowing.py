@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -95,6 +97,45 @@ def _tool(span_id: str) -> ToolSpan:
         started_at=_ts(1),
         ended_at=_ts(1),
     )
+
+
+def _self_consistent_window(
+    session: SessionView,
+    *,
+    core_trace_ids: list[str],
+    raw_trace_ids: list[str],
+) -> dict[str, object]:
+    positions = {turn.trace_id: position for position, turn in enumerate(session.turns, start=1)}
+    turns = {turn.trace_id: turn for turn in session.turns}
+    rendered = [render_raw_turn(turns[trace_id], positions[trace_id]) for trace_id in raw_trace_ids]
+    body: dict[str, object] = {
+        "index": 1,
+        "core_trace_ids": core_trace_ids,
+        "raw_trace_ids": raw_trace_ids,
+        "raw_turn_digests": [
+            "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest() for text in rendered
+        ],
+        "raw_tokens": estimate_tokens("\n\n".join(rendered)),
+    }
+    encoded = json.dumps(
+        body,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {"window_id": "sha256:" + hashlib.sha256(encoded).hexdigest(), **body}
+
+
+def _rehash_window(window: dict[str, object], **updates: object) -> dict[str, object]:
+    body = {key: value for key, value in window.items() if key != "window_id"}
+    body.update(updates)
+    encoded = json.dumps(
+        body,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {"window_id": "sha256:" + hashlib.sha256(encoded).hexdigest(), **body}
 
 
 def test_estimate_tokens_uses_versioned_conservative_utf8_bytes_estimator():
@@ -358,4 +399,67 @@ def test_render_raw_window_rejects_duplicate_raw_trace_ids():
     window = {**plan["windows"][0], "raw_trace_ids": ["t1", "t1"]}
 
     with pytest.raises(ValueError, match="window raw_trace_ids must be unique"):
+        render_raw_window(session, window)
+
+
+@pytest.mark.parametrize(
+    ("core_trace_ids", "message"),
+    [
+        (["t1", "t1"], "window core_trace_ids must be unique"),
+        (["missing"], "window core_trace_ids reference missing trace IDs: missing"),
+        (["t2", "t1"], "window core_trace_ids must follow session order"),
+        (["t1", "t3"], "window core_trace_ids must form a contiguous session range"),
+    ],
+)
+def test_render_raw_window_rejects_self_consistent_invalid_core_geometry(
+    core_trace_ids: list[str],
+    message: str,
+):
+    session = _session_with_rendered_turn_sizes([3_000, 3_000, 3_000, 3_000])
+    window = _self_consistent_window(
+        session,
+        core_trace_ids=core_trace_ids,
+        raw_trace_ids=["t1", "t2", "t3", "t4"],
+    )
+
+    with pytest.raises(ValueError, match=message):
+        render_raw_window(session, window)
+
+
+@pytest.mark.parametrize(
+    ("raw_trace_ids", "message"),
+    [
+        (["t2", "t1", "t3"], "window raw_trace_ids must follow session order"),
+        (["t1", "t3"], "window raw_trace_ids must form a contiguous session range"),
+        (
+            ["t2"],
+            "window raw_trace_ids must equal the core range plus one available neighboring turn",
+        ),
+    ],
+)
+def test_render_raw_window_rejects_self_consistent_invalid_raw_geometry(
+    raw_trace_ids: list[str],
+    message: str,
+):
+    session = _session_with_rendered_turn_sizes([3_000, 3_000, 3_000, 3_000])
+    window = _self_consistent_window(
+        session,
+        core_trace_ids=["t2"],
+        raw_trace_ids=raw_trace_ids,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        render_raw_window(session, window)
+
+
+def test_render_raw_window_rejects_rehashed_bogus_raw_geometry():
+    session = _session_with_rendered_turn_sizes([3_000, 3_000, 3_000, 3_000])
+    valid = _self_consistent_window(
+        session,
+        core_trace_ids=["t2"],
+        raw_trace_ids=["t1", "t2", "t3"],
+    )
+    window = _rehash_window(valid, raw_trace_ids=["missing"])
+
+    with pytest.raises(ValueError, match="window references missing trace IDs: missing"):
         render_raw_window(session, window)

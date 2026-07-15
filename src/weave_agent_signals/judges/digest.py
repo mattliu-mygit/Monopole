@@ -66,9 +66,15 @@ def judge_digest_contract_manifest() -> dict[str, object]:
 def build_turn_digest(turn: TurnSpan) -> JudgeDigest:
     """Compatibility entry point for complete raw single-turn evidence."""
 
-    from weave_agent_signals.judges.windowing import _turn_evidence_ids, render_raw_turn
+    from weave_agent_signals.judges.windowing import (
+        _turn_evidence_ids,
+        _validate_evidence_ids,
+        render_raw_turn,
+    )
 
-    return JudgeDigest(text=render_raw_turn(turn, 1), evidence_ids=_turn_evidence_ids(turn))
+    evidence_ids = _turn_evidence_ids(turn)
+    _validate_evidence_ids(list(evidence_ids))
+    return JudgeDigest(text=render_raw_turn(turn, 1), evidence_ids=evidence_ids)
 
 
 def build_turn_digest_with_context(
@@ -79,15 +85,21 @@ def build_turn_digest_with_context(
     """Compatibility entry point for complete raw prior and current turns."""
 
     del window
-    from weave_agent_signals.judges.windowing import _turn_evidence_ids, render_raw_turn
+    from weave_agent_signals.judges.windowing import (
+        _turn_evidence_ids,
+        _validate_evidence_ids,
+        render_raw_turn,
+    )
 
     selected = [*prior_turns, turn]
     rendered = [render_raw_turn(item, index) for index, item in enumerate(selected, start=1)]
+    evidence_ids = tuple(
+        evidence_id for item in selected for evidence_id in _turn_evidence_ids(item)
+    )
+    _validate_evidence_ids(list(evidence_ids))
     return JudgeDigest(
         text="\n\n".join(rendered),
-        evidence_ids=tuple(
-            evidence_id for item in selected for evidence_id in _turn_evidence_ids(item)
-        ),
+        evidence_ids=evidence_ids,
     )
 
 

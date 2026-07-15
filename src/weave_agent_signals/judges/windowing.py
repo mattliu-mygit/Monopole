@@ -129,14 +129,11 @@ def _turn_evidence_ids(turn: TurnSpan) -> tuple[str, ...]:
     return tuple(ids)
 
 
-def _validate_session_evidence_ids(session: SessionView) -> None:
-    evidence_ids = [
-        evidence_id for turn in session.turns for evidence_id in _turn_evidence_ids(turn)
-    ]
+def _validate_evidence_ids(evidence_ids: list[str], *, scope: str = "evidence") -> None:
     if any(
         not isinstance(evidence_id, str) or not evidence_id.strip() for evidence_id in evidence_ids
     ):
-        raise ValueError("session evidence IDs must be nonblank")
+        raise ValueError(f"{scope} IDs must be nonblank")
 
     seen: set[str] = set()
     duplicates: list[str] = []
@@ -145,7 +142,14 @@ def _validate_session_evidence_ids(session: SessionView) -> None:
             duplicates.append(evidence_id)
         seen.add(evidence_id)
     if duplicates:
-        raise ValueError("session evidence IDs must be globally unique: " + ", ".join(duplicates))
+        raise ValueError(f"{scope} IDs must be globally unique: " + ", ".join(duplicates))
+
+
+def _validate_session_evidence_ids(session: SessionView) -> None:
+    evidence_ids = [
+        evidence_id for turn in session.turns for evidence_id in _turn_evidence_ids(turn)
+    ]
+    _validate_evidence_ids(evidence_ids, scope="session evidence")
 
 
 def _range_tokens(byte_prefix: list[int], start: int, end: int) -> int:
@@ -353,12 +357,43 @@ def render_raw_window(
     _validate_session_evidence_ids(session)
     positions = {turn.trace_id: index for index, turn in enumerate(session.turns, start=1)}
     turns = {turn.trace_id: turn for turn in session.turns}
+
+    if len(core_trace_ids) != len(set(core_trace_ids)):
+        raise ValueError("window core_trace_ids must be unique")
+    missing_core_ids = [trace_id for trace_id in core_trace_ids if trace_id not in turns]
+    if missing_core_ids:
+        raise ValueError(
+            "window core_trace_ids reference missing trace IDs: " + ", ".join(missing_core_ids)
+        )
+    core_positions = [positions[trace_id] for trace_id in core_trace_ids]
+    if core_positions != sorted(core_positions):
+        raise ValueError("window core_trace_ids must follow session order")
+    if any(
+        current != previous + 1 for previous, current in zip(core_positions, core_positions[1:])
+    ):
+        raise ValueError("window core_trace_ids must form a contiguous session range")
+
     missing = [trace_id for trace_id in raw_trace_ids if trace_id not in turns]
     if missing:
         raise ValueError("window references missing trace IDs: " + ", ".join(missing))
     expected_order = sorted(raw_trace_ids, key=positions.__getitem__)
     if raw_trace_ids != expected_order:
         raise ValueError("window raw_trace_ids must follow session order")
+    raw_positions = [positions[trace_id] for trace_id in raw_trace_ids]
+    if any(current != previous + 1 for previous, current in zip(raw_positions, raw_positions[1:])):
+        raise ValueError("window raw_trace_ids must form a contiguous session range")
+
+    expected_raw_start = max(1, core_positions[0] - 1)
+    expected_raw_end = min(len(session.turns), core_positions[-1] + 1)
+    expected_raw_trace_ids = [
+        session.turns[position - 1].trace_id
+        for position in range(expected_raw_start, expected_raw_end + 1)
+    ]
+    if raw_trace_ids != expected_raw_trace_ids:
+        raise ValueError(
+            "window raw_trace_ids must equal the core range plus one available neighboring turn "
+            "on each side"
+        )
 
     selected_turns = [turns[trace_id] for trace_id in raw_trace_ids]
     rendered = [render_raw_turn(turn, positions[turn.trace_id]) for turn in selected_turns]

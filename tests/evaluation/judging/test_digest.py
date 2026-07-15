@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
+
+import pytest
 
 from weave_agent_signals.judges.digest import (
     JudgeDigest,
@@ -100,6 +103,40 @@ def test_context_digest_compatibility_wrapper_never_truncates_prior_evidence():
     for trace_id in ("trace-1", "trace-2", "trace-3", "trace-4"):
         assert trace_id in digest.evidence_ids
         assert f"evidence_id={trace_id}" in digest.text
+
+
+def test_turn_digest_rejects_blank_citation_ids():
+    turn = _turn("trace-1", user_input="request", assistant_output="response")
+    turn = replace(turn, tool_calls=[replace(turn.tool_calls[0], span_id=" ")])
+
+    with pytest.raises(ValueError, match="evidence IDs must be nonblank"):
+        build_turn_digest(turn)
+
+
+def test_turn_digest_rejects_duplicate_citation_ids():
+    turn = _turn("trace-1", user_input="request", assistant_output="response")
+    turn = replace(turn, tool_calls=[replace(turn.tool_calls[0], span_id="trace-1")])
+
+    with pytest.raises(ValueError, match="evidence IDs must be globally unique: trace-1"):
+        build_turn_digest(turn)
+
+
+def test_context_digest_rejects_blank_citation_ids():
+    prior = _turn("trace-1", user_input="prior", assistant_output="response")
+    prior = replace(prior, tool_calls=[replace(prior.tool_calls[0], span_id="")])
+    current = _turn("trace-2", user_input="current", assistant_output="response")
+
+    with pytest.raises(ValueError, match="evidence IDs must be nonblank"):
+        build_turn_digest_with_context(current, [prior])
+
+
+def test_context_digest_rejects_duplicate_citation_ids():
+    prior = _turn("trace-1", user_input="prior", assistant_output="response")
+    current = _turn("trace-2", user_input="current", assistant_output="response")
+    current = replace(current, tool_calls=[replace(current.tool_calls[0], span_id="trace-1")])
+
+    with pytest.raises(ValueError, match="evidence IDs must be globally unique: trace-1"):
+        build_turn_digest_with_context(current, [prior])
 
 
 def test_judge_messages_require_citations_and_allow_abstention():
