@@ -520,7 +520,7 @@ def test_reflection_stage_failure_exposes_only_safe_error_through_run_service(st
                 {
                     "id": "feedback-1",
                     "weave_ref": _cohort()["turns"][0]["weave_ref"],
-                    "feedback_type": "weave_agent_signals.judge.verification",
+                    "feedback_type": "weave_agent_signals.outcome.test",
                     "payload": {"rating": 0.2, "details": {}},
                 }
             ]
