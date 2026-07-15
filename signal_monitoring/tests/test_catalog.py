@@ -1,0 +1,51 @@
+import pytest
+from pydantic import ValidationError
+
+from weave_signal_monitoring.catalog import (
+    ANCHORS,
+    CATALOG,
+    CATALOG_VERSION,
+    RECOMMENDATION_THRESHOLD,
+    SAMPLING_RATE,
+)
+from weave_signal_monitoring.models import ScoreOutput
+
+
+def test_v1_catalog_is_exact_and_high_recall():
+    assert CATALOG_VERSION == "v1"
+    assert ANCHORS == (0.0, 0.25, 0.5, 0.75, 1.0)
+    assert RECOMMENDATION_THRESHOLD == 0.5
+    assert SAMPLING_RATE == 1.0
+    assert [signal.slug for signal in CATALOG] == [
+        "user-frustration",
+        "user-correction-or-rejection",
+        "explicit-repeat-or-rephrase-cue",
+        "stalled-or-deferred-response",
+        "low-quality-response",
+    ]
+    assert len({signal.monitor_name for signal in CATALOG}) == 5
+    assert all(signal.version == "v1" for signal in CATALOG)
+    assert all("high recall" in signal.scoring_prompt.lower() for signal in CATALOG)
+
+
+@pytest.mark.parametrize("rating", (0.0, 0.25, 0.5, 0.75, 1.0))
+def test_score_output_accepts_only_closed_anchors(rating):
+    assert ScoreOutput(rating=rating, reason="Visible evidence.").rating == rating
+
+
+@pytest.mark.parametrize("rating", (-0.1, 0.1, 0.6, 1.1))
+def test_score_output_rejects_non_anchor_values(rating):
+    with pytest.raises(ValidationError):
+        ScoreOutput(rating=rating, reason="Visible evidence.")
+
+
+def test_score_output_requires_short_nonempty_reason():
+    with pytest.raises(ValidationError):
+        ScoreOutput(rating=0.5, reason="")
+    with pytest.raises(ValidationError):
+        ScoreOutput(rating=0.5, reason="x" * 241)
+
+
+def test_score_output_strips_reason_whitespace():
+    output = ScoreOutput(rating=0.5, reason="  Visible evidence.  ")
+    assert output.reason == "Visible evidence."
