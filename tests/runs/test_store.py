@@ -217,6 +217,16 @@ def _judging_plan() -> dict:
     )
 
 
+def _rehash_plan(plan: dict) -> dict:
+    value = json.loads(json.dumps(plan))
+    body = {key: item for key, item in value.items() if key != "plan_id"}
+    canonical = json.dumps(
+        body, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+    value["plan_id"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    return value
+
+
 def _reflection_evidence() -> dict:
     return {
         "baseline": {"revision": "baseline-rev"},
@@ -897,6 +907,22 @@ def test_judging_plan_and_reflection_input_are_validated_and_write_once(store):
     changed_plan = {**plan, "schema_version": "changed"}
     with pytest.raises(ValueError, match="schema_version"):
         store.pin_judging_plan(started.run_id, changed_plan)
+
+    inconsistent = json.loads(json.dumps(plan))
+    inconsistent["totals"]["planned_rubrics"] = 99
+    inconsistent = _rehash_plan(inconsistent)
+    with pytest.raises(ValueError, match="totals"):
+        store.pin_judging_plan(started.run_id, inconsistent)
+
+    inconsistent = json.loads(json.dumps(plan))
+    inconsistent["sessions"][0]["rubrics"][0]["label"] = "detached"
+    with pytest.raises(ValueError, match="rubrics"):
+        store.pin_judging_plan(started.run_id, _rehash_plan(inconsistent))
+
+    inconsistent = json.loads(json.dumps(plan))
+    inconsistent["sessions"][0]["reviewers"][0]["work_bounds"]["digest_calls"] += 1
+    with pytest.raises(ValueError, match="work bounds"):
+        store.pin_judging_plan(started.run_id, _rehash_plan(inconsistent))
 
     store.record_stage_result(
         started.run_id,

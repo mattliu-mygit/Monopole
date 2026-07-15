@@ -8,6 +8,7 @@ import pytest
 
 from weave_agent_signals import cli
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
+from weave_agent_signals.models import Score
 
 
 def _catalog():
@@ -102,3 +103,39 @@ def test_hydration_failure_aborts_before_inference(monkeypatch):
     with pytest.raises(RuntimeError, match="detail hydration truncated"):
         cli.cmd_judge(_args())
     make_client.assert_not_called()
+
+
+def test_direct_cli_buffers_all_sessions_and_writes_nothing_on_later_failure(monkeypatch):
+    turns = [_turn(), _turn()]
+    turns[1].conversation_id = "session-2"
+    weave = MagicMock()
+    weave.query_turns.return_value = turns
+    weave.__enter__.return_value = weave
+    inference = MagicMock()
+    inference.__enter__.return_value = inference
+    sessions = []
+    for index in (1, 2):
+        session = MagicMock()
+        session.conversation_id = f"session-{index}"
+        session.turns = [turns[index - 1]]
+        session.config_version = "cfg"
+        session.git_branch = "main"
+        session.ref_for.return_value = f"weave:///session-{index}"
+        sessions.append(session)
+    plan = {
+        "plan_id": "plan",
+        "totals": {"sessions_planned": 2, "windows_planned": 2},
+        "sessions": [],
+    }
+    score = Score("judge.session_outcome", 0.75, [], {}, "session")
+    judge = MagicMock(side_effect=[[score], RuntimeError("later failure")])
+    monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
+    monkeypatch.setattr(cli, "build_model_catalog", _catalog)
+    monkeypatch.setattr(cli, "build_judging_plan", lambda *_args, **_kwargs: plan)
+    monkeypatch.setattr(cli, "_group_sessions", lambda _turns: sessions)
+    monkeypatch.setattr(cli, "_make_model_client", lambda *_args: inference)
+    monkeypatch.setattr(cli, "judge_session", judge)
+
+    assert cli.cmd_judge(_args(rubric="judge.session_outcome")) == 1
+    weave.write_score.assert_not_called()
+    weave.query_existing_feedback.assert_not_called()

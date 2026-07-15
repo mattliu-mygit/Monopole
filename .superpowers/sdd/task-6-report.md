@@ -37,9 +37,24 @@ Implemented the session-only sliding-window judging replacement.
 
 ## Verification
 
-- Focused plan/runner/stage/CLI tests: 14 passed.
-- Broader judging/catalog/stage/CLI tests: 233 passed before final cleanup.
-- Final backend suite: 783 passed, one existing Starlette deprecation warning.
+- Review-fix focused judging/CLI/stage/store suite: 93 passed.
+- Final backend suite: 797 passed, one existing Starlette deprecation warning.
 - `ruff check src/ tests/`: passed.
 - `ruff format --check src/ tests/`: passed.
 - `git diff --check`: passed.
+
+## Review hardening
+
+- Removed the retired schema-v3 verdict layout from rubric prompts, leaving structured
+  output layout exclusively to sliding phase schemas and prompts.
+- Made direct CLI writes fail closed across the complete selected session/rubric scope.
+- Added pre-inference runner authentication for plan digest/schema, review depth,
+  ordered positioned judges, context policy, exact rubric rows, and attempt bounds.
+- Persist phase progress after each immutable artifact commit, reconstruct unique phase
+  counts on resume, and use artifact identity rather than attempt audits as the
+  authoritative completed-work source.
+- Strengthened store validation for exact plan/window/reviewer/rubric/policy/protocol
+  shapes, hashes, coverage geometry, work bounds, and recomputed totals.
+- Restored session-only safety coverage for cancellation, durable cancellation/write
+  races, fail-closed buffering, force replacement ordering, write and cleanup failure
+  behavior, bounded audits/failures, and monotonic resumed artifact progress.

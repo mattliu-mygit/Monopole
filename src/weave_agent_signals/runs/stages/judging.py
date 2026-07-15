@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 _MAX_PERSISTED_OUTCOMES = 100
 _MAX_USAGE_FIELDS = 20
 _MAX_EVIDENCE_IDS = 100
+_MAX_INFERENCE_STEPS = 500
 _SUMMARY_TEXT_LIMIT = 500
 
 _Target = SessionView
@@ -214,7 +215,11 @@ def _attempts(values: object) -> list[dict[str, Any]]:
                 if isinstance(value.get("behavioral_feedback"), Mapping)
                 else None
             ),
-            steps=[dict(step) for step in value.get("steps", []) if isinstance(step, Mapping)],
+            steps=[
+                dict(step)
+                for step in value.get("steps", [])[:_MAX_INFERENCE_STEPS]
+                if isinstance(step, Mapping)
+            ],
         )
         records.append(record)
     return records
@@ -241,7 +246,6 @@ def _record_score(
     conversation_id: str,
 ) -> None:
     attempts = _attempts(score.metadata.get("attempts"))
-    _record_steps(state, score.metadata.get("attempts", []))
     _record_score_summary(
         state,
         score,
@@ -252,27 +256,20 @@ def _record_score(
     )
 
 
-def _record_steps(state: _State, attempts: object) -> None:
-    if not isinstance(attempts, (list, tuple)):
-        return
-    for attempt in attempts:
-        if isinstance(attempt, Mapping):
-            for step in attempt.get("steps", []):
-                if isinstance(step, Mapping):
-                    phase = step.get("phase")
-                    artifact_id = step.get("artifact_id")
-                    if (
-                        not isinstance(artifact_id, str)
-                        or artifact_id in state.completed_artifact_ids
-                    ):
-                        continue
-                    state.completed_artifact_ids.add(artifact_id)
-                    if phase == "digest":
-                        state.digest_steps_completed += 1
-                    elif phase == "window":
-                        state.window_steps_completed += 1
-                    elif phase == "merge":
-                        state.merge_steps_completed += 1
+def _record_phase_artifact(state: _State, artifact_id: str, phase: object) -> bool:
+    if artifact_id in state.completed_artifact_ids:
+        return False
+    state.completed_artifact_ids.add(artifact_id)
+    if phase == "digest":
+        state.digest_steps_completed += 1
+    elif phase == "window":
+        state.window_steps_completed += 1
+    elif phase == "merge":
+        state.merge_steps_completed += 1
+    else:
+        state.completed_artifact_ids.remove(artifact_id)
+        return False
+    return True
 
 
 def _record_score_summary(
@@ -311,7 +308,6 @@ def _record_failure(
     conversation_id: str,
 ) -> None:
     attempts = _attempts(failure.attempts)
-    _record_steps(state, failure.attempts)
     state.failures.append(failure)
     state.reviewer_attempts_completed += len(attempts)
     state.attempt_summary_count += 1
@@ -330,9 +326,8 @@ def _record_failure(
         },
     )
     state.failure_detail_count += 1
-    # A failed rubric has no feedback record, so this is its authoritative
-    # durable attempt audit and must not be subject to the display-summary cap.
-    state.failure_details.append(
+    _append_bounded(
+        state.failure_details,
         {
             "scope": unit,
             "rubric": failure.rubric,
@@ -341,7 +336,7 @@ def _record_failure(
             "attempt_count": len(attempts),
             "attempts": attempts,
             **context,
-        }
+        },
     )
 
 
@@ -517,6 +512,14 @@ def run_judging_stage(
         maximum_window_steps=totals["maximum_window_calls"],
         maximum_merge_steps=totals["maximum_merge_calls"],
     )
+    artifact_phases = {
+        "chunk_digest": "digest",
+        "window_findings": "window",
+        "merged_verdict": "merge",
+    }
+    for artifact_id, artifact in (current.judging_artifacts or {}).items():
+        if isinstance(artifact, Mapping):
+            _record_phase_artifact(state, artifact_id, artifact_phases.get(artifact.get("kind")))
 
     def progress(message: str, *, coverage_complete: bool = False) -> None:
         _persist(
@@ -556,7 +559,16 @@ def run_judging_stage(
                 return (active.judging_artifacts or {}).get(artifact_id)
 
             def record_artifact(artifact_id: str, artifact: Mapping[str, Any]) -> object:
-                return dependencies.store.record_judging_artifact(run_id, artifact_id, artifact)
+                result = dependencies.store.record_judging_artifact(run_id, artifact_id, artifact)
+                if _record_phase_artifact(
+                    state, artifact_id, artifact_phases.get(artifact.get("kind"))
+                ):
+                    progress(
+                        f"Processed {state.digest_steps_completed} digest, "
+                        f"{state.window_steps_completed} window, and "
+                        f"{state.merge_steps_completed} merge artifact(s)"
+                    )
+                return result
 
             accepted = _run_unit(
                 state,

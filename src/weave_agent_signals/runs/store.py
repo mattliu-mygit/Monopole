@@ -344,18 +344,7 @@ def _encode_judging_plan(judging_plan: Mapping[str, Any]) -> str:
         raise ValueError("judging plan sessions must be a list")
     if not isinstance(totals, dict):
         raise ValueError("judging plan totals must be an object")
-
-    for session in sessions:
-        if not isinstance(session, dict):
-            raise ValueError("judging plan sessions must contain objects")
-        turn_count = session.get("turn_count")
-        coverage = session.get("raw_coverage_trace_ids")
-        session_rubrics = session.get("rubrics")
-        reviewers = session.get("reviewers")
-        if type(turn_count) is not int or turn_count < 0:
-            raise ValueError("judging plan session turn_count must be non-negative")
-        if not all(isinstance(item, list) for item in (coverage, session_rubrics, reviewers)):
-            raise ValueError("judging plan session coverage, rubrics, and reviewers must be lists")
+    _validate_judging_plan_structure(value)
 
     body = {key: item for key, item in value.items() if key != "plan_id"}
     try:
@@ -368,6 +357,361 @@ def _encode_judging_plan(judging_plan: Mapping[str, Any]) -> str:
     if value["plan_id"] != expected_plan_id:
         raise ValueError("judging plan ID does not match its content")
     return _encode_json_object(value, "judging plan")
+
+
+def _exact_keys(value: object, keys: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValueError(f"judging plan {label} fields are invalid")
+    return value
+
+
+def _nonnegative_int(value: object, label: str, *, positive: bool = False) -> int:
+    if type(value) is not int or value < (1 if positive else 0):
+        qualifier = "positive" if positive else "non-negative"
+        raise ValueError(f"judging plan {label} must be a {qualifier} integer")
+    return value
+
+
+def _canonical_digest(value: object) -> str:
+    canonical = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+    return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
+    rubric_keys = {"id", "label", "evaluation_unit", "version", "content_digest", "pass_threshold"}
+    requested = value.get("requested_rubrics")
+    if not isinstance(requested, list) or not requested:
+        raise ValueError("judging plan requested_rubrics must be a non-empty list")
+    for rubric in requested:
+        row = _exact_keys(rubric, rubric_keys, "requested rubric")
+        if row["evaluation_unit"] != "session" or any(
+            not isinstance(row[key], str) or not row[key].strip()
+            for key in ("id", "label", "version", "content_digest")
+        ):
+            raise ValueError("judging plan requested rubric values are invalid")
+        threshold = row["pass_threshold"]
+        if (
+            isinstance(threshold, bool)
+            or not isinstance(threshold, (int, float))
+            or not 0 <= threshold <= 1
+        ):
+            raise ValueError("judging plan rubric threshold is invalid")
+    if len({row["id"] for row in requested}) != len(requested):
+        raise ValueError("judging plan requested rubric IDs must be unique")
+
+    depth = value.get("review_depth")
+    if depth not in {"primary", "selective", "full_panel"}:
+        raise ValueError("judging plan review_depth is invalid")
+    input_policy = _exact_keys(
+        value.get("input_policy"),
+        {
+            "contract_version",
+            "target_input_tokens",
+            "prompt_reserve_tokens",
+            "output_reserve_tokens",
+            "safety_reserve_tokens",
+            "digest_max_tokens",
+            "finding_max_tokens",
+            "overlap_turns",
+            "max_chunks",
+            "token_estimator",
+        },
+        "input policy",
+    )
+    if input_policy["contract_version"] != "1" or input_policy["overlap_turns"] != 1:
+        raise ValueError("judging plan input policy contract is invalid")
+    for key in (
+        "target_input_tokens",
+        "prompt_reserve_tokens",
+        "output_reserve_tokens",
+        "safety_reserve_tokens",
+        "digest_max_tokens",
+        "finding_max_tokens",
+        "max_chunks",
+    ):
+        _nonnegative_int(input_policy[key], f"input policy {key}", positive=True)
+    if input_policy["token_estimator"] != "utf8_bytes_div_3":
+        raise ValueError("judging plan token estimator is invalid")
+    protocol = _exact_keys(
+        value.get("protocol"), {"protocol_version", "prompt_templates", "schemas"}, "protocol"
+    )
+    if protocol["protocol_version"] != "2":
+        raise ValueError("judging plan protocol version is invalid")
+    prompts = _exact_keys(
+        protocol["prompt_templates"],
+        {
+            "digest_system",
+            "digest_user",
+            "window_system",
+            "window_user",
+            "merge_system",
+            "merge_user",
+        },
+        "protocol prompts",
+    )
+    if any(not isinstance(prompt, str) or not prompt for prompt in prompts.values()):
+        raise ValueError("judging plan protocol prompt values are invalid")
+    schemas = _exact_keys(protocol["schemas"], {"digest", "window", "merge"}, "protocol schemas")
+    for phase, schema in schemas.items():
+        schema_row = _exact_keys(schema, {"name", "schema"}, f"{phase} schema")
+        if not isinstance(schema_row["name"], str) or not isinstance(schema_row["schema"], dict):
+            raise ValueError(f"judging plan {phase} schema values are invalid")
+    if {phase: schema["name"] for phase, schema in schemas.items()} != {
+        "digest": "chunk_digest",
+        "window": "window_findings",
+        "merge": "merged_verdict",
+    }:
+        raise ValueError("judging plan protocol schema names are invalid")
+
+    sessions = value["sessions"]
+    minimum = None
+    maximum = None
+    totals_expected = {
+        "sessions_planned": len(sessions),
+        "turns_considered": 0,
+        "windows_planned": 0,
+        "planned_rubrics": len(sessions) * len(requested),
+        "minimum_reviewer_attempts": 0,
+        "maximum_reviewer_attempts": 0,
+        "maximum_digest_calls": 0,
+        "maximum_window_calls": 0,
+        "maximum_merge_calls": 0,
+    }
+    session_ids: set[str] = set()
+    for session in sessions:
+        row = _exact_keys(
+            session,
+            {"conversation_id", "turn_count", "raw_coverage_trace_ids", "rubrics", "reviewers"},
+            "session",
+        )
+        conversation_id = row["conversation_id"]
+        if (
+            not isinstance(conversation_id, str)
+            or not conversation_id
+            or conversation_id in session_ids
+        ):
+            raise ValueError("judging plan session conversation_id is invalid")
+        session_ids.add(conversation_id)
+        turn_count = _nonnegative_int(row["turn_count"], "session turn_count")
+        coverage = row["raw_coverage_trace_ids"]
+        if (
+            not isinstance(coverage, list)
+            or len(coverage) != turn_count
+            or len(set(coverage)) != len(coverage)
+            or any(not isinstance(item, str) or not item for item in coverage)
+        ):
+            raise ValueError("judging plan session raw coverage is invalid")
+        reviewers = row["reviewers"]
+        if not isinstance(reviewers, list):
+            raise ValueError("judging plan reviewers must be a list")
+        judge_count = len(reviewers)
+        valid_counts = {"primary": {1}, "selective": {2, 3}, "full_panel": {3}}
+        if judge_count not in valid_counts[depth]:
+            raise ValueError("judging plan reviewer count is invalid for review depth")
+        minimum = judge_count if depth == "full_panel" else 1
+        maximum = 1 if depth == "primary" else judge_count
+        expected_rubrics = [
+            {**rubric, "minimum_reviewer_attempts": minimum, "maximum_reviewer_attempts": maximum}
+            for rubric in requested
+        ]
+        if row["rubrics"] != expected_rubrics:
+            raise ValueError("judging plan session rubrics or attempt bounds are invalid")
+        totals_expected["turns_considered"] += turn_count
+        totals_expected["minimum_reviewer_attempts"] += len(requested) * minimum
+        totals_expected["maximum_reviewer_attempts"] += len(requested) * maximum
+        for ordinal, reviewer in enumerate(reviewers, start=1):
+            reviewer_row = _exact_keys(
+                reviewer, {"ordinal", "judge", "window_plan", "work_bounds"}, "reviewer"
+            )
+            judge = _exact_keys(
+                reviewer_row["judge"],
+                {
+                    "id",
+                    "label",
+                    "family",
+                    "backend",
+                    "supported_roles",
+                    "max_input_tokens",
+                    "role",
+                    "position",
+                },
+                "reviewer judge",
+            )
+            if (
+                type(reviewer_row["ordinal"]) is not int
+                or reviewer_row["ordinal"] != ordinal
+                or type(judge["position"]) is not int
+                or judge["position"] != ordinal
+                or judge["role"] != "judge"
+            ):
+                raise ValueError("judging plan reviewer ordinals are invalid")
+            roles = judge["supported_roles"]
+            if (
+                any(
+                    not isinstance(judge[key], str) or not judge[key].strip()
+                    for key in ("id", "label", "family", "backend")
+                )
+                or not isinstance(roles, list)
+                or "judge" not in roles
+                or any(not isinstance(role, str) or not role for role in roles)
+                or len(roles) != len(set(roles))
+            ):
+                raise ValueError("judging plan reviewer judge values are invalid")
+            _nonnegative_int(judge["max_input_tokens"], "judge max_input_tokens", positive=True)
+            window_plan = _validate_window_plan(
+                reviewer_row["window_plan"],
+                conversation_id,
+                coverage,
+                input_policy,
+                judge["max_input_tokens"],
+            )
+            chunk_count = window_plan["chunk_count"]
+            bounds = _exact_keys(
+                reviewer_row["work_bounds"],
+                {"digest_calls", "window_calls_per_rubric", "merge_calls_per_rubric"},
+                "reviewer work bounds",
+            )
+            for key in bounds:
+                _nonnegative_int(bounds[key], f"reviewer work bound {key}")
+            if bounds != {
+                "digest_calls": chunk_count,
+                "window_calls_per_rubric": chunk_count,
+                "merge_calls_per_rubric": 1,
+            }:
+                raise ValueError("judging plan reviewer work bounds are invalid")
+            totals_expected["windows_planned"] += chunk_count
+            totals_expected["maximum_digest_calls"] += chunk_count
+            totals_expected["maximum_window_calls"] += chunk_count * len(requested)
+            totals_expected["maximum_merge_calls"] += len(requested)
+    if any(type(value["totals"].get(key)) is not int for key in totals_expected):
+        raise ValueError("judging plan totals types are invalid")
+    if value["totals"] != totals_expected:
+        raise ValueError("judging plan totals are inconsistent")
+
+
+def _validate_window_plan(
+    value: object,
+    conversation_id: str,
+    coverage: list[str],
+    input_policy: dict[str, Any],
+    model_limit: int,
+) -> dict[str, Any]:
+    keys = {
+        "plan_id",
+        "contract_version",
+        "conversation_id",
+        "input_cap_tokens",
+        "raw_budget_tokens",
+        "chunk_count",
+        "overlap_turns",
+        "token_estimator",
+        "merge_input_tokens",
+        "raw_turns",
+        "raw_coverage_trace_ids",
+        "windows",
+    }
+    row = _exact_keys(value, keys, "window plan")
+    if (
+        row["contract_version"] != "1"
+        or row["conversation_id"] != conversation_id
+        or row["raw_coverage_trace_ids"] != coverage
+    ):
+        raise ValueError("judging plan window identity is invalid")
+    for key in ("input_cap_tokens", "raw_budget_tokens", "merge_input_tokens"):
+        _nonnegative_int(row[key], f"window {key}")
+    if row["overlap_turns"] != 1 or row["token_estimator"] != "utf8_bytes_div_3":
+        raise ValueError("judging plan window policy is invalid")
+    body = {key: item for key, item in row.items() if key != "plan_id"}
+    if row["plan_id"] != _canonical_digest(body):
+        raise ValueError("judging plan window plan ID is invalid")
+    windows = row["windows"]
+    raw_turns = row["raw_turns"]
+    if not isinstance(windows, list) or not isinstance(raw_turns, list):
+        raise ValueError("judging plan window collections are invalid")
+    chunk_count = _nonnegative_int(row["chunk_count"], "window chunk_count")
+    input_cap = min(input_policy["target_input_tokens"], model_limit)
+    reserve = (
+        input_policy["prompt_reserve_tokens"]
+        + input_policy["output_reserve_tokens"]
+        + input_policy["safety_reserve_tokens"]
+    )
+    expected_raw_budget = input_cap - reserve - chunk_count * input_policy["digest_max_tokens"]
+    expected_merge = reserve + chunk_count * (
+        input_policy["digest_max_tokens"] + input_policy["finding_max_tokens"]
+    )
+    if (
+        row["input_cap_tokens"] != input_cap
+        or row["raw_budget_tokens"] != expected_raw_budget
+        or row["merge_input_tokens"] != expected_merge
+    ):
+        raise ValueError("judging plan window token bounds are inconsistent")
+    if (
+        len(windows) != chunk_count
+        or [item.get("trace_id") if isinstance(item, dict) else None for item in raw_turns]
+        != coverage
+    ):
+        raise ValueError("judging plan window coverage is invalid")
+    for position, raw_turn in enumerate(raw_turns, start=1):
+        raw = _exact_keys(
+            raw_turn,
+            {"trace_id", "position", "estimated_tokens", "raw_digest"},
+            "raw turn",
+        )
+        if (
+            raw["trace_id"] != coverage[position - 1]
+            or raw["position"] != position
+            or not isinstance(raw["raw_digest"], str)
+        ):
+            raise ValueError("judging plan raw turn values are invalid")
+        _nonnegative_int(raw["estimated_tokens"], "raw turn estimated_tokens")
+    covered: list[str] = []
+    raw_digests = {raw["trace_id"]: raw["raw_digest"] for raw in raw_turns}
+    for index, window in enumerate(windows, start=1):
+        item = _exact_keys(
+            window,
+            {
+                "window_id",
+                "index",
+                "core_trace_ids",
+                "raw_trace_ids",
+                "raw_turn_digests",
+                "raw_tokens",
+            },
+            "window",
+        )
+        if (
+            item["index"] != index
+            or not isinstance(item["core_trace_ids"], list)
+            or not isinstance(item["raw_trace_ids"], list)
+            or not isinstance(item["raw_turn_digests"], list)
+        ):
+            raise ValueError("judging plan window values are invalid")
+        if any(trace_id not in coverage for trace_id in item["raw_trace_ids"]):
+            raise ValueError("judging plan raw window coverage is invalid")
+        if len(item["raw_trace_ids"]) != len(item["raw_turn_digests"]):
+            raise ValueError("judging plan raw window digests are invalid")
+        _nonnegative_int(item["raw_tokens"], "window raw_tokens")
+        core_positions = [coverage.index(trace_id) for trace_id in item["core_trace_ids"]]
+        if not core_positions or core_positions != list(
+            range(core_positions[0], core_positions[-1] + 1)
+        ):
+            raise ValueError("judging plan core window geometry is invalid")
+        expected_raw_ids = coverage[
+            max(0, core_positions[0] - 1) : min(len(coverage), core_positions[-1] + 2)
+        ]
+        if item["raw_trace_ids"] != expected_raw_ids or item["raw_turn_digests"] != [
+            raw_digests[trace_id] for trace_id in expected_raw_ids
+        ]:
+            raise ValueError("judging plan raw window geometry is invalid")
+        window_body = {key: part for key, part in item.items() if key != "window_id"}
+        if item["window_id"] != _canonical_digest(window_body):
+            raise ValueError("judging plan window ID is invalid")
+        covered.extend(item["core_trace_ids"])
+    if covered != coverage:
+        raise ValueError("judging plan core window coverage is invalid")
+    return row
 
 
 _JUDGING_ARTIFACT_FIELDS = frozenset({"schema_version", "kind", "content_digest", "payload"})

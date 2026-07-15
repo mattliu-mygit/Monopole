@@ -180,7 +180,7 @@ def test_runner_rejects_detached_rubric_selection(monkeypatch) -> None:
         judge_models=judges,
         context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
     )
-    with pytest.raises(ValueError, match="exact pinned session plan"):
+    with pytest.raises(ValueError, match="rubrics or attempt bounds"):
         judge_session(
             session,
             object(),
@@ -193,3 +193,34 @@ def test_runner_rejects_detached_rubric_selection(monkeypatch) -> None:
             artifact_loader=lambda _: None,
             artifact_recorder=lambda *_: None,
         )
+
+
+def test_runner_rejects_alternate_later_judge_before_reviewer_instantiation(monkeypatch) -> None:
+    session = _session()
+    pinned = (_judge("judge-1", 1), _judge("judge-2", 2))
+    rubrics = build_rubric_catalog().rubrics[:1]
+    plan = build_judging_plan(
+        [session],
+        cohort_id="cohort",
+        rubrics=rubrics,
+        review_depth="selective",
+        judge_models=pinned,
+        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
+    )
+    created = []
+    monkeypatch.setattr(runner, "SlidingReviewer", lambda **kwargs: created.append(kwargs))
+    alternate = (_judge("judge-1", 1), _judge("alternate", 2))
+    with pytest.raises(ValueError, match="ordered judges"):
+        judge_session(
+            session,
+            object(),
+            rubrics=rubrics,
+            judges=alternate,
+            review_depth="selective",
+            second_opinion_margin=0.1,
+            judging_plan=plan,
+            context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
+            artifact_loader=lambda _: None,
+            artifact_recorder=lambda *_: None,
+        )
+    assert created == []

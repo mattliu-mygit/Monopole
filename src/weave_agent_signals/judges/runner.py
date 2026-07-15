@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 
@@ -21,6 +23,60 @@ from weave_agent_signals.run_config import (
 
 REVIEW_POLICY_VERSION = "3"
 _REASON_LIMIT = 1200
+
+
+def _plan_digest(value: object) -> str:
+    canonical = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+    return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _authenticate_plan_policy(
+    plan: Mapping[str, object],
+    *,
+    session: SessionView,
+    rubrics: Sequence[RubricDescriptor],
+    judges: Sequence[PositionedJudge],
+    review_depth: ReviewDepth,
+    context_policy: JudgingContextPolicy,
+) -> Mapping[str, object]:
+    body = {key: value for key, value in plan.items() if key != "plan_id"}
+    if plan.get("schema_version") != "2" or plan.get("plan_id") != _plan_digest(body):
+        raise ValueError("judging plan schema or content digest is invalid")
+    if plan.get("review_depth") != review_depth:
+        raise ValueError("review depth does not match the pinned judging plan")
+    if plan.get("input_policy") != context_policy.model_dump(mode="json"):
+        raise ValueError("context policy does not match the pinned judging plan")
+    sessions = plan.get("sessions")
+    if not isinstance(sessions, list):
+        raise ValueError("pinned judging sessions are invalid")
+    matches = [
+        value
+        for value in sessions
+        if isinstance(value, Mapping) and value.get("conversation_id") == session.conversation_id
+    ]
+    if len(matches) != 1:
+        raise ValueError("session is not uniquely pinned in the judging plan")
+    session_row = matches[0]
+    reviewers = session_row.get("reviewers")
+    if not isinstance(reviewers, list) or [
+        value.get("judge") if isinstance(value, Mapping) else None for value in reviewers
+    ] != [judge.model_dump(mode="json") for judge in judges]:
+        raise ValueError("ordered judges do not match the pinned judging plan")
+    minimum = len(judges) if review_depth == "full_panel" else 1
+    maximum = 1 if review_depth == "primary" else len(judges)
+    expected_rows = [
+        {
+            **descriptor.model_dump(mode="json"),
+            "minimum_reviewer_attempts": minimum,
+            "maximum_reviewer_attempts": maximum,
+        }
+        for descriptor in rubrics
+    ]
+    if session_row.get("rubrics") != expected_rows:
+        raise ValueError("rubrics or attempt bounds do not match the pinned judging plan")
+    return session_row
 
 
 class JudgeFailure:
@@ -152,20 +208,14 @@ def judge_session(
         judges=tuple(judges),
         second_opinion_margin=second_opinion_margin,
     )
-    session_rows = [
-        value
-        for value in judging_plan.get("sessions", [])  # type: ignore[union-attr]
-        if isinstance(value, Mapping) and value.get("conversation_id") == session.conversation_id
-    ]
-    if len(session_rows) != 1:
-        raise ValueError("session is not uniquely pinned in the judging plan")
-    expected_ids = [
-        value.get("id")
-        for value in session_rows[0].get("rubrics", [])
-        if isinstance(value, Mapping)
-    ]
-    if [descriptor.id for descriptor in rubrics] != expected_ids:
-        raise ValueError("requested rubrics do not match the exact pinned session plan")
+    session_row = _authenticate_plan_policy(
+        judging_plan,
+        session=session,
+        rubrics=rubrics,
+        judges=judges,
+        review_depth=review_depth,
+        context_policy=context_policy,
+    )
 
     reviewer_cache: dict[str, SlidingReviewer] = {}
 
@@ -252,12 +302,12 @@ def judge_session(
                     "behavioral_feedback": feedback,
                     "evidence_trace_ids": evidence_ids,
                     "raw_coverage_trace_ids": list(
-                        session_rows[0]["raw_coverage_trace_ids"]  # type: ignore[index]
+                        session_row["raw_coverage_trace_ids"]  # type: ignore[index]
                     ),
                     "plan_id": judging_plan["plan_id"],
                     "reviewer_context": [
                         value["judge"]
-                        for value in session_rows[0]["reviewers"]  # type: ignore[index]
+                        for value in session_row["reviewers"]  # type: ignore[index]
                     ],
                     "evaluated_models": evaluated_models,
                     "evaluated_families": evaluated_families,

@@ -23,3 +23,9 @@ def test_rubric_prompts_keep_five_anchored_scores_and_insufficient_evidence() ->
         assert tuple(rubric.criteria) == ("0", "0.25", "0.5", "0.75", "1")
         assert "insufficient_evidence" in rubric.system_prompt
         assert "Allowed evidence" in rubric.system_prompt
+
+
+def test_rubric_prompts_do_not_compete_with_sliding_phase_output_contracts() -> None:
+    forbidden = ("schema_version", '"status"', '"score"', '"evidence"', "Verdict layout")
+    for rubric in SESSION_RUBRICS.values():
+        assert all(marker not in rubric.system_prompt for marker in forbidden)

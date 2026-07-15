@@ -546,6 +546,19 @@ def test_failed_merge_returns_failed_observation() -> None:
     assert result.schema_name == "merged_verdict"
 
 
+def test_each_phase_prompt_has_one_output_owner_and_unambiguous_task() -> None:
+    reviewer, client, _, _ = _reviewer()
+    reviewer.review(_rubric("judge.session_outcome"))
+    for call in client.calls:
+        system = call["messages"][0]["content"]
+        assert system.count("PHASE:") == 1
+        assert "schema_version" not in system
+        if call["phase"] == "window":
+            assert "findings, not a score" in system
+        if call["phase"] == "merge":
+            assert "session verdict" in system
+
+
 def test_reviewer_rejects_tampered_plan_before_inference() -> None:
     reviewer, client, artifacts, plan = _reviewer()
     del reviewer

@@ -31,38 +31,6 @@ class Rubric:
 
 
 _ANCHORS = ("0", "0.25", "0.5", "0.75", "1")
-_VERDICT_LAYOUT = """\
-Respond with exactly one JSON object and no prose, Markdown fence, or extra fields.
-
-For a scored verdict, use exactly this layout:
-{
-  "schema_version": 3,
-  "status": "scored",
-  "score": 0.75,
-  "rationale": "Concise explanation grounded only in the supplied evidence.",
-  "evidence": [
-    {
-      "id": "allowed-evidence-id",
-      "observations": [
-        "Specific behavior supporting the verdict."
-      ]
-    }
-  ]
-}
-
-For insufficient evidence, use exactly this layout:
-{
-  "schema_version": 3,
-  "status": "insufficient_evidence",
-  "score": null,
-  "rationale": "Why the supplied evidence is insufficient.",
-  "evidence": []
-}
-
-A scored verdict must cite at least one allowed evidence ID, group every distinct
-observation for that ID in its observations array, and use exactly one score anchor:
-0, 0.25, 0.5, 0.75, or 1. Each ID must appear exactly once. An
-insufficient-evidence verdict cites no evidence."""
 
 
 def _rubric_prompt(
@@ -94,8 +62,7 @@ def _rubric_prompt(
 ## Score anchors
 {anchors}
 
-## Verdict layout
-{_VERDICT_LAYOUT}"""
+"""
 
 
 def _rubric(

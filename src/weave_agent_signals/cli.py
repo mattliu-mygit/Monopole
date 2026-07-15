@@ -468,6 +468,7 @@ def cmd_judge(args: argparse.Namespace) -> int:
                 if existing != normalized:
                     raise ValueError(f"judging artifact conflict: {key}")
 
+            pending_scores: list[tuple[Score, str]] = []
             for session in sessions:
                 conv_id = session.conversation_id
                 run_time = session.turns[0].started_at if session.turns else None
@@ -491,15 +492,18 @@ def cmd_judge(args: argparse.Namespace) -> int:
                             git_branch=session.git_branch,
                             run_time=run_time,
                         )
-                        stats.write_score(client, score, sess_ref, force=args.force)
+                        pending_scores.append((score, sess_ref))
                 except Exception as error:
                     stats.errors += 1
                     log.warning("Error judging session %s: %s", conv_id[:12], error)
+            if not stats.errors:
+                for score, sess_ref in pending_scores:
+                    stats.write_score(client, score, sess_ref, force=args.force)
 
     print(
         f"Judged {judging_plan['totals']['sessions_planned']} sessions across "
         f"{judging_plan['totals']['windows_planned']} reviewer windows "
-        f"({stats.total_scored} rubric scores). Wrote {stats.total_written}."
+        f"({len(pending_scores)} rubric scores). Wrote {stats.total_written}."
     )
     if stats.errors:
         print(f"  Errors: {stats.errors} (use -v for details)")
