@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import difflib
+import ipaddress
 import json
 import logging
 import os
 import sys
 from collections import Counter
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
@@ -13,15 +16,16 @@ import httpx
 from dotenv import load_dotenv
 
 from weave_agent_signals import alerts
+from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
 from weave_agent_signals.client import WeaveClient
 from weave_agent_signals.judges.cli_backend import CliJudgeClient
 from weave_agent_signals.judges.inference import InferenceClient
-from weave_agent_signals.judges.rubrics import RUBRICS, SESSION_RUBRICS
-from weave_agent_signals.judges.runner import (
-    judge_default_model,
-    judge_session,
-    judge_turn,
+from weave_agent_signals.judges.plan import (
+    build_judging_plan,
+    session_evidence_trace_ids,
 )
+from weave_agent_signals.judges.review import ReviewPolicy
+from weave_agent_signals.judges.runner import judge_session, judge_turn
 from weave_agent_signals.models import Score, SessionView
 from weave_agent_signals.patterns import (
     ab_leaderboard,
@@ -29,11 +33,10 @@ from weave_agent_signals.patterns import (
     detect_config_regressions,
     detect_regressions,
 )
-from weave_agent_signals.reflector import (
-    extract_artifacts,
-    render_proposal_diff,
-    run_reflection,
-)
+from weave_agent_signals.run_config import ModelDescriptor, PositionedJudge
+from weave_agent_signals.runs.bundles import BundleSnapshot, compare_bundles
+from weave_agent_signals.runs.promotion import ProjectFileAdapter
+from weave_agent_signals.runs.reflection import run_reflection
 from weave_agent_signals.scorers import score_session, score_turn
 from weave_agent_signals.scorers.outcome import classify_command
 
@@ -48,6 +51,13 @@ def _parse_datetime(s: str) -> datetime:
         except ValueError:
             continue
     raise argparse.ArgumentTypeError(f"Cannot parse datetime: {s}")
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
 
 
 class _WriteStats:
@@ -66,49 +76,105 @@ class _WriteStats:
         score: Score,
         ref: str,
         *,
-        dry_run: bool,
         force: bool,
-        dry_run_label: str = "",
     ) -> None:
         self.total_scored += 1
-        if dry_run:
-            if dry_run_label:
-                print(f"  [{score.scorer}] {score.value} {dry_run_label}")
-            return
         feedback_type = f"weave_agent_signals.{score.scorer}"
         existing = client.query_existing_feedback(ref, feedback_type)
         if existing and not force:
             self.skipped += 1
             return
-        if existing and force:
-            client.delete_feedback_ids(existing)
         client.write_score(score, ref)
         self.total_written += 1
         self.all_tags.extend(score.tags)
+        if existing:
+            client.delete_feedback_ids(existing)
 
 
-def _make_judge_client(args: argparse.Namespace):
-    """Build the judge inference client for the requested backend.
+def _make_model_client(args: argparse.Namespace, model: ModelDescriptor):
+    """Build a chat client for one catalog-resolved model role."""
 
-    backend="cli" uses the local coding-agent CLIs (TEMPORARY, no credits);
-    anything else is the HTTP InferenceClient (openai / wandb / custom URL).
-    """
-    backend = getattr(args, "judge_backend", None)
-    if backend == "cli":
+    if model.backend == "cli":
         return CliJudgeClient()
-    return InferenceClient(entity=args.entity, project=args.project, backend=backend)
+    return InferenceClient(
+        entity=args.entity,
+        project=args.project,
+        backend=model.backend,
+    )
 
 
-def _stamp_metadata(score: Score, *, config_version, git_branch, run_time) -> None:
-    """Attach the fields analysis needs but scorers don't set themselves.
+def _positioned_judge(model: ModelDescriptor, position: int) -> PositionedJudge:
+    return PositionedJudge.model_validate({**model.model_dump(mode="python"), "position": position})
 
-    ``run_time`` is the agent's run timestamp (turn/session start) — trend
-    detection orders by this, not by when the score was written.
-    """
-    score.metadata.setdefault("config_version", config_version)
-    score.metadata.setdefault("git_branch", git_branch)
-    if run_time is not None:
-        score.metadata.setdefault("turn_started_at", run_time.isoformat())
+
+def _resolve_judge_policy(args: argparse.Namespace) -> ReviewPolicy:
+    """Resolve standalone judge options through the current guided catalog."""
+
+    catalog = build_model_catalog()
+    backend_name = args.judge_backend or catalog.recommended_judge_backend
+    try:
+        backend = catalog.backend(backend_name)
+    except KeyError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+    depth = args.review_depth or backend.recommended_review_depth
+    if depth is None:
+        raise RuntimeError(f"Judge backend {backend_name} has no recommended review depth")
+    model_ids = tuple(args.judge_models or backend.recommended_judges)
+    judges: list[PositionedJudge] = []
+    for position, model_id in enumerate(model_ids, start=1):
+        try:
+            model = backend.model(model_id)
+        except KeyError as exc:
+            raise RuntimeError(f"Unknown judge model for {backend_name}: {model_id}") from exc
+        if "judge" not in model.supported_roles:
+            raise RuntimeError(f"Model {model_id} does not support judging")
+        judges.append(_positioned_judge(model, position))
+
+    margin = args.second_opinion_margin
+    if depth == "selective" and margin is None:
+        margin = catalog.review_defaults["second_opinion_margin"]
+    try:
+        return ReviewPolicy(
+            depth=depth,
+            judges=tuple(judges),
+            second_opinion_margin=margin,
+        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def _resolve_reflection_models(
+    args: argparse.Namespace,
+) -> tuple[ModelDescriptor, ModelDescriptor]:
+    """Resolve standalone reflection's writer and evaluator independently."""
+
+    catalog = build_model_catalog()
+    writer_id = args.model or catalog.proposal.recommended_model
+    writers = {model.id: model for model in catalog.proposal.available_models}
+    writer = writers.get(writer_id) if writer_id is not None else None
+    if writer is None or "proposal_writer" not in writer.supported_roles:
+        raise RuntimeError(f"Unknown or unavailable proposal model: {writer_id}")
+
+    backend_name = args.judge_backend or catalog.recommended_judge_backend
+    try:
+        backend = catalog.backend(backend_name)
+    except KeyError as exc:
+        raise RuntimeError(str(exc)) from exc
+    evaluator_id = args.proposal_evaluator_model
+    if evaluator_id is None:
+        evaluator_id = next(iter(backend.proposal_evaluator_preferences), None)
+    if evaluator_id is None:
+        raise RuntimeError(f"Judge backend {backend_name} has no proposal evaluator")
+    try:
+        evaluator = backend.model(evaluator_id)
+    except KeyError as exc:
+        raise RuntimeError(
+            f"Unknown proposal evaluator for {backend_name}: {evaluator_id}"
+        ) from exc
+    if "proposal_evaluator" not in evaluator.supported_roles:
+        raise RuntimeError(f"Model {evaluator_id} does not support proposal evaluation")
+    return writer, evaluator
 
 
 def _group_sessions(turns: list) -> list[SessionView]:
@@ -144,8 +210,7 @@ def _score_sessions(
         try:
             run_time = session.turns[0].started_at if session.turns else None
             for s in score_session(session):
-                _stamp_metadata(
-                    s,
+                s.stamp(
                     config_version=session.config_version,
                     git_branch=session.git_branch,
                     run_time=run_time,
@@ -154,9 +219,7 @@ def _score_sessions(
                     client,
                     s,
                     sess_ref,
-                    dry_run=args.dry_run,
                     force=args.force,
-                    dry_run_label=f"→ {conv_id[:12]}",
                 )
         except Exception as e:
             stats.errors += 1
@@ -182,8 +245,7 @@ def cmd_score(args: argparse.Namespace) -> int:
                 client.hydrate_turn_children(turn)
                 turn_ref = turn.ref_for(args.entity, args.project)
                 for s in score_turn(turn):
-                    _stamp_metadata(
-                        s,
+                    s.stamp(
                         config_version=turn.config_version,
                         git_branch=turn.git_branch,
                         run_time=turn.started_at,
@@ -192,9 +254,7 @@ def cmd_score(args: argparse.Namespace) -> int:
                         client,
                         s,
                         turn_ref,
-                        dry_run=args.dry_run,
                         force=args.force,
-                        dry_run_label=str(s.tags),
                     )
             except Exception as e:
                 stats.errors += 1
@@ -251,8 +311,7 @@ def cmd_backfill(args: argparse.Namespace) -> int:
             try:
                 turn_ref = turn.ref_for(args.entity, args.project)
                 for s in score_turn(turn):
-                    _stamp_metadata(
-                        s,
+                    s.stamp(
                         config_version=turn.config_version,
                         git_branch=turn.git_branch,
                         run_time=turn.started_at,
@@ -261,7 +320,6 @@ def cmd_backfill(args: argparse.Namespace) -> int:
                         client,
                         s,
                         turn_ref,
-                        dry_run=args.dry_run,
                         force=args.force,
                     )
             except Exception as e:
@@ -269,12 +327,6 @@ def cmd_backfill(args: argparse.Namespace) -> int:
                 log.warning("Error scoring turn %s: %s", turn.trace_id[:12], e)
 
         sessions_scored = _score_sessions(client, turns, stats, args)
-
-    if args.dry_run:
-        print(f"\nDry run: {stats.total_scored} scores computed, 0 written.")
-        pct = (classified_bash / total_bash * 100) if total_bash else 0
-        print(f"  Bash coverage: {classified_bash}/{total_bash} classified ({pct:.0f}%)")
-        return 0
 
     pct = (classified_bash / total_bash * 100) if total_bash else 0
     print(
@@ -308,8 +360,15 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     with WeaveClient(entity=args.entity, project=args.project) as client:
         if args.recent:
             turns = client.query_turns(limit=args.recent)
+            client.hydrate_turns_batch(turns)
+            feedback_by_ref = (
+                client.query_all_feedback_batch(
+                    [turn.ref_for(args.entity, args.project) for turn in turns]
+                )
+                if args.feedback
+                else {}
+            )
             for turn in turns:
-                client.hydrate_turn_children(turn)
                 print(f"\n{'=' * 60}")
                 print(f"Turn {turn.trace_id[:12]}  [{turn.started_at}]")
                 print(
@@ -322,20 +381,27 @@ def cmd_inspect(args: argparse.Namespace) -> int:
                 )
                 print(f"  tools={len(turn.tool_calls)}  subagents={len(turn.subagents)}")
                 if args.feedback:
-                    feedback = client.query_all_feedback(turn.ref_for(args.entity, args.project))
+                    feedback = feedback_by_ref[turn.ref_for(args.entity, args.project)]
                     print("  Feedback:")
                     _print_feedback(feedback)
         elif args.session:
             session = client.query_session(args.session)
-            for t in session.turns:
-                client.hydrate_turn_children(t)
+            client.hydrate_turns_batch(session.turns)
+            session_ref = session.ref_for(args.entity, args.project)
+            turn_refs = {
+                turn.trace_id: turn.ref_for(args.entity, args.project) for turn in session.turns
+            }
+            feedback_by_ref = (
+                client.query_all_feedback_batch([session_ref, *turn_refs.values()])
+                if args.feedback
+                else {}
+            )
             print(f"Session {session.conversation_id}")
             print(f"  Turns: {len(session.turns)}")
             print(f"  Tokens: {session.total_tokens}")
             if args.feedback:
-                feedback = client.query_all_feedback(session.ref_for(args.entity, args.project))
                 print("  Session feedback:")
-                _print_feedback(feedback)
+                _print_feedback(feedback_by_ref[session_ref])
             for i, t in enumerate(session.turns):
                 print(
                     f"  [{i}] {t.trace_id[:12]}  steer={t.steering_count} "
@@ -343,8 +409,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
                     f"tools={len(t.tool_calls)} subagents={len(t.subagents)}"
                 )
                 if args.feedback:
-                    feedback = client.query_all_feedback(t.ref_for(args.entity, args.project))
-                    _print_feedback(feedback)
+                    _print_feedback(feedback_by_ref[turn_refs[t.trace_id]])
         else:
             print("Specify --recent N or --session CONVERSATION_ID")
             return 1
@@ -354,7 +419,25 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 
 def cmd_judge(args: argparse.Namespace) -> int:
     since = args.since or (datetime.now(timezone.utc) - timedelta(hours=24))
-    all_rubrics = {**RUBRICS, **SESSION_RUBRICS}
+    policy = _resolve_judge_policy(args)
+    rubric_catalog = build_rubric_catalog()
+    descriptors = {rubric.id: rubric for rubric in rubric_catalog.rubrics}
+    if args.rubric:
+        requested_ids = tuple(dict.fromkeys(part.strip() for part in args.rubric.split(",")))
+        unknown = [name for name in requested_ids if name not in descriptors]
+        if not requested_ids or any(not name for name in requested_ids) or unknown:
+            rendered = ", ".join(unknown) if unknown else args.rubric
+            print(f"Unknown rubric(s): {rendered}. Available: {', '.join(descriptors)}")
+            return 2
+        selected_rubrics = tuple(descriptors[name] for name in requested_ids)
+    else:
+        selected_rubrics = rubric_catalog.rubrics
+    turn_rubrics = tuple(
+        rubric for rubric in selected_rubrics if rubric.evaluation_unit == "episode"
+    )
+    session_rubrics = tuple(
+        rubric for rubric in selected_rubrics if rubric.evaluation_unit == "session"
+    )
 
     with WeaveClient(entity=args.entity, project=args.project) as client:
         turns = client.query_turns(limit=args.limit, since=since)
@@ -363,90 +446,138 @@ def cmd_judge(args: argparse.Namespace) -> int:
             print("No turns found.")
             return 0
 
-        turn_rubrics = None
-        session_rubrics = None
-        if args.rubric:
-            rubric_names = [r.strip() for r in args.rubric.split(",")]
-            turn_rubrics = [RUBRICS[n] for n in rubric_names if n in RUBRICS]
-            session_rubrics = [SESSION_RUBRICS[n] for n in rubric_names if n in SESSION_RUBRICS]
-            if not turn_rubrics and not session_rubrics:
-                print(
-                    f"Unknown rubric(s): {args.rubric}. Available: {', '.join(all_rubrics.keys())}"
-                )
-                return 2
-
-        run_turns = turn_rubrics is None or bool(turn_rubrics)
-        run_sessions = session_rubrics is None or bool(session_rubrics)
-
         stats = _WriteStats()
 
         # Session digests are built from the turns' tool/chat children, so the
         # turns must be hydrated whenever we judge sessions — not only when we
-        # judge turns. Hydrate once up front for every turn we'll use.
-        if run_turns or run_sessions:
-            for turn in turns:
-                try:
-                    client.hydrate_turn_children(turn)
-                except Exception as e:
-                    stats.errors += 1
-                    log.warning("Error hydrating turn %s: %s", turn.trace_id[:12], e)
+        # judge turns. Batch hydration validates completeness before any judge
+        # call, so a partial trace cannot produce durable feedback.
+        client.hydrate_turns_batch(turns)
 
-        with _make_judge_client(args) as inference:
-            for turn in turns if run_turns else []:
+        turns_by_session: dict[str, list] = {}
+        for t in turns:
+            turns_by_session.setdefault(t.conversation_id, []).append(t)
+        for ts in turns_by_session.values():
+            ts.sort(key=lambda t: t.started_at)
+
+        sessions = _group_sessions(turns)
+        cohort_id = "cli-direct:" + ",".join(sorted(turn.trace_id for turn in turns))
+        judging_plan = build_judging_plan(
+            sessions,
+            cohort_id=cohort_id,
+            rubrics=selected_rubrics,
+            review_depth=policy.depth,
+            judge_count=len(policy.judges),
+        )
+        planned_episodes = {
+            episode["trace_id"]: episode
+            for session_plan in judging_plan["sessions"]
+            for episode in session_plan["selected_episodes"]
+        }
+        planned_sessions = {
+            session_plan["conversation_id"]: session_plan
+            for session_plan in judging_plan["sessions"]
+        }
+
+        with _make_model_client(args, policy.judges[0].model) as inference:
+            for turn in turns if turn_rubrics else []:
+                episode = planned_episodes.get(turn.trace_id)
+                applicable_ids = (
+                    [
+                        rubric["id"]
+                        for rubric in episode["rubrics"]
+                        if rubric["applicability"] == "applicable"
+                    ]
+                    if episode is not None
+                    else []
+                )
+                if not applicable_ids:
+                    continue
                 try:
                     turn_ref = turn.ref_for(args.entity, args.project)
-                    scores = judge_turn(turn, inference, rubrics=turn_rubrics or None)
+                    sess_turns = turns_by_session.get(turn.conversation_id, [])
+                    turn_idx = next(
+                        (j for j, t in enumerate(sess_turns) if t.trace_id == turn.trace_id),
+                        0,
+                    )
+                    evidence_ids = set(episode["evidence_trace_ids"])
+                    prior = [
+                        candidate
+                        for candidate in sess_turns[:turn_idx]
+                        if candidate.trace_id in evidence_ids
+                    ]
+                    scores = judge_turn(
+                        turn,
+                        inference,
+                        rubrics=[descriptors[name] for name in applicable_ids],
+                        judges=policy.judges,
+                        review_depth=policy.depth,
+                        second_opinion_margin=policy.second_opinion_margin,
+                        prior_turns=prior,
+                    )
                     for s in scores:
-                        _stamp_metadata(
-                            s,
+                        s.stamp(
                             config_version=turn.config_version,
                             git_branch=turn.git_branch,
                             run_time=turn.started_at,
                         )
+                        s.metadata.setdefault("evaluation_unit", "episode")
+                        s.metadata.setdefault("selection_kind", episode["selection_kind"])
+                        s.metadata.setdefault("selection_reasons", episode["selection_reasons"])
+                        s.metadata.setdefault("applicability", "applicable")
+                        s.metadata.setdefault("evidence_trace_ids", episode["evidence_trace_ids"])
+                        s.metadata.setdefault("plan_id", judging_plan["plan_id"])
                         stats.write_score(
                             client,
                             s,
                             turn_ref,
-                            dry_run=args.dry_run,
                             force=args.force,
-                            dry_run_label=s.reason,
                         )
                 except Exception as e:
                     stats.errors += 1
                     log.warning("Error judging turn %s: %s", turn.trace_id[:12], e)
 
-            if run_sessions:
-                for session in _group_sessions(turns):
+            if session_rubrics:
+                for session in sessions:
                     conv_id = session.conversation_id
                     run_time = session.turns[0].started_at if session.turns else None
+                    session_plan = planned_sessions[conv_id]
+                    evidence_trace_ids = session_evidence_trace_ids(session_plan)
                     try:
                         scores = judge_session(
                             session,
                             inference,
-                            rubrics=session_rubrics or None,
-                            panel_size=args.panel_size,
+                            rubrics=session_rubrics,
+                            judges=policy.judges,
+                            review_depth=policy.depth,
+                            second_opinion_margin=policy.second_opinion_margin,
+                            evidence_trace_ids=evidence_trace_ids,
                         )
                         sess_ref = session.ref_for(args.entity, args.project)
                         for s in scores:
-                            _stamp_metadata(
-                                s,
+                            s.stamp(
                                 config_version=session.config_version,
                                 git_branch=session.git_branch,
                                 run_time=run_time,
                             )
+                            s.metadata.setdefault("evaluation_unit", "session")
+                            s.metadata.setdefault("selection_kind", "whole_session")
+                            s.metadata.setdefault("evidence_trace_ids", evidence_trace_ids)
+                            s.metadata.setdefault("plan_id", judging_plan["plan_id"])
                             stats.write_score(
                                 client,
                                 s,
                                 sess_ref,
-                                dry_run=args.dry_run,
                                 force=args.force,
-                                dry_run_label=f"→ {conv_id[:12]}  {s.reason}",
                             )
                     except Exception as e:
                         stats.errors += 1
                         log.warning("Error judging session %s: %s", conv_id[:12], e)
 
-    print(f"Judged {len(turns)} turns ({stats.total_scored} scores). Wrote {stats.total_written}.")
+    print(
+        f"Selected {judging_plan['totals']['episodes_selected']} episodes from "
+        f"{len(turns)} turns ({stats.total_scored} scores). Wrote {stats.total_written}."
+    )
     if stats.errors:
         print(f"  Errors: {stats.errors} (use -v for details)")
     return 1 if stats.errors else 0
@@ -467,7 +598,9 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         else:
             print(f"\nA/B Leaderboard ({len(results)} config versions):\n")
             for r in results:
-                print(f"  Config: {r.config_version}  ({r.turn_count} turns)")
+                print(
+                    f"  Config: {r.config_version}  ({r.evaluated_target_count} evaluated targets)"
+                )
                 for scorer, s in sorted(r.scores.items()):
                     lo, hi = s.ci
                     flag = "" if s.confident else "  ⚠ low n"
@@ -526,31 +659,53 @@ def cmd_monitor(args: argparse.Namespace) -> int:
     found = [alerts.trend_alert(r) for r in sig_trend] + [
         alerts.config_alert(r) for r in sig_config
     ]
-    seen = alerts.load_seen(args.state_file)
-    new = [a for a in found if a.key not in seen]
+    previously_active = alerts.load_active(args.state_file)
+    current_keys = {alert.key for alert in found}
+    new = [alert for alert in found if alert.key not in previously_active]
 
     tentative = len([r for r in trend if not r["significant"]]) + len(
         [r for r in config if not r["significant"]]
     )
     if not new:
+        if args.state_file:
+            alerts.save_active(args.state_file, previously_active & current_keys)
         print(
             f"No new significant regressions "
             f"({len(found)} already alerted, {tentative} tentative/low-confidence)."
         )
         return 0
 
-    if args.dry_run:
-        for a in new:
-            print(f"  would alert: {a.text}")
-        print(f"{len(new)} new significant regression(s) (dry run — not sent, state unchanged).")
-        return 0
-
     delivered = alerts.send(new, webhook=args.alert_webhook)
-    if args.state_file and delivered:
-        # dedup only what actually went out, so a failed webhook retries next run
-        alerts.save_seen(args.state_file, seen | {a.key for a in delivered})
+    if args.state_file:
+        # Retain ongoing delivered alerts, clear recovered alerts, and do not
+        # mark failed deliveries so they retry on the next run.
+        active = (previously_active & current_keys) | {alert.key for alert in delivered}
+        alerts.save_active(args.state_file, active)
     print(f"{len(delivered)} new significant regression(s) alerted.")
     return 0
+
+
+def _render_bundle_diff(past: BundleSnapshot, proposed: BundleSnapshot) -> str:
+    """Render an auditable unified diff for every changed bundle target."""
+
+    chunks: list[str] = []
+    for action in compare_bundles(past, proposed).actions:
+        before = (
+            (action.before.content or "").splitlines(keepends=True) if action.before.exists else []
+        )
+        after = (
+            (action.after.content or "").splitlines(keepends=True) if action.after.exists else []
+        )
+        chunks.extend(
+            line if line.endswith("\n") else f"{line}\n"
+            for line in difflib.unified_diff(
+                before,
+                after,
+                fromfile=f"B/{action.locator}",
+                tofile=f"C/{action.locator}",
+            )
+        )
+    return "".join(chunks)
 
 
 def cmd_reflect(args: argparse.Namespace) -> int:
@@ -567,58 +722,86 @@ def cmd_reflect(args: argparse.Namespace) -> int:
     print()
 
     project_root = args.project_root or os.getcwd()
-    originals = extract_artifacts(project_root)
-    if not originals:
-        print(f"No CLAUDE.md or agent artifacts found in {project_root}")
+    adapter = ProjectFileAdapter(project_root)
+    baseline = adapter.capture()
+    existing_targets = [target for target in baseline.targets if target.exists]
+    if not existing_targets:
+        print(f"No managed instruction targets found in {project_root}")
         return 2
 
-    print(f"Found {len(originals)} artifact(s): {', '.join(a.name for a in originals)}")
+    print(
+        f"Found {len(existing_targets)} managed target(s): "
+        f"{', '.join(target.locator for target in existing_targets)}"
+    )
+    writer, evaluator = _resolve_reflection_models(args)
 
-    # --dry-run is a cheap preview: show the coaching state and artifacts without
-    # invoking the (expensive, credit-consuming) GEPA reflection.
-    if args.dry_run:
-        print("\n(dry run — skipping GEPA reflection; re-run without --dry-run to propose edits)")
-        return 0
-
-    print(f"Running GEPA reflector (model={args.model}, iterations={args.iterations})...")
+    print(
+        "Running reflection "
+        f"(proposal_writer={writer.id}, proposal_evaluator={evaluator.id}, "
+        f"candidate_budget={args.candidate_budget})..."
+    )
     print()
 
     try:
-        with _make_judge_client(args) as judge:
+        with ExitStack() as stack:
+            writer_client = stack.enter_context(_make_model_client(args, writer))
+            evaluator_client = stack.enter_context(_make_model_client(args, evaluator))
             proposal = run_reflection(
-                project_root=project_root,
+                baseline=baseline,
                 feedback=feedback,
                 coaching_text=coaching,
-                judge_client=judge,
-                judge_model=judge_default_model(judge),
-                model=args.model,
-                max_iterations=args.iterations,
+                scope_policy=adapter.contract_manifest(),
+                requested_writer=writer,
+                requested_evaluator=evaluator,
+                writer_client=writer_client,
+                evaluator_client=evaluator_client,
+                build_candidate=adapter.bundle_from_content_map,
+                candidate_budget=args.candidate_budget,
             )
     except ModuleNotFoundError as e:
         print(
-            f"Error: reflector dependencies missing ({e.name}). "
-            f"Install with: pip install 'weave-agent-signals[rsi]'"
+            f"Error: reflection dependencies missing ({e.name}). "
+            f"Install with: pip install 'weave-agent-signals[reflection]'"
         )
         return 2
 
-    if proposal is None:
-        print("No improvements proposed.")
-        return 0
+    generated = proposal.candidates
+    recommended_id = proposal.recommended_candidate_id
+    if recommended_id is None:
+        if generated:
+            noun = "candidate" if len(generated) == 1 else "candidates"
+            print(f"Generated {len(generated)} {noun}.")
+        print("Kept the current baseline because none of the generated candidates scored higher.")
+    else:
+        selected_generated_index = next(
+            (
+                index
+                for index, candidate in enumerate(generated)
+                if candidate.candidate_id == recommended_id
+            ),
+            None,
+        )
+        if selected_generated_index is None:
+            raise RuntimeError("Reflection recommendation is missing from its candidates")
+        best = generated[selected_generated_index]
+        if len(generated) > 1:
+            print(
+                f"Generated {len(generated)} candidates, best is #{selected_generated_index + 1}:"
+            )
+            for i, candidate in enumerate(generated):
+                marker = " *" if i == selected_generated_index else ""
+                print(
+                    f"  #{i + 1} model={candidate.resolved_writer_model} "
+                    f"score_delta={candidate.score_delta:+.3f}{marker}"
+                )
+            print()
 
-    diff = render_proposal_diff(originals, proposal)
-    print(diff)
+        print(_render_bundle_diff(proposal.baseline, best.bundle))
 
-    if not args.apply:
-        print("\nReview the diff above. Re-run with --apply to write changes.")
-        return 0
-
-    for artifact in proposal.artifacts:
-        path = os.path.join(project_root, artifact.path)
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w") as f:
-            f.write(artifact.content)
-        print(f"  Wrote {artifact.path}")
-    print("Changes applied. Run 'score' to measure the impact.")
+    print(
+        "\nStandalone reflect is preview-only; this proposal is not saved. "
+        "Start a Run to generate its own proposal for review and promotion."
+    )
 
     return 0
 
@@ -628,7 +811,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="weave-agent-signals",
         description="Score agent traces from Weave",
     )
-    parser.add_argument("--entity", default="mliu-wandb-weights-biases")
+    parser.add_argument("--entity", default="weave-team")
     parser.add_argument("--project", default="agent-sessions")
     parser.add_argument("-v", "--verbose", action="store_true")
 
@@ -638,7 +821,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_score = subs.add_parser("score", help="Score recent unscored turns")
     p_score.add_argument("--since", type=_parse_datetime, default=None)
     p_score.add_argument("--limit", type=int, default=100)
-    p_score.add_argument("--dry-run", action="store_true")
     p_score.add_argument("--force", action="store_true")
 
     # backfill
@@ -646,7 +828,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_back.add_argument("--start", type=_parse_datetime, required=True)
     p_back.add_argument("--end", type=_parse_datetime, default=None)
     p_back.add_argument("--page-size", type=int, default=500)
-    p_back.add_argument("--dry-run", action="store_true")
     p_back.add_argument("--force", action="store_true")
 
     # judge
@@ -663,17 +844,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--judge-backend",
         type=str,
         default=None,
-        help="Judge backend: openai, wandb, custom URL, or cli "
-        "(local claude/codex CLIs, no credits — temporary) "
-        "(default: JUDGE_BACKEND env or openai)",
+        help="Judge catalog backend ID: cli, wandb, or openai (default: catalog recommendation)",
     )
     p_judge.add_argument(
-        "--panel-size",
-        type=int,
-        default=1,
-        help="Number of judges for session PoLL panel (default: 1)",
+        "--judge-model",
+        dest="judge_models",
+        action="append",
+        default=None,
+        help="Ordered judge model ID; repeat for each reviewer (default: catalog recommendation)",
     )
-    p_judge.add_argument("--dry-run", action="store_true")
+    p_judge.add_argument(
+        "--review-depth",
+        choices=("primary", "selective", "full_panel"),
+        default=None,
+        help="Reviewer escalation depth (default: catalog recommendation)",
+    )
+    p_judge.add_argument(
+        "--second-opinion-margin",
+        type=float,
+        default=None,
+        help="Selective-review threshold margin (default: catalog recommendation)",
+    )
     p_judge.add_argument("--force", action="store_true")
 
     # inspect
@@ -718,15 +909,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="JSON file to dedup alerts across scheduled runs",
     )
-    p_mon.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show alerts without sending to the webhook or updating state",
-    )
-
     # reflect
     p_reflect = subs.add_parser(
-        "reflect", help="GEPA reflector: propose CLAUDE.md edits from scores"
+        "reflect", help="Propose managed instruction edits from evaluation scores"
     )
     p_reflect.add_argument(
         "--limit",
@@ -737,34 +922,82 @@ def build_parser() -> argparse.ArgumentParser:
     p_reflect.add_argument(
         "--model",
         type=str,
-        default="gpt-4o",
-        help="LLM model for GEPA reflection (default: gpt-4o)",
+        default=None,
+        help="Proposal-writer model ID (default: catalog recommendation)",
     )
     p_reflect.add_argument(
         "--judge-backend",
         type=str,
         default=None,
-        help="Backend for the artifact-quality judge: openai, wandb, "
-        "custom URL, or cli (local, temporary)",
+        help="Proposal-evaluator catalog backend ID: cli, wandb, or openai "
+        "(default: catalog recommendation)",
     )
     p_reflect.add_argument(
-        "--iterations",
-        type=int,
+        "--proposal-evaluator-model",
+        type=str,
+        default=None,
+        help="Proposal-evaluator model ID (default: selected backend recommendation)",
+    )
+    p_reflect.add_argument(
+        "--candidate-budget",
+        type=_positive_int,
         default=3,
-        help="Max GEPA optimization iterations (default: 3)",
+        help="Maximum generated reflection candidates (default: 3)",
     )
     p_reflect.add_argument(
         "--project-root",
         type=str,
         default=None,
-        help="Project root to find CLAUDE.md (default: cwd)",
+        help="Project root containing managed instruction artifacts (default: cwd)",
     )
-    p_reflect.add_argument(
-        "--dry-run", action="store_true", help="Show proposed changes without writing"
+    # serve
+    p_serve = subs.add_parser("serve", help="Start the API server and frontend")
+    p_serve.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help=(
+            "Bind address (default: 127.0.0.1; non-loopback addresses expose the "
+            "unauthenticated API)"
+        ),
     )
-    p_reflect.add_argument("--apply", action="store_true", help="Write proposed changes to disk")
+    p_serve.add_argument("--port", type=int, default=8787)
+    p_serve.add_argument(
+        "--project-root",
+        type=str,
+        default=None,
+        help="Project root for artifact lookups (default: cwd)",
+    )
 
     return parser
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    if args.project_root:
+        os.environ["PROJECT_ROOT"] = args.project_root
+    os.environ.setdefault("WANDB_ENTITY", args.entity)
+    os.environ.setdefault("WANDB_PROJECT", args.project)
+
+    try:
+        is_loopback = ipaddress.ip_address(args.host).is_loopback
+    except ValueError:
+        is_loopback = args.host.casefold() == "localhost"
+    if not is_loopback:
+        print(
+            "WARNING: this non-loopback bind exposes an unauthenticated API and its "
+            "configured project access to the reachable network.",
+            file=sys.stderr,
+        )
+    print(f"Starting server on {args.host}:{args.port}")
+    uvicorn.run(
+        "weave_agent_signals.api:app",
+        host=args.host,
+        port=args.port,
+        reload=False,
+    )
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -788,6 +1021,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "analyze": cmd_analyze,
         "monitor": cmd_monitor,
         "reflect": cmd_reflect,
+        "serve": cmd_serve,
     }
     handler = handlers.get(args.command)
     if handler:

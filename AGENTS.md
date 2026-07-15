@@ -1,90 +1,156 @@
 # weave-agent-signals
 
-Layered evaluation & weak RSI for Weave agent traces. Reads traces from `weave-agent-adapter`, scores them (deterministic → LLM-judge → patterns → self-improvement), writes feedback back to the same Weave project.
+Monopole provides layered evaluation and human-reviewed instruction improvement
+for agent traces recorded by
+`weave-agent-adapter`. It reads and scores Weave traces, writes custom feedback,
+analyzes regressions, and manages human-reviewed instruction promotion. The
+package and CLI remain `weave-agent-signals`.
 
-## Development
+## Communication
 
-```bash
-pip install -e ".[dev]"
-pytest
-ruff check src/ tests/         # lint
-ruff format --check src/ tests/ # format
-```
+For direct questions, answer concisely—usually one or two sentences plus only
+the minimum useful elaboration. Let follow-up questions drive deeper
+explanation instead of preemptively expanding into a full walkthrough.
 
-## Architecture
+## Setup
 
-- `specs/DESIGN.md` — start here for the full system overview
-- `specs/` — detailed specs per component (01–06)
-- `src/weave_agent_signals/` — implementation
-- Weave entity: `mliu-wandb-weights-biases`, project: `agent-sessions`
-- All reads: `POST trace.wandb.ai/agents/spans/query` (custom_attr_columns required)
-- All writes: `POST trace.wandb.ai/feedback/create` (or batch variant)
-
-## Scorers
-
-| Scorer | Granularity | Module |
-|---|---|---|
-| `outcome.test` | turn | `scorers/outcome.py` |
-| `outcome.build` | turn | `scorers/outcome.py` |
-| `outcome.lint` | turn | `scorers/outcome.py` |
-| `outcome.git` | turn | `scorers/outcome.py` |
-| `outcome.install` | turn | `scorers/outcome.py` |
-| `outcome.command` | turn | `scorers/outcome.py` |
-| `judge.verification` | turn | `judges/rubrics.py` |
-| `judge.error_recovery` | turn | `judges/rubrics.py` |
-| `judge.tool_choice` | turn | `judges/rubrics.py` |
-| `judge.completion` | turn | `judges/rubrics.py` |
-| `judge.session_outcome` | session | `judges/rubrics.py` |
-| `judge.session_autonomy` | session | `judges/rubrics.py` |
-| `efficiency` | turn | `scorers/efficiency.py` |
-| `efficiency.session` | session | `scorers/efficiency.py` |
-| `implicit.correction_density` | session | `scorers/implicit.py` |
-| `implicit.abandonment` | session | `scorers/implicit.py` |
-
-Unified API: `scorers.score_turn(turn)` and `scorers.score_session(session)`.
-
-## CLI
+Python 3.11 or newer is required. Use the lockfiles rather than ad hoc installs:
 
 ```bash
-weave-agent-signals score [--since DATE] [--limit N] [--dry-run] [--force]
-weave-agent-signals backfill --start DATE [--end DATE] [--page-size N] [--dry-run] [--force]
-weave-agent-signals judge [--since DATE] [--limit N] [--rubric NAME,...] [--panel-size N] [--dry-run] [--force]
-weave-agent-signals analyze [--limit N] [--ab] [--trends] [--coaching]
-weave-agent-signals reflect [--limit N] [--model MODEL] [--iterations N] [--project-root DIR] [--dry-run] [--apply]
-weave-agent-signals inspect [--recent N] [--session ID] [--feedback]
+uv sync --frozen --all-extras
+cd frontend && npm ci
 ```
 
-Exit codes: 0 success, 1 partial failure, 2 config error, 3 API error.
+The default Weave scope is entity `weave-team`, project `agent-sessions`.
+Credentials come from `WANDB_API_KEY` or the `api.wandb.ai` entry in `~/.netrc`.
 
-## Testing
+## Verification
 
-Tests use synthetic span data (no live Weave calls). HTTP interactions mocked with `respx`.
+Run backend gates from the repository root:
 
 ```bash
-pytest                          # full suite (282 tests)
-pytest tests/test_outcome.py    # single module
-pytest -x                       # stop on first failure
+.venv/bin/python -m pytest -q
+.venv/bin/ruff check src/ tests/
+.venv/bin/ruff format --check src/ tests/
 ```
 
-## Conventions
+Run frontend gates from `frontend/`:
 
-- Scorer names: `<category>.<subcategory>` (e.g. `outcome.test`, `implicit.correction_density`)
-- Feedback types: `weave_agent_signals.<scorer_name>`
-- Score values: 0.0–1.0 float or bool; stored as `payload.rating` in feedback
-- All score payloads include `scorer_version`, `scored_at`; scorer-specific data under `payload.details`
-- Scores carry `details.turn_started_at` (agent run time): trend detection orders by this, not `scored_at`, so a single backfill doesn't collapse the timeline
-- Children query filters by `trace_id` to prevent cross-turn contamination
-- Backfill paginates automatically via cursor-based `query_turns_paginated`
-- `--force` deletes existing feedback before writing (not append)
+```bash
+npm test
+npm run lint
+npm run build
+```
 
-## Weave API quirks
+Tests use synthetic spans and mocked HTTP. Prefer focused tests while iterating,
+then run all gates before declaring completion.
 
-- Spans query: `parent_span_id` is empty string `""` not null; use `$eq ""` not `$not`
-- Datetime literals: ClickHouse DateTime64(6) needs bare ISO without timezone suffix (no `Z`, no `+00:00`)
-- Feedback query: response key is `result` (not `feedback` or `results`)
-- Feedback purge: only accepts `$eq` on `id` field; filter by ref/type requires query-then-delete
-- Feedback create: `scorer_*` fields only work with `wandb.agent_monitor` type (requires `runnable_ref`); custom types use `payload` only
-- Python env: requires Python 3.11+; use `uv` to create venv: `uv venv .venv --python 3.12`
-- **Tool results are JSON-wrapped**: Bash tool results come as `{"stdout": "...", "stderr": "..."}` not plain text. The `_extract_output_text()` helper unwraps this before passing to parsers. `status_code` is often `UNSET` (not `OK`/`ERROR`), so outcome parsers must infer success from output content when `exit_code` is None.
-- **W&B Inference endpoint**: `https://api.inference.wandb.ai/v1` (NOT the proxy at `api.wandb.ai/proxy/inference/v1`). Requires `Authorization: Bearer {wandb_api_key}` AND `OpenAI-Project: {entity}/{project}` headers. Model names: `gpt-oss-20b`, `Llama-3.1-8B`, `granite-4.1-8b` etc. A 402 means the account needs inference credits enabled.
-- **`include_details: true` is REQUIRED for tool args/results**: the spans query splits columns into a lightweight default set and heavy "detail-only" columns (`tool_call_arguments`, `tool_call_result`, `input_messages`, `output_messages`, `system_instructions`, `reasoning_content`, `*_refs`, `raw_span_dump`). Without `include_details`, those come back NULL — the outcome scorers get no command text or output. The children/hydration query sets it; the turn-list query does not (turn roots have no tool data, and details are expensive). Verified against Weave source: `agent_query_builder.py` `_SPANS_DETAILS_FIELD_NAMES` + `make_spans_list_query` (`details_projection` gated on `req.include_details`). Not allowed together with `group_by`.
+## Architecture map
+
+- [`specs/DESIGN.md`](specs/DESIGN.md) — product purpose and system overview
+- [`specs/01-weave-io.md`](specs/01-weave-io.md) — reads, hydration, refs, writes
+- [`specs/02-evaluation.md`](specs/02-evaluation.md) — deterministic and model
+  evaluation, applicability, review policy, and inference trust
+- [`specs/03-analysis-monitoring.md`](specs/03-analysis-monitoring.md) —
+  comparable evidence, trends, coaching, and alerts
+- [`specs/04-evaluation-runs.md`](specs/04-evaluation-runs.md) — reproducible runs,
+  review, and promotion
+- `src/weave_agent_signals/` — Weave I/O, evaluation, analysis, CLI, and API
+- `src/weave_agent_signals/runs/` — durable run, reflection, review, and
+  promotion lifecycle
+- `frontend/src/features/` — run and reflection product behavior
+- `tests/` and `frontend/tests/` — domain-organized backend and frontend tests
+
+Specifications describe product intent, observable behavior, boundaries,
+invariants, tradeoffs, and current architecture. Do not duplicate class/function
+inventories, schemas, route tables, algorithms, or framework details that an
+agent can read from source, CLI help, OpenAPI, or tests.
+
+## Current commands
+
+The installed entry point is `weave-agent-signals`. Use command `--help` for
+arguments and defaults.
+
+- `score` — deterministic recent scoring
+- `backfill` — paginated historical scoring
+- `judge` — turn/session rubric inference
+- `inspect` — read-only trace and feedback inspection
+- `analyze` — summary, cohort, trend, and coaching analysis
+- `monitor` — deduplicated regression alerts
+- `reflect` — proposal preview only
+- `serve` — local API and built-SPA serving
+
+Evaluation-run persistence, proposal editing, promotion, and receipts are web
+product behavior; standalone reflection does not mutate managed files.
+
+## Code conventions
+
+- Scorer names normally use `<category>.<subcategory>`; the aggregate turn
+  efficiency scorer remains `efficiency`.
+- Feedback types use `weave_agent_signals.<scorer_name>`.
+- Ratings are booleans or finite floats in `[0, 1]`, always use higher-is-better
+  direction, and declare turn/session granularity.
+- Payloads include scorer version and score time; scorer-specific data belongs
+  under `payload.details`.
+- Trend ordering uses `details.turn_started_at`, not write time.
+- `--force` queries matching scorer-plus-ref feedback, creates the new row, then
+  purges every prior match only after creation succeeds.
+- Evaluation runs pin exact trace identities and configuration before work.
+- Judging pins a selective episode/applicability plan before inference;
+  trigger-selected scores are diagnostics, not population estimates.
+- Runs pin model and rubric catalog versions, rubric thresholds, proposal
+  writer, ordered judge choices, review depth, and proposal evaluator;
+  recommendations never remain runtime defaults.
+- Runs pin one pipeline version in their effective configuration; each stage
+  fails closed before external work when that version is incompatible.
+- Explicit judge overrides are honored in order. Family overlap and low
+  diversity warn for bias risk but do not silently replace selected models.
+- Review scores belong to immutable whole-bundle revisions, not individual files.
+- Reflection pins separate proposal-writer and evaluator models plus a candidate
+  budget (default three), and stops after two consecutive scored, distinct,
+  non-baseline candidate iterations without a better predicted evaluator score.
+- Reflection score basis is `predicted_evaluator`; it is not a verification run.
+- Local judge and reflection CLIs receive only platform essentials and stored
+  credential locations, never arbitrary parent secrets or token/proxy variables.
+  Claude is tool-disabled. Codex uses a deny-by-default filesystem profile with
+  an isolated `HOME`; only its empty workspace and minimal runtime paths are
+  readable, and network, web search, apps, login shells, customizations, and
+  persistence are disabled. Google-family local models remain disabled until
+  Gemini has a verified confined mode.
+
+## Weave correctness checklist
+
+These constraints are operationally dangerous to get wrong:
+
+1. Root turn spans use `parent_span_id == ""`, never null or `$not`.
+2. Request adapter attributes through `custom_attr_columns` and flatten the
+   typed custom-attribute maps.
+3. Format ClickHouse `DateTime64(6)` literals as bare UTC ISO strings without
+   `Z` or `+00:00`.
+4. Detail columns require `include_details: true`; it cannot accompany
+   `group_by`.
+5. Hydrate children by exact `trace_id`, not conversation alone. Each detail
+   batch must also contain the requested `invoke_agent` roots.
+6. Unwrap Bash JSON `stdout`/`stderr`. Status is often `UNSET`, and an explicit
+   null exit code means unknown.
+7. Derive token totals/effective model from child chat spans when roots are zero.
+8. Feedback query returns records under `result`.
+9. Forced feedback replacement creates the new row before purging any prior
+   match. Purge supports `$eq` on feedback `id` and runs only after creation
+   succeeds.
+10. Custom scores use flat `payload`. `scorer_*` fields require monitor-specific
+    runnable, call, and trigger refs that this project does not create.
+11. W&B Inference is `https://api.inference.wandb.ai/v1` and requires bearer W&B
+    auth plus `OpenAI-Project: {entity}/{project}`. HTTP 402 means credits are
+    disabled.
+12. URL-encode `conversation_id` when constructing session refs.
+
+## Run and promotion safety
+
+Do not simplify away cohort/config pinning, reflection-input provenance, review
+compare-and-swap revisions, cancellation coordination, whole-scope drift checks,
+promotion journaling, rollback/recovery, or monotonic progress accounting. They
+protect current correctness and auditability.
+
+The local run database is disposable pre-release state. Do not add schema
+migrations or retired payload adapters unless the product support policy changes.

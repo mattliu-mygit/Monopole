@@ -17,6 +17,14 @@ from weave_agent_signals.models import FEEDBACK_PREFIX
 # Below this many samples a scorer's mean/pass-rate is not trustworthy on its own.
 MIN_CONFIDENT_SAMPLES = 5
 _Z_95 = 1.96  # z for a 95% interval
+_SESSION_EVALUATION_CONTEXT_FIELDS = (
+    "rubric_version",
+    "rubric_threshold",
+    "review_depth",
+    "review_policy_version",
+    "second_opinion_margin",
+    "requested_judge_models",
+)
 
 
 def _wilson_ci(k: float, n: int, z: float = _Z_95) -> tuple[float, float]:
@@ -71,7 +79,7 @@ class ScoreSummary:
 @dataclass
 class ABResult:
     config_version: str
-    turn_count: int
+    evaluated_target_count: int
     scores: dict[str, ScoreSummary]
 
 
@@ -91,14 +99,139 @@ def _details(feedback: dict) -> dict:
     return _payload(feedback).get("details") or {}
 
 
+def _is_trigger_selected_diagnostic(feedback: dict) -> bool:
+    """Whether a score came from a non-random, high-information episode."""
+    details = _details(feedback)
+    return (
+        details.get("selection_kind") == "deterministic_trigger"
+        and details.get("evaluation_unit") == "episode"
+    )
+
+
+def _is_session_judgment(feedback: dict) -> bool:
+    scorer = _extract_scorer(feedback)
+    if scorer is None or not scorer.startswith("judge."):
+        return False
+    return (
+        _details(feedback).get("evaluation_unit") == "session"
+        or _payload(feedback).get("granularity") == "session"
+    )
+
+
+def _evaluation_context_value(details: dict, field: str) -> object:
+    value = details[field]
+    if field in {"rubric_threshold", "second_opinion_margin"}:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+    if field == "requested_judge_models" and isinstance(value, tuple):
+        return list(value)
+    return value
+
+
+def _has_complete_session_evaluation_context(feedback: dict) -> bool:
+    if not _is_session_judgment(feedback):
+        return True
+    details = _details(feedback)
+    if any(field not in details for field in _SESSION_EVALUATION_CONTEXT_FIELDS):
+        return False
+
+    rubric_version = details["rubric_version"]
+    rubric_threshold = details["rubric_threshold"]
+    review_depth = details["review_depth"]
+    policy_version = details["review_policy_version"]
+    margin = details["second_opinion_margin"]
+    judges = details["requested_judge_models"]
+    return (
+        isinstance(rubric_version, str)
+        and bool(rubric_version.strip())
+        and isinstance(rubric_threshold, (int, float))
+        and not isinstance(rubric_threshold, bool)
+        and math.isfinite(float(rubric_threshold))
+        and review_depth in {"primary", "selective", "full_panel"}
+        and isinstance(policy_version, str)
+        and bool(policy_version.strip())
+        and (
+            margin is None
+            or (
+                isinstance(margin, (int, float))
+                and not isinstance(margin, bool)
+                and math.isfinite(float(margin))
+            )
+        )
+        and isinstance(judges, (list, tuple))
+        and bool(judges)
+        and all(isinstance(judge, str) and judge.strip() for judge in judges)
+    )
+
+
+def _evaluation_context_identity(feedback: dict) -> str | None:
+    """Readable session-judge configuration identity used by every analysis."""
+
+    if not _is_session_judgment(feedback) or not _has_complete_session_evaluation_context(feedback):
+        return None
+    details = _details(feedback)
+    context = {
+        field: _evaluation_context_value(details, field)
+        for field in _SESSION_EVALUATION_CONTEXT_FIELDS
+    }
+
+    def text(value: object) -> str:
+        if value is None:
+            return "none"
+        if isinstance(value, float):
+            return f"{value:g}"
+        return str(value)
+
+    raw_judges = context["requested_judge_models"]
+    judges = (
+        " → ".join(text(model) for model in raw_judges)
+        if isinstance(raw_judges, list)
+        else text(raw_judges)
+    )
+    return (
+        f"rubric {text(context['rubric_version'])}, "
+        f"threshold {text(context['rubric_threshold'])}; "
+        f"{text(context['review_depth'])}, "
+        f"policy {text(context['review_policy_version'])}, "
+        f"margin {text(context['second_opinion_margin'])}; "
+        f"judges {judges}"
+    )
+
+
+def _analytics_scorer(feedback: dict) -> str | None:
+    scorer = _extract_scorer(feedback)
+    if scorer is None:
+        return None
+    if _is_session_judgment(feedback) and not _has_complete_session_evaluation_context(feedback):
+        return None
+    context = _evaluation_context_identity(feedback)
+    return scorer if context is None else f"{scorer} [{context}]"
+
+
+def _is_audit_only_session_judgment(feedback: dict) -> bool:
+    """Whether a session judgment lacks a complete, comparable evaluation."""
+
+    details = _details(feedback)
+    return _is_session_judgment(feedback) and (
+        details.get("review_status") != "complete"
+        or not _has_complete_session_evaluation_context(feedback)
+    )
+
+
+def _is_ordinary_analytics_score(feedback: dict) -> bool:
+    return not (
+        _is_trigger_selected_diagnostic(feedback) or _is_audit_only_session_judgment(feedback)
+    )
+
+
 def _extract_rating(feedback: dict) -> float | None:
     rating = _payload(feedback).get("rating")
-    if rating is not None:
-        try:
-            return float(rating)
-        except (TypeError, ValueError):
-            return None
-    return None
+    if isinstance(rating, bool) or not isinstance(rating, (int, float)):
+        return None
+    value = float(rating)
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        return None
+    return value
 
 
 def _extract_config(feedback: dict) -> str:
@@ -143,12 +276,24 @@ def _summarize(scorer: str, ratings: list[float], tags: list[list[str]]) -> Scor
     )
 
 
-def aggregate_scores(feedback: list[dict]) -> dict[str, ScoreSummary]:
-    """Group feedback by scorer and compute summary stats."""
+def aggregate_scores(
+    feedback: list[dict],
+    *,
+    include_trigger_selected: bool = False,
+) -> dict[str, ScoreSummary]:
+    """Group representative feedback by scorer and compute summary stats.
+
+    Deterministically trigger-selected episode judgments are excluded by
+    default because their sampling process cannot support population summaries.
+    """
     by_scorer: dict[str, tuple[list[float], list[list[str]]]] = defaultdict(lambda: ([], []))
 
     for fb in feedback:
-        scorer = _extract_scorer(fb)
+        if _is_trigger_selected_diagnostic(fb) and not include_trigger_selected:
+            continue
+        if _is_audit_only_session_judgment(fb):
+            continue
+        scorer = _analytics_scorer(fb)
         rating = _extract_rating(fb)
         if scorer is None or rating is None:
             continue
@@ -168,6 +313,8 @@ def ab_leaderboard(feedback: list[dict]) -> list[ABResult]:
     by_config: dict[str, list[dict]] = defaultdict(list)
 
     for fb in feedback:
+        if not _is_ordinary_analytics_score(fb):
+            continue
         config = _extract_config(fb)
         by_config[config].append(fb)
 
@@ -178,7 +325,7 @@ def ab_leaderboard(feedback: list[dict]) -> list[ABResult]:
         results.append(
             ABResult(
                 config_version=config,
-                turn_count=len(refs),
+                evaluated_target_count=len(refs),
                 scores=scores,
             )
         )
@@ -234,7 +381,9 @@ def detect_regressions(
     by_scorer: dict[str, list[tuple[datetime, float]]] = defaultdict(list)
 
     for fb in feedback:
-        scorer = _extract_scorer(fb)
+        if not _is_ordinary_analytics_score(fb):
+            continue
+        scorer = _analytics_scorer(fb)
         rating = _extract_rating(fb)
         run_time = _parse_dt(_extract_run_time(fb))
         if scorer and rating is not None and run_time is not None:
@@ -284,40 +433,45 @@ def detect_config_regressions(
     min_samples: int = MIN_CONFIDENT_SAMPLES,
     threshold: float = 0.2,
 ) -> list[dict[str, Any]]:
-    """Compare the newest config_version cohort against the previous one.
+    """Compare the newest two configs within each comparable score cohort.
 
-    The RSI safety net: catch a config change (a CLAUDE.md/skill edit) that made
+    The instruction-change safety net: catch a config change (a CLAUDE.md/skill edit) that made
     scores worse. Only drops are reported (improvements are not regressions);
     ``significant`` marks drops where the two cohorts' 95% CIs don't overlap and
-    both have enough samples. Configs are ordered by their latest agent run time.
+    both have enough samples. Configs are ordered by their latest agent run time
+    separately for each scorer and session-judge evaluation context.
     """
-    by_config: dict[str, list[dict]] = defaultdict(list)
-    latest: dict[str, datetime] = {}
+    by_scorer: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
+    latest: dict[str, dict[str, datetime]] = defaultdict(dict)
     for fb in feedback:
-        cfg = _extract_config(fb)
-        if cfg == "unknown":
+        if not _is_ordinary_analytics_score(fb):
             continue
-        by_config[cfg].append(fb)
+        scorer = _analytics_scorer(fb)
+        cfg = _extract_config(fb)
+        if scorer is None or _extract_rating(fb) is None or cfg == "unknown":
+            continue
+        by_scorer[scorer][cfg].append(fb)
         rt = _parse_dt(_extract_run_time(fb))
-        if rt is not None and (cfg not in latest or rt > latest[cfg]):
-            latest[cfg] = rt
-
-    ordered = sorted((c for c in by_config if c in latest), key=lambda c: latest[c])
-    if len(ordered) < 2:
-        return []
-    new_cfg, prev_cfg = ordered[-1], ordered[-2]
-    if latest[new_cfg] == latest[prev_cfg]:
-        # Equal latest run times (e.g. a single backfill with no per-turn
-        # timestamps) — we can't tell which config is newer, so comparing them
-        # as new-vs-prev would be arbitrary. Skip rather than guess a direction.
-        return []
-    new_scores = aggregate_scores(by_config[new_cfg])
-    prev_scores = aggregate_scores(by_config[prev_cfg])
+        if rt is not None and (cfg not in latest[scorer] or rt > latest[scorer][cfg]):
+            latest[scorer][cfg] = rt
 
     regressions = []
-    for scorer, ns in new_scores.items():
-        ps = prev_scores.get(scorer)
-        if ps is None:
+    for scorer in sorted(by_scorer):
+        scorer_latest = latest[scorer]
+        ordered = sorted(
+            (cfg for cfg in by_scorer[scorer] if cfg in scorer_latest),
+            key=lambda cfg: scorer_latest[cfg],
+        )
+        if len(ordered) < 2:
+            continue
+        new_cfg, prev_cfg = ordered[-1], ordered[-2]
+        if scorer_latest[new_cfg] == scorer_latest[prev_cfg]:
+            # Equal latest run times (e.g. a single backfill with no per-turn
+            # timestamps) leave no defensible new-vs-previous direction.
+            continue
+        ns = aggregate_scores(by_scorer[scorer][new_cfg]).get(scorer)
+        ps = aggregate_scores(by_scorer[scorer][prev_cfg]).get(scorer)
+        if ns is None or ps is None:
             continue
         delta = ns.mean - ps.mean
         if delta > -threshold:  # only drops are regressions
@@ -344,8 +498,11 @@ def coaching_digest(feedback: list[dict]) -> str:
     if not feedback:
         return "No scores found."
 
-    summaries = aggregate_scores(feedback)
-    if not summaries:
+    representative = [fb for fb in feedback if _is_ordinary_analytics_score(fb)]
+    diagnostics = [fb for fb in feedback if _is_trigger_selected_diagnostic(fb)]
+    summaries = aggregate_scores(representative)
+    diagnostic_summaries = aggregate_scores(diagnostics, include_trigger_selected=True)
+    if not summaries and not diagnostic_summaries:
         return "No scores found."
 
     lines = ["# Coaching Digest", "", "## Summary", ""]
@@ -369,7 +526,25 @@ def coaching_digest(feedback: list[dict]) -> str:
             tag_str = ", ".join(f"{t}={c}" for t, c in top_tags)
             lines.append(f"  Tags: {tag_str}")
 
-    regressions = detect_regressions(feedback)
+    if diagnostic_summaries:
+        lines.extend(
+            [
+                "",
+                "## Selected episode diagnostics",
+                "",
+                (
+                    "These are trigger-selected examples, not a population estimate "
+                    "or prevalence rate."
+                ),
+                "",
+            ]
+        )
+        for scorer, summary in sorted(diagnostic_summaries.items()):
+            lines.append(
+                f"- **{scorer}**: diagnostic mean={summary.mean:.2f} (selected n={summary.count})"
+            )
+
+    regressions = detect_regressions(representative)
     if regressions:
         lines.extend(["", "## Trends", ""])
         for r in regressions:
@@ -380,11 +555,14 @@ def coaching_digest(feedback: list[dict]) -> str:
                 f"({r['delta']:+.2f}, n={r['sample_count']}){mark}"
             )
 
-    ab = ab_leaderboard(feedback)
+    ab = ab_leaderboard(representative)
     if len(ab) > 1:
         lines.extend(["", "## A/B Comparison", ""])
         for result in ab:
-            lines.append(f"### Config: `{result.config_version}` ({result.turn_count} turns)")
+            lines.append(
+                f"### Config: `{result.config_version}` "
+                f"({result.evaluated_target_count} evaluated targets)"
+            )
             for scorer, s in sorted(result.scores.items()):
                 lines.append(f"  - {scorer}: mean={s.mean:.2f} (n={s.count})")
 

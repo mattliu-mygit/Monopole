@@ -1,15 +1,18 @@
-# weave-agent-signals specs
+# Specifications
 
-Detailed specs behind [`DESIGN.md`](DESIGN.md). Each is self-contained; `DESIGN.md` stays the high-level map (including M2+ designs in sections L2–L4).
+Start with [DESIGN.md](DESIGN.md) for the product model and system boundaries.
+The component specs then cover the current behavioral contract:
 
-| # | Spec | Milestone | Status |
-|---|---|---|---|
-| — | [Design overview](DESIGN.md): architecture, layers, milestones | all | draft |
-| 01 | [Data flow & span reader](01-data-flow.md): query model, turn/session hydration | M1 | draft |
-| 02 | [Outcome extractor](02-outcome-extractor.md): test/build/lint/git parsing from Bash spans | M1 | draft |
-| 03 | [Implicit feedback](03-implicit-feedback.md): correction density, abandonment | M1 | draft |
-| 04 | [Efficiency scorers](04-efficiency-scorers.md): error loops, repeated reads, waste ratio | M1 | draft |
-| 05 | [Score write-back](05-score-writeback.md): feedback API, ref types, dedup, batch | M1 | draft |
-| 06 | [CLI](06-cli.md): score/backfill/inspect, scheduling | M1 | draft |
+1. [Weave I/O](01-weave-io.md) — trace identity, exact hydration, refs, feedback,
+   and external correctness constraints.
+2. [Evaluation](02-evaluation.md) — deterministic scores, planned model
+   judgment, verdicts, review policy, and inference trust.
+3. [Analysis and monitoring](03-analysis-monitoring.md) — comparable evidence,
+   summaries, cohorts, trends, coaching, and alerts.
+4. [Evaluation runs](04-evaluation-runs.md) — pinned execution, reflection,
+   B/C/D review, drift, promotion, and audit.
 
-Convention: specs describe *intended* behavior for their milestone. Items marked **OPEN** need verification against live APIs or real session data. M2+ designs live in `DESIGN.md` sections L2–L4 and get promoted to numbered specs when their milestone starts.
+Specifications explain product intent, observable behavior, boundaries,
+invariants, tradeoffs, and current architecture. They do not duplicate
+class/function inventories, route tables, schemas, algorithms, or framework
+details available from source, CLI help, OpenAPI, and tests.

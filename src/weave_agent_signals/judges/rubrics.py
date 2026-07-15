@@ -1,7 +1,7 @@
 """Turn-level process quality rubrics for LLM judges.
 
 Each rubric defines a scoring dimension with a system prompt, scoring criteria,
-and output schema. Judges score 0.0–1.0 with a rationale.
+and output schema. Judges select one of five anchors or abstain with evidence.
 """
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ class Rubric:
     name: str
     scorer_name: str
     description: str
+    version: str
+    evaluation_unit: str
     system_prompt: str
     criteria: dict[str, str]
     tags_on_low: list[str] = field(default_factory=list)
@@ -28,160 +30,426 @@ class Rubric:
         return "\n".join(lines)
 
 
-VERIFICATION_DISCIPLINE = Rubric(
+_ANCHORS = ("0", "0.25", "0.5", "0.75", "1")
+_VERDICT_LAYOUT = """\
+Respond with exactly one JSON object and no prose, Markdown fence, or extra fields.
+
+For a scored verdict, use exactly this layout:
+{
+  "schema_version": 3,
+  "status": "scored",
+  "score": 0.75,
+  "rationale": "Concise explanation grounded only in the supplied evidence.",
+  "evidence": [
+    {
+      "id": "allowed-evidence-id",
+      "observations": [
+        "Specific behavior supporting the verdict."
+      ]
+    }
+  ]
+}
+
+For insufficient evidence, use exactly this layout:
+{
+  "schema_version": 3,
+  "status": "insufficient_evidence",
+  "score": null,
+  "rationale": "Why the supplied evidence is insufficient.",
+  "evidence": []
+}
+
+A scored verdict must cite at least one allowed evidence ID, group every distinct
+observation for that ID in its observations array, and use exactly one score anchor:
+0, 0.25, 0.5, 0.75, or 1. Each ID must appear exactly once. An
+insufficient-evidence verdict cites no evidence."""
+
+
+def _rubric_prompt(
+    *,
+    question: str,
+    allowed_evidence: str,
+    excluded_concerns: str,
+    applicability: str,
+    criteria: dict[str, str],
+) -> str:
+    """Render the one shared visible rubric structure."""
+
+    if tuple(criteria) != _ANCHORS:
+        raise ValueError("rubric criteria must define the five ordered score anchors")
+    anchors = "\n".join(f"- **{anchor}**: {criteria[anchor]}" for anchor in _ANCHORS)
+    return f"""\
+## Evaluation question
+{question}
+
+## Allowed evidence
+{allowed_evidence}
+
+## Excluded concerns
+{excluded_concerns}
+
+## Applicability and insufficient evidence
+{applicability}
+
+## Score anchors
+{anchors}
+
+## Verdict layout
+{_VERDICT_LAYOUT}"""
+
+
+def _rubric(
+    *,
+    name: str,
+    scorer_name: str,
+    description: str,
+    evaluation_unit: str,
+    question: str,
+    allowed_evidence: str,
+    excluded_concerns: str,
+    applicability: str,
+    criteria: dict[str, str],
+    tags_on_low: list[str],
+    tags_on_high: list[str],
+) -> Rubric:
+    return Rubric(
+        name=name,
+        scorer_name=scorer_name,
+        description=description,
+        version="v3",
+        evaluation_unit=evaluation_unit,
+        system_prompt=_rubric_prompt(
+            question=question,
+            allowed_evidence=allowed_evidence,
+            excluded_concerns=excluded_concerns,
+            applicability=applicability,
+            criteria=criteria,
+        ),
+        criteria=criteria,
+        tags_on_low=tags_on_low,
+        tags_on_high=tags_on_high,
+        threshold=0.5,
+    )
+
+
+VERIFICATION_DISCIPLINE = _rubric(
     name="Verification Discipline",
     scorer_name="judge.verification",
-    description="Did the agent verify its work before claiming completion?",
-    system_prompt="""\
-You are evaluating whether a coding agent verified its work before finishing.
-Verification means running tests, type-checking, linting, building, or otherwise
-confirming the change works — not just reading code or claiming it looks correct.
-
-You will receive a structured summary of one agent turn: the tool calls made,
-their results, and whether the turn ended the session.
-
-Score the turn on a 0.0–1.0 scale based on verification discipline.""",
+    description="Do cited checks support the agent's completion or correctness claims?",
+    evaluation_unit="episode",
+    question=(
+        "When the agent claimed work was complete or correct, did cited checks and their "
+        "results support every material claim?"
+    ),
+    allowed_evidence=(
+        "Use the supplied completion or correctness claims, the checks the agent actually "
+        "performed, their recorded results, their relevance to the claimed work, and whether "
+        "they occurred after the work they are offered to verify."
+    ),
+    excluded_concerns=(
+        "Do not judge whether the initial tool or implementation approach was a good choice; "
+        "tool choice owns that question. Do not credit checks that are merely asserted or not "
+        "supported by an allowed evidence citation."
+    ),
+    applicability=(
+        "Apply this rubric when the supplied episode contains a material completion or "
+        "correctness claim and enough coverage to determine whether supporting checks occurred. "
+        "The absence of a supporting check in otherwise complete evidence is scorable at `0.25`; "
+        "it is not a reason to abstain. Return `insufficient_evidence` when no such claim is "
+        "present or the evidence coverage is missing, truncated, or ambiguous."
+    ),
     criteria={
-        "1.0": "Agent ran relevant verification (tests, build, lint, type-check) after making changes, and the verification passed.",
-        "0.75": "Agent ran verification but it failed, or ran partial verification (e.g. only lint, not tests).",
-        "0.5": "Agent made changes but ran no verification. Turn did not end the session, so verification may come in a later turn.",
-        "0.25": "Agent ended the session or claimed completion without running any verification after making changes.",
-        "0.0": "Agent explicitly skipped verification despite evidence it was needed (e.g. test failures in previous turns, user asked for tests).",
+        "0": (
+            "The agent makes a material completion or correctness claim despite unresolved cited "
+            "failed checks or cited evidence that directly contradicts the claim."
+        ),
+        "0.25": (
+            "The agent makes a material completion or correctness claim with no relevant cited "
+            "check, or relies only on assertion or inspection that cannot validate the claim."
+        ),
+        "0.5": (
+            "Cited checks address part of the claim, but material coverage is missing, results "
+            "are inconclusive, or the checks occurred before relevant changes."
+        ),
+        "0.75": (
+            "Relevant successful checks support the main claims, with one limited and clearly "
+            "non-critical verification gap."
+        ),
+        "1": (
+            "Relevant successful checks, cited from the supplied evidence, support every "
+            "material completion and correctness claim."
+        ),
     },
     tags_on_low=["no_verification"],
     tags_on_high=["verified"],
-    threshold=0.5,
 )
 
-ERROR_RECOVERY = Rubric(
+ERROR_RECOVERY = _rubric(
     name="Error Recovery",
     scorer_name="judge.error_recovery",
-    description="When errors occurred, did the agent recover effectively?",
-    system_prompt="""\
-You are evaluating how well a coding agent recovered from errors during a turn.
-Good recovery means: diagnosing the root cause, changing approach when retries fail,
-and not repeating the same failed action. Poor recovery means: blind retries,
-ignoring error messages, or giving up without trying alternatives.
-
-If no errors occurred in this turn, score 1.0 (nothing to recover from).
-
-You will receive a structured summary of one agent turn with tool calls and results.
-
-Score the turn on a 0.0–1.0 scale based on error recovery quality.""",
+    description="Did the agent adapt effectively after observed error evidence?",
+    evaluation_unit="episode",
+    question=(
+        "After the agent observed an error, did it diagnose the evidence and adapt its next "
+        "actions effectively?"
+    ),
+    allowed_evidence=(
+        "Use only observed error messages or failed results, the actions taken after those "
+        "errors, stated diagnoses that are supported by the evidence, changed approaches, "
+        "repeated failures, and the directly resulting recovery or containment."
+    ),
+    excluded_concerns=(
+        "Do not award recovery quality for eventual task success by itself. Do not judge the "
+        "initial tool choice except where the agent's response to observed failure shows whether "
+        "it adapted."
+    ),
+    applicability=(
+        "Apply this rubric only when the supplied evidence shows an observed error and a later "
+        "opportunity to respond. Return `insufficient_evidence` when no error was observed, no "
+        "post-error response is supplied, or the evidence cannot show how the agent recovered "
+        "from errors."
+    ),
     criteria={
-        "1.0": "No errors occurred, OR agent diagnosed the error, changed approach, and resolved it.",
-        "0.75": "Agent recovered from errors but took unnecessary retries or a roundabout path.",
-        "0.5": "Agent partially recovered — fixed some errors but left others or made new ones.",
-        "0.25": "Agent retried the same failing approach multiple times without meaningful changes.",
-        "0.0": "Agent gave up after errors without attempting recovery, or made the situation worse.",
+        "0": (
+            "The agent makes no meaningful response to clear error evidence, repeats the same "
+            "disproven action without diagnosis, or makes the situation materially worse."
+        ),
+        "0.25": (
+            "The agent makes a weak but genuine diagnosis or relevant change, yet the adaptation "
+            "is too superficial to recover or safely contain the error."
+        ),
+        "0.5": (
+            "The agent identifies part of the problem and makes a meaningful change, but the "
+            "diagnosis or adaptation remains incomplete and causes avoidable continued failure."
+        ),
+        "0.75": (
+            "The agent uses the error evidence to diagnose and adapt successfully, with only a "
+            "minor avoidable detour or narrow non-critical gap in the adaptation."
+        ),
+        "1": (
+            "The agent accurately diagnoses the observed error, changes course based on that "
+            "diagnosis, and resolves or safely contains it without avoidable repetition."
+        ),
     },
     tags_on_low=["poor_recovery"],
     tags_on_high=["clean_recovery"],
-    threshold=0.5,
 )
 
-TOOL_CHOICE = Rubric(
+TOOL_CHOICE = _rubric(
     name="Tool Choice Quality",
     scorer_name="judge.tool_choice",
-    description="Did the agent use appropriate tools for the task?",
-    system_prompt="""\
-You are evaluating whether a coding agent chose appropriate tools for its task.
-Good tool choice means: using Read to understand before Edit, using grep/find to
-locate code instead of guessing paths, using dedicated tools (Edit, Write) instead
-of shell commands for file operations, running tests after changes.
-
-You will receive a structured summary of one agent turn with tool calls and results.
-
-Score the turn on a 0.0–1.0 scale based on tool choice quality.""",
+    description="Did the selected capabilities fit the task and were they used efficiently?",
+    evaluation_unit="episode",
+    question=(
+        "Were the agent's selected tools or methods well matched to the task and used in an "
+        "efficient, safe sequence?"
+    ),
+    allowed_evidence=(
+        "Use the stated task and constraints, the capabilities demonstrated by each recorded "
+        "tool or method, their ordering, redundancy, safety, and the immediate results needed to "
+        "assess fit."
+    ),
+    excluded_concerns=(
+        "Do not judge later verification quality; verification owns whether checks support "
+        "completion claims. Do not impose vendor-specific tool names or prefer a named product "
+        "when a capability-equivalent choice fits the task."
+    ),
+    applicability=(
+        "Apply this rubric only when the task goal and at least one tool or method choice are "
+        "visible enough to assess fit. Return `insufficient_evidence` when the task, the selected "
+        "capability, or the relevant result is absent or opaque."
+    ),
     criteria={
-        "1.0": "All tool choices were appropriate and efficient for the task.",
-        "0.75": "Mostly good choices with minor inefficiencies (e.g. reading an entire file when grep would suffice).",
-        "0.5": "Mixed — some good choices, some questionable (e.g. editing without reading first).",
-        "0.25": "Mostly poor choices — using wrong tools, excessive exploration, missing obvious approaches.",
-        "0.0": "Actively counterproductive tool usage — destructive commands, editing wrong files, etc.",
+        "0": (
+            "The selected tools or methods are destructive, unsafe, or fundamentally incapable "
+            "of performing the task as used."
+        ),
+        "0.25": (
+            "Most choices are poorly matched or wasteful, with repeated avoidable work or a "
+            "missed readily available capability that blocks progress."
+        ),
+        "0.5": (
+            "The sequence mixes suitable and unsuitable choices; it can make progress but incurs "
+            "material avoidable exploration, repetition, or risk."
+        ),
+        "0.75": (
+            "The choices are well matched and safe, with only a minor inefficiency or ordering "
+            "issue that does not materially affect progress."
+        ),
+        "1": (
+            "The selected capabilities directly fit the task and are used in a safe, efficient "
+            "sequence without material redundant work."
+        ),
     },
     tags_on_low=["poor_tool_choice"],
     tags_on_high=["good_tool_choice"],
-    threshold=0.5,
 )
 
-TASK_COMPLETION = Rubric(
-    name="Task Completion Quality",
-    scorer_name="judge.completion",
-    description="How completely and correctly did the agent address the user's request?",
-    system_prompt="""\
-You are evaluating how well a coding agent completed the user's request in this turn.
-Consider: did it address all parts of the request? Did it introduce regressions?
-Did it leave loose ends? Was the implementation appropriate for the request scope?
-
-You will receive a structured summary of one agent turn including the user's message
-(if available), tool calls, results, and any test outcomes.
-
-Score the turn on a 0.0–1.0 scale based on task completion quality.""",
+STATE_CONSISTENCY = _rubric(
+    name="State Consistency",
+    scorer_name="judge.state_consistency",
+    description="Did current behavior remain consistent with supplied established state?",
+    evaluation_unit="episode",
+    question=(
+        "Did the agent's current actions and claims remain consistent with established prior "
+        "state, decisions, and constraints in the supplied evidence?"
+    ),
+    allowed_evidence=(
+        "Use only prior state, decisions, completed work, and constraints explicitly established "
+        "in allowed evidence, together with current actions or claims that preserve or contradict "
+        "them."
+    ),
+    excluded_concerns=(
+        "Do not infer prior state from conventions, likely intent, or facts outside the supplied "
+        "evidence. Do not count a user-authorized change or a correction based on newly supplied "
+        "information as a contradiction."
+    ),
+    applicability=(
+        "Apply this rubric only when the supplied evidence establishes prior state or a prior "
+        "constraint that the current episode could preserve or contradict. The judge must return "
+        "`insufficient_evidence` when there is no established prior state, or when that state is "
+        "too ambiguous to support a contradiction finding."
+    ),
     criteria={
-        "1.0": "Fully addressed the request with correct, clean implementation. Tests pass.",
-        "0.75": "Addressed the main request but missed minor aspects or left small issues.",
-        "0.5": "Partially addressed the request — significant parts incomplete or incorrect.",
-        "0.25": "Attempted the task but result is mostly wrong or incomplete.",
-        "0.0": "Did not meaningfully address the request, or made things worse.",
+        "0": (
+            "The current behavior directly reverses or overwrites clear established prior state "
+            "or constraints, creating a major unresolved conflict."
+        ),
+        "0.25": (
+            "The current behavior contains a material contradiction or several repeated "
+            "contradictions and does not meaningfully correct them."
+        ),
+        "0.5": (
+            "The current behavior introduces one meaningful inconsistency or several minor ones, "
+            "but partially recognizes or corrects the conflict."
+        ),
+        "0.75": (
+            "The current behavior preserves all material established state, with one minor lapse "
+            "that does not alter the result."
+        ),
+        "1": (
+            "The current behavior is fully consistent with every relevant established decision, "
+            "constraint, and completed state in the supplied evidence."
+        ),
     },
-    tags_on_low=["incomplete"],
-    tags_on_high=["complete"],
-    threshold=0.5,
+    tags_on_low=["inconsistent_state"],
+    tags_on_high=["consistent_state"],
 )
 
-SESSION_OUTCOME = Rubric(
+SESSION_OUTCOME = _rubric(
     name="Session Outcome Quality",
     scorer_name="judge.session_outcome",
-    description="Overall: did the agent accomplish what the user wanted across the full session?",
-    system_prompt="""\
-You are evaluating the overall outcome of a coding agent session. A session is a
-complete conversation where the user gave one or more requests and the agent worked
-to fulfill them. You will see a summary of all turns: tool calls, results, errors,
-and user steering corrections.
-
-Consider the full arc: did the agent converge on a correct solution? Did it leave
-unresolved issues? Did the user have to steer it heavily? Did it regress work it
-had already done? Score the session holistically.""",
+    description="Did the final result correctly and completely fulfill the user's request?",
+    evaluation_unit="session",
+    question=(
+        "Did the final session outcome correctly and completely fulfill the user's material "
+        "request and stated constraints?"
+    ),
+    allowed_evidence=(
+        "Use the user's requests and acceptance constraints, the final artifacts or actions, "
+        "relevant check results, unresolved errors, explicit limitations, and the observable final "
+        "state."
+    ),
+    excluded_concerns=(
+        "Do not score steering burden or how much correction the user supplied; session autonomy "
+        "owns that question. Do not penalize process style or tool efficiency unless it changes "
+        "the correctness or completeness of the achieved result."
+    ),
+    applicability=(
+        "Apply this rubric when the supplied session identifies a user request and provides enough "
+        "final-state evidence to assess fulfillment. Return `insufficient_evidence` when the "
+        "material request or observable outcome is missing or too truncated to judge."
+    ),
     criteria={
-        "1.0": "Agent fully accomplished all user requests. Clean execution, tests passing, no regressions.",
-        "0.75": "Agent accomplished the main request with minor loose ends or inefficiencies.",
-        "0.5": "Agent partially accomplished the request — significant parts incomplete or user heavily steered.",
-        "0.25": "Agent struggled substantially. Many errors, heavy user intervention, incomplete result.",
-        "0.0": "Agent failed to accomplish the request or made things worse overall.",
+        "0": (
+            "The session produces no usable result for the requested purpose, produces a harmful "
+            "or fundamentally unusable result, or leaves the user's state worse."
+        ),
+        "0.25": (
+            "The session delivers a limited usable fragment, but central requirements are absent "
+            "or serious defects prevent the core requested use."
+        ),
+        "0.5": (
+            "The session delivers meaningful partial value that remains usable, but one major "
+            "requirement is missing, incorrect, or unsupported."
+        ),
+        "0.75": (
+            "The core request is correctly fulfilled, with only a minor non-critical omission, "
+            "limitation, or verification gap."
+        ),
+        "1": (
+            "The final result correctly fulfills every material request and stated constraint, "
+            "with adequate evidence for the claimed outcome and no material regression."
+        ),
     },
     tags_on_low=["poor_outcome"],
     tags_on_high=["good_outcome"],
-    threshold=0.5,
 )
 
-SESSION_AUTONOMY = Rubric(
+SESSION_AUTONOMY = _rubric(
     name="Session Autonomy",
     scorer_name="judge.session_autonomy",
-    description="How independently did the agent work without needing user corrections?",
-    system_prompt="""\
-You are evaluating how autonomously a coding agent worked during a session.
-High autonomy means: the agent understood the task, made good decisions, and
-required minimal steering or corrections. Low autonomy means: the user had to
-repeatedly redirect, correct mistakes, or provide information the agent should
-have found itself.
-
-Steering events and denial events indicate user intervention.""",
+    description="How much avoidable user dependence or correction did the work require?",
+    evaluation_unit="session",
+    question=(
+        "How independently did the agent progress, considering only avoidable user direction, "
+        "correction, or re-explanation?"
+    ),
+    allowed_evidence=(
+        "Use the initial request, information already available to the agent, the agent's actions, "
+        "user corrections and redirects, repeated explanations, and whether requests for help "
+        "were avoidable within the agent's authority."
+    ),
+    excluded_concerns=(
+        "Do not penalize required approvals, authentication, policy gates, or genuinely missing "
+        "requirements that only the user could supply. Do not score final correctness or request "
+        "fulfillment; session outcome owns that question."
+    ),
+    applicability=(
+        "Apply this rubric when the supplied interaction history is complete enough to distinguish "
+        "avoidable dependence from required user input. Return `insufficient_evidence` when key "
+        "requests, corrections, or authority constraints are missing or truncated."
+    ),
     criteria={
-        "1.0": "Agent worked fully independently. Zero or minimal steering, no denials.",
-        "0.75": "Agent worked mostly independently with occasional, minor steering.",
-        "0.5": "Agent needed moderate user guidance — several steering events or a key correction.",
-        "0.25": "Agent required heavy user intervention — frequent steering, denials, or re-explanation.",
-        "0.0": "Agent could not work without constant user direction.",
+        "0": (
+            "The agent cannot incorporate repeated correction or proceed without near-constant "
+            "avoidable user direction, so progress stalls or regresses."
+        ),
+        "0.25": (
+            "The agent eventually makes progress, but only after repeated major corrections, "
+            "redirects, or re-explanations it could have avoided using supplied information."
+        ),
+        "0.5": (
+            "The agent makes independent progress but needs one major avoidable correction or "
+            "several smaller avoidable interventions."
+        ),
+        "0.75": (
+            "The agent works mostly independently and needs at most one minor avoidable steer or "
+            "correction."
+        ),
+        "1": (
+            "The agent progresses without avoidable user dependence, resolves available questions "
+            "itself, and asks only for genuinely required gates or missing information."
+        ),
     },
     tags_on_low=["low_autonomy"],
     tags_on_high=["high_autonomy"],
-    threshold=0.5,
 )
 
 RUBRICS: dict[str, Rubric] = {
     r.scorer_name: r
-    for r in [VERIFICATION_DISCIPLINE, ERROR_RECOVERY, TOOL_CHOICE, TASK_COMPLETION]
+    for r in [
+        VERIFICATION_DISCIPLINE,
+        ERROR_RECOVERY,
+        TOOL_CHOICE,
+        STATE_CONSISTENCY,
+    ]
+}
+
+CROSS_TURN_RUBRICS: set[str] = {
+    VERIFICATION_DISCIPLINE.scorer_name,
+    STATE_CONSISTENCY.scorer_name,
+    ERROR_RECOVERY.scorer_name,
 }
 
 SESSION_RUBRICS: dict[str, Rubric] = {r.scorer_name: r for r in [SESSION_OUTCOME, SESSION_AUTONOMY]}

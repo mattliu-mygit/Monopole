@@ -1,1 +1,1 @@
-"""Layered evaluation & weak RSI for Weave agent traces."""
+"""Layered evaluation and human-reviewed instruction improvement for Weave traces."""

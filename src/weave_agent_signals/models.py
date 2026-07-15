@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Union
 from urllib.parse import quote
 
-ENTITY = "mliu-wandb-weights-biases"
+ENTITY = "weave-team"
 PROJECT = "agent-sessions"
 
 # Prefix for every feedback type this system writes: weave_agent_signals.<scorer>
@@ -45,7 +45,6 @@ class SubagentSpan:
 class SpanEvent:
     name: str
     timestamp: datetime | None = None
-    attributes: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -73,12 +72,11 @@ class TurnSpan:
     chat_spans: list[ChatSpan]
     subagents: list[SubagentSpan]
 
+    user_input: str | None = None
+    assistant_output: str | None = None
+
     def ref_for(self, entity: str = ENTITY, project: str = PROJECT) -> str:
         return f"weave:///{entity}/{project}/agent_turn/{self.trace_id}"
-
-    @property
-    def ref(self) -> str:
-        return self.ref_for()
 
 
 @dataclass
@@ -93,10 +91,6 @@ class SessionView:
         return f"weave:///{entity}/{project}/agent_conversation/{encoded_id}"
 
     @property
-    def ref(self) -> str:
-        return self.ref_for()
-
-    @property
     def total_tokens(self) -> int:
         return sum(t.input_tokens + t.output_tokens for t in self.turns)
 
@@ -106,25 +100,33 @@ class Score:
     scorer: str
     value: Union[float, bool]
     tags: list[str]
-    confidence: float
     metadata: dict[str, Any]
     granularity: str
+    confidence: float | None = None
     reason: str = ""
+
+    def stamp(self, *, config_version, git_branch, run_time) -> None:
+        self.metadata.setdefault("config_version", config_version)
+        self.metadata.setdefault("git_branch", git_branch)
+        if run_time is not None:
+            self.metadata.setdefault("turn_started_at", run_time.isoformat())
 
     def to_feedback_payload(self, ref: str, project_id: str) -> dict[str, Any]:
         rating = float(self.value) if isinstance(self.value, bool) else self.value
+        payload = {
+            "scorer_version": "v1",
+            "scored_at": datetime.now(timezone.utc).isoformat(),
+            "rating": rating,
+            "tags": self.tags,
+            "reason": self.reason,
+            "granularity": self.granularity,
+            "details": self.metadata,
+        }
+        if self.confidence is not None:
+            payload["confidence"] = self.confidence
         return {
             "project_id": project_id,
             "weave_ref": ref,
             "feedback_type": f"{FEEDBACK_PREFIX}{self.scorer}",
-            "payload": {
-                "scorer_version": "v1",
-                "scored_at": datetime.now(timezone.utc).isoformat(),
-                "rating": rating,
-                "confidence": self.confidence,
-                "tags": self.tags,
-                "reason": self.reason,
-                "granularity": self.granularity,
-                "details": self.metadata,
-            },
+            "payload": payload,
         }

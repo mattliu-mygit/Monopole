@@ -10,3 +10,7 @@ venv/
 .env
 .DS_Store
 .worktrees/
+.superpowers/
+.playwright-cli/
+node_modules/
+.pnpm-store/
