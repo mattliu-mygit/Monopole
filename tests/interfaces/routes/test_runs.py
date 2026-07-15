@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from concurrent.futures import Future
 
@@ -12,7 +11,12 @@ from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catal
 from weave_agent_signals.routes.runs import create_runs_router
 from weave_agent_signals.run_config import RunConfig
 from weave_agent_signals.runs.service import RunService
-from weave_agent_signals.runs.store import RunStatus, RunStore, RunSummarySource
+from weave_agent_signals.runs.store import (
+    RunStatus,
+    RunStore,
+    RunSummarySource,
+    judging_artifact_payload_digest,
+)
 
 
 class SynchronousExecutor:
@@ -165,11 +169,10 @@ def test_run_detail_exposes_persisted_judging_artifacts(route_context):
     client.post(f"/api/runs/{created['run_id']}/advance")
     client.post(f"/api/runs/{created['run_id']}/advance")
     payload = {"window_id": "window-1", "findings": []}
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     artifact = {
         "schema_version": "1",
         "kind": "window_findings",
-        "content_digest": f"sha256:{hashlib.sha256(canonical).hexdigest()}",
+        "content_digest": judging_artifact_payload_digest(payload),
         "payload": payload,
     }
     artifact_id = "judge-1/session-1/findings/window-1"

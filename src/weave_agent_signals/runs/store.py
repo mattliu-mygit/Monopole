@@ -357,6 +357,7 @@ def _encode_judging_plan(judging_plan: Mapping[str, Any]) -> str:
 
 
 _JUDGING_ARTIFACT_FIELDS = frozenset({"schema_version", "kind", "content_digest", "payload"})
+_JUDGING_ARTIFACT_KINDS = frozenset({"chunk_digest", "window_findings", "merged_verdict"})
 
 
 def _validate_artifact_id(artifact_id: str) -> None:
@@ -371,7 +372,49 @@ def _validate_artifact_id(artifact_id: str) -> None:
         raise ValueError("judging artifact ID must be a nonblank slash-delimited string")
 
 
-def _validate_judging_artifact(artifact: Mapping[str, Any]) -> dict[str, Any]:
+def _canonical_json_object(
+    value: Mapping[str, Any],
+    *,
+    label: str,
+) -> tuple[dict[str, Any], str]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be a JSON object")
+    try:
+        encoded = json.dumps(
+            dict(value),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        normalized = json.loads(encoded)
+        canonical = json.dumps(
+            normalized,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be JSON serializable") from exc
+    return normalized, canonical
+
+
+def _canonical_judging_artifact_payload(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], str]:
+    normalized, canonical = _canonical_json_object(payload, label="judging artifact payload")
+    digest = f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
+    return normalized, digest
+
+
+def judging_artifact_payload_digest(payload: Mapping[str, Any]) -> str:
+    """Return the canonical content digest for one JSON-object artifact payload."""
+
+    return _canonical_judging_artifact_payload(payload)[1]
+
+
+def _canonical_judging_artifact(artifact: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(artifact, Mapping):
         raise ValueError("judging artifact must be a JSON object")
     value = dict(artifact)
@@ -380,25 +423,35 @@ def _validate_judging_artifact(artifact: Mapping[str, Any]) -> dict[str, Any]:
             "judging artifact body must contain exactly schema_version, kind, "
             "content_digest, and payload"
         )
-    for field_name in ("schema_version", "kind"):
-        if not isinstance(value[field_name], str) or not value[field_name].strip():
-            raise ValueError(f"judging artifact {field_name} must be a nonblank string")
+    if value["schema_version"] != "1":
+        raise ValueError("judging artifact schema_version must be '1'")
+    if not isinstance(value["kind"], str) or value["kind"] not in _JUDGING_ARTIFACT_KINDS:
+        raise ValueError(
+            "judging artifact kind must be chunk_digest, window_findings, or merged_verdict"
+        )
     if not isinstance(value["content_digest"], str):
         raise ValueError("judging artifact content_digest must be a string")
-    try:
-        canonical_payload = json.dumps(
-            value["payload"],
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
-    except (TypeError, ValueError) as exc:
-        raise ValueError("judging artifact payload must be JSON serializable") from exc
-    expected_digest = f"sha256:{hashlib.sha256(canonical_payload.encode()).hexdigest()}"
+    normalized_payload, expected_digest = _canonical_judging_artifact_payload(value["payload"])
     if value["content_digest"] != expected_digest:
         raise ValueError("judging artifact content digest does not match its payload")
-    value["payload"] = json.loads(canonical_payload)
+    value["payload"] = normalized_payload
     return value
+
+
+def _decode_judging_artifacts(encoded: str | None) -> dict[str, Any] | None:
+    if encoded is None:
+        return None
+    try:
+        stored = json.loads(encoded)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("stored judging artifacts must be a valid JSON object") from exc
+    if not isinstance(stored, dict):
+        raise ValueError("stored judging artifacts must be a JSON object map")
+    canonical: dict[str, Any] = {}
+    for artifact_id, artifact in stored.items():
+        _validate_artifact_id(artifact_id)
+        canonical[artifact_id] = _canonical_judging_artifact(artifact)
+    return canonical
 
 
 def _judging_plan_matches_cohort(
@@ -511,7 +564,6 @@ CREATE TABLE IF NOT EXISTS runs (
 _JSON_FIELDS = {
     "turn_cohort",
     "judging_plan",
-    "judging_artifacts",
     "reflection_input",
     "scoring_progress",
     "scoring_result",
@@ -951,7 +1003,7 @@ class RunStore:
         """Persist one immutable, content-addressed artifact during judging."""
 
         _validate_artifact_id(artifact_id)
-        value = _validate_judging_artifact(artifact)
+        value = _canonical_judging_artifact(artifact)
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
@@ -962,11 +1014,7 @@ class RunStore:
                         f"Run {run_id} can only record judging artifacts while judging; "
                         f"current status is {current_status.value}"
                     )
-                artifacts = (
-                    json.loads(row["judging_artifacts"])
-                    if row["judging_artifacts"] is not None
-                    else {}
-                )
+                artifacts = _decode_judging_artifacts(row["judging_artifacts"]) or {}
                 existing = artifacts.get(artifact_id)
                 if existing is not None:
                     if existing != value:
@@ -1322,6 +1370,7 @@ class RunStore:
         raw_selection = data.pop("data_selection")
         raw_config = data.pop("run_config")
         raw_effective = data.pop("effective_config")
+        raw_judging_artifacts = data.pop("judging_artifacts")
         for field_name in _JSON_FIELDS:
             if data.get(field_name) is not None:
                 data[field_name] = json.loads(data[field_name])
@@ -1336,6 +1385,7 @@ class RunStore:
             if raw_effective is not None
             else None
         )
+        data["judging_artifacts"] = _decode_judging_artifacts(raw_judging_artifacts)
         return Run(**data)
 
     def close(self) -> None:

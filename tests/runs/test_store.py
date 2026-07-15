@@ -19,6 +19,7 @@ from weave_agent_signals.runs.store import (
     RunStatus,
     RunStore,
     RunStoreConflictError,
+    judging_artifact_payload_digest,
 )
 
 
@@ -151,9 +152,25 @@ def _started_judging_run(store: RunStore):
     )
 
 
-def _payload_digest(payload: object) -> str:
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+def _payload_digest(payload: dict) -> str:
+    return judging_artifact_payload_digest(payload)
+
+
+def _artifact(
+    payload: dict,
+    *,
+    kind: object = "chunk_digest",
+    schema_version: object = "1",
+    content_digest: object | None = None,
+) -> dict:
+    return {
+        "schema_version": schema_version,
+        "kind": kind,
+        "content_digest": (
+            content_digest if content_digest is not None else _payload_digest(payload)
+        ),
+        "payload": payload,
+    }
 
 
 def _judging_plan() -> dict:
@@ -270,6 +287,74 @@ def test_judging_artifacts_are_content_addressed_and_idempotent(store):
         match="artifact already exists with different content",
     ):
         store.record_judging_artifact(run.run_id, artifact_id, changed)
+    assert store.get(run.run_id).judging_artifacts == {artifact_id: artifact}
+
+
+@pytest.mark.parametrize(
+    "stored_artifacts",
+    [
+        {
+            "judge-1//digest/chunk-1": _artifact({"chunk_id": "chunk-1"}),
+        },
+        {
+            "judge-1/session-1/digest/chunk-1": _artifact(
+                {"chunk_id": "chunk-1"},
+                content_digest="sha256:" + ("0" * 64),
+            ),
+        },
+    ],
+)
+def test_judging_artifact_append_fails_closed_on_corrupt_stored_sibling(
+    store,
+    stored_artifacts,
+):
+    run = _started_judging_run(store)
+    encoded = json.dumps(stored_artifacts)
+    store._conn.execute(
+        "UPDATE runs SET judging_artifacts = ? WHERE run_id = ?",
+        (encoded, run.run_id),
+    )
+    store._conn.commit()
+
+    with pytest.raises(ValueError, match="artifact ID|content digest"):
+        store.record_judging_artifact(
+            run.run_id,
+            "judge-1/session-1/digest/chunk-2",
+            _artifact({"chunk_id": "chunk-2"}),
+        )
+
+    persisted = store._conn.execute(
+        "SELECT judging_artifacts FROM runs WHERE run_id = ?",
+        (run.run_id,),
+    ).fetchone()[0]
+    assert persisted == encoded
+
+
+@pytest.mark.parametrize(
+    "stored_artifacts",
+    [
+        {"judge-1//digest/chunk-1": _artifact({"chunk_id": "chunk-1"})},
+        {
+            "judge-1/session-1/digest/chunk-1": _artifact(
+                {"chunk_id": "chunk-1"},
+                content_digest="sha256:" + ("0" * 64),
+            )
+        },
+    ],
+)
+def test_judging_artifact_hydration_fails_closed_on_corrupt_stored_sibling(
+    store,
+    stored_artifacts,
+):
+    run = store.create()
+    store._conn.execute(
+        "UPDATE runs SET judging_artifacts = ? WHERE run_id = ?",
+        (json.dumps(stored_artifacts), run.run_id),
+    )
+    store._conn.commit()
+
+    with pytest.raises(ValueError, match="artifact ID|content digest"):
+        store.get(run.run_id)
 
 
 @pytest.mark.parametrize(
@@ -342,6 +427,79 @@ def test_judging_artifact_body_fields_are_strict(store, changes, match):
         )
 
 
+@pytest.mark.parametrize(
+    ("changes", "match"),
+    [
+        ({"schema_version": "2"}, "schema_version"),
+        ({"kind": "unknown"}, "kind"),
+        ({"kind": []}, "kind"),
+        ({"payload": []}, "payload.*JSON object"),
+        ({"payload": "text"}, "payload.*JSON object"),
+        ({"payload": 1}, "payload.*JSON object"),
+        ({"payload": None}, "payload.*JSON object"),
+    ],
+)
+def test_judging_artifact_envelope_requires_supported_schema_kind_and_object_payload(
+    store,
+    changes,
+    match,
+):
+    run = _started_judging_run(store)
+    artifact = _artifact({"chunk_id": "chunk-1"})
+    artifact.update(changes)
+
+    with pytest.raises(ValueError, match=match):
+        store.record_judging_artifact(
+            run.run_id,
+            "judge-1/session-1/digest/chunk-1",
+            artifact,
+        )
+
+
+@pytest.mark.parametrize("kind", ["chunk_digest", "window_findings", "merged_verdict"])
+def test_judging_artifact_envelope_accepts_supported_kinds(store, kind):
+    run = _started_judging_run(store)
+    payload = {"text": "evidence"}
+    artifact = _artifact(payload, kind=kind)
+
+    recorded = store.record_judging_artifact(
+        run.run_id,
+        f"judge-1/session-1/{kind}/artifact-1",
+        artifact,
+    )
+
+    assert recorded.judging_artifacts is not None
+
+
+@pytest.mark.parametrize("number", [float("nan"), float("inf"), float("-inf")])
+def test_judging_artifact_digest_rejects_nonfinite_numbers(number):
+    with pytest.raises(ValueError, match="JSON serializable"):
+        judging_artifact_payload_digest({"number": number})
+
+
+def test_judging_artifact_digest_has_authoritative_unicode_canonicalization(store):
+    payload = {"z": "café", "a": {"snowman": "☃"}}
+    canonical = '{"a":{"snowman":"☃"},"z":"café"}'.encode()
+    expected = f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+    assert judging_artifact_payload_digest(payload) == expected
+
+    run = _started_judging_run(store)
+    artifact = _artifact(payload, content_digest=expected)
+    first = store.record_judging_artifact(
+        run.run_id,
+        "judge-1/session-1/digest/chunk-1",
+        artifact,
+    )
+    replay = store.record_judging_artifact(
+        run.run_id,
+        "judge-1/session-1/digest/chunk-1",
+        {**artifact, "payload": {"a": {"snowman": "☃"}, "z": "café"}},
+    )
+
+    assert replay.judging_artifacts == first.judging_artifacts
+
+
 def test_judging_artifacts_can_only_be_written_while_judging(store):
     run, _, _ = _start(store)
     payload = {"chunk_id": "chunk-1"}
@@ -358,6 +516,85 @@ def test_judging_artifacts_can_only_be_written_while_judging(store):
             "judge-1/session-1/digest/chunk-1",
             artifact,
         )
+
+
+def test_independent_stores_serialize_exact_judging_artifact_replays(tmp_path):
+    path = tmp_path / "runs.db"
+    first_store = RunStore(path)
+    second_store = RunStore(path)
+    run = _started_judging_run(first_store)
+    artifact = _artifact({"chunk_id": "chunk-1"})
+    barrier = threading.Barrier(2)
+    results = []
+
+    def record(instance):
+        barrier.wait()
+        results.append(
+            instance.record_judging_artifact(
+                run.run_id,
+                "judge-1/session-1/digest/chunk-1",
+                artifact,
+            )
+        )
+
+    threads = [
+        threading.Thread(target=record, args=(first_store,)),
+        threading.Thread(target=record, args=(second_store,)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(results) == 2
+    assert results[0].judging_artifacts == results[1].judging_artifacts
+    first_store.close()
+    second_store.close()
+
+
+def test_independent_stores_serialize_conflicting_judging_artifacts(tmp_path):
+    path = tmp_path / "runs.db"
+    first_store = RunStore(path)
+    second_store = RunStore(path)
+    run = _started_judging_run(first_store)
+    artifacts = [
+        _artifact({"chunk_id": "chunk-1", "text": "first"}),
+        _artifact({"chunk_id": "chunk-1", "text": "second"}),
+    ]
+    barrier = threading.Barrier(2)
+    results = []
+    errors = []
+
+    def record(instance, artifact):
+        barrier.wait()
+        try:
+            results.append(
+                instance.record_judging_artifact(
+                    run.run_id,
+                    "judge-1/session-1/digest/chunk-1",
+                    artifact,
+                )
+            )
+        except RunStoreConflictError as error:
+            errors.append(error)
+
+    threads = [
+        threading.Thread(target=record, args=(first_store, artifacts[0])),
+        threading.Thread(target=record, args=(second_store, artifacts[1])),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(results) == len(errors) == 1
+    assert "different content" in str(errors[0])
+    persisted = first_store.get(run.run_id).judging_artifacts
+    assert persisted == results[0].judging_artifacts
+    first_store.close()
+    second_store.close()
 
 
 def test_list_summaries_projects_only_scalar_fields_without_full_run_decoding(
