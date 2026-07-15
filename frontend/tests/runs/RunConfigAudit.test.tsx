@@ -8,7 +8,7 @@ import RunConfigAudit from '../../src/features/runs/RunConfigAudit'
 afterEach(cleanup)
 
 const config: EffectiveRunConfig = {
-  schema_version: '1',
+  schema_version: '2',
   pipeline_version: 'pipeline-v7',
   model_catalog_version: 'models-v4',
   rubric_catalog_version: 'rubrics-v9',
@@ -22,6 +22,7 @@ const config: EffectiveRunConfig = {
       family: 'openai',
       backend: 'cli',
       supported_roles: ['proposal_writer'],
+      max_input_tokens: 128_000,
     },
     judges: [
       {
@@ -30,6 +31,7 @@ const config: EffectiveRunConfig = {
         family: 'anthropic',
         backend: 'cli',
         supported_roles: ['judge'],
+        max_input_tokens: 128_000,
         role: 'judge',
         position: 1,
       },
@@ -39,6 +41,7 @@ const config: EffectiveRunConfig = {
         family: 'meta',
         backend: 'cli',
         supported_roles: ['judge', 'proposal_evaluator'],
+        max_input_tokens: 128_000,
         role: 'judge',
         position: 2,
       },
@@ -49,13 +52,14 @@ const config: EffectiveRunConfig = {
       family: 'meta',
       backend: 'cli',
       supported_roles: ['judge', 'proposal_evaluator'],
+      max_input_tokens: 128_000,
     },
   },
   rubrics: [
     {
       id: 'judge.verification',
       label: 'Verification discipline',
-      evaluation_unit: 'episode',
+      evaluation_unit: 'session',
       version: 'v3',
       content_digest: 'sha256:verification',
       pass_threshold: 0.65,
@@ -78,6 +82,11 @@ const config: EffectiveRunConfig = {
       compared_families: ['openai'],
     },
   ],
+  judging_context: {
+    contract_version: '1', target_input_tokens: 100_000, prompt_reserve_tokens: 6_000,
+    output_reserve_tokens: 4_000, safety_reserve_tokens: 8_000, digest_max_tokens: 1_000,
+    finding_max_tokens: 750, overlap_turns: 1, max_chunks: 40, token_estimator: 'utf8_bytes_div_3',
+  },
   candidate_budget: 4,
   force: true,
 }
@@ -95,11 +104,14 @@ describe('RunConfigAudit', () => {
     expect(screen.getByText('Selective')).not.toBeNull()
     expect(screen.getByText('0.12')).not.toBeNull()
     expect(screen.getByText('Verification discipline')).not.toBeNull()
-    expect(screen.getByText('v3 · episode · threshold 0.65')).not.toBeNull()
+    expect(screen.getByText('v3 · whole session · threshold 0.65')).not.toBeNull()
     expect(screen.getByText('v2 · whole session · threshold 0.50')).not.toBeNull()
     expect(screen.getByText('pipeline-v7')).not.toBeNull()
     expect(screen.getByText('models-v4')).not.toBeNull()
     expect(screen.getByText('rubrics-v9')).not.toBeNull()
+    expect(screen.getByText('100,000 target input tokens')).not.toBeNull()
+    expect(screen.getByText('1,000 digest · 750 findings · 1 turn overlap')).not.toBeNull()
+    expect(screen.getAllByText('128,000 max input tokens').length).toBe(4)
     expect(screen.getByText('Proposal attempt limit')).not.toBeNull()
     expect(screen.getByText('4 attempts')).not.toBeNull()
     expect(screen.queryByText('Candidate budget')).toBeNull()

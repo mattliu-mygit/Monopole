@@ -58,6 +58,7 @@ const writer = {
   family: 'openai',
   backend: 'cli',
   supported_roles: ['proposal_writer'] as const,
+  max_input_tokens: 128_000,
 }
 const judgeOne = {
   id: 'judge-anthropic',
@@ -65,6 +66,7 @@ const judgeOne = {
   family: 'anthropic',
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
+  max_input_tokens: 128_000,
 }
 const judgeTwo = {
   id: 'judge-openai',
@@ -72,6 +74,7 @@ const judgeTwo = {
   family: 'openai',
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
+  max_input_tokens: 128_000,
 }
 const judgeThree = {
   id: 'judge-meta',
@@ -79,6 +82,7 @@ const judgeThree = {
   family: 'meta',
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
+  max_input_tokens: 128_000,
 }
 
 const models: ModelCatalog = {
@@ -103,7 +107,7 @@ const rubrics: RubricCatalog = {
     {
       id: 'judge.verification',
       label: 'Verification discipline',
-      evaluation_unit: 'episode',
+      evaluation_unit: 'session',
       version: 'v1',
       content_digest: 'digest-verification',
       pass_threshold: 0.5,
@@ -134,7 +138,7 @@ const requestedConfig: RunConfig = {
 }
 
 const effectiveConfig: EffectiveRunConfig = {
-  schema_version: '1',
+  schema_version: '2',
   pipeline_version: 'pipeline-v1',
   model_catalog_version: models.catalog_version,
   rubric_catalog_version: rubrics.catalog_version,
@@ -152,6 +156,11 @@ const effectiveConfig: EffectiveRunConfig = {
   },
   rubrics: rubrics.rubrics,
   selection_warnings: [],
+  judging_context: {
+    contract_version: '1', target_input_tokens: 100_000, prompt_reserve_tokens: 6_000,
+    output_reserve_tokens: 4_000, safety_reserve_tokens: 8_000, digest_max_tokens: 1_000,
+    finding_max_tokens: 750, overlap_turns: 1, max_chunks: 40, token_estimator: 'utf8_bytes_div_3',
+  },
   candidate_budget: 3,
   force: false,
 }
@@ -199,25 +208,36 @@ const session: SessionSummary = {
 }
 
 const plan: JudgingPlan = {
-  plan_id: 'plan-1',
-  schema_version: '1',
+  plan_id: 'sha256:plan-1',
+  schema_version: '2',
   cohort_id: 'cohort-1',
   requested_rubrics: rubrics.rubrics,
   review_depth: 'selective',
-  judge_count: 3,
-  max_episodes_per_session: 8,
+  second_opinion_margin: 0.1,
+  input_policy: effectiveConfig.judging_context,
+  protocol: {
+    protocol_version: '2',
+    prompt_templates: {
+      digest_system: 'digest system', digest_user: 'digest user',
+      window_system: 'window system', window_user: 'window user',
+      merge_system: 'merge system', merge_user: 'merge user',
+    },
+    schemas: {
+      digest: { name: 'chunk_digest', schema: {} },
+      window: { name: 'window_findings', schema: {} },
+      merge: { name: 'sliding_merged_verdict', schema: {} },
+    },
+  },
   totals: {
+    sessions_planned: 1,
     turns_considered: 2,
-    episodes_selected: 1,
-    planned_episode_rubrics: 1,
-    planned_session_rubrics: 1,
+    windows_planned: 0,
     planned_rubrics: 2,
-    minimum_episode_reviewer_attempts: 1,
-    maximum_episode_reviewer_attempts: 3,
-    minimum_session_reviewer_attempts: 1,
-    maximum_session_reviewer_attempts: 3,
     minimum_reviewer_attempts: 2,
     maximum_reviewer_attempts: 6,
+    maximum_digest_calls: 0,
+    maximum_window_calls: 0,
+    maximum_merge_calls: 0,
   },
   sessions: [],
 }
@@ -263,6 +283,12 @@ function completedReflectionRun(): Run {
       minimum_reviewer_attempts: 2,
       maximum_reviewer_attempts: 6,
       reviewer_attempts_completed: 3,
+      digest_steps_completed: 0,
+      maximum_digest_steps: 0,
+      window_steps_completed: 0,
+      maximum_window_steps: 0,
+      merge_steps_completed: 0,
+      maximum_merge_steps: 0,
       scores_written: 2,
       failure_count: 0,
       write_failure_count: 0,
@@ -442,6 +468,12 @@ describe('RunDetail wiring', () => {
           minimum_reviewer_attempts: 2,
           maximum_reviewer_attempts: 6,
           reviewer_attempts_completed: 3,
+          digest_steps_completed: 0,
+          maximum_digest_steps: 0,
+          window_steps_completed: 0,
+          maximum_window_steps: 0,
+          merge_steps_completed: 0,
+          maximum_merge_steps: 0,
           scores_written: 0,
           failure_count: 0,
           write_failure_count: 0,

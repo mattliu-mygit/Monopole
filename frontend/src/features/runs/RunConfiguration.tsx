@@ -442,7 +442,7 @@ export default function RunConfiguration({
                 <span>
                   <span className="block font-medium">{rubric.label}</span>
                   <span className="block font-mono text-[0.6875rem] text-gray-500">
-                    {rubric.id} · {rubric.evaluation_unit === 'session' ? 'whole session' : 'episode'}
+                    {rubric.id} · whole session
                   </span>
                 </span>
               </label>

@@ -27,6 +27,7 @@ function ModelCard({
         <span>{model.family}</span>
         <span>{model.backend}</span>
       </div>
+      <div className="mt-1 text-xs text-gray-500">{model.max_input_tokens.toLocaleString()} max input tokens</div>
     </div>
   )
 }
@@ -78,6 +79,7 @@ export default function RunConfigAudit({ config }: RunConfigAuditProps) {
                 <span>{judge.family}</span>
                 <span>{judge.backend}</span>
               </div>
+              <div className="mt-1 text-xs text-gray-500">{judge.max_input_tokens.toLocaleString()} max input tokens</div>
             </li>
           ))}
         </ol>
@@ -108,6 +110,27 @@ export default function RunConfigAudit({ config }: RunConfigAuditProps) {
 
       <div>
         <h5 className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+          Sliding judging context
+        </h5>
+        <div className="rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-600">
+          <div className="font-medium text-gray-900">
+            {config.judging_context.target_input_tokens.toLocaleString()} target input tokens
+          </div>
+          <div className="mt-1">
+            {config.judging_context.digest_max_tokens.toLocaleString()} digest ·{' '}
+            {config.judging_context.finding_max_tokens.toLocaleString()} findings ·{' '}
+            {config.judging_context.overlap_turns} turn overlap
+          </div>
+          <div className="mt-1">
+            {config.judging_context.prompt_reserve_tokens.toLocaleString()} prompt ·{' '}
+            {config.judging_context.output_reserve_tokens.toLocaleString()} output ·{' '}
+            {config.judging_context.safety_reserve_tokens.toLocaleString()} safety reserve
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h5 className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
           Pinned rubrics
         </h5>
         <ul className="space-y-2">
@@ -115,7 +138,7 @@ export default function RunConfigAudit({ config }: RunConfigAuditProps) {
             <li key={rubric.id} className="rounded-lg border border-gray-200 bg-white p-3">
               <div className="font-medium text-gray-900">{rubric.label}</div>
               <div className="mt-1 text-xs text-gray-500">
-                {rubric.version} · {rubric.evaluation_unit === 'session' ? 'whole session' : 'episode'} · threshold{' '}
+                {rubric.version} · whole session · threshold{' '}
                 {rubric.pass_threshold.toFixed(2)}
               </div>
               <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[0.6875rem] text-gray-400">

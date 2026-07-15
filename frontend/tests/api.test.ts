@@ -38,6 +38,7 @@ const writer = {
   family: 'openai',
   backend: 'cli',
   supported_roles: ['proposal_writer'] as const,
+  max_input_tokens: 128_000,
 }
 
 const judge = {
@@ -46,12 +47,13 @@ const judge = {
   family: 'anthropic',
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
+  max_input_tokens: 128_000,
 }
 
 const rubric = {
   id: 'judge.verification',
   label: 'Verification discipline',
-  evaluation_unit: 'episode' as const,
+  evaluation_unit: 'session' as const,
   version: 'v1',
   content_digest: 'sha256:rubric',
   pass_threshold: 0.5,
@@ -96,7 +98,7 @@ const runConfig: RunConfig = {
 }
 
 const effectiveConfig: EffectiveRunConfig = {
-  schema_version: '1',
+  schema_version: '2',
   pipeline_version: '1',
   model_catalog_version: modelCatalog.catalog_version,
   rubric_catalog_version: rubricCatalog.catalog_version,
@@ -118,6 +120,11 @@ const effectiveConfig: EffectiveRunConfig = {
       compared_families: ['openai'],
     },
   ],
+  judging_context: {
+    contract_version: '1', target_input_tokens: 100_000, prompt_reserve_tokens: 6_000,
+    output_reserve_tokens: 4_000, safety_reserve_tokens: 8_000, digest_max_tokens: 1_000,
+    finding_max_tokens: 750, overlap_turns: 1, max_chunks: 40, token_estimator: 'utf8_bytes_div_3',
+  },
   candidate_budget: 3,
   force: false,
 }

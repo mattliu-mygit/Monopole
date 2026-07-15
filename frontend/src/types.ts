@@ -264,7 +264,7 @@ export interface DataSelection {
 
 export type ModelRole = 'proposal_writer' | 'judge' | 'proposal_evaluator'
 export type ReviewDepth = 'primary' | 'selective' | 'full_panel'
-export type EvaluationUnit = 'episode' | 'session'
+export type EvaluationUnit = 'session'
 
 export interface ModelDescriptor {
   id: string
@@ -272,6 +272,7 @@ export interface ModelDescriptor {
   family: string
   backend: string
   supported_roles: ModelRole[] | readonly ModelRole[]
+  max_input_tokens: number
 }
 
 export interface RubricDescriptor {
@@ -343,7 +344,7 @@ export interface EffectiveModelSelection {
 }
 
 export interface EffectiveRunConfig {
-  schema_version: '1'
+  schema_version: '2'
   pipeline_version: string
   model_catalog_version: string
   rubric_catalog_version: string
@@ -353,6 +354,7 @@ export interface EffectiveRunConfig {
   models: EffectiveModelSelection
   rubrics: RubricDescriptor[]
   selection_warnings: SelectionWarning[]
+  judging_context: JudgingContextPolicy
   candidate_budget: number
   force: boolean
 }
@@ -391,53 +393,133 @@ export interface ScoringResult {
 }
 
 export interface JudgingPlanTotals {
+  sessions_planned: number
   turns_considered: number
-  episodes_selected: number
-  planned_episode_rubrics: number
-  planned_session_rubrics: number
+  windows_planned: number
   planned_rubrics: number
-  minimum_episode_reviewer_attempts: number
-  maximum_episode_reviewer_attempts: number
-  minimum_session_reviewer_attempts: number
-  maximum_session_reviewer_attempts: number
   minimum_reviewer_attempts: number
   maximum_reviewer_attempts: number
+  maximum_digest_calls: number
+  maximum_window_calls: number
+  maximum_merge_calls: number
 }
 
 export interface JudgingPlanRubric extends RubricDescriptor {
-  applicability: 'applicable' | 'not_applicable'
   minimum_reviewer_attempts: number
   maximum_reviewer_attempts: number
-  skip_reason?: string | null
 }
 
-export interface JudgingPlanEpisode {
+export interface JudgingContextPolicy {
+  contract_version: '1'
+  target_input_tokens: number
+  prompt_reserve_tokens: number
+  output_reserve_tokens: number
+  safety_reserve_tokens: number
+  digest_max_tokens: number
+  finding_max_tokens: number
+  overlap_turns: 1
+  max_chunks: number
+  token_estimator: 'utf8_bytes_div_3'
+}
+
+export interface JudgingRawTurn {
   trace_id: string
-  turn_index: number
-  selection_kind: string
-  selection_reasons: string[]
-  evidence_trace_ids: string[]
-  rubrics: JudgingPlanRubric[]
+  position: number
+  estimated_tokens: number
+  raw_digest: string
+}
+
+export interface JudgingRawWindow {
+  window_id: string
+  index: number
+  core_trace_ids: string[]
+  raw_trace_ids: string[]
+  raw_turn_digests: string[]
+  raw_tokens: number
+}
+
+export interface JudgingWindowPlan {
+  plan_id: string
+  contract_version: '1'
+  conversation_id: string
+  input_cap_tokens: number
+  raw_budget_tokens: number
+  chunk_count: number
+  overlap_turns: 1
+  token_estimator: 'utf8_bytes_div_3'
+  merge_input_tokens: number
+  raw_turns: JudgingRawTurn[]
+  raw_coverage_trace_ids: string[]
+  windows: JudgingRawWindow[]
+}
+
+export interface JudgingReviewerPlan {
+  ordinal: number
+  judge: PositionedJudge
+  window_plan: JudgingWindowPlan
+  work_bounds: {
+    digest_calls: number
+    window_calls_per_rubric: number
+    merge_calls_per_rubric: number
+  }
+}
+
+export interface SlidingProtocolManifest {
+  protocol_version: string
+  prompt_templates: {
+    digest_system: string
+    digest_user: string
+    window_system: string
+    window_user: string
+    merge_system: string
+    merge_user: string
+  }
+  schemas: {
+    digest: { name: string; schema: Record<string, unknown> }
+    window: { name: string; schema: Record<string, unknown> }
+    merge: { name: string; schema: Record<string, unknown> }
+  }
 }
 
 export interface JudgingPlanSession {
   conversation_id: string
   turn_count: number
-  omitted_turn_count: number
-  session_rubrics: JudgingPlanRubric[]
-  selected_episodes: JudgingPlanEpisode[]
+  raw_coverage_trace_ids: string[]
+  rubrics: JudgingPlanRubric[]
+  reviewers: JudgingReviewerPlan[]
 }
 
 export interface JudgingPlan {
   plan_id: string
-  schema_version: string
+  schema_version: '2'
   cohort_id: string
   requested_rubrics: RubricDescriptor[]
   review_depth: ReviewDepth
-  judge_count: number
-  max_episodes_per_session: number
+  second_opinion_margin: number | null
+  input_policy: JudgingContextPolicy
+  protocol: SlidingProtocolManifest
   totals: JudgingPlanTotals
   sessions: JudgingPlanSession[]
+}
+
+export interface BehavioralFeedback {
+  success: string
+  problem: string
+  desired_behavior: string
+}
+
+export interface InferenceStepAudit {
+  phase: 'digest' | 'window' | 'merge'
+  artifact_id: string
+  requested_model: string
+  resolved_model?: string
+  usage: Record<string, unknown>
+  output_mode?: string
+  schema_name?: string
+  schema_fallback_reason?: string
+  transport_request_count: number
+  raw_output_digest?: string
+  reused: boolean
 }
 
 export interface ReviewAttempt {
@@ -453,8 +535,8 @@ export interface ReviewAttempt {
   score: number | null
   rationale: string | null
   evidence_ids: string[]
-  usage: Record<string, number>
-  output_mode: 'json_object' | 'json_schema' | 'json_object_fallback' | null
+  usage: Record<string, unknown>
+  output_mode: string | null
   schema_name: string | null
   schema_fallback_reason: string | null
   transport_request_count: number
@@ -462,28 +544,28 @@ export interface ReviewAttempt {
   raw_output_digest: string | null
   error_type: string | null
   message: string | null
+  behavioral_feedback: BehavioralFeedback | null
+  steps: InferenceStepAudit[]
 }
 
 export interface JudgingAttemptSummary {
-  scope: 'episode' | 'session'
+  scope: 'session'
   rubric: string
   review_status: 'complete' | 'degraded' | 'unresolved' | 'failed'
   rating: number | null
   attempt_count: number
   successful_reviewer_count: number | null
   attempts: ReviewAttempt[]
-  trace_id?: string
   conversation_id: string
 }
 
 export interface JudgingFailureDetail {
-  scope: 'episode' | 'session'
+  scope: 'session'
   rubric: string
   error_type: string
   message: string | null
   attempt_count: number
   attempts: ReviewAttempt[]
-  trace_id?: string
   conversation_id: string
 }
 
@@ -495,6 +577,12 @@ export interface JudgingProgress {
   minimum_reviewer_attempts: number
   maximum_reviewer_attempts: number
   reviewer_attempts_completed: number
+  digest_steps_completed: number
+  maximum_digest_steps: number
+  window_steps_completed: number
+  maximum_window_steps: number
+  merge_steps_completed: number
+  maximum_merge_steps: number
   scores_written: number
   failure_count: number
   write_failure_count: number

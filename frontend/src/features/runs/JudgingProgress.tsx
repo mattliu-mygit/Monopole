@@ -4,6 +4,7 @@ import type {
   JudgingProgress as JudgingProgressData,
   JudgingResult,
   ReviewAttempt,
+  InferenceStepAudit,
 } from '../../types'
 
 export interface JudgingProgressProps {
@@ -14,6 +15,30 @@ export interface JudgingProgressProps {
 
 function words(value: string): string {
   return value.replaceAll('_', ' ')
+}
+
+function usageText(usage: Record<string, unknown>): string {
+  return Object.entries(usage).map(([key, value]) => `${words(key)} ${String(value)}`).join(' · ') || '—'
+}
+
+function Step({ step }: { step: InferenceStepAudit }) {
+  return (
+    <li className="rounded border border-gray-200 bg-white p-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="font-medium text-gray-800">{step.phase} · {step.reused ? 'reused' : 'current'}</span>
+        <span className="font-mono text-gray-500">{step.schema_name ?? '—'}</span>
+      </div>
+      <dl className="mt-1 grid gap-1 sm:grid-cols-2">
+        <div><dt className="inline text-gray-400">Model: </dt><dd className="inline">{step.resolved_model ?? step.requested_model}</dd></div>
+        <div><dt className="inline text-gray-400">Transport requests: </dt><dd className="inline">{step.transport_request_count}</dd></div>
+        <div><dt className="inline text-gray-400">Output mode: </dt><dd className="inline">{step.output_mode ? words(step.output_mode) : '—'}</dd></div>
+        <div><dt className="inline text-gray-400">Usage: </dt><dd className="inline">{usageText(step.usage)}</dd></div>
+        <div className="sm:col-span-2"><dt className="inline text-gray-400">Artifact: </dt><dd className="inline break-all font-mono">{step.artifact_id}</dd></div>
+        {step.schema_fallback_reason && <div className="sm:col-span-2"><dt className="inline text-gray-400">Schema fallback: </dt><dd className="inline">{step.schema_fallback_reason}</dd></div>}
+        {step.raw_output_digest && <div className="sm:col-span-2"><dt className="inline text-gray-400">Output digest: </dt><dd className="inline break-all font-mono">{step.raw_output_digest}</dd></div>}
+      </dl>
+    </li>
+  )
 }
 
 function Attempt({ attempt }: { attempt: ReviewAttempt }) {
@@ -39,6 +64,13 @@ function Attempt({ attempt }: { attempt: ReviewAttempt }) {
         <div className="mt-1 font-mono tabular-nums text-gray-700">Score {attempt.score.toFixed(2)}</div>
       )}
       {attempt.rationale && <p className="mt-1 text-gray-600">{attempt.rationale}</p>}
+      {attempt.behavioral_feedback && (
+        <dl className="mt-2 grid gap-1 rounded border border-purple-100 bg-purple-50 p-2 text-gray-700">
+          <div><dt className="inline font-medium text-green-700">Success: </dt><dd className="inline">{attempt.behavioral_feedback.success}</dd></div>
+          <div><dt className="inline font-medium text-red-700">Problem: </dt><dd className="inline">{attempt.behavioral_feedback.problem}</dd></div>
+          <div><dt className="inline font-medium text-purple-700">Desired behavior: </dt><dd className="inline">{attempt.behavioral_feedback.desired_behavior}</dd></div>
+        </dl>
+      )}
       {attempt.status === 'failed' && (
         <p className="mt-1 text-red-700">
           {attempt.error_type ?? 'Error'}: {attempt.message ?? 'No error detail returned'}
@@ -52,12 +84,22 @@ function Attempt({ attempt }: { attempt: ReviewAttempt }) {
           <div><dt className="inline text-gray-400">Output mode: </dt><dd className="inline">{attempt.output_mode ? words(attempt.output_mode) : '—'}</dd></div>
           <div><dt className="inline text-gray-400">Schema: </dt><dd className="inline">{attempt.schema_name ?? '—'}{attempt.verdict_schema_version ? ` v${attempt.verdict_schema_version}` : ''}</dd></div>
           <div><dt className="inline text-gray-400">Transport requests: </dt><dd className="inline">{attempt.transport_request_count}</dd></div>
-          <div><dt className="inline text-gray-400">Usage: </dt><dd className="inline">{Object.entries(attempt.usage).map(([key, value]) => `${words(key)} ${value}`).join(' · ') || '—'}</dd></div>
+          <div><dt className="inline text-gray-400">Usage: </dt><dd className="inline">{usageText(attempt.usage)}</dd></div>
           {attempt.evidence_ids.length > 0 && <div className="sm:col-span-2"><dt className="inline text-gray-400">Evidence IDs: </dt><dd className="inline font-mono">{attempt.evidence_ids.join(', ')}</dd></div>}
           {attempt.schema_fallback_reason && <div className="sm:col-span-2"><dt className="inline text-gray-400">Schema fallback: </dt><dd className="inline">{attempt.schema_fallback_reason}</dd></div>}
           {attempt.raw_output_digest && <div className="sm:col-span-2"><dt className="inline text-gray-400">Output digest: </dt><dd className="inline break-all font-mono">{attempt.raw_output_digest}</dd></div>}
         </dl>
       </details>
+      {attempt.steps.length > 0 && (
+        <details className="mt-2 rounded border border-gray-100 bg-gray-50 p-2 text-[0.6875rem] text-gray-600">
+          <summary className="cursor-pointer font-medium text-gray-700">Ordered inference steps</summary>
+          <ol className="mt-2 space-y-2">
+            {attempt.steps.map((step, index) => (
+              <Step key={`${step.artifact_id}-${index}`} step={step} />
+            ))}
+          </ol>
+        </details>
+      )}
     </li>
   )
 }
@@ -74,7 +116,7 @@ function ReviewRecord({ record }: { record: JudgingAttemptSummary }) {
       </summary>
       <div className="space-y-2 border-t border-gray-200 px-3 py-2">
         <div className="text-gray-500">
-          {record.trace_id ? `trace ${record.trace_id} · ` : ''}session {record.conversation_id} ·{' '}
+          session {record.conversation_id} ·{' '}
           {record.attempt_count} reviewer attempt{record.attempt_count === 1 ? '' : 's'}
         </div>
         <ol className="space-y-2">
@@ -105,17 +147,6 @@ export default function JudgingProgress({
   const maximum = state?.maximum_reviewer_attempts ?? plan?.totals.maximum_reviewer_attempts ?? 0
   const reviewRecords = state?.attempt_summaries ?? []
   const failures = state?.failure_details ?? []
-  const skipped = plan?.sessions.flatMap((session) => (
-    session.selected_episodes.flatMap((episode) => (
-      episode.rubrics
-        .filter((rubric) => rubric.applicability === 'not_applicable' && rubric.skip_reason)
-        .map((rubric) => ({
-          rubric: rubric.id,
-          reason: rubric.skip_reason as string,
-          traceId: episode.trace_id,
-        }))
-    ))
-  )) ?? []
 
   return (
     <section aria-label="Judging progress" className="space-y-4">
@@ -126,7 +157,8 @@ export default function JudgingProgress({
           </p>
           {plan && (
             <span className="text-xs text-gray-500">
-              {plan.totals.episodes_selected} selected episodes from {plan.totals.turns_considered} turns
+              {plan.totals.sessions_planned} session{plan.totals.sessions_planned === 1 ? '' : 's'} ·{' '}
+              {plan.totals.turns_considered} turns · {plan.totals.windows_planned} raw windows
             </span>
           )}
         </div>
@@ -161,12 +193,60 @@ export default function JudgingProgress({
         </div>
       </div>
 
+      <div className="grid gap-2 text-sm sm:grid-cols-3">
+        <div className="rounded-lg bg-purple-50 p-3 font-medium text-purple-900">
+          {state?.digest_steps_completed ?? 0} of {state?.maximum_digest_steps ?? plan?.totals.maximum_digest_calls ?? 0} digests
+        </div>
+        <div className="rounded-lg bg-purple-50 p-3 font-medium text-purple-900">
+          {state?.window_steps_completed ?? 0} of {state?.maximum_window_steps ?? plan?.totals.maximum_window_calls ?? 0} windows
+        </div>
+        <div className="rounded-lg bg-purple-50 p-3 font-medium text-purple-900">
+          {state?.merge_steps_completed ?? 0} of {state?.maximum_merge_steps ?? plan?.totals.maximum_merge_calls ?? 0} merges
+        </div>
+      </div>
+
+      {plan && plan.sessions.length > 0 && (
+        <div>
+          <h4 className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">Pinned sliding windows</h4>
+          <div className="space-y-2">
+            {plan.sessions.map((session) => (
+              <details key={session.conversation_id} className="rounded-lg border border-gray-200 bg-gray-50 text-xs">
+                <summary className="cursor-pointer px-3 py-2 font-medium text-gray-900">
+                  {session.conversation_id} · {session.turn_count} turns · {session.reviewers.length} reviewers
+                </summary>
+                <div className="space-y-3 border-t border-gray-200 px-3 py-2">
+                  {session.reviewers.map((reviewer) => (
+                    <div key={reviewer.ordinal}>
+                      <div className="font-medium text-gray-800">Judge {reviewer.ordinal} · {reviewer.judge.label}</div>
+                      <div className="mt-0.5 text-gray-500">
+                        maximum {reviewer.work_bounds.digest_calls} digests ·{' '}
+                        {reviewer.work_bounds.window_calls_per_rubric} windows per rubric ·{' '}
+                        {reviewer.work_bounds.merge_calls_per_rubric} merge per rubric
+                      </div>
+                      <ol className="mt-2 space-y-1">
+                        {reviewer.window_plan.windows.map((window) => (
+                          <li key={window.window_id} className="rounded border border-gray-200 bg-white p-2">
+                            <span className="font-medium">Window {window.index}</span>{' · '}
+                            core {window.core_trace_ids.join(', ')} · raw {window.raw_trace_ids.join(', ')} ·{' '}
+                            {window.raw_tokens.toLocaleString()} estimated tokens
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ))}
+          </div>
+        </div>
+      )}
+
       {reviewRecords.length > 0 && (
         <div>
           <h4 className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">Reviewer audit</h4>
           <div className="max-h-[32rem] space-y-2 overflow-y-auto">
             {reviewRecords.map((record, index) => (
-              <ReviewRecord key={`${record.scope}-${record.rubric}-${record.trace_id ?? record.conversation_id}-${index}`} record={record} />
+              <ReviewRecord key={`${record.scope}-${record.rubric}-${record.conversation_id}-${index}`} record={record} />
             ))}
           </div>
           {state?.attempt_summaries_truncated && (
@@ -174,21 +254,6 @@ export default function JudgingProgress({
               Showing {reviewRecords.length} of {state.attempt_summary_count ?? reviewRecords.length} review records.
             </p>
           )}
-        </div>
-      )}
-
-      {skipped.length > 0 && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-          <h4 className="text-sm font-medium text-amber-900">Skipped rubric checks</h4>
-          <ul className="mt-2 space-y-2 text-xs text-amber-800">
-            {skipped.map((item) => (
-              <li key={`${item.rubric}-${item.traceId}`}>
-                <div className="font-medium">{item.rubric}</div>
-                <div>{item.reason}</div>
-                <div className="mt-1 text-amber-700">trace {item.traceId}</div>
-              </li>
-            ))}
-          </ul>
         </div>
       )}
 

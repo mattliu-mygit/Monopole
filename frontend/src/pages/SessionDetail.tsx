@@ -69,7 +69,7 @@ function FeedbackDetail({ fb, rubrics }: { fb: FeedbackItem; rubrics: RubricDesc
 
       {rubric && (
         <p className="text-xs text-gray-500">
-          {rubric.label} · {rubric.evaluation_unit === 'session' ? 'whole session' : 'episode'} · pass threshold{' '}
+          {rubric.label} · whole session · pass threshold{' '}
           {rubric.pass_threshold.toFixed(2)}
         </p>
       )}
