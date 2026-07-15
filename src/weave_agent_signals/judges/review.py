@@ -14,6 +14,7 @@ ReviewDepth = Literal["primary", "selective", "full_panel"]
 ObservationStatus = Literal["succeeded", "abstained", "failed"]
 ReviewStatus = Literal["complete", "degraded", "unresolved", "failed"]
 InferencePhase = Literal["digest", "window", "merge"]
+_SCHEMA_FALLBACK_REASON = "schema_output_unsupported"
 
 
 def _unit_float(value: object, field_name: str) -> float:
@@ -29,6 +30,15 @@ def _nonblank(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a nonblank string")
     return value
+
+
+def _validate_schema_fallback_metadata(
+    output_mode: str | None,
+    schema_fallback_reason: str | None,
+) -> None:
+    expected_reason = _SCHEMA_FALLBACK_REASON if output_mode == "json_object_fallback" else None
+    if schema_fallback_reason != expected_reason:
+        raise ValueError("schema fallback metadata is invalid")
 
 
 @dataclass(frozen=True)
@@ -113,8 +123,7 @@ class InferenceStepAudit:
             "json_object_fallback",
         }:
             raise ValueError("output_mode is invalid")
-        if self.schema_fallback_reason is not None:
-            _nonblank(self.schema_fallback_reason, "schema_fallback_reason")
+        _validate_schema_fallback_metadata(self.output_mode, self.schema_fallback_reason)
         if type(self.transport_request_count) is not int or self.transport_request_count < 0:
             raise ValueError("transport_request_count must be a nonnegative integer")
         if type(self.reused) is not bool:
@@ -176,13 +185,9 @@ class AttemptObservation:
             "json_object_fallback",
         }:
             raise ValueError("output_mode is invalid")
-        for name in (
-            "schema_name",
-            "schema_fallback_reason",
-        ):
-            value = getattr(self, name)
-            if value is not None:
-                _nonblank(value, name)
+        if self.schema_name is not None:
+            _nonblank(self.schema_name, "schema_name")
+        _validate_schema_fallback_metadata(self.output_mode, self.schema_fallback_reason)
         if self.raw_output_digest is not None and (
             not isinstance(self.raw_output_digest, str)
             or len(self.raw_output_digest) != 64

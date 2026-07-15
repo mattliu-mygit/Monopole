@@ -110,14 +110,20 @@ class _ScriptedClient:
         *,
         fail_merge: bool = False,
         invalid_window_citation: bool = False,
+        invalid_chunk_id: bool = False,
+        invalid_window_id: bool = False,
         large_digest: bool = False,
         invocation_error: Exception | None = None,
+        schema_fallback_reason: str | None = None,
     ):
         self.calls: list[dict[str, Any]] = []
         self.fail_merge = fail_merge
         self.invalid_window_citation = invalid_window_citation
+        self.invalid_chunk_id = invalid_chunk_id
+        self.invalid_window_id = invalid_window_id
         self.large_digest = large_digest
         self.invocation_error = invocation_error
+        self.schema_fallback_reason = schema_fallback_reason
         self._lock = threading.Lock()
 
     def chat_json(
@@ -147,7 +153,11 @@ class _ScriptedClient:
         if phase == "digest":
             payload = {
                 "schema_version": 1,
-                "chunk_id": _marker(messages, "EXPECTED_CHUNK_ID"),
+                "chunk_id": (
+                    "SENTINEL_PRIVATE_CHUNK_ID"
+                    if self.invalid_chunk_id
+                    else _marker(messages, "EXPECTED_CHUNK_ID")
+                ),
                 "text": (
                     "x" * 5_900
                     if self.large_digest
@@ -159,7 +169,11 @@ class _ScriptedClient:
             evidence_id = "unknown-evidence" if self.invalid_window_citation else "trace-2"
             payload = {
                 "schema_version": 1,
-                "window_id": _marker(messages, "EXPECTED_WINDOW_ID"),
+                "window_id": (
+                    "SENTINEL_PRIVATE_WINDOW_ID"
+                    if self.invalid_window_id
+                    else _marker(messages, "EXPECTED_WINDOW_ID")
+                ),
                 "findings": [
                     {
                         "finding_id": "shared-finding",
@@ -191,8 +205,11 @@ class _ScriptedClient:
             content=raw,
             model="resolved-judge-1",
             usage={"input_tokens": call_index, "total_tokens": call_index + 1},
-            output_mode="json_schema",
+            output_mode=(
+                "json_object_fallback" if self.schema_fallback_reason is not None else "json_schema"
+            ),
             schema_name=getattr(response_schema, "name", None),
+            schema_fallback_reason=self.schema_fallback_reason,
             transport_request_count=1,
             raw_output_digest=hashlib.sha256(raw.encode()).hexdigest(),
         )
@@ -429,6 +446,42 @@ def test_replay_rejects_an_artifact_persisted_as_already_reused() -> None:
     assert replay_client.calls == []
 
 
+def test_replay_rejects_arbitrary_schema_fallback_detail_without_persisting_it() -> None:
+    first, _, artifacts, _ = _reviewer()
+    first.review(_rubric("judge.session_outcome"))
+    artifact_id = next(iter(artifacts))
+    artifact = dict(artifacts[artifact_id])
+    payload = dict(artifact["payload"])
+    audit = dict(payload["audit"])
+    secret = "SENTINEL_PRIVATE_REPLAY_DETAIL"
+    audit["output_mode"] = "json_object_fallback"
+    audit["schema_fallback_reason"] = secret
+    payload["audit"] = audit
+    artifact["payload"] = payload
+    artifact["content_digest"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+    )
+    artifacts[artifact_id] = artifact
+    replay_client = _ScriptedClient()
+    replay, _, _, _ = _reviewer(client=replay_client, artifacts=artifacts)
+
+    result = replay.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    assert result.message == "schema fallback metadata is invalid"
+    assert secret not in result.message
+    assert result.steps == ()
+    assert replay_client.calls == []
+
+
 @pytest.mark.parametrize(
     "judge",
     [
@@ -532,6 +585,50 @@ def test_invalid_window_citation_fails_closed() -> None:
     assert result.evidence_ids == ()
     assert result.behavioral_feedback is None
     assert result.error_type == "ValueError"
+    assert result.message == "unknown evidence ID"
+    assert "unknown-evidence" not in result.message
+
+
+@pytest.mark.parametrize(
+    ("client", "expected_message", "secret"),
+    [
+        (
+            _ScriptedClient(invalid_chunk_id=True),
+            "unexpected chunk ID",
+            "SENTINEL_PRIVATE_CHUNK_ID",
+        ),
+        (
+            _ScriptedClient(invalid_window_id=True),
+            "unexpected window ID",
+            "SENTINEL_PRIVATE_WINDOW_ID",
+        ),
+    ],
+)
+def test_rejected_model_identifiers_are_not_persisted(
+    client: _ScriptedClient,
+    expected_message: str,
+    secret: str,
+) -> None:
+    reviewer, _, _, _ = _reviewer(client=client)
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    assert result.message == expected_message
+    assert secret not in result.message
+
+
+def test_custom_client_schema_fallback_detail_is_rejected_before_persistence() -> None:
+    secret = "SENTINEL_PRIVATE_FALLBACK_DETAIL"
+    reviewer, _, artifacts, _ = _reviewer(client=_ScriptedClient(schema_fallback_reason=secret))
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    assert result.message == "schema fallback metadata is invalid"
+    assert secret not in result.message
+    assert result.steps == ()
+    assert artifacts == {}
 
 
 def test_failed_merge_returns_failed_observation() -> None:

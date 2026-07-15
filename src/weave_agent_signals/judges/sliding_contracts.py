@@ -170,7 +170,7 @@ def _validated_evidence_ids(
         raise ValueError("evidence IDs must be unique")
     for evidence_id in normalized:
         if evidence_id not in allowed_ids:
-            raise ValueError(f"unknown evidence ID: {evidence_id}")
+            raise ValueError("unknown evidence ID")
     return normalized
 
 
@@ -190,7 +190,7 @@ def parse_chunk_digest(
     if expected_chunk_id is not None and chunk_id != _nonblank_id(
         expected_chunk_id, field="expected chunk ID"
     ):
-        raise ValueError(f"unexpected chunk ID: {chunk_id}")
+        raise ValueError("unexpected chunk ID")
     text = _normalized_text(digest.text, field="digest text")
     if estimate_tokens(text) > max_tokens:
         raise ValueError("digest text exceeds the configured token limit")
@@ -245,7 +245,7 @@ def parse_window_findings(
     if expected_window_id is not None and window_id != _nonblank_id(
         expected_window_id, field="expected window ID"
     ):
-        raise ValueError(f"unexpected window ID: {window_id}")
+        raise ValueError("unexpected window ID")
     findings = tuple(
         parse_window_finding(finding, allowed_evidence_ids=allowed_evidence_ids)
         for finding in parsed.findings
