@@ -642,6 +642,9 @@ def test_verification_judge_consumes_all_pinned_prior_evidence() -> None:
     prior_turns[0].trace_id = "modification-evidence"
     prior_turns[0].tool_calls = [_bash("apply_patch", "updated")]
     current = _turn([_bash("pytest", "passed")])
+    for turn_index, turn in enumerate([*prior_turns, current]):
+        for span_index, span in enumerate(turn.tool_calls):
+            span.span_id = f"turn-{turn_index}-span-{span_index}"
     client = _Client({"judge-1": [(0.75, "verified")]})
 
     _judge_turn(client, turn=current, prior_turns=prior_turns)
