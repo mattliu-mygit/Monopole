@@ -549,6 +549,7 @@ def test_failed_merge_returns_failed_observation() -> None:
     assert result.transport_request_count == 5
     assert result.output_mode == "json_schema"
     assert result.schema_name == "merged_verdict"
+    assert "schema_version" in (result.message or "")
 
 
 def test_inference_exception_message_is_sanitized_before_observation() -> None:
@@ -564,6 +565,32 @@ def test_inference_exception_message_is_sanitized_before_observation() -> None:
     assert result.transport_request_count == 3
     assert len(result.steps) == 1
     assert result.steps[0].phase == "digest"
+
+
+@pytest.mark.parametrize("callback", ["load", "record", "cancel"])
+def test_callback_exception_message_is_sanitized_before_observation(callback: str) -> None:
+    secret = "SENTINEL_PRIVATE_CALLBACK_DETAIL"
+    reviewer, client, artifacts, _ = _reviewer()
+
+    def fail(*_args: object) -> None:
+        raise RuntimeError(secret)
+
+    if callback == "load":
+        reviewer._load_artifact = fail
+    elif callback == "record":
+        reviewer._record_artifact = fail
+    else:
+        reviewer._is_cancelled = fail
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    assert result.error_type == "RuntimeError"
+    assert result.message == "review infrastructure failed"
+    assert secret not in result.message
+    if callback == "load":
+        assert client.calls == []
+        assert artifacts == {}
 
 
 def test_each_phase_prompt_has_one_output_owner_and_unambiguous_task() -> None:

@@ -97,8 +97,14 @@ _MERGE_USER_TEMPLATE = (
 
 class _JudgeInvocationFailure(RuntimeError):
     def __init__(self, error_type: str) -> None:
-        self.error_type = error_type
         super().__init__("judge invocation failed")
+        self.error_type = error_type
+
+
+class _ReviewInfrastructureFailure(RuntimeError):
+    def __init__(self, error_type: str) -> None:
+        super().__init__("review infrastructure failed")
+        self.error_type = error_type
 
 
 def _canonical_json(value: object) -> str:
@@ -163,7 +169,18 @@ def _bounded_error(error: Exception) -> str:
             message = " ".join(str(issue.get("msg", "validation failed")).split())
             parts.append(f"{location}: {message}" if location else message)
         return "; ".join(parts)[:_ERROR_TEXT_LIMIT] or "structured output validation failed"
-    return " ".join(str(error).split())[:_ERROR_TEXT_LIMIT] or type(error).__name__
+    if isinstance(error, (_JudgeInvocationFailure, _ReviewInfrastructureFailure, ValueError)):
+        return " ".join(str(error).split())[:_ERROR_TEXT_LIMIT] or type(error).__name__
+    return "sliding review failed"
+
+
+def _review_callback(callback: Callable[..., Any], *args: object) -> Any:
+    try:
+        return callback(*args)
+    except InferenceCancelled:
+        raise
+    except Exception as error:
+        raise _ReviewInfrastructureFailure(type(error).__name__) from None
 
 
 def _normalized_usage(value: object) -> dict[str, int]:
@@ -391,7 +408,7 @@ class SlidingReviewer:
         return rubric
 
     def _check_cancelled(self) -> None:
-        if self._is_cancelled():
+        if _review_callback(self._is_cancelled):
             raise InferenceCancelled("sliding reviewer inference cancelled")
 
     def _messages_fit(self, messages: list[dict[str, str]], max_tokens: int) -> None:
@@ -510,7 +527,7 @@ class SlidingReviewer:
         chunk_id = self._chunk_id(window)
         artifact_id = self._artifact_id("digest", chunk_id)
         raw_text, evidence_ids = self._core_evidence(window)
-        artifact = self._load_artifact(artifact_id)
+        artifact = _review_callback(self._load_artifact, artifact_id)
         if artifact is not None:
             payload, audit = _artifact_payload(
                 artifact,
@@ -542,7 +559,8 @@ class SlidingReviewer:
             expected_chunk_id=chunk_id,
         )
         if artifact is None:
-            self._record_artifact(
+            _review_callback(
+                self._record_artifact,
                 artifact_id,
                 _artifact_envelope(
                     "chunk_digest",
@@ -641,7 +659,7 @@ class SlidingReviewer:
             window=window,
             digests=digests,
         )
-        artifact = self._load_artifact(artifact_id)
+        artifact = _review_callback(self._load_artifact, artifact_id)
         if artifact is not None:
             payload, audit = _artifact_payload(
                 artifact,
@@ -669,7 +687,8 @@ class SlidingReviewer:
             expected_window_id=str(window["window_id"]),
         )
         if artifact is None:
-            self._record_artifact(
+            _review_callback(
+                self._record_artifact,
                 artifact_id,
                 _artifact_envelope(
                     "window_findings",
@@ -748,7 +767,7 @@ class SlidingReviewer:
             "merge",
             f"{descriptor.id}:{descriptor.content_digest}",
         )
-        artifact = self._load_artifact(artifact_id)
+        artifact = _review_callback(self._load_artifact, artifact_id)
         if artifact is not None:
             payload, audit = _artifact_payload(
                 artifact,
@@ -771,7 +790,8 @@ class SlidingReviewer:
             )
         verdict = parse_merged_verdict(payload, allowed_evidence_ids=self._all_evidence_ids)
         if artifact is None:
-            self._record_artifact(
+            _review_callback(
+                self._record_artifact,
                 artifact_id,
                 _artifact_envelope(
                     "merged_verdict",
@@ -822,7 +842,7 @@ class SlidingReviewer:
                 usage=usage,
                 error_type=(
                     error.error_type
-                    if isinstance(error, _JudgeInvocationFailure)
+                    if isinstance(error, (_JudgeInvocationFailure, _ReviewInfrastructureFailure))
                     else type(error).__name__
                 ),
                 message=_bounded_error(error),

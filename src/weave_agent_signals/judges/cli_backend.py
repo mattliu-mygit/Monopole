@@ -19,9 +19,11 @@ from typing import Any, Callable
 
 from weave_agent_signals.judges.families import model_family
 from weave_agent_signals.judges.inference import (
+    SCHEMA_FALLBACK_UNSUPPORTED,
     InferenceCancelled,
     JsonSchemaSpec,
     JudgeResponse,
+    _add_transport_request_count,
     _explicit_schema_rejection_reason,
     _parse_exact_json_object,
     _raw_output_digest,
@@ -204,14 +206,18 @@ class CliJudgeClient:
             except _SchemaOutputUnsupported as error:
                 if response_schema is None:
                     raise
-                parsed, content, raw_output, fallback_count = self._invoke(
-                    model=model,
-                    system=system,
-                    user=user,
-                    env=env,
-                    response_schema=None,
-                    schema_path=None,
-                )
+                try:
+                    parsed, content, raw_output, fallback_count = self._invoke(
+                        model=model,
+                        system=system,
+                        user=user,
+                        env=env,
+                        response_schema=None,
+                        schema_path=None,
+                    )
+                except Exception as fallback_error:
+                    _add_transport_request_count(fallback_error, error.request_count)
+                    raise
                 request_count = error.request_count + fallback_count
                 output_mode = "json_object_fallback"
                 fallback_reason = error.reason
@@ -428,14 +434,16 @@ class CliJudgeClient:
             reason = _explicit_schema_rejection_reason(combined)
             if reason is not None:
                 raise _SchemaOutputUnsupported(
-                    "structured output is not supported by the local CLI",
+                    SCHEMA_FALLBACK_UNSUPPORTED,
                     request_count,
                 )
-        raise RuntimeError(
+        error = RuntimeError(
             f"{argv[0]} judge exited {returncode}: "
             f"error_category={_process_error_category(combined, response_schema)} "
             f"process_output_sha256={_raw_output_digest(combined)}"
         )
+        _add_transport_request_count(error, request_count)
+        raise error
 
     def _decode_output(self, stdout: str, mode: str, *, strict: bool) -> tuple[dict, str]:
         if strict and mode == "claude":

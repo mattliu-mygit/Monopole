@@ -200,8 +200,35 @@ def test_cli_schema_fallback_keeps_the_same_model(tmp_path, monkeypatch):
     assert "--output-schema" not in calls[1]
     assert response.output_mode == "json_object_fallback"
     assert response.schema_name == "judge_verdict"
-    assert "not supported" in (response.schema_fallback_reason or "")
+    assert response.schema_fallback_reason == "schema_output_unsupported"
     assert response.transport_request_count == 2
+
+
+def test_cli_failed_fallback_preserves_both_transport_attempts(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "judge-home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(tmp_path / "judge-home" / "sandbox"))
+    calls = 0
+
+    def fake_run(_argv, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _FakeProc(
+                stderr="error: --output-schema is not supported by this CLI",
+                returncode=2,
+            )
+        return _FakeProc(stderr="fallback process failed", returncode=7)
+
+    with pytest.raises(RuntimeError) as captured:
+        CliJudgeClient(runner=fake_run).chat_json(
+            model="gpt-5.1",
+            messages=_msgs(),
+            response_schema=_schema(),
+        )
+
+    assert calls == 2
+    assert getattr(captured.value, "_transport_request_count", None) == 2
 
 
 @pytest.mark.parametrize(
@@ -521,6 +548,22 @@ def test_retryable_process_failure_retries_once(tmp_path, monkeypatch):
 
     assert parsed["score"] == 0.6
     assert run.call_count == 2
+
+
+def test_exhausted_cli_retries_preserve_all_transport_attempts(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(tmp_path / "sandbox"))
+    monkeypatch.setattr(cli_backend.time, "sleep", lambda _delay: None)
+    client = CliJudgeClient()
+    run = MagicMock(return_value=("", "429 rate limit", 1))
+    monkeypatch.setattr(client, "_run_with_cancel", run)
+
+    with pytest.raises(RuntimeError) as captured:
+        client.chat_json(model="gpt-5.1", messages=_msgs())
+
+    assert run.call_count == cli_backend.MAX_CLI_RETRIES + 1
+    assert getattr(captured.value, "_transport_request_count", None) == 3
 
 
 def test_process_cancellation_is_not_converted_to_a_retry(tmp_path, monkeypatch):
