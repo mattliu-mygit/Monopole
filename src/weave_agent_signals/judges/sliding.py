@@ -41,7 +41,56 @@ ArtifactLoader = Callable[[str], Mapping[str, Any] | None]
 ArtifactRecorder = Callable[[str, Mapping[str, Any]], object]
 
 _ARTIFACT_FIELDS = frozenset({"schema_version", "kind", "content_digest", "payload"})
+_ARTIFACT_PAYLOAD_FIELDS = frozenset({"schema_version", "result", "audit"})
+_AUDIT_FIELDS = frozenset(
+    {
+        "phase",
+        "artifact_id",
+        "requested_model",
+        "resolved_model",
+        "usage",
+        "output_mode",
+        "schema_name",
+        "schema_fallback_reason",
+        "transport_request_count",
+        "raw_output_digest",
+    }
+)
 _ERROR_TEXT_LIMIT = 500
+SLIDING_PROTOCOL_VERSION = "1"
+
+_DIGEST_SYSTEM_TEMPLATE = (
+    "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. "
+    "Preserve important actions, results, omissions, corrections, and constraints. Cite only "
+    "allowed evidence IDs. Return the requested JSON."
+)
+_DIGEST_USER_TEMPLATE = (
+    "EXPECTED_CHUNK_ID: {chunk_id}\n"
+    "EXAMPLE_EVIDENCE_ID: {example_evidence_id}\n"
+    "ALLOWED_EVIDENCE_IDS: {allowed_evidence_ids}\n"
+    "RAW_CHUNK:\n{raw_text}"
+)
+_WINDOW_SYSTEM_TEMPLATE = (
+    "PHASE: window\n{rubric_system}\nReturn bounded findings, not a score. Cite only evidence "
+    "IDs visible in the active raw window."
+)
+_WINDOW_USER_TEMPLATE = (
+    "EXPECTED_WINDOW_ID: {window_id}\n"
+    "EXAMPLE_EVIDENCE_ID: {example_evidence_id}\n"
+    "ALLOWED_FINDING_EVIDENCE_IDS: {allowed_evidence_ids}\n"
+    "RUBRIC_CRITERIA:\n{rubric_criteria}\n{sections}"
+)
+_MERGE_SYSTEM_TEMPLATE = (
+    "PHASE: merge\n{rubric_system}\nReturn one anchored session verdict with evidence-cited "
+    "behavioral feedback."
+)
+_MERGE_USER_TEMPLATE = (
+    "COVERAGE_MANIFEST: {coverage_manifest}\n"
+    "ORDERED_CHUNK_DIGESTS: {digest_context}\n"
+    "ORDERED_DEDUPLICATED_FINDINGS: {finding_context}\n"
+    "ALLOWED_EVIDENCE_IDS: {allowed_evidence_ids}\n"
+    "RUBRIC_CRITERIA:\n{rubric_criteria}"
+)
 
 
 def _canonical_json(value: object) -> str:
@@ -60,6 +109,42 @@ def _sha256(value: object) -> str:
 
 def _payload_digest(payload: Mapping[str, Any]) -> str:
     return _sha256(dict(payload))
+
+
+def sliding_protocol_contract_manifest() -> dict[str, object]:
+    """Return the content-derived prompt and schema contract for artifact identity."""
+
+    return {
+        "protocol_version": SLIDING_PROTOCOL_VERSION,
+        "prompt_templates": {
+            "digest_system": _DIGEST_SYSTEM_TEMPLATE,
+            "digest_user": _DIGEST_USER_TEMPLATE,
+            "window_system": _WINDOW_SYSTEM_TEMPLATE,
+            "window_user": _WINDOW_USER_TEMPLATE,
+            "merge_system": _MERGE_SYSTEM_TEMPLATE,
+            "merge_user": _MERGE_USER_TEMPLATE,
+        },
+        "schemas": {
+            "digest": {
+                "name": CHUNK_DIGEST_SCHEMA.name,
+                "schema": dict(CHUNK_DIGEST_SCHEMA.schema),
+            },
+            "window": {
+                "name": WINDOW_FINDINGS_SCHEMA.name,
+                "schema": dict(WINDOW_FINDINGS_SCHEMA.schema),
+            },
+            "merge": {
+                "name": MERGED_VERDICT_SCHEMA.name,
+                "schema": dict(MERGED_VERDICT_SCHEMA.schema),
+            },
+        },
+    }
+
+
+def sliding_protocol_contract_digest() -> str:
+    """Return the content digest bound into every sliding artifact ID."""
+
+    return _sha256(sliding_protocol_contract_manifest())
 
 
 def _bounded_error(error: Exception) -> str:
@@ -88,8 +173,35 @@ def _add_usage(total: dict[str, int], addition: Mapping[str, int]) -> None:
         total[key] = total.get(key, 0) + value
 
 
-def _artifact_envelope(kind: ArtifactKind, payload: Mapping[str, Any]) -> dict[str, Any]:
-    normalized = json.loads(_canonical_json(dict(payload)))
+def _audit_payload(audit: InferenceStepAudit) -> dict[str, object]:
+    return {
+        "phase": audit.phase,
+        "artifact_id": audit.artifact_id,
+        "requested_model": audit.requested_model,
+        "resolved_model": audit.resolved_model,
+        "usage": dict(audit.usage),
+        "output_mode": audit.output_mode,
+        "schema_name": audit.schema_name,
+        "schema_fallback_reason": audit.schema_fallback_reason,
+        "transport_request_count": audit.transport_request_count,
+        "raw_output_digest": audit.raw_output_digest,
+    }
+
+
+def _artifact_envelope(
+    kind: ArtifactKind,
+    result: Mapping[str, Any],
+    audit: InferenceStepAudit,
+) -> dict[str, Any]:
+    normalized = json.loads(
+        _canonical_json(
+            {
+                "schema_version": 1,
+                "result": dict(result),
+                "audit": _audit_payload(audit),
+            }
+        )
+    )
     return {
         "schema_version": "1",
         "kind": kind,
@@ -103,7 +215,10 @@ def _artifact_payload(
     *,
     artifact_id: str,
     expected_kind: ArtifactKind,
-) -> Mapping[str, Any]:
+    expected_phase: Literal["digest", "window", "merge"],
+    expected_schema: JsonSchemaSpec,
+    requested_model: str,
+) -> tuple[Mapping[str, Any], InferenceStepAudit]:
     value = dict(artifact)
     if set(value) != _ARTIFACT_FIELDS:
         raise ValueError(f"artifact {artifact_id} has invalid envelope fields")
@@ -114,7 +229,29 @@ def _artifact_payload(
         raise ValueError(f"artifact {artifact_id} payload must be an object")
     if value["content_digest"] != _payload_digest(payload):
         raise ValueError(f"artifact {artifact_id} content digest is invalid")
-    return payload
+    payload_value = dict(payload)
+    if set(payload_value) != _ARTIFACT_PAYLOAD_FIELDS or payload_value["schema_version"] != 1:
+        raise ValueError(f"artifact {artifact_id} payload contract is invalid")
+    result = payload_value["result"]
+    audit_value = payload_value["audit"]
+    if not isinstance(result, Mapping) or not isinstance(audit_value, Mapping):
+        raise ValueError(f"artifact {artifact_id} result and audit must be objects")
+    audit_data = dict(audit_value)
+    if set(audit_data) != _AUDIT_FIELDS:
+        raise ValueError(f"artifact {artifact_id} audit fields are invalid")
+    audit = InferenceStepAudit(**audit_data)  # type: ignore[arg-type]
+    if (
+        audit.phase != expected_phase
+        or audit.artifact_id != artifact_id
+        or audit.requested_model != requested_model
+        or audit.schema_name != expected_schema.name
+        or audit.resolved_model is None
+        or audit.output_mode is None
+        or audit.transport_request_count < 1
+        or audit.raw_output_digest is None
+    ):
+        raise ValueError(f"artifact {artifact_id} inference audit identity is invalid")
+    return result, audit
 
 
 class SlidingReviewer:
@@ -154,9 +291,11 @@ class SlidingReviewer:
         self._is_cancelled = is_cancelled
         self._digest_lock = threading.Lock()
         self._digests: tuple[ChunkDigest, ...] | None = None
+        self._digest_steps: tuple[InferenceStepAudit, ...] | None = None
         self._reviewer_key = hashlib.sha256(
-            _canonical_json({"id": judge.id, "position": judge.position}).encode()
+            _canonical_json(judge.model_dump(mode="json")).encode()
         ).hexdigest()
+        self._protocol_digest = sliding_protocol_contract_digest().removeprefix("sha256:")
         self._positions = {
             turn.trace_id: position for position, turn in enumerate(session.turns, start=1)
         }
@@ -190,7 +329,7 @@ class SlidingReviewer:
     ) -> str:
         plan_hash = str(self.window_plan["plan_id"]).removeprefix("sha256:")
         identity_hash = hashlib.sha256(identity.encode()).hexdigest()
-        return f"{phase}/{plan_hash}/{self._reviewer_key}/{identity_hash}"
+        return f"{phase}/{plan_hash}/{self._reviewer_key}/{self._protocol_digest}/{identity_hash}"
 
     def _rubric(self, descriptor: RubricDescriptor) -> Rubric:
         if not isinstance(descriptor, RubricDescriptor):
@@ -301,19 +440,15 @@ class SlidingReviewer:
         return [
             {
                 "role": "system",
-                "content": (
-                    "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw "
-                    "chunk. Preserve important actions, results, omissions, corrections, and "
-                    "constraints. Cite only allowed evidence IDs. Return the requested JSON."
-                ),
+                "content": _DIGEST_SYSTEM_TEMPLATE,
             },
             {
                 "role": "user",
-                "content": (
-                    f"EXPECTED_CHUNK_ID: {chunk_id}\n"
-                    f"EXAMPLE_EVIDENCE_ID: {evidence_ids[0]}\n"
-                    f"ALLOWED_EVIDENCE_IDS: {_canonical_json(list(evidence_ids))}\n"
-                    f"RAW_CHUNK:\n{raw_text}"
+                "content": _DIGEST_USER_TEMPLATE.format(
+                    chunk_id=chunk_id,
+                    example_evidence_id=evidence_ids[0],
+                    allowed_evidence_ids=_canonical_json(list(evidence_ids)),
+                    raw_text=raw_text,
                 ),
             },
         ]
@@ -330,11 +465,16 @@ class SlidingReviewer:
         raw_text, evidence_ids = self._core_evidence(window)
         artifact = self._load_artifact(artifact_id)
         if artifact is not None:
-            payload = _artifact_payload(
+            payload, audit = _artifact_payload(
                 artifact,
                 artifact_id=artifact_id,
                 expected_kind="chunk_digest",
+                expected_phase="digest",
+                expected_schema=CHUNK_DIGEST_SCHEMA,
+                requested_model=self.judge.id,
             )
+            steps.append(audit)
+            _add_usage(usage, audit.usage)
         else:
             payload = self._infer(
                 phase="digest",
@@ -358,7 +498,11 @@ class SlidingReviewer:
         if artifact is None:
             self._record_artifact(
                 artifact_id,
-                _artifact_envelope("chunk_digest", digest.model_dump(mode="json")),
+                _artifact_envelope(
+                    "chunk_digest",
+                    digest.model_dump(mode="json"),
+                    steps[-1],
+                ),
             )
         return digest
 
@@ -369,13 +513,26 @@ class SlidingReviewer:
         usage: dict[str, int],
     ) -> tuple[ChunkDigest, ...]:
         if self._digests is not None:
+            if self._digest_steps is None:
+                raise AssertionError("digest provenance must accompany cached digests")
+            steps.extend(self._digest_steps)
+            for audit in self._digest_steps:
+                _add_usage(usage, audit.usage)
             return self._digests
         with self._digest_lock:
             if self._digests is None:
+                first_digest_step = len(steps)
                 self._digests = tuple(
                     self._load_or_create_digest(window, steps=steps, usage=usage)
                     for window in self._windows
                 )
+                self._digest_steps = tuple(steps[first_digest_step:])
+            else:
+                if self._digest_steps is None:
+                    raise AssertionError("digest provenance must accompany cached digests")
+                steps.extend(self._digest_steps)
+                for audit in self._digest_steps:
+                    _add_usage(usage, audit.usage)
             return self._digests
 
     def _window_messages(
@@ -405,18 +562,16 @@ class SlidingReviewer:
             [
                 {
                     "role": "system",
-                    "content": (
-                        "PHASE: window\n" + rubric.system_prompt + "\nReturn bounded findings, "
-                        "not a score. Cite only evidence IDs visible in the active raw window."
-                    ),
+                    "content": _WINDOW_SYSTEM_TEMPLATE.format(rubric_system=rubric.system_prompt),
                 },
                 {
                     "role": "user",
-                    "content": (
-                        f"EXPECTED_WINDOW_ID: {window['window_id']}\n"
-                        f"EXAMPLE_EVIDENCE_ID: {raw.evidence_ids[0]}\n"
-                        f"ALLOWED_FINDING_EVIDENCE_IDS: {_canonical_json(list(raw.evidence_ids))}\n"
-                        f"RUBRIC_CRITERIA:\n{rubric.criteria_text}\n" + "\n\n".join(sections)
+                    "content": _WINDOW_USER_TEMPLATE.format(
+                        window_id=window["window_id"],
+                        example_evidence_id=raw.evidence_ids[0],
+                        allowed_evidence_ids=_canonical_json(list(raw.evidence_ids)),
+                        rubric_criteria=rubric.criteria_text,
+                        sections="\n\n".join(sections),
                     ),
                 },
             ],
@@ -446,11 +601,16 @@ class SlidingReviewer:
         )
         artifact = self._load_artifact(artifact_id)
         if artifact is not None:
-            payload = _artifact_payload(
+            payload, audit = _artifact_payload(
                 artifact,
                 artifact_id=artifact_id,
                 expected_kind="window_findings",
+                expected_phase="window",
+                expected_schema=WINDOW_FINDINGS_SCHEMA,
+                requested_model=self.judge.id,
             )
+            steps.append(audit)
+            _add_usage(usage, audit.usage)
         else:
             payload = self._infer(
                 phase="window",
@@ -470,7 +630,11 @@ class SlidingReviewer:
         if artifact is None:
             self._record_artifact(
                 artifact_id,
-                _artifact_envelope("window_findings", findings.model_dump(mode="json")),
+                _artifact_envelope(
+                    "window_findings",
+                    findings.model_dump(mode="json"),
+                    steps[-1],
+                ),
             )
         return findings
 
@@ -515,19 +679,16 @@ class SlidingReviewer:
         return [
             {
                 "role": "system",
-                "content": (
-                    "PHASE: merge\n" + rubric.system_prompt + "\nReturn one anchored session "
-                    "verdict with evidence-cited behavioral feedback."
-                ),
+                "content": _MERGE_SYSTEM_TEMPLATE.format(rubric_system=rubric.system_prompt),
             },
             {
                 "role": "user",
-                "content": (
-                    f"COVERAGE_MANIFEST: {_canonical_json(manifest)}\n"
-                    f"ORDERED_CHUNK_DIGESTS: {_canonical_json(digest_context)}\n"
-                    f"ORDERED_DEDUPLICATED_FINDINGS: {_canonical_json(finding_context)}\n"
-                    f"ALLOWED_EVIDENCE_IDS: {_canonical_json(list(self._all_evidence_ids))}\n"
-                    f"RUBRIC_CRITERIA:\n{rubric.criteria_text}"
+                "content": _MERGE_USER_TEMPLATE.format(
+                    coverage_manifest=_canonical_json(manifest),
+                    digest_context=_canonical_json(digest_context),
+                    finding_context=_canonical_json(finding_context),
+                    allowed_evidence_ids=_canonical_json(list(self._all_evidence_ids)),
+                    rubric_criteria=rubric.criteria_text,
                 ),
             },
         ]
@@ -548,11 +709,16 @@ class SlidingReviewer:
         )
         artifact = self._load_artifact(artifact_id)
         if artifact is not None:
-            payload = _artifact_payload(
+            payload, audit = _artifact_payload(
                 artifact,
                 artifact_id=artifact_id,
                 expected_kind="merged_verdict",
+                expected_phase="merge",
+                expected_schema=MERGED_VERDICT_SCHEMA,
+                requested_model=self.judge.id,
             )
+            steps.append(audit)
+            _add_usage(usage, audit.usage)
         else:
             payload = self._infer(
                 phase="merge",
@@ -567,7 +733,11 @@ class SlidingReviewer:
         if artifact is None:
             self._record_artifact(
                 artifact_id,
-                _artifact_envelope("merged_verdict", verdict.model_dump(mode="json")),
+                _artifact_envelope(
+                    "merged_verdict",
+                    verdict.model_dump(mode="json"),
+                    steps[-1],
+                ),
             )
         return verdict
 

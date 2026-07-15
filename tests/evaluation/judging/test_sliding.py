@@ -12,9 +12,16 @@ from typing import Any
 import pytest
 
 from weave_agent_signals.catalogs import build_rubric_catalog
-from weave_agent_signals.judges.inference import InferenceCancelled, JudgeResponse
+from weave_agent_signals.judges.inference import (
+    InferenceCancelled,
+    JsonSchemaSpec,
+    JudgeResponse,
+)
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
-from weave_agent_signals.judges.sliding import SlidingReviewer
+from weave_agent_signals.judges.sliding import (
+    SlidingReviewer,
+    sliding_protocol_contract_digest,
+)
 from weave_agent_signals.judges.windowing import build_window_plan, render_raw_turn
 from weave_agent_signals.models import SessionView, TurnSpan
 from weave_agent_signals.run_config import JudgingContextPolicy, PositionedJudge, RubricDescriptor
@@ -64,15 +71,19 @@ def _policy(**updates: int) -> JudgingContextPolicy:
     return JudgingContextPolicy(**values)
 
 
-def _judge() -> PositionedJudge:
+def _judge(**updates: object) -> PositionedJudge:
+    values = {
+        "id": "judge-1",
+        "label": "Judge One",
+        "family": "family-1",
+        "backend": "openai",
+        "supported_roles": ("judge",),
+        "max_input_tokens": 60_000,
+        "position": 1,
+    }
+    values.update(updates)
     return PositionedJudge(
-        id="judge-1",
-        label="Judge One",
-        family="family-1",
-        backend="openai",
-        supported_roles=("judge",),
-        max_input_tokens=60_000,
-        position=1,
+        **values,  # type: ignore[arg-type]
     )
 
 
@@ -188,6 +199,7 @@ def _reviewer(
     artifacts: dict[str, Mapping[str, Any]] | None = None,
     policy: JudgingContextPolicy | None = None,
     cancelled=lambda: False,
+    judge: PositionedJudge | None = None,
 ) -> tuple[SlidingReviewer, _ScriptedClient, dict[str, Mapping[str, Any]], dict[str, object]]:
     session = SessionView(
         "session-1",
@@ -196,7 +208,8 @@ def _reviewer(
         "main",
     )
     active_policy = policy or _policy()
-    plan = build_window_plan(session, active_policy, _judge().max_input_tokens)
+    active_judge = judge or _judge()
+    plan = build_window_plan(session, active_policy, active_judge.max_input_tokens)
     assert len(plan["windows"]) == 2
     stored = {} if artifacts is None else artifacts
     scripted = client or _ScriptedClient()
@@ -209,7 +222,7 @@ def _reviewer(
     return (
         SlidingReviewer(
             session=session,
-            judge=_judge(),
+            judge=active_judge,
             window_plan=plan,
             context_policy=active_policy,
             client=scripted,
@@ -287,8 +300,119 @@ def test_artifact_replay_makes_zero_model_calls() -> None:
 
     assert replay_client.calls == []
     assert replay_result.score == first_result.score
-    assert replay_result.usage == {}
-    assert replay_result.steps == ()
+    assert replay_result.resolved_model == first_result.resolved_model
+    assert replay_result.usage == first_result.usage
+    assert replay_result.steps == first_result.steps
+    assert replay_result.transport_request_count == first_result.transport_request_count
+    assert replay_result.output_mode == first_result.output_mode
+    assert replay_result.raw_output_digest == first_result.raw_output_digest
+
+
+def test_replay_provenance_matches_a_rubric_that_reused_cached_digests() -> None:
+    first, _, artifacts, _ = _reviewer()
+    first.review(_rubric("judge.session_outcome"))
+    original = first.review(_rubric("judge.session_autonomy"))
+    replay_client = _ScriptedClient()
+    replay, _, _, _ = _reviewer(client=replay_client, artifacts=artifacts)
+
+    restored = replay.review(_rubric("judge.session_autonomy"))
+
+    assert replay_client.calls == []
+    assert restored.steps == original.steps
+    assert restored.usage == original.usage
+
+
+def test_replay_rejects_tampered_inference_audit_without_model_call() -> None:
+    first, _, artifacts, _ = _reviewer()
+    first.review(_rubric("judge.session_outcome"))
+    artifact_id = next(iter(artifacts))
+    artifact = dict(artifacts[artifact_id])
+    payload = dict(artifact["payload"])
+    audit = dict(payload["audit"])
+    audit["usage"] = {"total_tokens": "not-an-integer"}
+    payload["audit"] = audit
+    artifact["payload"] = payload
+    artifact["content_digest"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+    )
+    artifacts[artifact_id] = artifact
+    replay_client = _ScriptedClient()
+    replay, _, _, _ = _reviewer(client=replay_client, artifacts=artifacts)
+
+    result = replay.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    assert result.steps == ()
+    assert result.usage == {}
+    assert replay_client.calls == []
+
+
+@pytest.mark.parametrize(
+    "judge",
+    [
+        _judge(backend="wandb"),
+        _judge(family="different-family"),
+        _judge(max_input_tokens=61_000),
+    ],
+)
+def test_artifact_identity_binds_complete_positioned_judge(judge: PositionedJudge) -> None:
+    first, _, first_artifacts, _ = _reviewer()
+    first.review(_rubric("judge.session_outcome"))
+    second, _, second_artifacts, _ = _reviewer(judge=judge)
+
+    second.review(_rubric("judge.session_outcome"))
+
+    assert set(first_artifacts).isdisjoint(second_artifacts)
+
+
+def test_protocol_contract_digest_binds_version_prompts_and_schemas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import weave_agent_signals.judges.sliding as sliding
+
+    original = sliding_protocol_contract_digest()
+    original_template = sliding._DIGEST_SYSTEM_TEMPLATE
+    monkeypatch.setattr(sliding, "SLIDING_PROTOCOL_VERSION", "test-version")
+    assert sliding_protocol_contract_digest() != original
+    monkeypatch.setattr(sliding, "SLIDING_PROTOCOL_VERSION", "1")
+    monkeypatch.setattr(
+        sliding,
+        "_DIGEST_SYSTEM_TEMPLATE",
+        original_template + " changed",
+    )
+    prompt_changed = sliding_protocol_contract_digest()
+    assert prompt_changed != original
+    monkeypatch.setattr(sliding, "_DIGEST_SYSTEM_TEMPLATE", original_template)
+    monkeypatch.setattr(
+        sliding,
+        "CHUNK_DIGEST_SCHEMA",
+        JsonSchemaSpec(
+            name="chunk_digest",
+            schema={**dict(sliding.CHUNK_DIGEST_SCHEMA.schema), "description": "changed"},
+        ),
+    )
+    assert sliding_protocol_contract_digest() not in {original, prompt_changed}
+
+
+def test_artifact_ids_bind_protocol_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    import weave_agent_signals.judges.sliding as sliding
+
+    first, _, first_artifacts, _ = _reviewer()
+    first.review(_rubric("judge.session_outcome"))
+    monkeypatch.setattr(sliding, "SLIDING_PROTOCOL_VERSION", "future-version")
+    second, _, second_artifacts, _ = _reviewer()
+
+    second.review(_rubric("judge.session_outcome"))
+
+    assert set(first_artifacts).isdisjoint(second_artifacts)
 
 
 def test_concurrent_rubrics_share_one_digest_generation() -> None:

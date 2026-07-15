@@ -14,11 +14,16 @@ Implemented one reviewer's resumable digest-window-merge pipeline.
   leaving `execute_review` escalation decisions unchanged.
 - Failed, malformed, and over-budget pipelines return failed observations without feedback or
   evidence; artifact replay makes zero repeated model calls.
+- Review follow-up: each artifact now stores a strict result-plus-inference-audit payload, so
+  replay restores the original steps, resolved model, usage, transport count, output mode, and
+  raw-output digest while rejecting tampered audit metadata.
+- Review follow-up: artifact identity now binds the complete positioned-judge descriptor and an
+  explicit, content-derived protocol contract over all phase prompt templates and JSON schemas.
 
 ## Verification
 
-- `.venv/bin/python -m pytest -q tests/evaluation/judging/test_sliding.py tests/evaluation/judging/test_review_policy.py` — 47 passed.
-- `.venv/bin/python -m pytest -q tests/evaluation/judging/test_sliding.py tests/evaluation/judging/test_review_policy.py tests/evaluation/judging/test_sliding_contracts.py tests/evaluation/judging/test_windowing.py tests/runs/test_store.py` — 167 passed.
+- `.venv/bin/python -m pytest -q tests/evaluation/judging/test_sliding.py tests/evaluation/judging/test_review_policy.py` — 54 passed after review fixes.
+- `.venv/bin/python -m pytest -q tests/evaluation/judging/test_sliding.py tests/evaluation/judging/test_review_policy.py tests/evaluation/judging/test_sliding_contracts.py tests/evaluation/judging/test_windowing.py tests/runs/test_store.py` — 174 passed after review fixes.
 - Ruff check and format check passed for all four changed source/test files.
 - `git diff --check` passed.
 
