@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from concurrent.futures import Future
 
@@ -150,6 +151,36 @@ def test_run_routes_accept_exact_setup_contract_and_return_pinned_run(route_cont
     assert client.get(f"/api/runs/{created['run_id']}").json() == body
 
 
+def test_run_detail_exposes_persisted_judging_artifacts(route_context):
+    client, service, models, rubrics = route_context
+    created = client.post("/api/runs").json()
+    client.put(
+        f"/api/runs/{created['run_id']}/selection",
+        json={"session_ids": ["session-1"]},
+    )
+    client.put(
+        f"/api/runs/{created['run_id']}/config",
+        json=_config(models, rubrics),
+    )
+    client.post(f"/api/runs/{created['run_id']}/advance")
+    client.post(f"/api/runs/{created['run_id']}/advance")
+    payload = {"window_id": "window-1", "findings": []}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    artifact = {
+        "schema_version": "1",
+        "kind": "window_findings",
+        "content_digest": f"sha256:{hashlib.sha256(canonical).hexdigest()}",
+        "payload": payload,
+    }
+    artifact_id = "judge-1/session-1/findings/window-1"
+    service.store.record_judging_artifact(created["run_id"], artifact_id, artifact)
+
+    response = client.get(f"/api/runs/{created['run_id']}")
+
+    assert response.status_code == 200
+    assert response.json()["judging_artifacts"] == {artifact_id: artifact}
+
+
 def test_run_list_uses_scalar_projection_without_evidence_or_live_review_overlay(
     tmp_path,
     monkeypatch,
@@ -233,6 +264,7 @@ def test_run_list_uses_scalar_projection_without_evidence_or_live_review_overlay
         "effective_config",
         "turn_cohort",
         "judging_plan",
+        "judging_artifacts",
         "reflection_input",
         "scoring_progress",
         "scoring_result",

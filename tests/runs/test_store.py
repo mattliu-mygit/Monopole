@@ -137,6 +137,25 @@ def _advance_to_reflecting(store: RunStore):
     return reflecting, requested, effective
 
 
+def _started_judging_run(store: RunStore):
+    started, _, _ = _start(store)
+    store.record_stage_result(
+        started.run_id,
+        stage=RunStatus.SCORING,
+        result={"written": 1},
+    )
+    return store.finalize_stage_success(
+        started.run_id,
+        stage=RunStatus.SCORING,
+        advance=True,
+    )
+
+
+def _payload_digest(payload: object) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+
 def _judging_plan() -> dict:
     session_rubric = next(
         rubric for rubric in build_rubric_catalog().rubrics if rubric.evaluation_unit == "session"
@@ -204,7 +223,7 @@ def _reflection_evidence() -> dict:
     }
 
 
-def test_schema_v4_resets_disposable_database_on_version_mismatch(tmp_path):
+def test_schema_v5_resets_disposable_database_on_version_mismatch(tmp_path):
     path = tmp_path / "runs.db"
     connection = sqlite3.connect(path)
     connection.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, obsolete TEXT)")
@@ -216,11 +235,129 @@ def test_schema_v4_resets_disposable_database_on_version_mismatch(tmp_path):
     store = RunStore(path)
     columns = {row[1] for row in store._conn.execute("PRAGMA table_info(runs)").fetchall()}
 
-    assert RUN_DB_SCHEMA_VERSION == 4
+    assert RUN_DB_SCHEMA_VERSION == 5
     assert store.get("legacy") is None
-    assert {"run_id", "run_config", "effective_config"} <= columns
-    assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert {"run_id", "run_config", "effective_config", "judging_artifacts"} <= columns
+    assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 5
     store.close()
+
+
+def test_judging_artifacts_are_content_addressed_and_idempotent(store):
+    run = _started_judging_run(store)
+    payload = {"chunk_id": "chunk-1", "text": "cited digest"}
+    artifact = {
+        "schema_version": "1",
+        "kind": "chunk_digest",
+        "content_digest": _payload_digest(payload),
+        "payload": payload,
+    }
+    artifact_id = "judge-1/session-1/digest/chunk-1"
+
+    first = store.record_judging_artifact(run.run_id, artifact_id, artifact)
+    second = store.record_judging_artifact(run.run_id, artifact_id, artifact)
+
+    assert first.judging_artifacts == {artifact_id: artifact}
+    assert second.judging_artifacts == first.judging_artifacts
+
+    changed_payload = {"chunk_id": "chunk-1", "text": "changed"}
+    changed = {
+        **artifact,
+        "content_digest": _payload_digest(changed_payload),
+        "payload": changed_payload,
+    }
+    with pytest.raises(
+        RunStoreConflictError,
+        match="artifact already exists with different content",
+    ):
+        store.record_judging_artifact(run.run_id, artifact_id, changed)
+
+
+@pytest.mark.parametrize(
+    "artifact_id",
+    ["", " ", "artifact", "/session/digest/chunk-1", "judge-1//digest/chunk-1"],
+)
+def test_judging_artifact_ids_must_be_nonblank_slash_delimited(store, artifact_id):
+    run = _started_judging_run(store)
+    payload = {"chunk_id": "chunk-1"}
+    artifact = {
+        "schema_version": "1",
+        "kind": "chunk_digest",
+        "content_digest": _payload_digest(payload),
+        "payload": payload,
+    }
+
+    with pytest.raises(ValueError, match="artifact ID"):
+        store.record_judging_artifact(run.run_id, artifact_id, artifact)
+
+
+def test_judging_artifacts_require_exact_valid_content_digest(store):
+    run = _started_judging_run(store)
+    payload = {"chunk_id": "chunk-1"}
+    artifact = {
+        "schema_version": "1",
+        "kind": "chunk_digest",
+        "content_digest": _payload_digest(payload),
+        "payload": payload,
+    }
+
+    with pytest.raises(ValueError, match="exactly"):
+        store.record_judging_artifact(
+            run.run_id,
+            "judge-1/session-1/digest/chunk-1",
+            {**artifact, "extra": True},
+        )
+    with pytest.raises(ValueError, match="content digest"):
+        store.record_judging_artifact(
+            run.run_id,
+            "judge-1/session-1/digest/chunk-1",
+            {**artifact, "content_digest": "sha256:" + ("0" * 64)},
+        )
+
+
+@pytest.mark.parametrize(
+    ("changes", "match"),
+    [
+        ({"schema_version": " "}, "schema_version"),
+        ({"kind": ""}, "kind"),
+        ({"content_digest": 1}, "content_digest"),
+        ({"payload": {"value": float("nan")}}, "JSON serializable"),
+    ],
+)
+def test_judging_artifact_body_fields_are_strict(store, changes, match):
+    run = _started_judging_run(store)
+    payload = {"chunk_id": "chunk-1"}
+    artifact = {
+        "schema_version": "1",
+        "kind": "chunk_digest",
+        "content_digest": _payload_digest(payload),
+        "payload": payload,
+        **changes,
+    }
+
+    with pytest.raises(ValueError, match=match):
+        store.record_judging_artifact(
+            run.run_id,
+            "judge-1/session-1/digest/chunk-1",
+            artifact,
+        )
+
+
+def test_judging_artifacts_can_only_be_written_while_judging(store):
+    run, _, _ = _start(store)
+    payload = {"chunk_id": "chunk-1"}
+    artifact = {
+        "schema_version": "1",
+        "kind": "chunk_digest",
+        "content_digest": _payload_digest(payload),
+        "payload": payload,
+    }
+
+    with pytest.raises(RunStoreConflictError, match="only record.*while judging"):
+        store.record_judging_artifact(
+            run.run_id,
+            "judge-1/session-1/digest/chunk-1",
+            artifact,
+        )
 
 
 def test_list_summaries_projects_only_scalar_fields_without_full_run_decoding(

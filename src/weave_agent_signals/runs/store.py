@@ -18,7 +18,7 @@ from typing import Any
 from weave_agent_signals.run_config import EffectiveRunConfig, RunConfig
 
 _DEFAULT_DB_DIR = Path.home() / ".weave-agent-signals"
-RUN_DB_SCHEMA_VERSION = 4
+RUN_DB_SCHEMA_VERSION = 5
 
 
 def _default_db_path() -> Path:
@@ -199,6 +199,7 @@ class Run:
     effective_config: EffectiveRunConfig | None = None
     turn_cohort: dict[str, Any] | None = None
     judging_plan: dict[str, Any] | None = None
+    judging_artifacts: dict[str, Any] | None = None
     reflection_input: dict[str, Any] | None = None
     scoring_progress: dict[str, Any] | None = None
     scoring_result: dict[str, Any] | None = None
@@ -355,6 +356,51 @@ def _encode_judging_plan(judging_plan: Mapping[str, Any]) -> str:
     return _encode_json_object(value, "judging plan")
 
 
+_JUDGING_ARTIFACT_FIELDS = frozenset({"schema_version", "kind", "content_digest", "payload"})
+
+
+def _validate_artifact_id(artifact_id: str) -> None:
+    if not isinstance(artifact_id, str):
+        raise ValueError("judging artifact ID must be a string")
+    parts = artifact_id.split("/")
+    if (
+        len(parts) < 2
+        or artifact_id != artifact_id.strip()
+        or any(not part.strip() or part != part.strip() for part in parts)
+    ):
+        raise ValueError("judging artifact ID must be a nonblank slash-delimited string")
+
+
+def _validate_judging_artifact(artifact: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(artifact, Mapping):
+        raise ValueError("judging artifact must be a JSON object")
+    value = dict(artifact)
+    if set(value) != _JUDGING_ARTIFACT_FIELDS:
+        raise ValueError(
+            "judging artifact body must contain exactly schema_version, kind, "
+            "content_digest, and payload"
+        )
+    for field_name in ("schema_version", "kind"):
+        if not isinstance(value[field_name], str) or not value[field_name].strip():
+            raise ValueError(f"judging artifact {field_name} must be a nonblank string")
+    if not isinstance(value["content_digest"], str):
+        raise ValueError("judging artifact content_digest must be a string")
+    try:
+        canonical_payload = json.dumps(
+            value["payload"],
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("judging artifact payload must be JSON serializable") from exc
+    expected_digest = f"sha256:{hashlib.sha256(canonical_payload.encode()).hexdigest()}"
+    if value["content_digest"] != expected_digest:
+        raise ValueError("judging artifact content digest does not match its payload")
+    value["payload"] = json.loads(canonical_payload)
+    return value
+
+
 def _judging_plan_matches_cohort(
     judging_plan: Mapping[str, Any],
     turn_cohort: Mapping[str, Any],
@@ -445,6 +491,7 @@ CREATE TABLE IF NOT EXISTS runs (
     effective_config TEXT,
     turn_cohort TEXT,
     judging_plan TEXT,
+    judging_artifacts TEXT,
     reflection_input TEXT,
     scoring_progress TEXT,
     scoring_result TEXT,
@@ -464,6 +511,7 @@ CREATE TABLE IF NOT EXISTS runs (
 _JSON_FIELDS = {
     "turn_cohort",
     "judging_plan",
+    "judging_artifacts",
     "reflection_input",
     "scoring_progress",
     "scoring_result",
@@ -892,6 +940,58 @@ class RunStore:
                 raise RunStoreConflictError(f"Run {run_id} changed while pinning judging plan")
             self._conn.commit()
             updated = self._get_row_locked(run_id)
+        return self._row_to_run(updated)
+
+    def record_judging_artifact(
+        self,
+        run_id: str,
+        artifact_id: str,
+        artifact: Mapping[str, Any],
+    ) -> Run:
+        """Persist one immutable, content-addressed artifact during judging."""
+
+        _validate_artifact_id(artifact_id)
+        value = _validate_judging_artifact(artifact)
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._get_row_locked(run_id)
+                current_status = RunStatus(row["status"])
+                if current_status is not RunStatus.JUDGING:
+                    raise RunStoreConflictError(
+                        f"Run {run_id} can only record judging artifacts while judging; "
+                        f"current status is {current_status.value}"
+                    )
+                artifacts = (
+                    json.loads(row["judging_artifacts"])
+                    if row["judging_artifacts"] is not None
+                    else {}
+                )
+                existing = artifacts.get(artifact_id)
+                if existing is not None:
+                    if existing != value:
+                        raise RunStoreConflictError(
+                            f"Run {run_id} judging artifact already exists with different content: "
+                            f"{artifact_id}"
+                        )
+                    self._conn.commit()
+                    return self._row_to_run(row)
+
+                artifacts[artifact_id] = value
+                encoded = _encode_json_object(artifacts, "judging artifacts")
+                cursor = self._conn.execute(
+                    "UPDATE runs SET judging_artifacts = ? WHERE run_id = ? AND status = ?",
+                    (encoded, run_id, RunStatus.JUDGING.value),
+                )
+                if cursor.rowcount != 1:
+                    raise RunStoreConflictError(
+                        f"Run {run_id} changed while recording judging artifact {artifact_id}"
+                    )
+                updated = self._get_row_locked(run_id)
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
         return self._row_to_run(updated)
 
     @contextmanager

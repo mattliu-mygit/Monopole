@@ -24,6 +24,7 @@ def serialize_run(run: Run) -> dict:
         ),
         "turn_cohort": run.turn_cohort,
         "judging_plan": run.judging_plan,
+        "judging_artifacts": run.judging_artifacts,
         "reflection_input": run.reflection_input,
         "scoring_progress": run.scoring_progress,
         "scoring_result": run.scoring_result,
