@@ -6,10 +6,12 @@ computation — no API calls. The CLI orchestrates query → analyze → report.
 
 from __future__ import annotations
 
+import json
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from itertools import islice
 from typing import Any
 from urllib.parse import unquote
 
@@ -109,10 +111,9 @@ def _is_session_judgment(feedback: dict) -> bool:
     scorer = _extract_scorer(feedback)
     if scorer is None or not scorer.startswith("judge."):
         return False
-    return (
-        _details(feedback).get("evaluation_unit") == "session"
-        or _payload(feedback).get("granularity") == "session"
-    )
+    details_unit = _details(feedback).get("evaluation_unit")
+    granularity = _payload(feedback).get("granularity")
+    return details_unit == "session" or granularity == "session"
 
 
 def _evaluation_context_value(details: dict, field: str) -> object:
@@ -120,8 +121,6 @@ def _evaluation_context_value(details: dict, field: str) -> object:
     if field in {"rubric_threshold", "second_opinion_margin"}:
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return float(value)
-    if field == "requested_judge_models" and isinstance(value, tuple):
-        return list(value)
     return value
 
 
@@ -138,26 +137,43 @@ def _has_complete_session_evaluation_context(feedback: dict) -> bool:
     policy_version = details["review_policy_version"]
     margin = details["second_opinion_margin"]
     judges = details["requested_judge_models"]
-    return (
-        isinstance(rubric_version, str)
-        and bool(rubric_version.strip())
-        and isinstance(rubric_threshold, (int, float))
+    markers_match = (
+        _payload(feedback).get("granularity") == "session"
+        and details.get("evaluation_unit") == "session"
+    )
+    numeric_threshold = (
+        isinstance(rubric_threshold, (int, float))
         and not isinstance(rubric_threshold, bool)
         and math.isfinite(float(rubric_threshold))
-        and review_depth in {"primary", "selective", "full_panel"}
-        and isinstance(policy_version, str)
-        and bool(policy_version.strip())
-        and (
-            margin is None
-            or (
-                isinstance(margin, (int, float))
+        and 0.0 <= float(rubric_threshold) <= 1.0
+    )
+    valid_judges = (
+        isinstance(judges, list)
+        and all(isinstance(judge, str) and judge.strip() for judge in judges)
+        and len(judges) == len(set(judges))
+    )
+    valid_policy = False
+    if valid_judges:
+        if review_depth == "primary":
+            valid_policy = len(judges) == 1 and margin is None
+        elif review_depth == "selective":
+            valid_policy = (
+                len(judges) in {2, 3}
+                and isinstance(margin, (int, float))
                 and not isinstance(margin, bool)
                 and math.isfinite(float(margin))
+                and 0.0 <= float(margin) <= 0.5
             )
-        )
-        and isinstance(judges, (list, tuple))
-        and bool(judges)
-        and all(isinstance(judge, str) and judge.strip() for judge in judges)
+        elif review_depth == "full_panel":
+            valid_policy = len(judges) == 3 and margin is None
+    return (
+        markers_match
+        and isinstance(rubric_version, str)
+        and bool(rubric_version.strip())
+        and numeric_threshold
+        and isinstance(policy_version, str)
+        and bool(policy_version.strip())
+        and valid_policy
     )
 
 
@@ -237,7 +253,7 @@ def _extract_tags(feedback: dict) -> list[str]:
     return _payload(feedback).get("tags") or []
 
 
-def _extract_run_time(feedback: dict) -> str:
+def _extract_run_time(feedback: dict) -> object:
     # Order trends by when the agent ran, not when we scored it — a single
     # backfill stamps every score with the same scored_at, which would make
     # chronological comparison meaningless.
@@ -321,8 +337,10 @@ def ab_leaderboard(feedback: list[dict]) -> list[ABResult]:
     return results
 
 
-def _parse_dt(val: str) -> datetime | None:
+def _parse_dt(val: object) -> datetime | None:
     try:
+        if not isinstance(val, str):
+            return None
         if val.endswith("Z"):
             val = val[:-1] + "+00:00"
         dt = datetime.fromisoformat(val)
@@ -504,18 +522,57 @@ def _bounded_id(value: object) -> str | None:
     return _bounded_text(value.replace("`", "'"), _MAX_ID_CHARS)
 
 
-def _behavior_values(details: dict, field: str, limit: int) -> list[str]:
-    values: list[str] = []
+def _reviewer_feedback(details: dict) -> list[dict[str, object]]:
+    judges = details.get("requested_judge_models")
     raw_feedback = details.get("behavioral_feedback")
-    if not isinstance(raw_feedback, list):
-        return values
-    for item in raw_feedback:
-        if not isinstance(item, dict):
+    if not isinstance(judges, list) or not isinstance(raw_feedback, list):
+        return []
+    limit = min(len(judges), 3)
+    values: list[dict[str, object]] = []
+    expected = {"success", "problem", "desired_behavior"}
+    for item in islice(raw_feedback, limit):
+        if (
+            not isinstance(item, dict)
+            or set(item) != expected
+            or any(value is not None and not isinstance(value, str) for value in item.values())
+        ):
             continue
+        values.append(item)
+    return values
+
+
+def _behavior_values(
+    reviewer_feedback: list[dict[str, object]], field: str, limit: int
+) -> list[str]:
+    values: list[str] = []
+    for item in reviewer_feedback:
         value = _bounded_text(item.get(field), limit)
         if value is not None and value not in values:
             values.append(value)
     return values
+
+
+def _execution_sort_key(feedback: dict) -> tuple[int, datetime, str, str]:
+    raw = _extract_run_time(feedback)
+    parsed = _parse_dt(raw)
+    if parsed is not None:
+        return (0, parsed, "", "")
+    try:
+        fallback = json.dumps(
+            raw,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        fallback = repr(raw)
+    return (
+        1,
+        datetime.max.replace(tzinfo=timezone.utc),
+        type(raw).__name__,
+        fallback[:_MAX_ID_CHARS],
+    )
 
 
 def _behavioral_examples(feedback: list[dict]) -> dict[str, list[dict[str, object]]]:
@@ -536,13 +593,14 @@ def _behavioral_examples(feedback: list[dict]) -> dict[str, list[dict[str, objec
             or rating >= float(threshold)
         ):
             continue
-        problems = _behavior_values(details, "problem", _MAX_BEHAVIOR_CHARS)
-        desired = _behavior_values(details, "desired_behavior", _MAX_BEHAVIOR_CHARS)
+        reviewer_feedback = _reviewer_feedback(details)
+        problems = _behavior_values(reviewer_feedback, "problem", _MAX_BEHAVIOR_CHARS)
+        desired = _behavior_values(reviewer_feedback, "desired_behavior", _MAX_BEHAVIOR_CHARS)
         if not problems and not desired:
             continue
         successes = [
             value
-            for value in _behavior_values(details, "success", _MAX_SUCCESS_CHARS)
+            for value in _behavior_values(reviewer_feedback, "success", _MAX_SUCCESS_CHARS)
             if value not in problems and value not in desired
         ]
         evidence: list[str] = []
@@ -557,7 +615,7 @@ def _behavioral_examples(feedback: list[dict]) -> dict[str, list[dict[str, objec
         by_rubric[scorer].append(
             {
                 "rating": rating,
-                "run_time": _extract_run_time(item),
+                "execution_sort_key": _execution_sort_key(item),
                 "session_id": _session_id(item),
                 "evidence_ids": evidence,
                 "successes": successes,
@@ -569,7 +627,7 @@ def _behavioral_examples(feedback: list[dict]) -> dict[str, list[dict[str, objec
         examples.sort(
             key=lambda value: (
                 value["rating"],
-                value["run_time"],
+                value["execution_sort_key"],
                 value["session_id"],
             )
         )

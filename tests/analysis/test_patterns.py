@@ -139,7 +139,10 @@ def test_population_summary_excludes_noncomplete_session_judgments():
     [
         {"rubric_version": "v3"},
         {"rubric_threshold": 0.6},
-        {"review_depth": "full_panel"},
+        {
+            "review_depth": "full_panel",
+            "second_opinion_margin": None,
+        },
         {"review_policy_version": "3"},
         {"second_opinion_margin": 0.2},
         {"requested_judge_models": ["judge-b", "judge-a", "judge-c"]},
@@ -229,6 +232,60 @@ def test_session_judge_without_review_status_is_audit_only():
     incomplete["payload"]["granularity"] = "session"
 
     assert aggregate_scores([incomplete]) == {}
+
+
+@pytest.mark.parametrize(
+    "context_overrides",
+    [
+        {"rubric_threshold": -0.1},
+        {"rubric_threshold": 1.1},
+        {"review_depth": "selective", "second_opinion_margin": None},
+        {"review_depth": "selective", "second_opinion_margin": 0.51},
+        {
+            "review_depth": "primary",
+            "second_opinion_margin": 0.1,
+            "requested_judge_models": ["judge-a"],
+        },
+        {
+            "review_depth": "primary",
+            "second_opinion_margin": None,
+            "requested_judge_models": ["judge-a", "judge-b"],
+        },
+        {
+            "review_depth": "full_panel",
+            "second_opinion_margin": None,
+            "requested_judge_models": ["judge-a", "judge-b"],
+        },
+        {"requested_judge_models": ["judge-a", "judge-a"]},
+        {"requested_judge_models": ["judge-a", " "]},
+        {"requested_judge_models": ("judge-a", "judge-b")},
+    ],
+)
+def test_invalid_session_review_policy_context_is_audit_only(context_overrides):
+    feedback = _session_judge_fb(
+        "judge.session_outcome",
+        0.2,
+        review_status="complete",
+        context_overrides=context_overrides,
+    )
+
+    assert aggregate_scores([feedback]) == {}
+
+
+@pytest.mark.parametrize(
+    ("granularity", "evaluation_unit"),
+    [("turn", "session"), ("session", "turn")],
+)
+def test_conflicting_session_markers_are_audit_only(granularity, evaluation_unit):
+    feedback = _session_judge_fb(
+        "judge.session_outcome",
+        0.2,
+        review_status="complete",
+    )
+    feedback["payload"]["granularity"] = granularity
+    feedback["payload"]["details"]["evaluation_unit"] = evaluation_unit
+
+    assert aggregate_scores([feedback]) == {}
 
 
 def test_noncomplete_session_judgments_do_not_enter_ab_or_trend_analysis():
@@ -469,7 +526,10 @@ def test_config_regression_does_not_compare_different_session_evaluation_context
             review_status="complete",
             config_version="v_new",
             scored_at="2026-07-09T00:00:00",
-            context_overrides={"review_depth": "full_panel"},
+            context_overrides={
+                "review_depth": "full_panel",
+                "second_opinion_margin": None,
+            },
         )
         for _ in range(6)
     ]
@@ -663,6 +723,79 @@ def test_behavioral_feedback_uses_only_merged_fields_not_raw_or_findings():
     assert "Success:" not in digest
     assert "RAW CONVERSATION SECRET" not in digest
     assert "RAW WINDOW FINDING" not in digest
+
+
+def test_behavioral_feedback_caps_and_authenticates_reviewer_items():
+    huge_feedback = [
+        {
+            "success": None,
+            "problem": "ignored malformed",
+            "desired_behavior": "ignored malformed desired",
+            "raw_window": "must not be accepted",
+        },
+        {
+            "success": None,
+            "problem": "reviewer two problem",
+            "desired_behavior": "reviewer two desired",
+        },
+        {
+            "success": None,
+            "problem": "reviewer three problem",
+            "desired_behavior": "reviewer three desired",
+        },
+    ] + [
+        {
+            "success": None,
+            "problem": f"excess problem {index}",
+            "desired_behavior": f"excess desired {index}",
+        }
+        for index in range(10_000)
+    ]
+    feedback = _session_judge_fb(
+        "judge.verification",
+        0.2,
+        review_status="complete",
+        behavioral_feedback=huge_feedback,
+    )
+
+    digest = coaching_digest([feedback])
+
+    assert "ignored malformed" not in digest
+    assert "reviewer two problem" in digest
+    assert "reviewer three problem" in digest
+    assert "excess problem" not in digest
+
+
+def test_behavioral_feedback_orders_offset_timestamps_chronologically_with_typed_fallbacks():
+    def example(session_id, started_at):
+        feedback = _session_judge_fb(
+            "judge.verification",
+            0.1,
+            review_status="complete",
+            conversation_id=session_id,
+            behavioral_feedback=[
+                {
+                    "success": None,
+                    "problem": f"problem {session_id}",
+                    "desired_behavior": f"desired {session_id}",
+                }
+            ],
+        )
+        feedback["payload"]["details"]["turn_started_at"] = started_at
+        return feedback
+
+    digest = coaching_digest(
+        [
+            example("invalid-dict", {"when": "later"}),
+            example("later-offset", "2026-07-15T01:00:00+00:00"),
+            example("earlier-offset", "2026-07-14T20:00:00-04:00"),
+            example("invalid-int", 7),
+        ]
+    )
+
+    assert digest.index("earlier-offset") < digest.index("later-offset")
+    assert "invalid-dict" in digest
+    assert "invalid-int" not in digest
 
 
 def test_coaching_digest_does_not_merge_session_evaluation_contexts():
