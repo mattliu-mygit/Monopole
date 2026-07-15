@@ -408,6 +408,7 @@ export interface JudgingPlanRubric extends RubricDescriptor {
   applicability: 'applicable' | 'not_applicable'
   minimum_reviewer_attempts: number
   maximum_reviewer_attempts: number
+  skip_reason?: string | null
 }
 
 export interface JudgingPlanEpisode {

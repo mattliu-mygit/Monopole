@@ -45,6 +45,9 @@ def _turn(
     errors: int = 0,
     steering: int = 0,
     user_input: str | None = None,
+    assistant_output: str | None = "Completed.",
+    input_tokens: int = 100,
+    output_tokens: int = 50,
 ) -> TurnSpan:
     return TurnSpan(
         trace_id=trace_id,
@@ -52,8 +55,8 @@ def _turn(
         started_at=_ts(minute),
         ended_at=_ts(minute + 1),
         model="claude-opus-4",
-        input_tokens=100,
-        output_tokens=50,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
         cache_read_tokens=0,
         status_code="OK",
         config_version="cfg",
@@ -68,6 +71,7 @@ def _turn(
         chat_spans=[],
         subagents=[],
         user_input=user_input,
+        assistant_output=assistant_output,
     )
 
 
@@ -338,6 +342,57 @@ def test_verification_evidence_spans_latest_modification_through_verification() 
     }
 
     assert episodes["verify"]["evidence_trace_ids"] == ["edit", "inspect", "verify"]
+
+
+def test_verification_is_skipped_when_assistant_output_was_not_captured() -> None:
+    turn = _turn(
+        "bare-verification",
+        0,
+        tools=[
+            _tool("Edit", '{"path":"app.py"}', "updated"),
+            _tool("Bash", '{"command":"pytest"}', "passed"),
+        ],
+        assistant_output=None,
+    )
+
+    plan = _plan([_session([turn])], rubrics=_rubrics("judge.verification"))
+    record = plan["sessions"][0]["selected_episodes"][0]["rubrics"][0]
+
+    assert record["applicability"] == "not_applicable"
+    assert record["minimum_reviewer_attempts"] == 0
+    assert record["maximum_reviewer_attempts"] == 0
+    assert record["skip_reason"] == (
+        "Assistant output was not captured, so there was no completion or correctness claim "
+        "to verify."
+    )
+
+
+def test_state_consistency_is_skipped_without_captured_prior_state() -> None:
+    prior = _turn(
+        "bare-prior-turn",
+        0,
+        assistant_output=None,
+        input_tokens=0,
+        output_tokens=0,
+    )
+    current = _turn("current-turn", 2, user_input="Continue")
+
+    plan = _plan(
+        [_session([prior, current])],
+        rubrics=_rubrics("judge.state_consistency"),
+    )
+    episodes = {
+        episode["trace_id"]: episode for episode in plan["sessions"][0]["selected_episodes"]
+    }
+    record = episodes["current-turn"]["rubrics"][0]
+
+    assert record["applicability"] == "not_applicable"
+    assert record["minimum_reviewer_attempts"] == 0
+    assert record["maximum_reviewer_attempts"] == 0
+    assert record["skip_reason"] == (
+        "The prior turn contained no captured assistant output, tool activity, or model "
+        "tokens to establish prior state."
+    )
 
 
 @pytest.mark.parametrize(

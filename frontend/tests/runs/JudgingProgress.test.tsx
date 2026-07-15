@@ -190,6 +190,44 @@ describe('JudgingProgress', () => {
     expect(screen.getAllByText('The visible evidence is insufficient.').length).toBeGreaterThan(0)
   })
 
+  it('shows rubrics skipped because captured evidence was too bare', () => {
+    const planWithSkip: JudgingPlan = {
+      ...plan,
+      sessions: [{
+        conversation_id: 'session-1',
+        turn_count: 1,
+        omitted_turn_count: 0,
+        session_rubrics: [],
+        selected_episodes: [{
+          trace_id: 'trace-bare',
+          turn_index: 0,
+          selection_kind: 'deterministic_trigger',
+          selection_reasons: ['verification'],
+          evidence_trace_ids: ['trace-bare'],
+          rubrics: [{
+            id: 'judge.verification',
+            label: 'Verification Discipline',
+            evaluation_unit: 'episode',
+            version: '1',
+            content_digest: 'sha256:verification',
+            pass_threshold: 0.5,
+            applicability: 'not_applicable',
+            minimum_reviewer_attempts: 0,
+            maximum_reviewer_attempts: 0,
+            skip_reason: 'Assistant output was not captured, so there was no completion or correctness claim to verify.',
+          }],
+        }],
+      }],
+    }
+
+    render(<JudgingProgress plan={planWithSkip} progress={null} result={null} />)
+
+    expect(screen.getByText('Skipped rubric checks')).not.toBeNull()
+    expect(screen.getByText('judge.verification')).not.toBeNull()
+    expect(screen.getByText(/assistant output was not captured/i)).not.toBeNull()
+    expect(screen.getByText(/trace trace-bare/i)).not.toBeNull()
+  })
+
   it('shows an honest empty state before a plan is available', () => {
     render(<JudgingProgress plan={null} progress={null} result={null} />)
     expect(screen.getByRole('status').textContent).toBe('Waiting for judging to start.')

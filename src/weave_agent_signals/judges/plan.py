@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -19,6 +20,7 @@ from weave_agent_signals.run_config import ReviewDepth, RubricDescriptor
 
 PLAN_SCHEMA_VERSION = "1"
 DEFAULT_MAX_EPISODES_PER_SESSION = 8
+log = logging.getLogger(__name__)
 
 _MODIFICATION_TOOLS = {
     "edit",
@@ -143,6 +145,36 @@ def _applicability(
     }
 
 
+def _captured_text(value: str | None) -> bool:
+    return bool(value and value.strip())
+
+
+def _missing_evidence_reason(
+    turns: list[TurnSpan],
+    index: int,
+    rubric_id: str,
+) -> str | None:
+    turn = turns[index]
+    if rubric_id == "judge.verification" and not _captured_text(turn.assistant_output):
+        return (
+            "Assistant output was not captured, so there was no completion or correctness "
+            "claim to verify."
+        )
+    if rubric_id == "judge.state_consistency" and index > 0:
+        prior = turns[index - 1]
+        if not (
+            _captured_text(prior.assistant_output)
+            or prior.tool_calls
+            or prior.input_tokens
+            or prior.output_tokens
+        ):
+            return (
+                "The prior turn contained no captured assistant output, tool activity, or "
+                "model tokens to establish prior state."
+            )
+    return None
+
+
 def _evidence_trace_ids(
     turns: list[TurnSpan],
     index: int,
@@ -206,13 +238,17 @@ def _rubric_record(
     applicability: str,
     minimum_reviewer_attempts: int,
     maximum_reviewer_attempts: int,
+    skip_reason: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    record = {
         **descriptor.model_dump(mode="json"),
         "applicability": applicability,
         "minimum_reviewer_attempts": minimum_reviewer_attempts,
         "maximum_reviewer_attempts": maximum_reviewer_attempts,
     }
+    if skip_reason is not None:
+        record["skip_reason"] = skip_reason
+    return record
 
 
 def build_judging_plan(
@@ -283,6 +319,18 @@ def build_judging_plan(
             rubric_records: list[dict[str, Any]] = []
             for descriptor in requested_turn:
                 state = applicability[descriptor.id]
+                skip_reason = None
+                if state == "applicable":
+                    skip_reason = _missing_evidence_reason(turns, index, descriptor.id)
+                    if skip_reason is not None:
+                        state = "not_applicable"
+                        applicability[descriptor.id] = state
+                        log.info(
+                            "Skipped rubric %s for trace %s: %s",
+                            descriptor.id,
+                            turns[index].trace_id,
+                            skip_reason,
+                        )
                 is_applicable = state == "applicable"
                 minimum_attempts = minimum_per_rubric if is_applicable else 0
                 maximum_attempts = maximum_per_rubric if is_applicable else 0
@@ -292,6 +340,7 @@ def build_judging_plan(
                         applicability=state,
                         minimum_reviewer_attempts=minimum_attempts,
                         maximum_reviewer_attempts=maximum_attempts,
+                        skip_reason=skip_reason,
                     )
                 )
                 if is_applicable:

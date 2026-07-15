@@ -105,6 +105,17 @@ export default function JudgingProgress({
   const maximum = state?.maximum_reviewer_attempts ?? plan?.totals.maximum_reviewer_attempts ?? 0
   const reviewRecords = state?.attempt_summaries ?? []
   const failures = state?.failure_details ?? []
+  const skipped = plan?.sessions.flatMap((session) => (
+    session.selected_episodes.flatMap((episode) => (
+      episode.rubrics
+        .filter((rubric) => rubric.applicability === 'not_applicable' && rubric.skip_reason)
+        .map((rubric) => ({
+          rubric: rubric.id,
+          reason: rubric.skip_reason as string,
+          traceId: episode.trace_id,
+        }))
+    ))
+  )) ?? []
 
   return (
     <section aria-label="Judging progress" className="space-y-4">
@@ -163,6 +174,21 @@ export default function JudgingProgress({
               Showing {reviewRecords.length} of {state.attempt_summary_count ?? reviewRecords.length} review records.
             </p>
           )}
+        </div>
+      )}
+
+      {skipped.length > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <h4 className="text-sm font-medium text-amber-900">Skipped rubric checks</h4>
+          <ul className="mt-2 space-y-2 text-xs text-amber-800">
+            {skipped.map((item) => (
+              <li key={`${item.rubric}-${item.traceId}`}>
+                <div className="font-medium">{item.rubric}</div>
+                <div>{item.reason}</div>
+                <div className="mt-1 text-amber-700">trace {item.traceId}</div>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
