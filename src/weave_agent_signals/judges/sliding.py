@@ -95,6 +95,12 @@ _MERGE_USER_TEMPLATE = (
 )
 
 
+class _JudgeInvocationFailure(RuntimeError):
+    def __init__(self, error_type: str) -> None:
+        self.error_type = error_type
+        super().__init__("judge invocation failed")
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(
         value,
@@ -438,7 +444,7 @@ class SlidingReviewer:
                     raw_output_digest=None,
                 )
             )
-            raise
+            raise _JudgeInvocationFailure(type(error).__name__) from None
 
         normalized_usage = _normalized_usage(response.usage)
         _add_usage(usage, normalized_usage)
@@ -814,7 +820,11 @@ class SlidingReviewer:
                 score=None,
                 rationale=None,
                 usage=usage,
-                error_type=type(error).__name__,
+                error_type=(
+                    error.error_type
+                    if isinstance(error, _JudgeInvocationFailure)
+                    else type(error).__name__
+                ),
                 message=_bounded_error(error),
                 output_mode=last_step.output_mode if last_step is not None else None,
                 schema_name=last_step.schema_name if last_step is not None else None,

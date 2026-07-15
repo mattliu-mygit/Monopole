@@ -111,11 +111,13 @@ class _ScriptedClient:
         fail_merge: bool = False,
         invalid_window_citation: bool = False,
         large_digest: bool = False,
+        invocation_error: Exception | None = None,
     ):
         self.calls: list[dict[str, Any]] = []
         self.fail_merge = fail_merge
         self.invalid_window_citation = invalid_window_citation
         self.large_digest = large_digest
+        self.invocation_error = invocation_error
         self._lock = threading.Lock()
 
     def chat_json(
@@ -140,6 +142,8 @@ class _ScriptedClient:
                     "schema_name": getattr(response_schema, "name", None),
                 }
             )
+        if self.invocation_error is not None:
+            raise self.invocation_error
         if phase == "digest":
             payload = {
                 "schema_version": 1,
@@ -545,6 +549,21 @@ def test_failed_merge_returns_failed_observation() -> None:
     assert result.transport_request_count == 5
     assert result.output_mode == "json_schema"
     assert result.schema_name == "merged_verdict"
+
+
+def test_inference_exception_message_is_sanitized_before_observation() -> None:
+    error = RuntimeError("codex judge exited 1: sensitive raw CLI output")
+    error._transport_request_count = 3  # type: ignore[attr-defined]
+    reviewer, _, _, _ = _reviewer(client=_ScriptedClient(invocation_error=error))
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    assert result.error_type == "RuntimeError"
+    assert result.message == "judge invocation failed"
+    assert result.transport_request_count == 3
+    assert len(result.steps) == 1
+    assert result.steps[0].phase == "digest"
 
 
 def test_each_phase_prompt_has_one_output_owner_and_unambiguous_task() -> None:
