@@ -69,14 +69,12 @@ validation, and no provider-specific retry or compatibility layer is added.
 
 ## Audit data
 
-Successful and abstained reviewer attempts retain bounded canonical evidence
-groups alongside the existing unique `evidence_ids`, rationale, score, model,
-usage, output mode, and content digest. Failed attempts continue to retain only
-safe bounded error information. Raw model output and prompts remain excluded.
-
-Persisted observation text follows the same trust treatment as persisted judge
-rationales: it is model-authored structured outcome text, bounded before it
-enters run progress or feedback metadata.
+Grouped observations are validated transiently so a valid score and rationale
+survive the judge boundary. Durable attempt audit remains unchanged: it retains
+the canonical unique `evidence_ids`, rationale, score, model, usage, output
+mode, and content digest. Observation bodies, raw model output, and prompts are
+not persisted. This keeps the fix inside the verdict contract and avoids adding
+a new run-storage or frontend surface.
 
 ## Versioning and scope
 
@@ -93,20 +91,21 @@ reflection ranking, or promotion.
 
 ## Testing
 
-Tests will establish the behavior in this order:
+Only two new regression tests are needed:
 
-1. A version-3 verdict with two groups for one allowed ID initially fails under
-   the existing parser, reproducing the Claude failure.
-2. Parsing returns one canonical group containing both distinct observations in
-   first-seen order.
-3. Exact duplicate observations are retained once.
-4. Unknown IDs and blank observations remain rejected.
-5. Judge execution records one unique evidence ID and the complete bounded
-   grouped observations without raw output.
-6. Selective review treats the normalized verdict as a successful attempt and
-   does not escalate solely because its source groups repeated an allowed ID.
-7. Focused judge tests, the backend test suite, Ruff checks, and formatting
-   checks pass.
+1. The verdict parser turns repeated groups for one allowed ID into one
+   canonical group, preserves distinct observations in first-seen order, and
+   retains an exact duplicate observation once.
+2. Judge execution treats that canonical verdict as a successful attempt,
+   records one unique evidence ID, and does not escalate selective review solely
+   because the source groups repeated an allowed ID.
+
+Existing schema, prompt, invalid-evidence, and audit-version assertions are
+updated for version 3 instead of duplicated. Unknown IDs and blank observations
+remain covered by their current contract tests. No run-stage, frontend, GEPA,
+analysis, or promotion tests are added because those boundaries do not change.
+Focused judge tests, the backend suite, Ruff checks, and formatting checks
+provide final verification.
 
 ## Cleanup criteria
 
