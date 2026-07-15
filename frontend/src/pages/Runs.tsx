@@ -1,38 +1,53 @@
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
+import RunStatusBadge from '../features/runs/RunStatusBadge'
 import { getRuns, createRun } from '../api'
-import type { Run } from '../types'
+import type { RunReviewState, RunSummary } from '../types'
+import { shouldPollRuns } from '../features/runs/runPolling'
+import {
+  formatSelectionRange,
+  selectionTimezoneLabel,
+} from '../features/runs/selectionSummary'
 
-const STATUS_COLORS: Record<string, string> = {
-  created: 'bg-gray-100 text-gray-700',
-  scoring: 'bg-blue-100 text-blue-800',
-  judging: 'bg-purple-100 text-purple-800',
-  reflecting: 'bg-indigo-100 text-indigo-800',
-  complete: 'bg-green-100 text-green-800',
-  failed: 'bg-red-100 text-red-800',
-}
-
-function StatusBadge({ status }: { status: string }) {
-  return (
-    <span
-      className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[status] ?? 'bg-gray-100 text-gray-700'}`}
-    >
-      {status}
-    </span>
-  )
-}
-
-function sessionSummary(run: Run): string {
-  const sel = run.data_selection
+function sessionSummary(run: RunSummary): string {
+  const sel = run.selection
   if (!sel) return '—'
-  const included = sel.session_ids.length
-  const excluded = sel.excluded_session_ids.length
-  const base = included > 0 ? `${included} selected` : 'all in range'
-  return excluded > 0 ? `${base}, ${excluded} excluded` : base
+  return `${sel.session_count} selected`
 }
 
-const TERMINAL_STATUSES = new Set(['complete', 'failed'])
+function rangeSummary(run: RunSummary): string {
+  const selection = run.selection
+  if (!selection) return 'All dates'
+  return formatSelectionRange(selection)
+}
+
+function reviewLabel(state: RunReviewState): string {
+  if (state === 'review-needed') return 'Review needed'
+  if (state === 'promoted') return 'Promoted'
+  if (state === 'dismissed') return 'Dismissed'
+  if (state === 'no-change') return 'No change'
+  if (state === 'no-valid-proposal') return 'No valid proposal'
+  return '—'
+}
+
+function ReviewBadge({ run }: { run: RunSummary }) {
+  const label = reviewLabel(run.review_state)
+  if (label === '—') return <span className="text-gray-400">—</span>
+  const colors =
+    label === 'Review needed'
+      ? 'bg-indigo-100 text-indigo-800'
+      : label === 'Promoted'
+        ? 'bg-green-100 text-green-800'
+        : label === 'Dismissed'
+          ? 'bg-gray-100 text-gray-700'
+          : label === 'No change'
+            ? 'bg-green-50 text-green-800'
+            : label === 'No valid proposal'
+              ? 'bg-amber-50 text-amber-900'
+            : 'bg-amber-100 text-amber-900'
+  return <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${colors}`}>{label}</span>
+}
 
 export default function Runs() {
   const navigate = useNavigate()
@@ -42,8 +57,7 @@ export default function Runs() {
     queryFn: getRuns,
     refetchInterval: (query) => {
       const runs = query.state.data?.runs ?? []
-      const hasActive = runs.some((r) => !TERMINAL_STATUSES.has(r.status))
-      return hasActive ? 2000 : false
+      return shouldPollRuns(runs) ? 2000 : false
     },
   })
 
@@ -70,14 +84,25 @@ export default function Runs() {
       </PageHeader>
 
       {createMutation.error && (
-        <p className="text-red-600 text-sm mb-4">
+        <p role="alert" className="text-red-600 text-sm mb-4">
           {(createMutation.error as Error).message}
         </p>
       )}
 
       {runsQuery.isLoading && <p className="text-gray-500 text-sm">Loading...</p>}
       {runsQuery.error && (
-        <p className="text-red-600 text-sm">{(runsQuery.error as Error).message}</p>
+        <div className="flex items-center gap-3 text-sm">
+          <p role="alert" className="text-red-600">
+            {(runsQuery.error as Error).message}
+          </p>
+          <button
+            type="button"
+            className="font-medium text-blue-600 hover:underline"
+            onClick={() => void runsQuery.refetch()}
+          >
+            Retry
+          </button>
+        </div>
       )}
 
       {runs.length > 0 && (
@@ -87,28 +112,39 @@ export default function Runs() {
               <tr className="border-b text-gray-500 text-xs uppercase tracking-wider">
                 <th className="px-3 py-2 font-medium">Run ID</th>
                 <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Created</th>
-                <th className="px-3 py-2 font-medium">Sessions</th>
-                <th className="px-3 py-2 font-medium">Config</th>
+                <th className="px-3 py-2 font-medium">Review</th>
+                <th className="hidden px-3 py-2 font-medium md:table-cell">Created</th>
+                <th className="hidden px-3 py-2 font-medium md:table-cell">Selection</th>
               </tr>
             </thead>
             <tbody>
               {runs.map((run) => (
-                <tr
-                  key={run.run_id}
-                  className="border-b hover:bg-gray-50 cursor-pointer"
-                  onClick={() => navigate(`/runs/${run.run_id}`)}
-                >
-                  <td className="px-3 py-2 font-mono text-xs">{run.run_id}</td>
-                  <td className="px-3 py-2">
-                    <StatusBadge status={run.status} />
+                <tr key={run.run_id} className="border-b hover:bg-gray-50">
+                  <td className="px-3 py-2 font-mono text-xs">
+                    <Link
+                      to={`/runs/${run.run_id}`}
+                      className="font-semibold text-blue-700 hover:text-blue-900 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      {run.run_id}
+                    </Link>
                   </td>
-                  <td className="px-3 py-2 text-gray-500">
+                  <td className="px-3 py-2">
+                    <RunStatusBadge status={run.status} />
+                  </td>
+                  <td className="px-3 py-2">
+                    <ReviewBadge run={run} />
+                  </td>
+                  <td className="hidden px-3 py-2 text-gray-500 md:table-cell">
                     {new Date(run.created_at).toLocaleString()}
                   </td>
-                  <td className="px-3 py-2 text-gray-600">{sessionSummary(run)}</td>
-                  <td className="px-3 py-2 font-mono text-xs text-gray-500">
-                    {run.config_version ? run.config_version.slice(0, 8) : '—'}
+                  <td className="hidden px-3 py-2 text-gray-600 md:table-cell">
+                    <div>{sessionSummary(run)}</div>
+                    <div className="text-xs text-gray-400">{rangeSummary(run)}</div>
+                    {run.selection && (
+                      <div className="font-mono text-[0.6875rem] text-gray-400">
+                        {selectionTimezoneLabel(run.selection.timezone)}
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -117,7 +153,7 @@ export default function Runs() {
         </div>
       )}
 
-      {!runsQuery.isLoading && runs.length === 0 && (
+      {!runsQuery.isLoading && !runsQuery.error && runs.length === 0 && (
         <p className="text-gray-500 text-sm">
           No runs yet. Click "New Run" to start an evaluation pipeline.
         </p>

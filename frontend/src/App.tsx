@@ -5,23 +5,19 @@ import SessionDetailPage from './pages/SessionDetail'
 import Runs from './pages/Runs'
 import RunDetail from './pages/RunDetail'
 import Analyze from './pages/Analyze'
-import Monitor from './pages/Monitor'
-import Jobs from './pages/Jobs'
 
 const navItems = [
   { to: '/', label: 'Dashboard' },
   { to: '/sessions', label: 'Sessions' },
   { to: '/runs', label: 'Runs' },
   { to: '/analyze', label: 'Analysis' },
-  { to: '/monitor', label: 'Monitor' },
-  { to: '/jobs', label: 'Jobs' },
 ]
 
 function Layout() {
   return (
-    <div className="flex h-screen">
-      <nav className="w-56 bg-gray-900 text-white flex flex-col p-4 gap-1">
-        <div className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
+    <div className="flex min-h-screen flex-col md:h-screen md:flex-row">
+      <nav className="flex w-full shrink-0 flex-row flex-wrap gap-1 bg-gray-900 p-4 text-white md:w-56 md:flex-col md:flex-nowrap">
+        <div className="mb-2 w-full text-sm font-semibold uppercase tracking-wider text-gray-400 md:mb-4">
           Weave Agent Signals
         </div>
         {navItems.map((item) => (
@@ -39,7 +35,7 @@ function Layout() {
           </NavLink>
         ))}
       </nav>
-      <main className="flex-1 overflow-auto bg-gray-50 p-6">
+      <main className="min-w-0 flex-1 overflow-auto bg-gray-50 p-4 sm:p-6">
         <Outlet />
       </main>
     </div>
@@ -56,8 +52,6 @@ export default function App() {
         <Route path="runs" element={<Runs />} />
         <Route path="runs/:runId" element={<RunDetail />} />
         <Route path="analyze" element={<Analyze />} />
-        <Route path="monitor" element={<Monitor />} />
-        <Route path="jobs" element={<Jobs />} />
       </Route>
     </Routes>
   )

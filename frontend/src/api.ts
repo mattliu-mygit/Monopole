@@ -1,24 +1,46 @@
 import type {
-  TurnSummary,
-  TurnDetail,
   SessionSummary,
   SessionDetail,
-  FeedbackItem,
   AnalysisResponse,
-  Artifact,
-  Rubric,
-  Job,
   Run,
+  RunSummary,
+  ModelCatalog,
+  RubricCatalog,
   DataSelection,
+  RunConfig,
 } from './types'
 
 const BASE = import.meta.env.VITE_API_URL || ''
+
+export class ApiError extends Error {
+  status: number
+  detail: unknown
+
+  constructor(status: number, body: string, detail: unknown) {
+    const message =
+      detail && typeof detail === 'object' && 'message' in detail &&
+      typeof detail.message === 'string'
+        ? detail.message
+        : body
+    super(`API ${status}: ${message}`)
+    this.name = 'ApiError'
+    this.status = status
+    this.detail = detail
+  }
+}
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, init)
   if (!res.ok) {
     const body = await res.text().catch(() => '')
-    throw new Error(`API ${res.status}: ${body}`)
+    let detail: unknown = body
+    try {
+      const parsed = JSON.parse(body) as { detail?: unknown }
+      detail = parsed.detail ?? parsed
+    } catch {
+      // Keep the raw body when an upstream returns plain text.
+    }
+    throw new ApiError(res.status, body, detail)
   }
   return res.json()
 }
@@ -31,30 +53,26 @@ function qs(params: Record<string, string | number | undefined>): string {
   return '?' + new URLSearchParams(entries.map(([k, v]) => [k, String(v)])).toString()
 }
 
-export function getTurns(
-  params?: { since?: string; limit?: number },
-): Promise<{ turns: TurnSummary[] }> {
-  return apiFetch(`/api/turns${qs({ since: params?.since, limit: params?.limit })}`)
-}
-
-export function getTurn(traceId: string): Promise<TurnDetail> {
-  return apiFetch(`/api/turns/${encodeURIComponent(traceId)}`)
-}
-
 export function getSessions(
-  params?: { since?: string; limit?: number },
-): Promise<{ sessions: SessionSummary[] }> {
-  return apiFetch(`/api/sessions${qs({ since: params?.since, limit: params?.limit })}`)
+  params?: { since?: string; until?: string; timezone?: string; limit?: number },
+): Promise<{
+  sessions: SessionSummary[]
+  total?: number
+  truncated?: boolean
+  limit?: number
+}> {
+  return apiFetch(
+    `/api/sessions${qs({
+      since: params?.since,
+      until: params?.until,
+      timezone: params?.timezone,
+      limit: params?.limit,
+    })}`,
+  )
 }
 
 export function getSession(conversationId: string): Promise<SessionDetail> {
   return apiFetch(`/api/sessions/${encodeURIComponent(conversationId)}`)
-}
-
-export function getFeedback(
-  params: { trace_id?: string; ref?: string },
-): Promise<{ feedback: FeedbackItem[] }> {
-  return apiFetch(`/api/feedback${qs({ trace_id: params.trace_id, ref: params.ref })}`)
 }
 
 export function getAnalysis(
@@ -63,45 +81,15 @@ export function getAnalysis(
   return apiFetch(`/api/analyze${qs({ limit: params?.limit })}`)
 }
 
-export function getArtifacts(): Promise<{ artifacts: Artifact[] }> {
-  return apiFetch('/api/artifacts')
-}
-
-export function getRubrics(): Promise<{ rubrics: Rubric[] }> {
+export function getRubrics(): Promise<RubricCatalog> {
   return apiFetch('/api/rubrics')
 }
 
-export function getJobs(): Promise<{ jobs: Job[] }> {
-  return apiFetch('/api/jobs')
-}
-
-export function getJob(jobId: string): Promise<Job> {
-  return apiFetch(`/api/jobs/${encodeURIComponent(jobId)}`)
-}
-
-export function submitJob(
-  type: string,
-  params: Record<string, unknown>,
-): Promise<{ job_id: string; status: string }> {
-  return apiFetch(`/api/jobs/${type}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  })
-}
-
-
-export function getModels(): Promise<
-  Record<string, { default: string[]; poll: string[]; escalation: string }>
-> {
+export function getModels(): Promise<ModelCatalog> {
   return apiFetch('/api/models')
 }
 
-export function getMonitorState(): Promise<{ seen_keys: string[]; count: number }> {
-  return apiFetch('/api/monitor/state')
-}
-
-export function getRuns(): Promise<{ runs: Run[] }> {
+export function getRuns(): Promise<{ runs: RunSummary[] }> {
   return apiFetch('/api/runs')
 }
 
@@ -110,12 +98,14 @@ export function getRun(runId: string): Promise<Run> {
 }
 
 export function createRun(): Promise<Run> {
-  return apiFetch('/api/runs', { method: 'POST' })
+  return apiFetch('/api/runs', {
+    method: 'POST',
+  })
 }
 
 export function setRunSelection(
   runId: string,
-  selection: Partial<DataSelection>,
+  selection: DataSelection,
 ): Promise<Run> {
   return apiFetch(`/api/runs/${encodeURIComponent(runId)}/selection`, {
     method: 'PUT',
@@ -124,26 +114,111 @@ export function setRunSelection(
   })
 }
 
-export function advanceRun(
+export function setRunConfig(
   runId: string,
-  params?: Record<string, unknown>,
+  config: RunConfig,
 ): Promise<Run> {
-  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/advance`, {
-    method: 'POST',
+  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/config`, {
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params ?? {}),
+    body: JSON.stringify(config),
   })
 }
 
-// NOTE: there is no backend endpoint for this yet. The evaluation-runs plan
-// (docs/plans/2026-07-12-evaluation-runs.md, Task 4) assumes a "run-scoped
-// apply" endpoint exists to replace `/api/jobs/reflect/apply`, but no task in
-// that plan actually adds one (Task 2 only shipped create/list/get/selection/
-// advance). This calls the RESTful shape that fits the rest of the run API;
-// it will 404 until a matching `POST /api/runs/{run_id}/apply` endpoint is
-// added to api.py. Surfaced as a concern in task-3-report.md.
-export function applyRunReflection(runId: string): Promise<{ applied: string[] }> {
-  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/apply`, {
+export function setAutoRun(runId: string, autoRun: boolean): Promise<Run> {
+  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/auto_run`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ auto_run: autoRun }),
+  })
+}
+
+export function cancelRun(runId: string): Promise<Run> {
+  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/cancel`, {
     method: 'POST',
+  })
+}
+
+export function advanceRun(runId: string): Promise<Run> {
+  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/advance`, {
+    method: 'POST',
+  })
+}
+
+export function setReflectionSelection(
+  runId: string,
+  candidateId: string,
+  expectedRevision = 0,
+  discardDraft = false,
+): Promise<Run> {
+  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/reflection_selection`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      candidate_id: candidateId,
+      expected_revision: expectedRevision,
+      discard_draft: discardDraft,
+    }),
+  })
+}
+
+export function saveReflectionDraft(
+  runId: string,
+  contents: Record<string, string | null>,
+  expectedRevision: number,
+  expectedDraftRevision: string | null,
+): Promise<Run> {
+  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/reflection_draft`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      expected_revision: expectedRevision,
+      expected_draft_revision: expectedDraftRevision,
+      contents,
+    }),
+  })
+}
+
+export function resetReflectionDraft(
+  runId: string,
+  expectedRevision: number,
+  expectedDraftRevision: string | null,
+): Promise<Run> {
+  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/reflection_draft`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      expected_revision: expectedRevision,
+      expected_draft_revision: expectedDraftRevision,
+    }),
+  })
+}
+
+export function promoteRunReflection(
+  runId: string,
+  options: {
+    expectedRevision: number
+    expectedDraftRevision?: string | null
+    idempotencyKey: string
+    acknowledgeUnevaluated: boolean
+  },
+): Promise<Run> {
+  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/promote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      expected_revision: options.expectedRevision,
+      expected_draft_revision: options.expectedDraftRevision,
+      idempotency_key: options.idempotencyKey,
+      acknowledge_unevaluated: options.acknowledgeUnevaluated,
+    }),
+  })
+}
+
+export function dismissRunReflection(runId: string, expectedRevision: number): Promise<Run> {
+  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/dismiss`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expected_revision: expectedRevision }),
   })
 }

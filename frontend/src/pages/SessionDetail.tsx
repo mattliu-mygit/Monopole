@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import PageHeader from '../components/PageHeader'
 import ScoreBadge from '../components/ScoreBadge'
 import { getSession, getRubrics } from '../api'
-import type { TurnDetail, FeedbackItem, Rubric } from '../types'
+import type { TurnDetail, FeedbackItem, ReviewAttempt, RubricDescriptor } from '../types'
 
 function formatDuration(start: string | null, end: string | null): string {
   if (!start) return '—'
@@ -39,10 +39,9 @@ function scorerLabel(feedbackType: string): string {
   return feedbackType.replace(/^weave_agent_signals\./, '')
 }
 
-function FeedbackDetail({ fb, rubrics }: { fb: FeedbackItem; rubrics: Rubric[] }) {
-  const [showCriteria, setShowCriteria] = useState(false)
+function FeedbackDetail({ fb, rubrics }: { fb: FeedbackItem; rubrics: RubricDescriptor[] }) {
   const scorer = scorerLabel(fb.feedback_type)
-  const rubric = rubrics.find(r => r.scorer_name === scorer)
+  const rubric = rubrics.find(r => r.id === scorer)
   const reason = fb.payload.reason
   const details = fb.payload.details ?? {}
   const rationale = details.rationale as string | undefined
@@ -53,8 +52,9 @@ function FeedbackDetail({ fb, rubrics }: { fb: FeedbackItem; rubrics: Rubric[] }
   const wasteRatio = details.waste_ratio as number | undefined
   const outcomes = details.outcomes as Array<Record<string, any>> | undefined
 
-  const judgeModel = details.judge_model as string | undefined
-  const panelModels = details.panel_models as string[] | undefined
+  const attempts = Array.isArray(details.attempts)
+    ? details.attempts as ReviewAttempt[]
+    : []
 
   return (
     <div className="bg-gray-50 rounded p-3 space-y-2">
@@ -65,16 +65,41 @@ function FeedbackDetail({ fb, rubrics }: { fb: FeedbackItem; rubrics: Rubric[] }
             <span key={tag} className="text-xs px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">{tag}</span>
           ))}
         </div>
-        {judgeModel && !panelModels && <span className="text-xs text-gray-400">judged by {judgeModel}</span>}
-        {panelModels && <span className="text-xs text-gray-400">panel: {panelModels.join(', ')}</span>}
       </div>
 
       {rubric && (
-        <p className="text-xs text-gray-500 italic">{rubric.description}</p>
+        <p className="text-xs text-gray-500">
+          {rubric.label} · {rubric.evaluation_unit === 'session' ? 'whole session' : 'episode'} · pass threshold{' '}
+          {rubric.pass_threshold.toFixed(2)}
+        </p>
       )}
 
       {(reason || rationale) && (
         <p className="text-sm text-gray-700">{reason || rationale}</p>
+      )}
+
+      {attempts.length > 0 && (
+        <ol aria-label="Review attempts" className="space-y-1.5 text-xs">
+          {attempts.map((attempt, index) => (
+            <li key={`${attempt.position}-${attempt.trigger}-${index}`} className="rounded border border-gray-200 bg-white px-2 py-1.5">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="font-medium text-gray-700">Judge {attempt.position}</span>
+                <span className="text-gray-500">{attempt.trigger.replaceAll('_', ' ')}</span>
+                <span className="font-mono text-gray-600">{attempt.resolved_model ?? attempt.requested_model}</span>
+                <span className="text-gray-400">{attempt.requested_family}</span>
+                {attempt.status === 'succeeded' && attempt.score != null && (
+                  <span className="font-mono font-medium text-gray-700">{attempt.score.toFixed(3)}</span>
+                )}
+              </div>
+              {attempt.rationale && <div className="mt-1 text-gray-600">{attempt.rationale}</div>}
+              {attempt.status === 'failed' && (
+                <div className="mt-1 text-red-700">
+                  {attempt.error_type ?? 'Error'}: {attempt.message ?? 'Review attempt failed'}
+                </div>
+              )}
+            </li>
+          ))}
+        </ol>
       )}
 
       {errorLoops && errorLoops.length > 0 && (
@@ -117,34 +142,13 @@ function FeedbackDetail({ fb, rubrics }: { fb: FeedbackItem; rubrics: Rubric[] }
         </div>
       )}
 
-      {rubric && (
-        <div>
-          <button
-            type="button"
-            className="text-xs text-blue-600 hover:underline"
-            onClick={() => setShowCriteria(!showCriteria)}
-          >
-            {showCriteria ? 'Hide' : 'Show'} scoring criteria
-          </button>
-          {showCriteria && (
-            <div className="mt-1 text-xs space-y-0.5 text-gray-600 border-l-2 border-gray-200 pl-2">
-              {Object.entries(rubric.criteria)
-                .sort(([a], [b]) => parseFloat(b) - parseFloat(a))
-                .map(([level, desc]) => (
-                  <div key={level} className={parseFloat(level) === fb.payload.rating ? 'font-medium text-gray-900' : ''}>
-                    <span className="font-mono">{level}</span>: {desc}
-                  </div>
-                ))}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }
 
-function TurnCard({ turn, index, feedback, rubrics }: { turn: TurnDetail; index: number; feedback: FeedbackItem[]; rubrics: Rubric[] }) {
+function TurnCard({ turn, index, feedback, rubrics }: { turn: TurnDetail; index: number; feedback: FeedbackItem[]; rubrics: RubricDescriptor[] }) {
   const [expanded, setExpanded] = useState(false)
+  const detailsId = useId()
   const totalTokens = turn.input_tokens + turn.output_tokens + turn.cache_read_tokens
 
   return (
@@ -153,6 +157,8 @@ function TurnCard({ turn, index, feedback, rubrics }: { turn: TurnDetail; index:
         type="button"
         className="w-full text-left p-4 hover:bg-gray-50"
         onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
+        aria-controls={detailsId}
       >
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
@@ -189,7 +195,7 @@ function TurnCard({ turn, index, feedback, rubrics }: { turn: TurnDetail; index:
       </button>
 
       {expanded && (
-        <div className="border-t px-4 py-3 space-y-4">
+        <div id={detailsId} className="border-t px-4 py-3 space-y-4">
           {turn.user_input && (
             <div>
               <h4 className="text-sm font-medium text-gray-700 mb-1">User Input</h4>
@@ -333,7 +339,7 @@ function TurnCard({ turn, index, feedback, rubrics }: { turn: TurnDetail; index:
 export default function SessionDetail() {
   const { id } = useParams<{ id: string }>()
 
-  const { data: session, isLoading, error } = useQuery({
+  const { data: session, isLoading, error, refetch } = useQuery({
     queryKey: ['session', id],
     queryFn: () => getSession(id!),
     enabled: !!id,
@@ -358,7 +364,16 @@ export default function SessionDetail() {
     return (
       <div>
         <PageHeader title={`Session ${id?.slice(0, 12) ?? ''}`} />
-        <p className="text-red-600 text-sm">{(error as Error).message}</p>
+        <div className="flex items-center gap-3 text-sm">
+          <p className="text-red-600" role="alert">{(error as Error).message}</p>
+          <button
+            type="button"
+            className="font-medium text-blue-600 hover:underline"
+            onClick={() => void refetch()}
+          >
+            Retry
+          </button>
+        </div>
       </div>
     )
   }

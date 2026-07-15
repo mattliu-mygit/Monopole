@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useRef, useState, type KeyboardEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import PageHeader from '../components/PageHeader'
 import { getAnalysis } from '../api'
@@ -13,10 +13,12 @@ const tabs: { key: Tab; label: string }[] = [
   { key: 'coaching', label: 'Coaching' },
 ]
 
-function directionArrow(dir: string): string {
-  if (dir === 'up') return '↑'
-  if (dir === 'down') return '↓'
-  return '—'
+function directionArrow(dir: TrendEntry['direction']): string {
+  return dir === 'regression' ? '↓' : '↑'
+}
+
+function directionLabel(dir: TrendEntry['direction']): string {
+  return dir === 'regression' ? 'Regression' : 'Improvement'
 }
 
 function bestMeanPerScorer(entries: ABEntry[]): Record<string, string> {
@@ -36,6 +38,15 @@ function bestMeanPerScorer(entries: ABEntry[]): Record<string, string> {
 }
 
 function SummaryTable({ data }: { data: ScoreSummary[] }) {
+  if (data.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed p-6 text-sm text-gray-600">
+        <p className="font-medium text-gray-900">No score summaries yet.</p>
+        <p className="mt-1">Complete an evaluation run to populate this view.</p>
+      </div>
+    )
+  }
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm text-left">
@@ -79,6 +90,17 @@ function SummaryTable({ data }: { data: ScoreSummary[] }) {
 }
 
 function ABComparison({ data }: { data: ABEntry[] }) {
+  if (data.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed p-6 text-sm text-gray-600">
+        <p className="font-medium text-gray-900">No A/B comparisons yet.</p>
+        <p className="mt-1">
+          Evaluate traces from more than one configuration version to compare them.
+        </p>
+      </div>
+    )
+  }
+
   const best = bestMeanPerScorer(data)
   const allScorers = Array.from(
     new Set(data.flatMap((e) => Object.keys(e.scores))),
@@ -93,7 +115,7 @@ function ABComparison({ data }: { data: ABEntry[] }) {
               {entry.config_version.slice(0, 8)}
             </span>
             <span className="text-xs text-gray-500">
-              {entry.turn_count} turns
+              {entry.evaluated_target_count} evaluated targets
             </span>
           </div>
           <table className="w-full text-sm text-left">
@@ -140,13 +162,9 @@ function TrendsList({ data }: { data: TrendEntry[] }) {
           className="flex items-center gap-3 rounded-lg border p-3"
         >
           <span
-            className={`text-lg ${
-              t.direction === 'up'
-                ? 'text-green-600'
-                : t.direction === 'down'
-                  ? 'text-red-600'
-                  : 'text-gray-500'
-            }`}
+            role="img"
+            aria-label={directionLabel(t.direction)}
+            className={`text-lg ${t.direction === 'regression' ? 'text-red-600' : 'text-green-600'}`}
           >
             {directionArrow(t.direction)}
           </span>
@@ -183,27 +201,69 @@ function TrendsList({ data }: { data: TrendEntry[] }) {
 
 export default function Analyze() {
   const [activeTab, setActiveTab] = useState<Tab>('summary')
+  const tabRefs = useRef(new Map<Tab, HTMLButtonElement>())
+  const tabsId = useId().replaceAll(':', '')
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['analysis'],
     queryFn: () => getAnalysis(),
   })
+
+  function tabId(tab: Tab): string {
+    return `${tabsId}-tab-${tab}`
+  }
+
+  function panelId(tab: Tab): string {
+    return `${tabsId}-panel-${tab}`
+  }
+
+  function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    let nextIndex: number | null = null
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      nextIndex = (index + 1) % tabs.length
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      nextIndex = (index - 1 + tabs.length) % tabs.length
+    } else if (event.key === 'Home') {
+      nextIndex = 0
+    } else if (event.key === 'End') {
+      nextIndex = tabs.length - 1
+    }
+    if (nextIndex === null) return
+    event.preventDefault()
+    const nextTab = tabs[nextIndex].key
+    setActiveTab(nextTab)
+    tabRefs.current.get(nextTab)?.focus()
+  }
 
   return (
     <div>
       <PageHeader title="Analysis" />
 
-      <div className="flex gap-0 border-b mb-6">
-        {tabs.map((tab) => (
+      <div
+        className="flex gap-0 border-b mb-6"
+        role="tablist"
+        aria-label="Analysis views"
+      >
+        {tabs.map((tab, index) => (
           <button
             key={tab.key}
+            ref={(element) => {
+              if (element) tabRefs.current.set(tab.key, element)
+              else tabRefs.current.delete(tab.key)
+            }}
+            id={tabId(tab.key)}
             type="button"
+            role="tab"
+            aria-selected={activeTab === tab.key}
+            aria-controls={panelId(tab.key)}
+            tabIndex={activeTab === tab.key ? 0 : -1}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
               activeTab === tab.key
                 ? 'border-blue-500 text-blue-600'
                 : 'border-transparent text-gray-500 hover:text-gray-700'
             }`}
             onClick={() => setActiveTab(tab.key)}
+            onKeyDown={(event) => handleTabKeyDown(event, index)}
           >
             {tab.label}
           </button>
@@ -212,22 +272,61 @@ export default function Analyze() {
 
       {isLoading && <p className="text-gray-500 text-sm">Loading...</p>}
       {error && (
-        <p className="text-red-600 text-sm">{(error as Error).message}</p>
-      )}
-
-      {data && activeTab === 'summary' && <SummaryTable data={data.summary} />}
-
-      {data && activeTab === 'ab' && (
-        <ABComparison data={data.ab_leaderboard} />
-      )}
-
-      {data && activeTab === 'trends' && <TrendsList data={data.trends} />}
-
-      {data && activeTab === 'coaching' && (
-        <div className="bg-gray-50 rounded-lg p-6 font-mono text-sm whitespace-pre-wrap">
-          {data.coaching_markdown || 'No coaching recommendations available.'}
+        <div className="flex items-center gap-3 text-sm">
+          <p className="text-red-600" role="alert">{(error as Error).message}</p>
+          <button
+            type="button"
+            className="font-medium text-blue-600 hover:underline"
+            onClick={() => void refetch()}
+          >
+            Retry
+          </button>
         </div>
       )}
+
+      <div
+        id={panelId('summary')}
+        role="tabpanel"
+        aria-labelledby={tabId('summary')}
+        hidden={activeTab !== 'summary'}
+        tabIndex={0}
+      >
+        {data && <SummaryTable data={data.summary} />}
+      </div>
+
+      <div
+        id={panelId('ab')}
+        role="tabpanel"
+        aria-labelledby={tabId('ab')}
+        hidden={activeTab !== 'ab'}
+        tabIndex={0}
+      >
+        {data && <ABComparison data={data.ab_leaderboard} />}
+      </div>
+
+      <div
+        id={panelId('trends')}
+        role="tabpanel"
+        aria-labelledby={tabId('trends')}
+        hidden={activeTab !== 'trends'}
+        tabIndex={0}
+      >
+        {data && <TrendsList data={data.trends} />}
+      </div>
+
+      <div
+        id={panelId('coaching')}
+        role="tabpanel"
+        aria-labelledby={tabId('coaching')}
+        hidden={activeTab !== 'coaching'}
+        tabIndex={0}
+      >
+        {data && (
+          <div className="bg-gray-50 rounded-lg p-6 font-mono text-sm whitespace-pre-wrap">
+            {data.coaching_markdown || 'No coaching recommendations available.'}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import { getSessions } from '../api'
 import type { SessionSummary } from '../types'
@@ -26,14 +26,14 @@ function duration(start: string | null, end: string | null): string {
 }
 
 export default function Sessions() {
-  const navigate = useNavigate()
-
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['sessions'],
     queryFn: () => getSessions({ limit: 100 }),
   })
 
   const sessions = data?.sessions ?? []
+  const total = data?.total ?? sessions.length
+  const omitted = Math.max(total - sessions.length, 0)
 
   return (
     <div>
@@ -41,16 +41,38 @@ export default function Sessions() {
 
       {isLoading && <p className="text-gray-500 text-sm">Loading...</p>}
       {error && (
-        <p className="text-red-600 text-sm">{(error as Error).message}</p>
+        <div className="flex items-center gap-3 text-sm">
+          <p className="text-red-600" role="alert">{(error as Error).message}</p>
+          <button
+            type="button"
+            className="font-medium text-blue-600 hover:underline"
+            onClick={() => void refetch()}
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {data && (sessions.length > 0 || data.truncated) && (
+        <p className="mb-3 text-sm text-gray-500">
+          {data.truncated ? (
+            <>
+              Showing the newest {sessions.length} of {total} sessions.{' '}
+              {omitted} older session{omitted === 1 ? ' is' : 's are'} omitted.
+            </>
+          ) : (
+            <>Showing {sessions.length} of {total} sessions.</>
+          )}
+        </p>
       )}
 
       {sessions.length > 0 && (
         <div className="space-y-2">
           {sessions.map((session: SessionSummary) => (
-            <div
+            <Link
               key={session.conversation_id}
-              className="rounded-lg border hover:bg-gray-50 cursor-pointer p-4"
-              onClick={() => navigate(`/sessions/${session.conversation_id}`)}
+              to={`/sessions/${encodeURIComponent(session.conversation_id)}`}
+              className="block rounded-lg border p-4 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <div className="flex items-start justify-between gap-4">
                 <div className="flex-1 min-w-0">
@@ -62,7 +84,7 @@ export default function Sessions() {
                     <p className="text-sm text-gray-400 italic">No input recorded</p>
                   )}
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1.5 text-xs text-gray-500">
-                    <span>{formatDate(session.started_at)}</span>
+                    <span>{formatDate(session.last_activity ?? session.started_at)}</span>
                     <span>{duration(session.started_at, session.ended_at)}</span>
                     <span>
                       {session.turn_count} turn{session.turn_count !== 1 ? 's' : ''}
@@ -86,12 +108,12 @@ export default function Sessions() {
                   {session.conversation_id.slice(0, 8)}
                 </span>
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       )}
 
-      {!isLoading && sessions.length === 0 && (
+      {!isLoading && !error && sessions.length === 0 && (
         <p className="text-gray-500 text-sm">No sessions found.</p>
       )}
     </div>

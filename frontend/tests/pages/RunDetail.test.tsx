@@ -1,0 +1,629 @@
+// @vitest-environment jsdom
+
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { createMemoryRouter, RouterProvider } from 'react-router-dom'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type {
+  EffectiveRunConfig,
+  JudgingPlan,
+  ModelCatalog,
+  RubricCatalog,
+  Run,
+  RunConfig,
+  SessionSummary,
+} from '../../src/types'
+import { ApiError } from '../../src/api'
+import RunDetail from '../../src/pages/RunDetail'
+import { renderWithQueryClient } from '../support/render'
+
+const api = vi.hoisted(() => ({
+  getRun: vi.fn(),
+  getSessions: vi.fn(),
+  getModels: vi.fn(),
+  getRubrics: vi.fn(),
+  setRunSelection: vi.fn(),
+  setRunConfig: vi.fn(),
+  setAutoRun: vi.fn(),
+  advanceRun: vi.fn(),
+  cancelRun: vi.fn(),
+  setReflectionSelection: vi.fn(),
+  saveReflectionDraft: vi.fn(),
+  resetReflectionDraft: vi.fn(),
+  promoteRunReflection: vi.fn(),
+  dismissRunReflection: vi.fn(),
+}))
+
+vi.mock('../../src/api', () => ({
+  ...api,
+  ApiError: class ApiError extends Error {
+    status: number
+    detail: unknown
+    constructor(status: number, body: string, detail: unknown) {
+      const message =
+        detail && typeof detail === 'object' && 'message' in detail
+          ? String(detail.message)
+          : body
+      super(`API ${status}: ${message}`)
+      this.status = status
+      this.detail = detail
+    }
+  },
+}))
+
+afterEach(cleanup)
+
+const writer = {
+  id: 'writer-openai',
+  label: 'Writer OpenAI',
+  family: 'openai',
+  backend: 'cli',
+  supported_roles: ['proposal_writer'] as const,
+}
+const judgeOne = {
+  id: 'judge-anthropic',
+  label: 'Judge Anthropic',
+  family: 'anthropic',
+  backend: 'cli',
+  supported_roles: ['judge', 'proposal_evaluator'] as const,
+}
+const judgeTwo = {
+  id: 'judge-openai',
+  label: 'Judge OpenAI',
+  family: 'openai',
+  backend: 'cli',
+  supported_roles: ['judge', 'proposal_evaluator'] as const,
+}
+const judgeThree = {
+  id: 'judge-meta',
+  label: 'Judge Meta',
+  family: 'meta',
+  backend: 'cli',
+  supported_roles: ['judge', 'proposal_evaluator'] as const,
+}
+
+const models: ModelCatalog = {
+  catalog_version: 'models-v1',
+  proposal: { available_models: [writer], recommended_model: writer.id },
+  review_defaults: { second_opinion_margin: 0.1 },
+  recommended_judge_backend: 'cli',
+  judge_backends: {
+    cli: {
+      available_models: [judgeOne, judgeTwo, judgeThree],
+      recommended_judges: [judgeOne.id, judgeTwo.id, judgeThree.id],
+      proposal_evaluator_preferences: [judgeOne.id, judgeTwo.id],
+      recommended_review_depth: 'selective',
+      supported_review_depths: ['primary', 'selective', 'full_panel'],
+    },
+  },
+}
+
+const rubrics: RubricCatalog = {
+  catalog_version: 'rubrics-v1',
+  rubrics: [
+    {
+      id: 'judge.verification',
+      label: 'Verification discipline',
+      evaluation_unit: 'episode',
+      version: 'v1',
+      content_digest: 'digest-verification',
+      pass_threshold: 0.5,
+    },
+    {
+      id: 'judge.session_outcome',
+      label: 'Session outcome',
+      evaluation_unit: 'session',
+      version: 'v1',
+      content_digest: 'digest-outcome',
+      pass_threshold: 0.6,
+    },
+  ],
+}
+
+const requestedConfig: RunConfig = {
+  model_catalog_version: models.catalog_version,
+  rubric_catalog_version: rubrics.catalog_version,
+  judge_backend: 'cli',
+  review_depth: 'selective',
+  judge_models: [judgeOne.id, judgeTwo.id, judgeThree.id],
+  second_opinion_margin: 0.1,
+  proposal_model: writer.id,
+  proposal_evaluator_model: judgeOne.id,
+  rubrics: rubrics.rubrics.map((rubric) => rubric.id),
+  candidate_budget: 3,
+  force: false,
+}
+
+const effectiveConfig: EffectiveRunConfig = {
+  schema_version: '1',
+  pipeline_version: 'pipeline-v1',
+  model_catalog_version: models.catalog_version,
+  rubric_catalog_version: rubrics.catalog_version,
+  judge_backend: 'cli',
+  review_depth: 'selective',
+  second_opinion_margin: 0.1,
+  models: {
+    proposal_writer: writer,
+    judges: [judgeOne, judgeTwo, judgeThree].map((judge, index) => ({
+      ...judge,
+      role: 'judge' as const,
+      position: index + 1,
+    })),
+    proposal_evaluator: judgeOne,
+  },
+  rubrics: rubrics.rubrics,
+  selection_warnings: [],
+  candidate_budget: 3,
+  force: false,
+}
+
+function baseRun(overrides: Partial<Run> = {}): Run {
+  return {
+    run_id: 'run-ui',
+    status: 'created',
+    current_stage_succeeded: false,
+    created_at: '2026-07-14T18:00:00Z',
+    auto_run: false,
+    data_selection: null,
+    run_config: null,
+    effective_config: null,
+    turn_cohort: null,
+    judging_plan: null,
+    reflection_input: null,
+    scoring_progress: null,
+    scoring_result: null,
+    judging_progress: null,
+    judging_result: null,
+    reflecting_progress: null,
+    reflecting_result: null,
+    reflection_review: null,
+    reflection_review_revision: 0,
+    error: null,
+    ...overrides,
+  }
+}
+
+const session: SessionSummary = {
+  conversation_id: 'session-1',
+  session_id: null,
+  turn_count: 2,
+  started_at: '2026-07-13T22:00:00Z',
+  ended_at: null,
+  last_activity: null,
+  model: 'agent-model',
+  effort_level: null,
+  config_version: null,
+  git_branch: null,
+  total_tokens: 100,
+  total_tool_calls: 2,
+  input_preview: 'Evaluate this session',
+}
+
+const plan: JudgingPlan = {
+  plan_id: 'plan-1',
+  schema_version: '1',
+  cohort_id: 'cohort-1',
+  requested_rubrics: rubrics.rubrics,
+  review_depth: 'selective',
+  judge_count: 3,
+  max_episodes_per_session: 8,
+  totals: {
+    turns_considered: 2,
+    episodes_selected: 1,
+    planned_episode_rubrics: 1,
+    planned_session_rubrics: 1,
+    planned_rubrics: 2,
+    minimum_episode_reviewer_attempts: 1,
+    maximum_episode_reviewer_attempts: 3,
+    minimum_session_reviewer_attempts: 1,
+    maximum_session_reviewer_attempts: 3,
+    minimum_reviewer_attempts: 2,
+    maximum_reviewer_attempts: 6,
+  },
+  sessions: [],
+}
+
+function renderPage() {
+  const router = createMemoryRouter([
+    { path: '/runs/:runId', element: <RunDetail /> },
+    { path: '/runs', element: <div>Run list</div> },
+  ], { initialEntries: ['/runs/run-ui'] })
+  return {
+    router,
+    ...renderWithQueryClient(<RouterProvider router={router} />),
+  }
+}
+
+function completedReflectionRun(): Run {
+  const past = {
+    kind: 'file',
+    locator: 'CLAUDE.md',
+    display_name: 'CLAUDE.md',
+    path: 'CLAUDE.md',
+    exists: true,
+    content: 'Past',
+    revision: 'target:b',
+  }
+  const proposed = { ...past, content: 'Proposed', revision: 'target:c' }
+  return baseRun({
+    status: 'complete',
+    current_stage_succeeded: true,
+    run_config: requestedConfig,
+    effective_config: effectiveConfig,
+    scoring_result: {
+      turns_scored: 2,
+      sessions_scored: 1,
+      scores_written: 4,
+      errors: 0,
+    },
+    judging_result: {
+      plan_id: plan.plan_id,
+      planned_rubrics: 2,
+      rubrics_completed: 2,
+      rated_rubrics: 2,
+      minimum_reviewer_attempts: 2,
+      maximum_reviewer_attempts: 6,
+      reviewer_attempts_completed: 3,
+      scores_written: 2,
+      failure_count: 0,
+      write_failure_count: 0,
+      coverage_complete: true,
+      status_message: 'Judging complete',
+      attempt_summaries: [],
+      failure_details: [],
+    },
+    reflecting_result: {
+      baseline: { scope: null, targets: [past], revision: 'bundle:b' },
+      baseline_score: 0.4,
+      baseline_evaluation: {
+        evaluation_id: 'evaluation-b',
+        target_revision: 'bundle:b',
+        requested_model: 'evaluator',
+        requested_family: 'family',
+        requested_backend: 'cli',
+        resolved_model: 'evaluator',
+        resolved_family: 'family',
+        resolved_backend: 'cli',
+        score: 0.4,
+        rationale: 'Baseline evidence.',
+        usage: {},
+      },
+      candidates: [
+        {
+          candidate_id: 'candidate-1',
+          bundle: { scope: null, targets: [proposed], revision: 'bundle:c' },
+          score: 0.7,
+          score_delta: 0.3,
+          rationale: 'Improve verification.',
+          generation_attempt_id: 'attempt-1',
+          requested_writer: writer,
+          resolved_writer_model: writer.id,
+          resolved_writer_family: writer.family,
+          resolved_writer_backend: writer.backend,
+          evaluation: {
+            evaluation_id: 'evaluation-c',
+            target_revision: 'bundle:c',
+            requested_model: 'evaluator',
+            requested_family: 'family',
+            requested_backend: 'cli',
+            resolved_model: 'evaluator',
+            resolved_family: 'family',
+            resolved_backend: 'cli',
+            score: 0.7,
+            rationale: 'Improves verification.',
+            usage: {},
+          },
+        },
+      ],
+      generation_attempts: [],
+      recommended_candidate_id: 'candidate-1',
+      baseline_won: false,
+      reason: null,
+      score_basis: 'predicted_evaluator',
+    },
+    reflection_review: {
+      status: 'pending',
+      selected_candidate_id: 'candidate-1',
+      draft: null,
+    },
+    reflection_review_revision: 1,
+  })
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  const created = baseRun()
+  api.getRun.mockResolvedValue(created)
+  api.getSessions.mockResolvedValue({ sessions: [session], total: 1, truncated: false })
+  api.getModels.mockResolvedValue(models)
+  api.getRubrics.mockResolvedValue(rubrics)
+  api.setRunSelection.mockResolvedValue(created)
+  api.setRunConfig.mockResolvedValue(created)
+  api.setAutoRun.mockResolvedValue(created)
+  api.advanceRun.mockResolvedValue({ ...created, status: 'scoring' })
+  api.cancelRun.mockResolvedValue({ ...created, status: 'cancelled' })
+})
+
+describe('RunDetail wiring', () => {
+  it('saves explicit selection and guided configuration before starting', async () => {
+    renderPage()
+
+    const start = await screen.findByRole('button', { name: 'Start Scoring' })
+    await waitFor(() => expect(start).toHaveProperty('disabled', false))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Continue automatically' }))
+    fireEvent.click(start)
+
+    await waitFor(() => expect(api.advanceRun).toHaveBeenCalledWith('run-ui'))
+    expect(api.setRunSelection).toHaveBeenCalledWith(
+      'run-ui',
+      expect.objectContaining({ session_ids: ['session-1'] }),
+    )
+    expect(api.setRunConfig).toHaveBeenCalledWith('run-ui', requestedConfig)
+    expect(api.setAutoRun).toHaveBeenCalledWith('run-ui', true)
+    expect(api.setRunSelection.mock.invocationCallOrder[0]).toBeLessThan(
+      api.setRunConfig.mock.invocationCallOrder[0],
+    )
+    expect(api.setRunConfig.mock.invocationCallOrder[0]).toBeLessThan(
+      api.advanceRun.mock.invocationCallOrder[0],
+    )
+    expect(screen.queryByRole('textbox', { name: /model/i })).toBeNull()
+  })
+
+  it('retries session discovery and model catalogs in place', async () => {
+    api.getModels
+      .mockRejectedValueOnce(new Error('Model catalog unavailable'))
+      .mockResolvedValue(models)
+    api.getSessions
+      .mockRejectedValueOnce(new Error('Session discovery unavailable'))
+      .mockResolvedValue({ sessions: [session], total: 1, truncated: false })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry configuration catalogs' }))
+    await waitFor(() => expect(api.getModels).toHaveBeenCalledTimes(2))
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry session discovery' }))
+    await waitFor(() => expect(api.getSessions).toHaveBeenCalledTimes(2))
+    expect(await screen.findByRole('checkbox', { name: 'Select session session-1' })).not.toBeNull()
+  })
+
+  it('supports manual advance and confirmed cancellation', async () => {
+    const scoring = baseRun({
+      status: 'scoring',
+      current_stage_succeeded: true,
+      run_config: requestedConfig,
+      effective_config: effectiveConfig,
+      scoring_result: {
+        turns_scored: 2,
+        sessions_scored: 1,
+        scores_written: 4,
+        errors: 0,
+      },
+    })
+    api.getRun.mockResolvedValue(scoring)
+    api.advanceRun.mockResolvedValue({ ...scoring, status: 'judging' })
+    api.cancelRun.mockResolvedValue({ ...scoring, status: 'cancelled' })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue to judging' }))
+    await waitFor(() => expect(api.advanceRun).toHaveBeenCalledWith('run-ui'))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel Run' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel run' }))
+    await waitFor(() => expect(api.cancelRun).toHaveBeenCalledWith('run-ui'))
+  })
+
+  it('composes pinned audit and active judging progress', async () => {
+    api.getRun.mockResolvedValue(
+      baseRun({
+        status: 'judging',
+        data_selection: {
+          since: '2026-07-01T07:00:00Z',
+          until: '2026-07-15T06:59:59.999999Z',
+          timezone: 'America/Los_Angeles',
+          session_ids: [
+            'session-1', 'session-2', 'session-3', 'session-4',
+            'session-5', 'session-6', 'session-7',
+          ],
+        },
+        run_config: requestedConfig,
+        effective_config: effectiveConfig,
+        turn_cohort: {
+          schema_version: '1',
+          cohort_id: 'sha256:cohort-123',
+          pinned_at: '2026-07-15T07:30:00Z',
+          turn_count: 12,
+          session_count: 7,
+          turns: [],
+          sessions: [],
+        },
+        judging_plan: plan,
+        judging_progress: {
+          plan_id: plan.plan_id,
+          planned_rubrics: 2,
+          rubrics_completed: 2,
+          rated_rubrics: 2,
+          minimum_reviewer_attempts: 2,
+          maximum_reviewer_attempts: 6,
+          reviewer_attempts_completed: 3,
+          scores_written: 0,
+          failure_count: 0,
+          write_failure_count: 0,
+          coverage_complete: false,
+          status_message: 'Writing 2 judge scores...',
+          attempt_summaries: [],
+          failure_details: [],
+        },
+      }),
+    )
+    renderPage()
+
+    const selectionStage = await screen.findByRole('button', {
+      name: 'Data selection & configuration',
+    })
+    expect(selectionStage.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(selectionStage)
+    expect(screen.getByRole('region', { name: 'Pinned selection and cohort' })).not.toBeNull()
+    expect(screen.getByText('Jul 1, 2026 – Jul 14, 2026')).not.toBeNull()
+    expect(screen.getByText('America/Los_Angeles')).not.toBeNull()
+    expect(screen.getByText('sha256:cohort-123')).not.toBeNull()
+    expect(screen.getByText('12 turns across 7 sessions')).not.toBeNull()
+    expect(screen.getByText('7 selected session IDs')).not.toBeNull()
+    expect(screen.getByText('session-7')).not.toBeNull()
+    expect(screen.getByRole('region', { name: 'Pinned run configuration' })).not.toBeNull()
+    expect(screen.getByRole('region', { name: 'Judging progress' })).not.toBeNull()
+    expect(screen.getByText('2 of 2 rubrics reviewed')).not.toBeNull()
+    expect(screen.getByText('3 reviewer attempts so far')).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Judging' }).getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('collapses completed stages but keeps a pending reflection decision visible', async () => {
+    api.getRun.mockResolvedValue(completedReflectionRun())
+    renderPage()
+
+    expect((await screen.findByRole('button', {
+      name: 'Data selection & configuration',
+    })).getAttribute('aria-expanded')).toBe('false')
+    expect(screen.getByRole('button', { name: 'Scoring' }).getAttribute('aria-expanded')).toBe('false')
+    expect(screen.getByRole('button', { name: 'Judging' }).getAttribute('aria-expanded')).toBe('false')
+    expect(screen.getByRole('button', { name: 'Reflecting' }).getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByRole('region', { name: 'Reflection decision' })).not.toBeNull()
+  })
+
+  it('protects unsaved D from route navigation and browser unload', async () => {
+    api.getRun.mockResolvedValue(completedReflectionRun())
+    const { router } = renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit proposal inline' }))
+    fireEvent.change(screen.getByLabelText('Edit CLAUDE.md'), {
+      target: { value: 'Unsaved edited D' },
+    })
+
+    const unload = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(unload)
+    expect(unload.defaultPrevented).toBe(true)
+
+    void router.navigate('/runs')
+    expect(await screen.findByRole('dialog', {
+      name: 'Leave without saving edited D?',
+    })).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
+    expect(screen.getByDisplayValue('Unsaved edited D')).not.toBeNull()
+
+    void router.navigate('/runs')
+    fireEvent.click(await screen.findByRole('button', { name: 'Leave without saving' }))
+    expect(await screen.findByText('Run list')).not.toBeNull()
+  })
+
+  it('keeps cached run evidence and unsaved D visible when a background refresh fails', async () => {
+    api.getRun
+      .mockResolvedValueOnce(completedReflectionRun())
+      .mockRejectedValueOnce(new Error('Run refresh unavailable'))
+    const { client } = renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit proposal inline' }))
+    fireEvent.change(screen.getByLabelText('Edit CLAUDE.md'), {
+      target: { value: 'Cached unsaved D' },
+    })
+    await act(() => client.refetchQueries({ queryKey: ['run', 'run-ui'] }))
+
+    expect(await screen.findByRole('alert')).toHaveProperty(
+      'textContent',
+      expect.stringContaining('Could not refresh run: Run refresh unavailable'),
+    )
+    expect(screen.getByDisplayValue('Cached unsaved D')).not.toBeNull()
+    expect(screen.getByRole('region', { name: 'Reflection review' })).not.toBeNull()
+  })
+
+  it('composes completed reflection evidence and decision controls', async () => {
+    const completed = completedReflectionRun()
+    api.getRun.mockResolvedValue(completed)
+    api.promoteRunReflection.mockResolvedValue(completed)
+    renderPage()
+
+    expect(await screen.findByRole('region', { name: 'Reflection review' })).not.toBeNull()
+    expect(screen.getByText('Review needed')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Promote evaluated C' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm promotion' }))
+
+    await waitFor(() => expect(api.promoteRunReflection).toHaveBeenCalledWith('run-ui', {
+      expectedRevision: 1,
+      expectedDraftRevision: null,
+      acknowledgeUnevaluated: false,
+      idempotencyKey: 'run-ui:1:evaluated',
+    }))
+  })
+
+  it('shows the exact actionable terminal reflection error without an empty logs panel', async () => {
+    const message = 'Proposal evaluator failed: W&B credits are disabled'
+    api.getRun.mockResolvedValue(baseRun({
+      status: 'failed',
+      error: message,
+      reflecting_progress: {
+        phase: 'reflection_failed',
+        status_message: message,
+        started_at: '2026-07-14T19:20:00+00:00',
+        attempted: 1,
+        valid: 1,
+        rejected: 0,
+        scored: 0,
+        total_attempts: 3,
+        events: [],
+      },
+    }))
+    renderPage()
+
+    expect(await screen.findByText(message)).not.toBeNull()
+    expect(screen.queryByText(`Last update before failure: ${message}`)).toBeNull()
+    expect(screen.queryByText('Logs')).toBeNull()
+  })
+
+  it('routes an all-invalid finalized reflection through the full review evidence view', async () => {
+    const completed = completedReflectionRun()
+    const successful = completed.reflecting_result!
+    if (!('baseline' in successful)) throw new Error('fixture must be successful')
+    api.getRun.mockResolvedValue({
+      ...completed,
+      reflecting_result: {
+        ...successful,
+        candidates: [],
+        recommended_candidate_id: null,
+        baseline_won: false,
+        reason: 'No valid proposal generated',
+      },
+      reflection_review: null,
+    })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Reflecting' }))
+    expect(await screen.findByRole('region', { name: 'Reflection review' })).not.toBeNull()
+    expect(screen.getByText(/No proposed C was evaluated/i)).not.toBeNull()
+    expect(screen.getAllByText('Baseline evidence.').length).toBeGreaterThan(0)
+  })
+
+  it('shows API conflicts and requeries durable run state', async () => {
+    const scoring = baseRun({
+      status: 'scoring',
+      current_stage_succeeded: true,
+      run_config: requestedConfig,
+      effective_config: effectiveConfig,
+      scoring_result: {
+        turns_scored: 2,
+        sessions_scored: 1,
+        scores_written: 4,
+        errors: 0,
+      },
+    })
+    api.getRun
+      .mockResolvedValueOnce(scoring)
+      .mockResolvedValue({ ...scoring, status: 'judging' })
+    api.advanceRun.mockRejectedValue(
+      new ApiError(409, '', { message: 'Run advanced in another tab.' }),
+    )
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue to judging' }))
+
+    expect(await screen.findByRole('alert')).toHaveProperty(
+      'textContent',
+      expect.stringContaining('Run advanced in another tab.'),
+    )
+    await waitFor(() => expect(api.getRun).toHaveBeenCalledTimes(2))
+  })
+})

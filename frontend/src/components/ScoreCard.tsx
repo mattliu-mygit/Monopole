@@ -1,10 +1,14 @@
+import type { TrendEntry } from "../types";
+
+type Trend = Pick<TrendEntry, "direction" | "delta">;
+
 interface ScoreCardProps {
   scorer: string;
   mean: number;
   count: number;
   ci: [number, number];
   passRate: number | null;
-  trend?: { direction: string; delta: number };
+  trend?: Trend;
   confident: boolean;
 }
 
@@ -14,15 +18,20 @@ function bgColor(mean: number): string {
   return "bg-red-50";
 }
 
-function trendIndicator(trend: { direction: string; delta: number }) {
+function trendIndicator(trend: Trend) {
   const delta = (trend.delta * 100).toFixed(1);
-  if (trend.direction === "up") {
-    return <span className="text-green-600">↑ +{delta}%</span>;
+  if (trend.direction === "regression") {
+    return (
+      <span role="img" aria-label="Regression" className="text-red-600">
+        ↓ {delta}%
+      </span>
+    );
   }
-  if (trend.direction === "down") {
-    return <span className="text-red-600">↓ {delta}%</span>;
-  }
-  return <span className="text-gray-500">→ {delta}%</span>;
+  return (
+    <span role="img" aria-label="Improvement" className="text-green-600">
+      ↑ +{delta}%
+    </span>
+  );
 }
 
 export default function ScoreCard({

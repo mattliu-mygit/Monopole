@@ -1,1042 +1,645 @@
-import { useState, type ReactNode } from 'react'
-import { useParams } from 'react-router-dom'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import PageHeader from '../components/PageHeader'
-import ConfirmDialog from '../components/ConfirmDialog'
-import DiffViewer from '../components/DiffViewer'
+import { useBeforeUnload, useBlocker, useParams } from 'react-router-dom'
 import {
-  getRun,
-  setRunSelection,
   advanceRun,
-  applyRunReflection,
-  getSessions,
+  ApiError,
+  cancelRun,
+  dismissRunReflection,
   getModels,
   getRubrics,
+  getRun,
+  getSessions,
+  promoteRunReflection,
+  resetReflectionDraft,
+  saveReflectionDraft,
+  setAutoRun,
+  setReflectionSelection,
+  setRunConfig,
+  setRunSelection,
 } from '../api'
-import type { DataSelection, Run } from '../types'
+import Dialog from '../components/Dialog'
+import PageHeader from '../components/PageHeader'
+import ReflectionActivity from '../features/reflection/ReflectionActivity'
+import ReflectionReview from '../features/reflection/ReflectionReview'
+import RunStatusBadge from '../features/runs/RunStatusBadge'
+import JudgingProgress from '../features/runs/JudgingProgress'
+import RunConfigAudit from '../features/runs/RunConfigAudit'
+import RunConfiguration from '../features/runs/RunConfiguration'
+import PinnedSelectionAudit from '../features/runs/PinnedSelectionAudit'
+import RunSelection from '../features/runs/RunSelection'
+import ScoringProgress from '../features/runs/ScoringProgress'
+import {
+  assessRunConfig,
+  initializeRunConfigState,
+  toRunConfig,
+  transitionRunConfig,
+  type RunConfigAction,
+} from '../features/runs/runConfigState'
+import type {
+  DataSelection,
+  ModelCatalog,
+  ReflectionBundleSnapshot,
+  RubricCatalog,
+  Run,
+  RunConfig,
+} from '../types'
+import { shouldPollRun } from '../features/runs/runPolling'
 
-// ---------------------------------------------------------------------------
-// Pipeline step bookkeeping
-//
-// `run.status` names the step currently in flight (or the terminal state).
-// Each card below derives its own past/current/future state from that single
-// value instead of tracking separate booleans per card.
-// ---------------------------------------------------------------------------
+const primaryButton =
+  'rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50'
+const dangerButton =
+  'rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50'
 
-type StepKey = 'selection' | 'scoring' | 'judging' | 'reflecting'
-type StepState = 'past' | 'current' | 'future'
+function formatDateTime(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
 
-const STEP_ORDER: StepKey[] = ['selection', 'scoring', 'judging', 'reflecting']
-
-function statusStepIndex(status: Run['status']): number {
-  switch (status) {
-    case 'created':
-      return 0
-    case 'scoring':
-      return 1
-    case 'judging':
-      return 2
-    case 'reflecting':
-      return 3
-    case 'complete':
-      return 4
-    default:
-      return 4
+function dateInputValue(value: string | null | undefined, timezone?: string | null): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone || undefined,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(date)
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+    return `${values.year}-${values.month}-${values.day}`
+  } catch {
+    return value.slice(0, 10)
   }
 }
 
-// FAILED loses track of which step was running (runs.py's state machine
-// collapses it to one terminal value), so we infer it: the pipeline is
-// linear and each step always writes its `*_result` before the next one can
-// start, so the first missing result is the one that failed.
-function failedStep(run: Run): StepKey {
-  if (!run.scoring_result) return 'scoring'
-  if (!run.judging_result) return 'judging'
-  return 'reflecting'
+function defaultSince(): string {
+  const date = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset())
+  return date.toISOString().slice(0, 10)
 }
 
-function stepState(run: Run, step: StepKey): StepState {
-  const stepIdx = STEP_ORDER.indexOf(step)
-  if (run.status === 'failed') {
-    const failedIdx = STEP_ORDER.indexOf(failedStep(run))
-    if (stepIdx < failedIdx) return 'past'
-    return stepIdx === failedIdx ? 'current' : 'future'
+function dayBoundary(value: string, end: boolean, timezone?: string): string | null {
+  if (!value) return null
+  const [year, month, day] = value.split('-').map(Number)
+  if (![year, month, day].every(Number.isFinite)) return null
+  const hour = end ? 23 : 0
+  const minute = end ? 59 : 0
+  const second = end ? 59 : 0
+  const millisecond = end ? 999 : 0
+  const serialize = (date: Date) =>
+    end
+      ? date.toISOString().replace(/\.999Z$/, '.999999Z')
+      : date.toISOString()
+
+  if (!timezone) {
+    return serialize(new Date(year, month - 1, day, hour, minute, second, millisecond))
   }
-  const curIdx = statusStepIndex(run.status)
-  if (stepIdx < curIdx) return 'past'
-  return stepIdx === curIdx ? 'current' : 'future'
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+    const desired = Date.UTC(year, month - 1, day, hour, minute, second)
+    let instant = desired
+    for (let iteration = 0; iteration < 2; iteration += 1) {
+      const parts = Object.fromEntries(
+        formatter.formatToParts(new Date(instant)).map((part) => [part.type, part.value]),
+      )
+      const represented = Date.UTC(
+        Number(parts.year),
+        Number(parts.month) - 1,
+        Number(parts.day),
+        Number(parts.hour),
+        Number(parts.minute),
+        Number(parts.second),
+      )
+      instant += desired - represented
+    }
+    return serialize(new Date(instant + millisecond))
+  } catch {
+    return serialize(new Date(year, month - 1, day, hour, minute, second, millisecond))
+  }
 }
 
-function isRunInProgress(run: Run): boolean {
-  return (
-    (run.status === 'scoring' && !run.scoring_result) ||
-    (run.status === 'judging' && !run.judging_result) ||
-    (run.status === 'reflecting' && !run.reflecting_result)
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Formatting helpers
-// ---------------------------------------------------------------------------
-
-function formatDateTime(iso: string | null): string {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleString()
-}
-
-function toDateInputValue(iso: string | null | undefined): string {
-  if (!iso) return ''
-  return iso.slice(0, 10)
-}
-
-function defaultSinceInput(): string {
-  return new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-}
-
-function selectionSummary(sel: DataSelection | null): string {
-  if (!sel) return 'no selection saved'
-  const range = [sel.since, sel.until].filter(Boolean).join(' → ') || 'all time'
-  const included = sel.session_ids.length
-  const excluded = sel.excluded_session_ids.length
-  const countLabel =
-    included > 0 ? `${included} sessions` : excluded > 0 ? `all minus ${excluded}` : 'all sessions'
-  return `${range} · ${countLabel}`
-}
-
-// ---------------------------------------------------------------------------
-// Result shapes (Run's `*_progress`/`*_result` fields are typed as
-// `Record<string, unknown>` in types.ts since they're opaque JSON blobs from
-// the backend; these narrow them to what api.py actually writes).
-// ---------------------------------------------------------------------------
-
-interface ScoringProgress {
-  total: number
-  scored: number
-  written: number
-}
-
-interface ScoringResult {
-  turns_scored: number
-  sessions_scored: number
-  scores_written: number
-  errors: number
-  dry_run: boolean
-}
-
-interface JudgingProgress {
-  total: number
-  judged: number
-  written: number
-}
-
-interface JudgingResult {
-  turns_judged: number
-  scores_written: number
-  errors: number
-  dry_run: boolean
-}
-
-interface ReflectingProgress {
-  phase: string
-  iterations: number
-}
-
-interface ReflectingProposal {
-  diff: string
-  rationale: string
-  score_delta: number
-  artifacts: { name: string; path: string; content: string }[]
-  coaching_markdown: string
-}
-
-interface ReflectingNoProposal {
-  proposal: null
-  reason: string
-  coaching_markdown?: string
-  artifact_count?: number
-  feedback_count?: number
-  dry_run?: boolean
-}
-
-type ReflectingResult = ReflectingProposal | ReflectingNoProposal
-
-function hasProposal(r: ReflectingResult): r is ReflectingProposal {
-  return 'diff' in r
-}
-
-// ---------------------------------------------------------------------------
-// Shared presentational pieces
-// ---------------------------------------------------------------------------
-
-const STATUS_COLORS: Record<string, string> = {
-  created: 'bg-gray-100 text-gray-700',
-  scoring: 'bg-blue-100 text-blue-800',
-  judging: 'bg-purple-100 text-purple-800',
-  reflecting: 'bg-indigo-100 text-indigo-800',
-  complete: 'bg-green-100 text-green-800',
-  failed: 'bg-red-100 text-red-800',
-}
-
-function StatusBadge({ status }: { status: string }) {
-  return (
-    <span
-      className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[status] ?? 'bg-gray-100 text-gray-700'}`}
-    >
-      {status}
-    </span>
-  )
-}
-
-function ProgressBar({ done, total, label }: { done: number; total: number; label: string }) {
-  const pct = total > 0 ? Math.round((done / total) * 100) : 0
-  return (
-    <div>
-      <div className="bg-gray-200 rounded-full h-2">
-        <div
-          className="bg-blue-500 rounded-full h-2 transition-all"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <div className="text-xs text-gray-500 mt-1">
-        {label} {done} / {total} ({pct}%)
-      </div>
-    </div>
-  )
-}
-
-function StepShell({
+function StageCard({
   title,
-  state,
-  expanded,
-  onToggle,
-  summary,
   children,
+  expandedByDefault,
 }: {
   title: string
-  state: StepState
-  expanded: boolean
-  onToggle: () => void
-  summary?: string
-  children?: ReactNode
+  children: ReactNode
+  expandedByDefault: boolean
 }) {
-  if (state === 'future') {
-    return (
-      <div className="rounded-lg border p-4 opacity-50">
-        <div className="flex items-center justify-between">
-          <h3 className="text-base font-semibold text-gray-400">{title}</h3>
-          <span className="text-xs text-gray-400">Not started</span>
-        </div>
-      </div>
-    )
-  }
+  const slug = title.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-')
+  const titleId = `run-stage-${slug}`
+  const panelId = `${titleId}-content`
+  const [expanded, setExpanded] = useState(expandedByDefault)
 
-  const showBody = state === 'current' || expanded
+  useEffect(() => setExpanded(expandedByDefault), [expandedByDefault])
 
   return (
-    <div
-      className={`rounded-lg border p-4 ${state === 'current' ? 'border-blue-300 shadow-sm' : ''}`}
-    >
-      <button
-        type="button"
-        className="w-full flex items-center justify-between text-left"
-        onClick={state === 'past' ? onToggle : undefined}
-      >
-        <h3 className="text-base font-semibold text-gray-900">{title}</h3>
-        <div className="flex items-center gap-3">
-          {state === 'past' && summary && (
-            <span className="text-xs text-gray-500">{summary}</span>
-          )}
-          {state === 'past' && (
-            <span className="text-xs text-gray-400">{expanded ? '▲' : '▼'}</span>
-          )}
-        </div>
-      </button>
-      {showBody && <div className="mt-3">{children}</div>}
-    </div>
+    <section aria-labelledby={titleId} className="rounded-xl border border-gray-200 bg-white p-5">
+      <h2 id={titleId} className="text-base font-semibold text-gray-900">
+        <button
+          type="button"
+          aria-label={title}
+          aria-expanded={expanded}
+          aria-controls={panelId}
+          className="flex w-full items-center justify-between gap-3 text-left"
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <span>{title}</span>
+          <span aria-hidden="true" className="text-sm text-gray-400">
+            {expanded ? '−' : '+'}
+          </span>
+        </button>
+      </h2>
+      <div id={panelId} hidden={!expanded} className="mt-4">
+        {children}
+      </div>
+    </section>
   )
 }
 
-function ErrorBox({ message }: { message: string }) {
+function ErrorNotice({ message }: { message: string }) {
   return (
-    <div className="rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-700">
+    <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
       {message}
     </div>
   )
 }
 
-const inputClass =
-  'block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-const primaryBtn =
-  'px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium disabled:opacity-50'
-const secondaryBtn =
-  'px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-sm disabled:opacity-50'
-
-// ---------------------------------------------------------------------------
-// Data Selection card
-// ---------------------------------------------------------------------------
-
-function SelectionSection({
+function CreatedRunSetup({
   run,
-  state,
-  expanded,
-  onToggle,
-  onSave,
+  models,
+  rubrics,
+  pending,
   onStart,
-  saving,
-  saveError,
-  starting,
-  startError,
 }: {
   run: Run
-  state: StepState
-  expanded: boolean
-  onToggle: () => void
-  onSave: (selection: DataSelection) => void
-  onStart: (params: Record<string, unknown>) => void
-  saving: boolean
-  saveError: Error | null
-  starting: boolean
-  startError: Error | null
+  models: ModelCatalog
+  rubrics: RubricCatalog
+  pending: boolean
+  onStart: (selection: DataSelection, config: RunConfig, autoRun: boolean) => void
 }) {
-  const sel = run.data_selection
-  const [since, setSince] = useState(toDateInputValue(sel?.since) || defaultSinceInput())
-  const [until, setUntil] = useState(toDateInputValue(sel?.until))
-  const [excluded, setExcluded] = useState<Set<string>>(new Set(sel?.excluded_session_ids ?? []))
-  const [dryRun, setDryRun] = useState(false)
-  const [force, setForce] = useState(false)
-
+  const timezone = run.data_selection?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+  const [since, setSince] = useState(
+    () => dateInputValue(run.data_selection?.since, timezone) || defaultSince(),
+  )
+  const [until, setUntil] = useState(() => dateInputValue(run.data_selection?.until, timezone))
+  const [selectedIds, setSelectedIds] = useState<string[] | null>(
+    () => run.data_selection?.session_ids ?? null,
+  )
+  const [autoRun, setAutoRunChoice] = useState(run.auto_run)
+  const [config, setConfig] = useState(() =>
+    initializeRunConfigState(models, rubrics, run.run_config),
+  )
+  const sinceInstant = dayBoundary(since, false, timezone) ?? undefined
+  const untilInstant = dayBoundary(until, true, timezone) ?? undefined
   const sessionsQuery = useQuery({
-    queryKey: ['sessions-for-run', since],
-    queryFn: () => getSessions({ since: since || undefined, limit: 100 }),
-    enabled: state === 'current',
+    queryKey: ['sessions-for-run', sinceInstant, untilInstant, timezone],
+    queryFn: () =>
+      getSessions({ since: sinceInstant, until: untilInstant, timezone }),
   })
+  const sessions = sessionsQuery.data?.sessions ?? []
+  const selectedSessionIds = selectedIds ?? sessions.map((session) => session.conversation_id)
+  const truncated = Boolean(sessionsQuery.data?.truncated)
+  const assessment = assessRunConfig(config, models, rubrics)
+  const selectionError =
+    selectedSessionIds.length === 0
+      ? 'Select at least one session.'
+      : truncated
+        ? 'Narrow the date range before starting so the session cohort is explicit.'
+        : null
+  const cannotStart =
+    pending || sessionsQuery.isLoading || Boolean(sessionsQuery.error) ||
+    Boolean(selectionError) || assessment.errors.length > 0
 
-  const sessions = (sessionsQuery.data?.sessions ?? []).filter((s) => {
-    if (!until || !s.started_at) return true
-    return new Date(s.started_at).getTime() <= new Date(until).getTime()
-  })
+  function changeDate(setter: (value: string) => void, value: string) {
+    setter(value)
+    setSelectedIds(null)
+  }
 
-  function toggleExcluded(id: string) {
-    setExcluded((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
+  function dispatch(action: RunConfigAction) {
+    setConfig((current) => transitionRunConfig(current, action, models))
+  }
+
+  function start() {
+    if (cannotStart) return
+    onStart(
+      {
+        since: sinceInstant ?? null,
+        until: untilInstant ?? null,
+        timezone,
+        session_ids: selectedSessionIds,
+      },
+      toRunConfig(config, models, rubrics),
+      autoRun,
+    )
   }
 
   return (
-    <StepShell
-      title="Data Selection"
-      state={state}
-      expanded={expanded}
-      onToggle={onToggle}
-      summary={selectionSummary(sel)}
-    >
-      {state === 'current' ? (
-        <div>
-          <div className="grid grid-cols-2 gap-4 max-w-lg">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Since</label>
-              <input
-                type="date"
-                value={since}
-                onChange={(e) => setSince(e.target.value)}
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Until</label>
-              <input
-                type="date"
-                value={until}
-                onChange={(e) => setUntil(e.target.value)}
-                className={inputClass}
-              />
-            </div>
-          </div>
-
-          <div className="mt-4">
-            <h4 className="text-sm font-medium text-gray-700 mb-2">
-              Sessions in range ({sessions.length})
-            </h4>
-            {sessionsQuery.isLoading && <p className="text-gray-500 text-sm">Loading...</p>}
-            {sessionsQuery.error && (
-              <p className="text-red-600 text-sm">{(sessionsQuery.error as Error).message}</p>
-            )}
-            {sessions.length > 0 && (
-              <div className="space-y-1.5 max-h-96 overflow-y-auto">
-                {sessions.map((s) => (
-                  <label
-                    key={s.conversation_id}
-                    className="flex items-center gap-3 rounded-lg border p-2.5 text-sm hover:bg-gray-50"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={!excluded.has(s.conversation_id)}
-                      onChange={() => toggleExcluded(s.conversation_id)}
-                    />
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500">
-                      <span className="font-mono text-gray-700">
-                        {s.conversation_id.slice(0, 8)}
-                      </span>
-                      <span>
-                        {s.turn_count} turn{s.turn_count !== 1 ? 's' : ''}
-                      </span>
-                      <span>{formatDateTime(s.started_at)}</span>
-                      {s.config_version && (
-                        <span className="font-mono bg-gray-100 px-1.5 py-0.5 rounded">
-                          {s.config_version.slice(0, 8)}
-                        </span>
-                      )}
-                    </div>
-                  </label>
-                ))}
-              </div>
-            )}
-            {!sessionsQuery.isLoading && sessions.length === 0 && (
-              <p className="text-gray-500 text-sm">No sessions found in this range.</p>
-            )}
-          </div>
-
-          <div className="mt-4 flex items-center gap-3 flex-wrap">
-            <button
-              type="button"
-              className={secondaryBtn}
-              disabled={saving}
-              onClick={() =>
-                onSave({
-                  since: since || null,
-                  until: until || null,
-                  session_ids: [],
-                  excluded_session_ids: Array.from(excluded),
-                })
-              }
-            >
-              {saving ? 'Saving...' : 'Save Selection'}
-            </button>
-            <label className="flex items-center gap-1.5 text-sm text-gray-700">
-              <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
-              Dry run
-            </label>
-            <label className="flex items-center gap-1.5 text-sm text-gray-700">
-              <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
-              Force re-score
-            </label>
-            <button
-              type="button"
-              className={primaryBtn}
-              disabled={starting || !run.data_selection}
-              title={!run.data_selection ? 'Save a selection first' : undefined}
-              onClick={() => onStart({ dry_run: dryRun, force })}
-            >
-              {starting ? 'Starting...' : 'Start Scoring'}
-            </button>
-          </div>
-          {saveError && <p className="text-red-600 text-sm mt-2">{saveError.message}</p>}
-          {startError && <p className="text-red-600 text-sm mt-2">{startError.message}</p>}
-        </div>
-      ) : (
-        <div className="text-sm text-gray-600">
-          Since {sel?.since ?? '—'}, until {sel?.until ?? '—'}.{' '}
-          {sel && sel.session_ids.length > 0 && (
-            <span>Included: {sel.session_ids.join(', ')}. </span>
-          )}
-          {sel && sel.excluded_session_ids.length > 0 && (
-            <span>Excluded: {sel.excluded_session_ids.join(', ')}.</span>
-          )}
-        </div>
-      )}
-    </StepShell>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Scoring card
-// ---------------------------------------------------------------------------
-
-function ScoringSection({
-  run,
-  state,
-  expanded,
-  onToggle,
-  judgeBackend,
-  onJudgeBackendChange,
-  onStartJudging,
-  starting,
-  startError,
-}: {
-  run: Run
-  state: StepState
-  expanded: boolean
-  onToggle: () => void
-  judgeBackend: string
-  onJudgeBackendChange: (v: string) => void
-  onStartJudging: (params: Record<string, unknown>) => void
-  starting: boolean
-  startError: Error | null
-}) {
-  const progress = run.scoring_progress as ScoringProgress | null
-  const result = run.scoring_result as ScoringResult | null
-
-  const [panelSize, setPanelSize] = useState(1)
-  const [selectedRubrics, setSelectedRubrics] = useState<Set<string>>(new Set())
-  const [dryRun, setDryRun] = useState(false)
-  const [force, setForce] = useState(false)
-
-  const modelsQuery = useQuery({
-    queryKey: ['models'],
-    queryFn: getModels,
-    enabled: state === 'current' && !!result,
-  })
-  const rubricsQuery = useQuery({
-    queryKey: ['rubrics'],
-    queryFn: getRubrics,
-    enabled: state === 'current' && !!result,
-  })
-  const rubrics = rubricsQuery.data?.rubrics ?? []
-
-  function toggleRubric(name: string) {
-    setSelectedRubrics((prev) => {
-      const next = new Set(prev)
-      if (next.has(name)) next.delete(name)
-      else next.add(name)
-      return next
-    })
-  }
-
-  const summary = result
-    ? `${result.turns_scored} turns, ${result.sessions_scored} sessions, ${result.scores_written} written${result.errors ? `, ${result.errors} errors` : ''}`
-    : 'no result'
-
-  return (
-    <StepShell title="Scoring" state={state} expanded={expanded} onToggle={onToggle} summary={summary}>
-      {state === 'current' && run.status === 'failed' && run.error && (
-        <ErrorBox message={run.error} />
-      )}
-
-      {!result && run.status !== 'failed' && (
-        <>
-          {progress ? (
-            <ProgressBar done={progress.scored} total={progress.total} label="Scored" />
-          ) : (
-            <p className="text-gray-500 text-sm">Starting...</p>
-          )}
-        </>
-      )}
-
-      {result && (
-        <div className="text-sm text-gray-700 space-y-1">
-          <div>Turns scored: {result.turns_scored}</div>
-          <div>Sessions scored: {result.sessions_scored}</div>
-          <div>Scores written: {result.scores_written}</div>
-          {result.errors > 0 && <div className="text-red-600">Errors: {result.errors}</div>}
-          {result.dry_run && <div className="text-amber-600">Dry run — nothing written</div>}
-        </div>
-      )}
-
-      {state === 'current' && result && (
-        <div className="mt-4 border-t pt-4">
-          <h4 className="text-sm font-medium text-gray-700 mb-3">Judging configuration</h4>
-          <div className="grid grid-cols-2 gap-4 max-w-lg">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Judge Backend
-              </label>
-              <select
-                value={judgeBackend}
-                onChange={(e) => onJudgeBackendChange(e.target.value)}
-                className={inputClass}
-              >
-                <option value="cli">cli</option>
-                <option value="openai">openai</option>
-                <option value="wandb">wandb</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Panel Size</label>
-              <input
-                type="number"
-                min={1}
-                value={panelSize}
-                onChange={(e) => setPanelSize(Number(e.target.value))}
-                className={inputClass}
-              />
-            </div>
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
-              Dry run
-            </label>
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
-              Force
-            </label>
-          </div>
-
-          {modelsQuery.data?.[judgeBackend] && (
-            <div className="mt-3">
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Judge Models ({panelSize > 1 ? 'PoLL panel' : 'default'})
-              </label>
-              <div className="flex flex-wrap gap-1.5">
-                {(panelSize > 1
-                  ? modelsQuery.data[judgeBackend].poll
-                  : modelsQuery.data[judgeBackend].default
-                ).map((m) => (
-                  <span
-                    key={m}
-                    className="inline-block rounded-full bg-gray-100 text-gray-700 px-2.5 py-0.5 text-xs font-medium"
-                  >
-                    {m}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {rubrics.length > 0 && (
-            <div className="mt-3">
-              <label className="block text-sm font-medium text-gray-700 mb-2">Rubrics</label>
-              <div className="grid grid-cols-2 gap-1">
-                {rubrics.map((r) => (
-                  <label key={r.name} className="flex items-center gap-2 text-sm text-gray-700">
-                    <input
-                      type="checkbox"
-                      checked={selectedRubrics.has(r.name)}
-                      onChange={() => toggleRubric(r.name)}
-                    />
-                    {r.name}
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className="mt-4">
-            <button
-              type="button"
-              className={primaryBtn}
-              disabled={starting}
-              onClick={() =>
-                onStartJudging({
-                  judge_backend: judgeBackend,
-                  panel_size: panelSize,
-                  rubrics: selectedRubrics.size > 0 ? Array.from(selectedRubrics) : undefined,
-                  dry_run: dryRun,
-                  force,
-                })
-              }
-            >
-              {starting ? 'Starting...' : 'Start Judging'}
-            </button>
-            {startError && <p className="text-red-600 text-sm mt-2">{startError.message}</p>}
-          </div>
-        </div>
-      )}
-    </StepShell>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Judging card
-// ---------------------------------------------------------------------------
-
-function JudgingSection({
-  run,
-  state,
-  expanded,
-  onToggle,
-  judgeBackend,
-  onStartReflecting,
-  starting,
-  startError,
-}: {
-  run: Run
-  state: StepState
-  expanded: boolean
-  onToggle: () => void
-  judgeBackend: string
-  onStartReflecting: (params: Record<string, unknown>) => void
-  starting: boolean
-  startError: Error | null
-}) {
-  const progress = run.judging_progress as JudgingProgress | null
-  const result = run.judging_result as JudgingResult | null
-
-  const [model, setModel] = useState('gpt-4o')
-  const [iterations, setIterations] = useState(3)
-  const [dryRun, setDryRun] = useState(false)
-
-  const modelsQuery = useQuery({
-    queryKey: ['models'],
-    queryFn: getModels,
-    enabled: state === 'current' && !!result,
-  })
-
-  const backendModels = (() => {
-    const rosters = modelsQuery.data
-    if (!rosters || !rosters[judgeBackend]) return []
-    const r = rosters[judgeBackend]
-    const seen = new Set<string>()
-    const all: string[] = []
-    for (const m of [...r.default, ...r.poll, r.escalation]) {
-      if (!seen.has(m)) {
-        seen.add(m)
-        all.push(m)
-      }
-    }
-    return all
-  })()
-
-  const summary = result
-    ? `${result.turns_judged} turns, ${result.scores_written} written${result.errors ? `, ${result.errors} errors` : ''}`
-    : 'no result'
-
-  return (
-    <StepShell title="Judging" state={state} expanded={expanded} onToggle={onToggle} summary={summary}>
-      {state === 'current' && run.status === 'failed' && run.error && (
-        <ErrorBox message={run.error} />
-      )}
-
-      {!result && run.status !== 'failed' && (
-        <>
-          {progress ? (
-            <ProgressBar done={progress.judged} total={progress.total} label="Judged" />
-          ) : (
-            <p className="text-gray-500 text-sm">Starting...</p>
-          )}
-        </>
-      )}
-
-      {result && (
-        <div className="text-sm text-gray-700 space-y-1">
-          <div>Turns judged: {result.turns_judged}</div>
-          <div>Scores written: {result.scores_written}</div>
-          {result.errors > 0 && <div className="text-red-600">Errors: {result.errors}</div>}
-          {result.dry_run && <div className="text-amber-600">Dry run — nothing written</div>}
-        </div>
-      )}
-
-      {state === 'current' && result && (
-        <div className="mt-4 border-t pt-4">
-          <h4 className="text-sm font-medium text-gray-700 mb-3">Reflecting configuration</h4>
-          <p className="text-xs text-gray-500 mb-3">
-            Reusing <span className="font-mono">{judgeBackend}</span> as the judge backend
-            (chosen on the Scoring step).
-          </p>
-          <div className="grid grid-cols-2 gap-4 max-w-lg">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Model</label>
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className={inputClass}
-              >
-                {backendModels.length === 0 && <option value={model}>{model}</option>}
-                {backendModels.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Iterations</label>
-              <input
-                type="number"
-                min={1}
-                value={iterations}
-                onChange={(e) => setIterations(Number(e.target.value))}
-                className={inputClass}
-              />
-            </div>
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
-              Dry run
-            </label>
-          </div>
-
-          <div className="mt-4">
-            <button
-              type="button"
-              className={primaryBtn}
-              disabled={starting}
-              onClick={() =>
-                onStartReflecting({
-                  model,
-                  iterations,
-                  judge_backend: judgeBackend,
-                  dry_run: dryRun,
-                })
-              }
-            >
-              {starting ? 'Starting...' : 'Start Reflecting'}
-            </button>
-            {startError && <p className="text-red-600 text-sm mt-2">{startError.message}</p>}
-          </div>
-        </div>
-      )}
-    </StepShell>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Reflecting card
-// ---------------------------------------------------------------------------
-
-function ReflectingSection({
-  run,
-  state,
-  expanded,
-  onToggle,
-  onComplete,
-  completing,
-  completeError,
-}: {
-  run: Run
-  state: StepState
-  expanded: boolean
-  onToggle: () => void
-  onComplete: () => void
-  completing: boolean
-  completeError: Error | null
-}) {
-  const [confirmOpen, setConfirmOpen] = useState(false)
-  const progress = run.reflecting_progress as ReflectingProgress | null
-  const result = run.reflecting_result as ReflectingResult | null
-
-  const applyMutation = useMutation({
-    mutationFn: () => applyRunReflection(run.run_id),
-  })
-
-  const summary = result
-    ? hasProposal(result)
-      ? `score Δ ${result.score_delta >= 0 ? '+' : ''}${result.score_delta.toFixed(3)}`
-      : result.reason
-    : 'no result'
-
-  return (
-    <StepShell
-      title="Reflecting"
-      state={state}
-      expanded={expanded}
-      onToggle={onToggle}
-      summary={summary}
-    >
-      {state === 'current' && run.status === 'failed' && run.error && (
-        <ErrorBox message={run.error} />
-      )}
-
-      {!result && run.status !== 'failed' && (
-        <p className="text-gray-500 text-sm">
-          {progress ? `Reflecting (${progress.phase})...` : 'Starting...'}
-        </p>
-      )}
-
-      {result && !hasProposal(result) && (
-        <p className="text-gray-600 text-sm">{result.reason}</p>
-      )}
-
-      {result && hasProposal(result) && (
-        <div className="space-y-3">
-          <div>
-            <h4 className="text-sm font-medium text-gray-700 mb-1">Rationale</h4>
-            <p className="text-sm text-gray-600">{result.rationale}</p>
-          </div>
-          <div className="text-sm">
-            <span className="text-gray-500">Score delta: </span>
-            <span
-              className={`font-mono font-medium ${result.score_delta >= 0 ? 'text-green-600' : 'text-red-600'}`}
-            >
-              {result.score_delta >= 0 ? '+' : ''}
-              {result.score_delta.toFixed(3)}
-            </span>
-          </div>
-          <div>
-            <h4 className="text-sm font-medium text-gray-700 mb-1">Diff</h4>
-            <DiffViewer diff={result.diff} />
-          </div>
-        </div>
-      )}
-
-      {state === 'current' && result && (
-        <div className="mt-4 border-t pt-4 flex items-center gap-3">
-          {hasProposal(result) && (
-            <button
-              type="button"
-              className={secondaryBtn}
-              disabled={applyMutation.isPending || applyMutation.isSuccess}
-              onClick={() => setConfirmOpen(true)}
-            >
-              {applyMutation.isPending
-                ? 'Applying...'
-                : applyMutation.isSuccess
-                  ? 'Applied'
-                  : 'Apply Changes'}
-            </button>
-          )}
-          <button type="button" className={primaryBtn} disabled={completing} onClick={onComplete}>
-            {completing ? 'Completing...' : 'Complete'}
-          </button>
-        </div>
-      )}
-      {applyMutation.error && (
-        <p className="text-red-600 text-sm mt-2">{(applyMutation.error as Error).message}</p>
-      )}
-      {applyMutation.isSuccess && (
-        <p className="text-green-600 text-sm mt-2">Changes applied.</p>
-      )}
-      {completeError && <p className="text-red-600 text-sm mt-2">{completeError.message}</p>}
-
-      <ConfirmDialog
-        open={confirmOpen}
-        title="Apply reflected changes"
-        message="Apply the reflected changes to your config artifacts? This will overwrite the current versions."
-        onConfirm={() => {
-          setConfirmOpen(false)
-          applyMutation.mutate()
-        }}
-        onCancel={() => setConfirmOpen(false)}
+    <div className="space-y-6">
+      <RunSelection
+        since={since}
+        until={until}
+        sessions={sessions}
+        selectedSessionIds={selectedSessionIds}
+        totalSessions={sessionsQuery.data?.total ?? sessions.length}
+        truncated={truncated}
+        loading={sessionsQuery.isLoading}
+        error={sessionsQuery.error instanceof Error ? sessionsQuery.error.message : null}
+        disabled={pending}
+        onSinceChange={(value) => changeDate(setSince, value)}
+        onUntilChange={(value) => changeDate(setUntil, value)}
+        onSessionIdsChange={setSelectedIds}
+        onRetry={() => void sessionsQuery.refetch()}
       />
-    </StepShell>
+      <RunConfiguration
+        state={config}
+        models={models}
+        rubrics={rubrics}
+        disabled={pending}
+        onAction={dispatch}
+      />
+      {selectionError && <ErrorNotice message={selectionError} />}
+      <div className="flex flex-wrap items-center gap-4 border-t border-gray-200 pt-4">
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={autoRun}
+            disabled={pending}
+            onChange={(event) => setAutoRunChoice(event.target.checked)}
+          />
+          Continue automatically
+        </label>
+        <button type="button" className={primaryButton} disabled={cannotStart} onClick={start}>
+          {pending ? 'Starting…' : 'Start Scoring'}
+        </button>
+      </div>
+    </div>
   )
 }
 
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
+function isCancellable(run: Run): boolean {
+  if (!['created', 'scoring', 'judging', 'reflecting'].includes(run.status)) return false
+  return !(
+    run.status === 'reflecting' &&
+    (run.reflecting_result !== null || run.reflection_review !== null)
+  )
+}
 
 export default function RunDetail() {
   const { runId } = useParams<{ runId: string }>()
   const queryClient = useQueryClient()
-  const [expandedSteps, setExpandedSteps] = useState<Partial<Record<StepKey, boolean>>>({})
-  const [judgeBackend, setJudgeBackend] = useState('cli')
-
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [reviewDirty, setReviewDirty] = useState(false)
+  const blocker = useBlocker(useCallback(
+    ({ currentLocation, nextLocation }) =>
+      reviewDirty && currentLocation.pathname !== nextLocation.pathname,
+    [reviewDirty],
+  ))
+  useBeforeUnload(useCallback((event) => {
+    if (!reviewDirty) return
+    event.preventDefault()
+    event.returnValue = ''
+  }, [reviewDirty]), { capture: true })
   const runQuery = useQuery({
     queryKey: ['run', runId],
     queryFn: () => getRun(runId!),
-    enabled: !!runId,
+    enabled: Boolean(runId),
     refetchInterval: (query) => {
-      const run = query.state.data
-      return run && isRunInProgress(run) ? 2000 : false
+      const current = query.state.data
+      return current && shouldPollRun(current) ? 2_000 : false
     },
   })
-
   const run = runQuery.data
-
-  const selectionMutation = useMutation({
-    mutationFn: (selection: DataSelection) => setRunSelection(runId!, selection),
-    onSuccess: (data) => queryClient.setQueryData(['run', runId], data),
+  const modelsQuery = useQuery({
+    queryKey: ['models'],
+    queryFn: getModels,
+    enabled: run?.status === 'created',
+  })
+  const rubricsQuery = useQuery({
+    queryKey: ['rubrics'],
+    queryFn: getRubrics,
+    enabled: run?.status === 'created',
   })
 
+  function updateRun(next: Run) {
+    queryClient.setQueryData(['run', runId], next)
+    void queryClient.invalidateQueries({ queryKey: ['runs'] })
+  }
+
+  function reconcileError(error: unknown) {
+    setActionError(error instanceof Error ? error.message : String(error))
+    if (run && error instanceof ApiError && error.status === 409) {
+      const detail = error.detail
+      if (detail && typeof detail === 'object') {
+        const conflict = detail as {
+          code?: string
+          current_revision?: number
+          current_review?: Run['reflection_review']
+          changed_targets?: string[]
+          current?: ReflectionBundleSnapshot | null
+          message?: string
+        }
+        if (
+          typeof conflict.current_revision === 'number' &&
+          conflict.current_review && typeof conflict.current_review === 'object'
+        ) {
+          queryClient.setQueryData<Run>(['run', runId], {
+            ...run,
+            reflection_review: conflict.current_review,
+            reflection_review_revision: conflict.current_revision,
+          })
+        } else if (conflict.code === 'baseline_stale' && run.reflection_review) {
+          queryClient.setQueryData<Run>(['run', runId], {
+            ...run,
+            reflection_review: {
+              ...run.reflection_review,
+              stale: true,
+              changed_targets: conflict.changed_targets ?? [],
+              current: conflict.current ?? null,
+              stale_reason: conflict.message ?? 'baseline_changed',
+            },
+          })
+        }
+      }
+    }
+    void queryClient.invalidateQueries({ queryKey: ['run', runId] })
+  }
+
+  const startMutation = useMutation({
+    mutationFn: async ({
+      selection,
+      config,
+      autoRun,
+    }: {
+      selection: DataSelection
+      config: RunConfig
+      autoRun: boolean
+    }) => {
+      await setRunSelection(runId!, selection)
+      await setRunConfig(runId!, config)
+      await setAutoRun(runId!, autoRun)
+      return advanceRun(runId!)
+    },
+    onMutate: () => setActionError(null),
+    onSuccess: updateRun,
+    onError: reconcileError,
+  })
   const advanceMutation = useMutation({
-    mutationFn: (params: Record<string, unknown>) => advanceRun(runId!, params),
-    onSuccess: (data) => queryClient.setQueryData(['run', runId], data),
+    mutationFn: () => advanceRun(runId!),
+    onMutate: () => setActionError(null),
+    onSuccess: updateRun,
+    onError: reconcileError,
   })
-
-  function isExpanded(step: StepKey, state: StepState): boolean {
-    if (step in expandedSteps) return !!expandedSteps[step]
-    // Auto-expand the step that most recently produced the run's final
-    // outcome, so landing on a finished run shows something useful by
-    // default instead of four collapsed rows.
-    if (run?.status === 'complete' && step === 'reflecting') return true
-    if (run?.status === 'failed' && state === 'current') return true
-    return false
-  }
-
-  function toggleExpanded(step: StepKey, state: StepState) {
-    setExpandedSteps((prev) => ({ ...prev, [step]: !isExpanded(step, state) }))
-  }
+  const cancelMutation = useMutation({
+    mutationFn: () => cancelRun(runId!),
+    onMutate: () => setActionError(null),
+    onSuccess: (next) => {
+      updateRun(next)
+      setCancelDialogOpen(false)
+    },
+    onError: reconcileError,
+  })
 
   if (!runId) return null
-
   if (runQuery.isLoading) {
+    return <><PageHeader title="Run" /><p role="status">Loading run…</p></>
+  }
+  if (runQuery.error && !run) {
     return (
-      <div>
+      <>
         <PageHeader title="Run" />
-        <p className="text-gray-500 text-sm">Loading...</p>
-      </div>
+        <ErrorNotice message={(runQuery.error as Error).message} />
+        <button type="button" className="mt-3 text-sm font-medium text-blue-700" onClick={() => void runQuery.refetch()}>
+          Retry
+        </button>
+      </>
     )
   }
-
-  if (runQuery.error) {
-    return (
-      <div>
-        <PageHeader title="Run" />
-        <p className="text-red-600 text-sm">{(runQuery.error as Error).message}</p>
-      </div>
-    )
-  }
-
   if (!run) return null
 
-  const selectionState = stepState(run, 'selection')
-  const scoringState = stepState(run, 'scoring')
-  const judgingState = stepState(run, 'judging')
-  const reflectingState = stepState(run, 'reflecting')
+  const reviewError = (error: unknown): never => {
+    reconcileError(error)
+    throw error
+  }
+  const selectCandidate = async (candidateId: string, discardDraft: boolean) => {
+    try {
+      updateRun(await setReflectionSelection(
+        run.run_id, candidateId, run.reflection_review_revision, discardDraft,
+      ))
+    } catch (error) { reviewError(error) }
+  }
+  const saveDraft = async (contents: Record<string, string | null>) => {
+    try {
+      updateRun(await saveReflectionDraft(
+        run.run_id,
+        contents,
+        run.reflection_review_revision,
+        run.reflection_review?.draft?.revision ?? null,
+      ))
+    } catch (error) { reviewError(error) }
+  }
+  const resetDraft = async () => {
+    try {
+      updateRun(await resetReflectionDraft(
+        run.run_id,
+        run.reflection_review_revision,
+        run.reflection_review?.draft?.revision ?? null,
+      ))
+    } catch (error) { reviewError(error) }
+  }
+  const promote = async (acknowledgeUnevaluated: boolean) => {
+    try {
+      updateRun(await promoteRunReflection(run.run_id, {
+        expectedRevision: run.reflection_review_revision,
+        expectedDraftRevision: run.reflection_review?.draft?.revision ?? null,
+        acknowledgeUnevaluated,
+        idempotencyKey: [
+          run.run_id,
+          run.reflection_review_revision,
+          run.reflection_review?.draft?.revision ?? 'evaluated',
+        ].join(':'),
+      }))
+    } catch (error) { reviewError(error) }
+  }
+  const dismiss = async () => {
+    try {
+      updateRun(await dismissRunReflection(run.run_id, run.reflection_review_revision))
+    } catch (error) { reviewError(error) }
+  }
+
+  const showJudging = Boolean(
+    run.judging_plan || run.judging_progress || run.judging_result ||
+    ['judging', 'reflecting', 'complete'].includes(run.status),
+  )
+  const showReflecting = Boolean(
+    run.reflecting_progress || run.reflecting_result || run.reflection_review ||
+    ['reflecting', 'complete'].includes(run.status),
+  )
 
   return (
     <div>
       <PageHeader title={run.run_id}>
-        <StatusBadge status={run.status} />
+        <RunStatusBadge status={run.status} />
+        {isCancellable(run) && (
+          <button type="button" className={dangerButton} disabled={cancelMutation.isPending} onClick={() => setCancelDialogOpen(true)}>
+            Cancel Run
+          </button>
+        )}
       </PageHeader>
 
-      <div className="text-sm text-gray-500 mb-4">
-        Created {formatDateTime(run.created_at)}
-      </div>
-
-      {run.status === 'failed' && run.error && (
-        <div className="mb-4">
-          <ErrorBox message={`Run failed: ${run.error}`} />
-        </div>
+      {cancelDialogOpen && (
+        <Dialog title="Cancel this run?" closeLabel="Keep running" busy={cancelMutation.isPending} onClose={() => setCancelDialogOpen(false)}>
+          <p className="mt-2 text-sm text-gray-600">Completed evidence remains available.</p>
+          <button type="button" className={`${dangerButton} mt-4`} disabled={cancelMutation.isPending} onClick={() => cancelMutation.mutate()}>
+            {cancelMutation.isPending ? 'Cancelling…' : 'Cancel run'}
+          </button>
+        </Dialog>
       )}
 
-      <div className="space-y-4">
-        <SelectionSection
-          run={run}
-          state={selectionState}
-          expanded={isExpanded('selection', selectionState)}
-          onToggle={() => toggleExpanded('selection', selectionState)}
-          onSave={(selection) => selectionMutation.mutate(selection)}
-          onStart={(params) => advanceMutation.mutate(params)}
-          saving={selectionMutation.isPending}
-          saveError={selectionMutation.error as Error | null}
-          starting={advanceMutation.isPending}
-          startError={run.status === 'created' ? (advanceMutation.error as Error | null) : null}
-        />
+      {blocker.state === 'blocked' && (
+        <Dialog
+          title="Leave without saving edited D?"
+          closeLabel="Keep editing"
+          onClose={() => blocker.reset()}
+        >
+          <p className="mt-2 text-sm text-gray-600">
+            Your inline edits have not been saved. Leaving this page will discard them.
+          </p>
+          <button
+            type="button"
+            className={`${dangerButton} mt-4`}
+            onClick={() => blocker.proceed()}
+          >
+            Leave without saving
+          </button>
+        </Dialog>
+      )}
 
-        <ScoringSection
-          run={run}
-          state={scoringState}
-          expanded={isExpanded('scoring', scoringState)}
-          onToggle={() => toggleExpanded('scoring', scoringState)}
-          judgeBackend={judgeBackend}
-          onJudgeBackendChange={setJudgeBackend}
-          onStartJudging={(params) => advanceMutation.mutate(params)}
-          starting={advanceMutation.isPending}
-          startError={run.status === 'scoring' ? (advanceMutation.error as Error | null) : null}
-        />
+      <p className="mb-4 text-sm text-gray-500">Created {formatDateTime(run.created_at)}</p>
+      {runQuery.error && (
+        <div className="mb-4 space-y-2">
+          <ErrorNotice message={`Could not refresh run: ${(runQuery.error as Error).message}`} />
+          <button
+            type="button"
+            className="text-sm font-semibold text-blue-700 hover:underline"
+            onClick={() => void runQuery.refetch()}
+          >
+            Retry run refresh
+          </button>
+        </div>
+      )}
+      {run.status === 'failed' && run.error && <ErrorNotice message={`Run failed: ${run.error}`} />}
+      {run.status === 'cancelled' && (
+        <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-3 text-sm text-yellow-800">Run was cancelled.</div>
+      )}
+      {actionError && <div className="mt-4"><ErrorNotice message={actionError} /></div>}
 
-        <JudgingSection
-          run={run}
-          state={judgingState}
-          expanded={isExpanded('judging', judgingState)}
-          onToggle={() => toggleExpanded('judging', judgingState)}
-          judgeBackend={judgeBackend}
-          onStartReflecting={(params) => advanceMutation.mutate(params)}
-          starting={advanceMutation.isPending}
-          startError={run.status === 'judging' ? (advanceMutation.error as Error | null) : null}
-        />
+      <div className="mt-4 space-y-4">
+        <StageCard
+          title="Data selection & configuration"
+          expandedByDefault={run.status === 'created'}
+        >
+          {run.status === 'created' ? (
+            modelsQuery.data && rubricsQuery.data ? (
+              <CreatedRunSetup
+                run={run}
+                models={modelsQuery.data}
+                rubrics={rubricsQuery.data}
+                pending={startMutation.isPending}
+                onStart={(selection, config, autoRun) =>
+                  startMutation.mutate({ selection, config, autoRun })}
+              />
+            ) : modelsQuery.error || rubricsQuery.error ? (
+              <div>
+                <ErrorNotice message={((modelsQuery.error ?? rubricsQuery.error) as Error).message} />
+                <button
+                  type="button"
+                  className="mt-3 text-sm font-semibold text-blue-700 hover:underline"
+                  onClick={() => {
+                    void modelsQuery.refetch()
+                    void rubricsQuery.refetch()
+                  }}
+                >
+                  Retry configuration catalogs
+                </button>
+              </div>
+            ) : (
+              <p role="status" className="text-sm text-gray-500">Loading configuration catalogs…</p>
+            )
+          ) : (
+            <div className="space-y-4">
+              <PinnedSelectionAudit selection={run.data_selection} cohort={run.turn_cohort} />
+              {run.effective_config ? (
+                <RunConfigAudit config={run.effective_config} />
+              ) : (
+                <p className="text-sm text-gray-500">Pinned configuration unavailable.</p>
+              )}
+            </div>
+          )}
+        </StageCard>
 
-        <ReflectingSection
-          run={run}
-          state={reflectingState}
-          expanded={isExpanded('reflecting', reflectingState)}
-          onToggle={() => toggleExpanded('reflecting', reflectingState)}
-          onComplete={() => advanceMutation.mutate({})}
-          completing={advanceMutation.isPending}
-          completeError={run.status === 'reflecting' ? (advanceMutation.error as Error | null) : null}
-        />
+        {run.status !== 'created' && (
+          <StageCard title="Scoring" expandedByDefault={run.status === 'scoring'}>
+            <ScoringProgress progress={run.scoring_progress} result={run.scoring_result} />
+            {run.status === 'scoring' && run.current_stage_succeeded && run.scoring_result && !run.auto_run && (
+              <button type="button" className={`${primaryButton} mt-4`} disabled={advanceMutation.isPending} onClick={() => advanceMutation.mutate()}>
+                {advanceMutation.isPending ? 'Starting…' : 'Continue to judging'}
+              </button>
+            )}
+          </StageCard>
+        )}
+
+        {showJudging && (
+          <StageCard title="Judging" expandedByDefault={run.status === 'judging'}>
+            <JudgingProgress
+              plan={run.judging_plan ?? null}
+              progress={run.judging_progress}
+              result={run.judging_result}
+            />
+            {run.status === 'judging' && run.current_stage_succeeded && run.judging_result?.coverage_complete && !run.auto_run && (
+              <button type="button" className={`${primaryButton} mt-4`} disabled={advanceMutation.isPending} onClick={() => advanceMutation.mutate()}>
+                {advanceMutation.isPending ? 'Starting…' : 'Continue to reflection'}
+              </button>
+            )}
+          </StageCard>
+        )}
+
+        {showReflecting && (
+          <StageCard
+            title="Reflecting"
+            expandedByDefault={
+              run.status === 'reflecting' || run.reflection_review?.status === 'pending'
+            }
+          >
+            {run.reflecting_progress && (
+              <ReflectionActivity progress={run.reflecting_progress} active={run.status === 'reflecting'} />
+            )}
+            {run.reflecting_result && (
+              <ReflectionReview
+                run={run}
+                onSelect={selectCandidate}
+                onSaveDraft={saveDraft}
+                onResetDraft={resetDraft}
+                onPromote={promote}
+                onDismiss={dismiss}
+                onDirtyChange={setReviewDirty}
+              />
+            )}
+          </StageCard>
+        )}
       </div>
     </div>
   )
