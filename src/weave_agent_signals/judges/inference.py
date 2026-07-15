@@ -290,7 +290,11 @@ class InferenceClient:
             except httpx.HTTPStatusError as error:
                 error._transport_request_count = attempt + 1  # type: ignore[attr-defined]
                 raise
-            return resp.json(), attempt + 1
+            try:
+                return resp.json(), attempt + 1
+            except ValueError as error:
+                _add_transport_request_count(error, attempt + 1)
+                raise
         raise AssertionError("HTTP retry loop exhausted without a response")
 
     def chat(
@@ -312,18 +316,22 @@ class InferenceClient:
 
         data, request_count = self._post_with_retry("/chat/completions", body)
 
-        choice = data["choices"][0]
-        usage = data.get("usage", {})
-        content = choice["message"]["content"]
-        if not isinstance(content, str):
-            content = ""
-        return JudgeResponse(
-            content=content,
-            model=data.get("model", model),
-            usage=usage if isinstance(usage, Mapping) else {},
-            transport_request_count=request_count,
-            raw_output_digest=_raw_output_digest(content),
-        )
+        try:
+            choice = data["choices"][0]
+            usage = data.get("usage", {})
+            content = choice["message"]["content"]
+            if not isinstance(content, str):
+                content = ""
+            return JudgeResponse(
+                content=content,
+                model=data.get("model", model),
+                usage=usage if isinstance(usage, Mapping) else {},
+                transport_request_count=request_count,
+                raw_output_digest=_raw_output_digest(content),
+            )
+        except Exception as error:
+            _add_transport_request_count(error, request_count)
+            raise
 
     def chat_json(
         self,

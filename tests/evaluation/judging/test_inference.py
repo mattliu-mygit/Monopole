@@ -373,6 +373,97 @@ def test_http_failed_fallback_preserves_all_transport_attempts(client, monkeypat
     assert getattr(captured.value, "_transport_request_count", None) == 3
 
 
+def test_http_malformed_json_preserves_rate_limit_attempts(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    responses = iter(
+        [
+            httpx.Response(429, request=request),
+            httpx.Response(200, request=request, content=b"not-json"),
+        ]
+    )
+    calls = 0
+
+    def fake_post(_path, *, json):
+        nonlocal calls
+        calls += 1
+        return next(responses)
+
+    monkeypatch.setattr(client._http, "post", fake_post)
+    monkeypatch.setattr(inference.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(ValueError) as captured:
+        client.chat_json(model="gpt-pinned", messages=_messages())
+
+    assert calls == 2
+    assert getattr(captured.value, "_transport_request_count", None) == 2
+
+
+def test_http_malformed_response_shape_preserves_rate_limit_attempts(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    responses = iter(
+        [
+            httpx.Response(429, request=request),
+            httpx.Response(200, request=request, json={"choices": []}),
+        ]
+    )
+    calls = 0
+
+    def fake_post(_path, *, json):
+        nonlocal calls
+        calls += 1
+        return next(responses)
+
+    monkeypatch.setattr(client._http, "post", fake_post)
+    monkeypatch.setattr(inference.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(IndexError) as captured:
+        client.chat_json(model="gpt-pinned", messages=_messages())
+
+    assert calls == 2
+    assert getattr(captured.value, "_transport_request_count", None) == 2
+
+
+def test_http_schema_fallback_malformed_success_preserves_all_attempts(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    responses = iter(
+        [
+            httpx.Response(
+                400,
+                request=request,
+                json={
+                    "error": {
+                        "message": "response_format json_schema is not supported",
+                        "param": "response_format",
+                        "code": "unsupported_value",
+                        "type": "invalid_request_error",
+                    }
+                },
+            ),
+            httpx.Response(429, request=request),
+            httpx.Response(200, request=request, content=b"not-json"),
+        ]
+    )
+    calls = 0
+
+    def fake_post(_path, *, json):
+        nonlocal calls
+        calls += 1
+        return next(responses)
+
+    monkeypatch.setattr(client._http, "post", fake_post)
+    monkeypatch.setattr(inference.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(ValueError) as captured:
+        client.chat_json(
+            model="gpt-pinned",
+            messages=_messages(),
+            response_schema=_schema(),
+        )
+
+    assert calls == 3
+    assert getattr(captured.value, "_transport_request_count", None) == 3
+
+
 def test_http_invalid_output_log_contains_metadata_not_model_output(client, monkeypatch, caplog):
     secret = "SENTINEL_PRIVATE_INSTRUCTION"
     output = f"not json: {secret}"
