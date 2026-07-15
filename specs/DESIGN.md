@@ -1,240 +1,121 @@
-# weave-agent-signals: Layered evaluation & weak RSI for agent traces
+# Monopole design
 
-> v1 design. Reads agent-session traces from Weave (emitted by [weave-agent-adapter](https://github.com/mattliu-mygit/Weave-Agent-Adapter)), scores them through four layers — deterministic, LLM-as-judge, pattern recognition, self-improvement — and writes structured feedback back to the same Weave project. The end goal: a closed loop that proposes, measures, and iterates on the user's prompts, skills, and configuration.
+Monopole turns agent traces recorded by `weave-agent-adapter` into an
+auditable improvement loop. It evaluates observed outcomes and process quality,
+finds regressions, proposes repository instruction changes, and requires a human
+decision before promotion.
 
-## 1. Purpose
+## Product model
 
-Personal coding performance evaluation over Claude Code sessions at three granularities (per-turn, per-session, multi-session) with an improvement loop. Not a generic eval framework — opinionated about what matters for a single power user iterating on their own agent workflow.
-
-## 2. Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  Weave project: agent-sessions                          │
-│  ┌───────────────┐         ┌──────────────────────┐     │
-│  │ Agent traces   │         │ Feedback (scores)    │     │
-│  │ (from adapter) │         │ on agent refs        │     │
-│  └───────┬───────┘         └──────────▲───────────┘     │
-└──────────┼────────────────────────────┼─────────────────┘
-           │ agents/spans/query         │ feedback/create
-           │ + custom_attr_columns      │ (batch)
-           ▼                            │
-┌──────────────────────────────────────────────────────────┐
-│  weave-agent-signals                                     │
-│                                                          │
-│  ┌─────────────────┐                                     │
-│  │ Span Reader      │ query turns + conversations        │
-│  │ (spec 01)        │ from Weave, hydrate into Turn/     │
-│  │                  │ Session models with tool results    │
-│  └────────┬─────────┘                                    │
-│           │                                              │
-│  ┌────────▼─────────────────────────────────────────┐    │
-│  │ L1 Fact Extraction (M1)                          │    │
-│  │  deterministic scorers (M1); micro-LLM (M2)     │    │
-│  │  ├── outcome extractor (spec 02)                 │    │
-│  │  │   test/build/lint/git → pass/fail/counts      │    │
-│  │  ├── implicit feedback (spec 03)                 │    │
-│  │  │   correction density + abandonment            │    │
-│  │  └── efficiency (spec 04)                        │    │
-│  │      error loops/repeated reads → waste ratio    │    │
-│  └────────┬─────────────────────────────────────────┘    │
-│           │                                              │
-│  ┌────────▼─────────────────────────────────────────┐    │
-│  │ Routing Gates (M2)                                │    │
-│  │  deterministic predicates → skip / small / panel │    │
-│  └────────┬─────────────────────────────────────────┘    │
-│           │                                              │
-│  ┌────────▼─────────────────────────────────────────┐    │
-│  │ L2 LLM-as-Judge (M2–M3)                           │    │
-│  │  ├── turn signals: process rubrics, small judges │    │
-│  │  └── session panel:                              │    │
-│  │      digest → 3-family PoLL → confidence cascade │    │
-│  └────────┬─────────────────────────────────────────┘    │
-│           │                                              │
-│  ┌────────▼─────────────────────────────────────────┐    │
-│  │ L3 Pattern Engine (M4)                            │    │
-│  │  emergent clustering, correction records,        │    │
-│  │  A/B leaderboards keyed by config_version        │    │
-│  └────────┬─────────────────────────────────────────┘    │
-│           │                                              │
-│  ┌────────▼─────────────────────────────────────────┐    │
-│  │ L4 Weak RSI (M4)                                  │    │
-│  │  GEPA reflector → create/edit/delete artifacts   │    │
-│  │  → validation → review gate → config_version flip│    │
-│  └──────────────────────────────────────────────────┘    │
-│                                                          │
-│  ┌──────────────────────────────────────────────────┐    │
-│  │ Score Writer (spec 05)                           │    │
-│  │ feedback/create on agent_turn / agent_conversation│    │
-│  │ refs with typed scorer columns                   │    │
-│  └──────────────────────────────────────────────────┘    │
-│                                                          │
-│  ┌──────────────────────────────────────────────────┐    │
-│  │ CLI (spec 06)                                    │    │
-│  │ score · backfill · judge · analyze · reflect     │    │
-│  │ monitor · inspect                                │    │
-│  └──────────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────────┘
-
-Stretch goal: coach agent (see L4 section below).
+```mermaid
+flowchart LR
+    A["Weave traces"] --> B["Exact trace hydration"]
+    B --> C["Deterministic evaluation"]
+    B --> D["Planned model evaluation"]
+    C --> E["Weave score feedback"]
+    D --> E
+    E --> F["Analysis and monitoring"]
+    E --> G["Pinned evaluation run"]
+    G --> H["Whole-bundle proposals"]
+    H --> I["B / C / D human review"]
+    I --> J["Drift-checked promotion"]
 ```
 
-**Evaluation runs** (spec 09): the CLI and its REST/frontend wrappers (specs 06–08) originally exposed scoring, judging, and reflecting as independent operations, each free to read whatever data happened to match its own `since`/`limit` params — stale, cross-config-version data could silently leak into reflection proposals, with no way to inspect what fed a given suggestion. Runs make data selection a first-class, versioned step: a run pins a date range + session set once, and scoring → judging → reflecting all execute against that same pinned selection, with every step's result inspectable against the others. The frontend's separate Scoring/Judging/Reflect pages were replaced by a single Runs page built around this pipeline; see spec 09.
+Three systems hold different kinds of authority:
 
-## 3. Score model
+- Weave is the source of truth for recorded traces and attached scores.
+- Local SQLite is the source of truth for evaluation-run inputs, progress,
+  immutable review evidence, decisions, and promotion receipts.
+- Repository Markdown files are the live instruction state and the promotion
+  target.
 
-Every scorer produces a `Score`: a scorer name, a 0–1 (or binary) value, categorical tags, a confidence (0–1, used for routing and cascade), scorer-specific metadata, and a granularity (`turn` | `session`).
+The CLI provides direct scoring, judging, analysis, monitoring, inspection, and
+proposal preview. The local web product owns durable evaluation runs, proposal
+editing, promotion, and audit receipts.
 
-Scores are written as Weave feedback:
-- **Turn scores** → `agent_turn/{trace_id}` ref
-- **Session scores** → `agent_conversation/{conversation_id}` ref
-- **Feedback type**: custom (`weave_agent_signals.<scorer>`) for every scorer here, since Weave's native `wandb.agent_monitor` type requires `runnable_ref`/`call_ref`/`trigger_ref` — refs to registered Signals infrastructure that only exist once a scorer is itself a registered Weave Signal, not a CLI/API-driven one. Custom-type feedback stores rating/confidence/tags/detail in a flat `payload`, not the typed `scorer_ratings`/`scorer_tags` columns (those are gated behind the same Signals infrastructure and only apply to `wandb.agent_monitor`).
-- **Dedup**: skip if feedback with same scorer+ref already exists (idempotent backfill)
+The implementation follows those product boundaries. External trace access,
+evaluation, analysis, and the durable run lifecycle are separate backend areas;
+HTTP routes translate requests into them rather than owning their rules. The
+frontend likewise keeps run execution and reflection review as feature areas,
+while pages compose those features into user workflows.
 
-## 4. Layers
+## Evaluation model
 
-### L1 Objective fact extraction (M1)
+Evaluation is layered:
 
-L1 is **fact extraction, not judgment**. The boundary with L2 is not the mechanism — it's fact vs. opinion. Three extraction classes:
+1. Weave I/O discovers turn roots, hydrates exact traces, builds turn and
+   session views, and writes score feedback to exact refs.
+2. Deterministic evaluation extracts high-precision outcome and process signals
+   without inference.
+3. Model evaluation pins a bounded, applicability-aware plan, judges selected
+   episodes and whole sessions, and retains every reviewer attempt.
+4. Analysis separates representative evidence from selected diagnostics before
+   comparing configurations or trends.
+5. Evaluation runs pin their cohort and configuration, score and judge it, then
+   evaluate complete instruction-bundle proposals.
+6. Human review compares Past B, evaluated proposal C, and optional unevaluated
+   edit D before a drift-checked promotion.
 
-- **Class 1 — environment verdicts** (deterministic, zero holes): exit codes, parsed test counts, git operations, the adapter's hook-event counters (`steering_count`, `denial_count`, `tool_error_count`), token/cache counts, compaction events. The environment already emitted a machine-readable verdict; an LLM could only add noise.
-- **Class 2 — structural trace patterns** (deterministic, one rule): error loops, repeated reads, test-recency. Objectively-defined patterns. Rule: **L1 scores the pattern, never the blame** — "3 failing retries of the same command" is a fact; whether it was avoidable is L2's call.
-- **Class 3 — micro-LLM fact extraction** (small model, single short text, structured output): facts latent in language — "does this final message claim completion?", "is this steering message a correction, a neutral addition, or a redirect?", "did this unparsed command output report test success?". LLM-as-parser/classifier, not judge: narrow tasks where small models are near-perfect, costing ~$0.001 and firing only on the relevant residue. (TRAIL's ~11–22% catch rate is about whole-trace judging — a different regime.)
+Every persisted rating is a boolean or finite number in `[0, 1]`, and higher
+always means better. Harmful raw measures such as correction density or
+abandonment remain explanatory metadata; their persisted scores are
+correction-free rate and completion. A score describes evidence available in
+the retained trace. It does not prove causality, and a whole-bundle proposal
+score cannot be divided into causal per-file scores.
 
-What stays out of L1: rubrics, quality opinions, blame — that's L2.
+## Evaluation-run lifecycle
 
-1. **Verifiable environment outcomes** (spec 02): regex detection + framework parsers over `execute_tool` Bash spans for test/build/lint/git commands, with exit-code fallback. **M1**: Tier 1 (deterministic) only. **M2**: micro-LLM fallback on the unparsed residue, verification-before-done (deterministic test-recency + micro-LLM done-claim detection).
+```text
+created -> scoring -> judging -> reflecting -> complete
+             \          \           \
+              +----------+-----------+-> failed | cancelled
+```
 
-2. **Implicit human feedback** (spec 03): **M1**: correction density (factual ratio of turns with steering/denials) and abandonment detection (observable end-state). Raw hook-event counters available as span attrs. **M2**: micro-LLM classification of steering/denial content (correction vs. addition vs. redirect), frustration index over classified events, corrective follow-ups.
+Selection and configuration are editable only while a run is created. Starting
+pins the exact trace cohort, evaluator configuration, rubric and model catalogs,
+and one compatible pipeline version. Every stage rehydrates the pinned
+identities and fails closed if evidence or configuration no longer matches.
 
-3. **Efficiency** (spec 04): error loops, repeated reads (with deterministic excuses: post-compaction re-reads, subagent contexts), waste ratio. Normalized — raw counts are anti-metrics (denominators for L3, not scores). Token efficiency is metadata, not a standalone score.
+Reflection pins the feedback it consumed, captures exact Past B, evaluates B
+and generated candidates, and initializes immutable review evidence. Review is
+separate from pipeline status. The user may select an evaluated C, edit its
+contents as unevaluated D, promote, or dismiss. D requires explicit
+acknowledgement but not another inference run. A later evaluation run can assess
+the promoted state.
 
-**Uses**: ground truth for judge calibration, L2 routing gates, L3 correlation features, coaching input.
+The correctness mechanisms are deliberately stronger than the local deployment
+model: pinned inputs, explicit applicability, reviewer-attempt audit, stage
+success markers, cancellation coordination, compare-and-swap review revisions,
+whole-scope drift detection, journaled multi-file promotion, rollback/recovery,
+and monotonic progress are required.
 
-### L2 LLM-as-Judge (M2, M3)
+## Trust boundaries and limits
 
-Two granularities with different judge strategies:
+- The local API is unauthenticated, binds to loopback by default, and is
+  intended for one trusted user. A non-loopback bind is an explicit exposure of
+  that trust boundary.
+- Judge and proposal subprocesses receive only the minimum runtime and stored
+  credential locations. Unsupported local backends fail closed when equivalent
+  confinement cannot be established.
+- Deterministic parsers favor precision and cannot recover evidence omitted by
+  the adapter or fully interpret arbitrary shell programs.
+- Model judgments are opinions over bounded evidence. There is no human-labeled
+  calibration set, held-out validation gate, or claim that review heuristics are
+  statistically optimal.
+- Trigger-selected episode judgments are diagnostic rather than representative.
+- Reflection evaluates complete Markdown bundle revisions. The project-file
+  adapter is the only promotion adapter today.
+- The frontend polls persisted state; there is no raw-log or streaming endpoint.
+- Standalone `reflect` previews proposals and never mutates managed files.
 
-**Routing gates (M2)**: deterministic predicates deciding which turns get LLM judging. At single-user volume (~100–200 turns/day, small judges ≈ $0.10–0.20/day) gates save pennies; their value is noise reduction. Default lean: skip gates in v1 — judge everything with small models, sample the panel — and add gates only if cost or score noise actually hurts. Thresholds set from backfill data, not guesses.
+## Current-contract policy
 
-**Turn-level (M2)**: Weave Signals fire on `turn_ended`, running small judges (`gpt-oss-20b`, `Llama-3.1-8B`, `granite-4.1-8b`) on process rubrics — verification discipline, error recovery, tool choice quality, user-prompt quality. Custom-attr filters (e.g. only judge turns with `tool_error_count > 0`) reduce cost. **Weave-native reality (verified 2026-07-09)**: turn-level judging infrastructure already ships — 13 preset classifier signals + 8 agent-signal templates, custom prompts, 0–1 sampling, W&B Inference judge picker. M2 = signal/rubric definitions published as code, not judging infrastructure. Also lands: micro-LLM classifiers for frustration scoring (spec 03) and verification-before-done (spec 02).
+This is a pre-release, current-contract-only product. Removed routes, payloads,
+frontend surfaces, SQLite schemas, and stored local run rows are not supported.
+The local run database is disposable, and discarding it also discards local run
+and receipt history. Optional Git metadata is supporting context, not a required
+or complete archive.
 
-**Session-level (M3)**: raw whole-trace judging catches ~11–22% of issues (TRAIL, arXiv:2505.08638). Fix: **digest builder** extracts ~10–20 chronological key moments + L1 scores into ~2K tokens, then a **PoLL panel** (arXiv:2404.18796) judges the digest — mean-pooled scores, max-pooled flags, confidence-gated escalation (Trust-or-Escalate, arXiv:2407.18370) on low agreement. **Known risk**: the digest is load-bearing and lossy — whatever extraction rules miss, the panel never sees. Mitigations: anchor on L1 facts (anomalies always included); validate digests against ~10 hand-read sessions before trusting panel scores (M3 exit criterion). Session scope does NOT exist in Weave Signals (`conversation_ended` is a commented-out TODO) — build M3 externally, migrate onto the native trigger when it ships.
-
-**Panel composition (updated 2026-07-10)**: minimum **3 judges = 1 same-family + ≥2 non-same-family**. This deliberately re-admits one same-family judge (for a Claude agent, an Anthropic model) as a strong, well-aligned reader, outvoted 2:1 by cross-family judges — a considered trade of some self-preference bias (arXiv:2410.21819) for capability, with decomposed rubrics (§Bias controls) as the mitigation. Selection targets this composition and **warns when a backend cannot seat it**. Backend reality: W&B Inference serves no Anthropic model (0 same-family); the temporary CLI backend has Claude but only one cross-family (Codex). Seating a full 1+2 panel therefore requires either more local CLIs (e.g. a Gemini CLI) or a mixed backend (CLI-Claude + W&B Inference cross-family). Prior default (`gpt-oss-120b` / `DeepSeek-V4` / `Qwen3-30B`, all non-Anthropic) remains valid as a pure-cross-family panel on W&B Inference.
-
-**Bias controls**: `gpt-oss` counts as OpenAI-family (shared training distribution, arXiv:2410.21819); the panel admits at most one same-family judge and requires ≥2 non-same-family (above); decomposed multi-dim rubrics cut self-preference ~31.5% (arXiv:2604.22891); position-swap for pairwise comparisons only (meaningless for absolute rubric scoring).
-
-All judges via **W&B Inference** (OpenAI-compatible, auth via W&B API key, no external keys).
-
-### L3 Pattern Recognition (M4)
-
-Scheduled rollups via genai-spans-query + feedback queries → pandas:
-- **Emergent failure clustering** (soul-stealer pattern) — don't impose a taxonomy; cluster negative-signal turns by features and let recurring shapes name themselves
-- **Correction records** — structured prompt-response pairs of what got corrected and how (negative space), sourced from full local transcripts. Reuse `hivemind-query`'s map/reduce prompts (`agents-md.yaml`) as a tested starting point.
-- Trend analysis, prompt-quality ↔ efficiency correlations
-- **A/B leaderboards keyed by `config_version`** — quasi-experimental, not an RCT. Task mix confounds everything; trust only large effects; stratify by session type rather than comparing raw cohort means.
-
-Output: materialized views (queryable by the coach agent) + EvaluationLogger rollups.
-
-**Documented limitations**: sessions ≠ tasks (one `conversation_id` can span several distinct tasks); frustration measures the user, whose standards drift — within-cohort comparisons valid, long-horizon trends not.
-
-### L4 Weak RSI (M4)
-
-Engine: **`gepa.optimize_anything`** (MIT; arXiv:2507.19457, ICLR 2026 oral). Judge rationales = GEPA textual feedback; `gepa.gskill` as reference recipe; Weave has native GEPA tracing.
-
-**Action space**: create, edit, and delete:
-- CLAUDE.md sections
-- Skills (`.claude/skills/`)
-- Slash commands (`.claude/commands/`)
-- Prompt templates
-- Memory entries
-
-Every proposal driven by evaluation outcomes (scores, judge rationales, A/B results), all behind a **review-queue gate**. Applied diff ⇒ `config_version` flips ⇒ same suite measures before/after. Rubrics versioned + recalibrated against a small human-graded annotation-queue sample (EvalGen).
-
-**Proposal validation** (SkillOpt pattern): weak-model pre-screen (syntax/sanity, ~$0.001) → held-in test (do triggering failure cases improve?) → held-out test (do good sessions regress?). Only validated proposals enter the review queue.
-
-**Two loops, two speeds**: GEPA's iterative search cannot run against live usage — one "rollout" would be days of real sessions. The **inner loop** (GEPA candidate evaluation) runs offline against replayed history and held-in/held-out splits; the **outer loop** (live A/B on `config_version` cohorts) only measures the one applied winner, over days-to-weeks.
-
-**Generated artifact format** follows SKILL.md progressive disclosure: YAML frontmatter (~100 tokens, always loaded) + full instructions (~2–5K tokens, loaded when triggered). Prevents config-surface bloat.
-
-Baseline: user currently has no global CLAUDE.md/skills/commands, only auto-memory — early iterations mostly *create* from observed patterns. Deletion proposals fire when an artifact's config_version cohort measures worse or goes unused.
-
-**HiveMind reconciliation (required before M4 design is final)**: `hivemind insights list/apply` already ships a gated suggestions→context-file loop. It lacks outcome/score grounding, proposal validation, and A/B measurement — our L4 differentiation. Emit validated proposals INTO hivemind's suggestion lifecycle if its API allows external sources; at minimum adopt its `pending|applied|dismissed` lifecycle semantics.
-
-### Monitoring & alerting (M5)
-
-Continuous watch that samples incoming traces, scores them, and alerts on **statistically real** performance degradation — distinct from M4's on-demand analysis. Three parts, only the first of which needs Signals:
-
-1. **Sample + score** *(needs Weave Signals, or a sampled local run)*: score a fraction of incoming traces continuously. Weave Signals do this natively — server-side, 0–1 sampling, W&B Serverless Inference, no local compute — the target once inference billing is enabled. Until then, a sampled `score`/`judge` cron (`--sample <rate>`) approximates it locally.
-2. **Detect degradation** *(buildable now — source-agnostic over feedback)*: `detect_regressions` over run-time-ordered windows with Wilson-interval significance, so alerts fire only on real drops, not small-sample noise. Plus A/B: flag when a new `config_version` cohort measures worse than the prior (large effects only, per §L3).
-3. **Alert** *(buildable now)*: a pluggable sink — log / webhook / Slack / Weave annotation — carrying scorer, delta, 95% CI, sample size, and the offending `config_version`.
-
-**Key**: parts 2–3 consume feedback regardless of who wrote it, so the alerting layer is buildable today over trustworthy M1 scores and gains the judge/session signals once M2/M3 are validated and Signals-based sampling is on. Cadence: scheduled (launchd/cron), same as `score`. Guard against alert fatigue — only significant, sustained regressions notify.
-
-### Stretch goal: coach agent
-
-A subagent Matt can converse with to understand what he's been doing and how, grounded in the pipeline's data. No new datastore — Weave holds scores + spans; hivemind holds searchable transcripts; local `~/.claude/projects` holds full-fidelity transcripts. Join key: adapter stamps `weave_agent_adapter.session_id` which matches hivemind's daemon session key. Useful from M1 scores alone; gets smarter with each layer. Can slot in any time after M1.
-
-## 5. Dependencies
-
-| Dependency | Role |
-|---|---|
-| `weave-agent-adapter` | Produces the traces (custom attrs: `config_version`, `steering_count`, `denial_count`, `tool_error_count`, `git_branch`, `effort_level`) |
-| `httpx` | Direct Weave trace-server API calls (agents/spans/query, feedback/create) |
-| `python-dotenv` | Load `.env` for API keys |
-| `openai` (optional) | W&B Inference judge calls (OpenAI-compatible) |
-| `gepa` (optional) | L4 RSI loop |
-| `ruff` (dev) | Linting and formatting |
-| `pytest` / `respx` (dev) | Testing with mocked HTTP |
-
-## 6. Weave project
-
-Entity: `mliu-wandb-weights-biases`, project: `agent-sessions` — same project the adapter writes to. Scores land as feedback on the same traces they evaluate.
-
-## 7. Scheduling
-
-CLI-driven, schedulable via launchd:
-- **`score`**: score recent unscored turns/sessions (incremental)
-- **`backfill`**: score historical sessions in a date range
-- **`judge`**: run LLM judges (turn + session level, PoLL panels)
-- **`analyze`**: A/B leaderboard, trends, coaching summary
-- **`reflect`**: GEPA-based config proposals (dry-run + apply)
-- **`monitor`**: alert on significant regressions (trend + config)
-- **`inspect`**: debugging (recent turns, session detail, feedback)
-
-Deployed: launchd plist in `deploy/` runs `score` then `monitor` hourly, logging to `~/Library/Logs/weave-agent-signals.log`.
-
-## 8. Milestones
-
-1. **M1 — deterministic layer** (specs 01–06): outcome extractor + implicit feedback + efficiency scorers + score write-back + backfill CLI. Exit: backfill recent history, spot-check against ~10 sessions.
-2. **M2 — turn signals**: routing gates + preset/custom Weave Signals (process rubrics, small judges, sampling, custom-attr filters). Exit: live sessions → signals fire with tags/ratings.
-3. **M3 — session panel**: digest builder + 3-family PoLL + feedback on `agent_conversation` refs + confidence-gated escalation. Exit: backfill panel scores, verify disagreement rates.
-4. **M4 — pattern + RSI**: emergent clustering + A/B leaderboards, coaching digest, GEPA diff proposer with validation + review gate, annotation-queue calibration. Exit: dry-run reflector on history, apply one diff → config_version flips → A/B populates.
-5. **M5 — monitoring & alerting**: sampled continuous scoring + regression/A-B degradation alerts on a schedule (see §Monitoring & alerting). Exit: a real regression in recent scores fires a significant, deduplicated alert.
-
-**Build status (2026-07-12)**: M1 implemented and validated on real data. M2/M3/M4 implemented and unit-tested, but judging runs through a **temporary local CLI backend** (`claude`/`codex`/`gemini` CLIs) pending W&B Inference billing, and the M3 exit criteria (digest validation vs hand-read sessions, disagreement rates) are **not yet met** — judge scores are unvalidated. M5 implemented: hourly launchd job runs `score` then `monitor`, alerts on significant regressions (trend-down + config-regression), with webhook + dedup state.
-
-## 9. Prior art & reuse
-
-| Library | Use |
-|---|---|
-| `agentevals` | Referenceless trajectory judge (MIT) |
-| RAGAS | `AgentGoalAccuracyWithoutReference` |
-| `openevals` | Judge primitives + pyright/code evaluators |
-| `ccusage --json` | Cost axis |
-| `claude-code-log` | Transcript parsing (prior art, not a dependency) |
-| `gepa` | L4 artifact optimization |
-| PoLL (arXiv:2404.18796) | 3 small disjoint-family judges, 7–8x cheaper than GPT-4 |
-| Trust-or-Escalate (arXiv:2407.18370) | Confidence-gated cascade |
-| Decomposed rubrics (arXiv:2604.22891) | Multi-dim scoring cuts self-preference ~31.5% |
-| TRAIL (arXiv:2505.08638) | Motivates digest-then-judge over raw-trace judging |
-| Activeloop Hivemind | SkillOpt held-in/held-out proposal validation |
-| W&B soul-stealer / HiveMind | Emergent clustering, negative-space extraction, quality gates; subagent-wraps-CLI access pattern |
-| W&B hivemind-query | Map/reduce YAML harness over transcripts; `agents-md.yaml` corrections→rules prompts |
-| ACE (arXiv:2510.04618) | Incremental delta updates for long context files (borrow into GEPA mutations) |
-| Claude Code OTel + issue #42796 | L1 field semantics + behavioral metric set (Read:Edit ratio, edit loops, interrupts) |
-| Verdict (MIT) | Judge-ensemble aggregation primitives (voting, pooling, debate) |
-| LangSmith / MLflow / Braintrust | Idle-timeout session-close trigger; judge alignment; rewind re-scoring |
-
-**Novel contribution**: rubric-based agent-session scoring persisted as Weave feedback, closing into an eval-score-driven config loop with A/B measurement. Distinct from auto-memory/insights (heuristic, not score-driven).
+These specifications define product intent, observable behavior, boundaries,
+invariants, tradeoffs, and current architecture. Source, CLI help, OpenAPI, and
+tests remain the authority for lower-level implementation and interface detail.
