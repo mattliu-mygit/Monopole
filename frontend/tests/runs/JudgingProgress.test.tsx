@@ -63,7 +63,7 @@ const progress: Progress = {
       schema_fallback_reason: null,
       transport_request_count: 3,
       verdict_schema_version: 1,
-      raw_output_digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      raw_output_digest: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       error_type: null,
       message: null,
       behavioral_feedback: {
@@ -72,9 +72,9 @@ const progress: Progress = {
         desired_behavior: 'Run the focused check before claiming completion.',
       },
       steps: [
-        { phase: 'digest', artifact_id: artifactIds.digest, requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 4 }, output_mode: 'json_schema', schema_name: 'chunk_digest', transport_request_count: 1, raw_output_digest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', reused: true },
-        { phase: 'window', artifact_id: artifactIds.window, requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 3 }, output_mode: 'json_schema', schema_name: 'window_findings', transport_request_count: 1, raw_output_digest: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', reused: false },
-        { phase: 'merge', artifact_id: artifactIds.merge, requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 3 }, output_mode: 'json_object_fallback', schema_name: 'merged_verdict', schema_fallback_reason: 'Native schema unavailable', transport_request_count: 1, raw_output_digest: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', reused: false },
+        { phase: 'digest', artifact_id: artifactIds.digest, requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 4 }, output_mode: 'json_schema', schema_name: 'chunk_digest', transport_request_count: 1, raw_output_digest: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', reused: true },
+        { phase: 'window', artifact_id: artifactIds.window, requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 3 }, output_mode: 'json_schema', schema_name: 'window_findings', transport_request_count: 1, raw_output_digest: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', reused: false },
+        { phase: 'merge', artifact_id: artifactIds.merge, requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 3 }, output_mode: 'json_object_fallback', schema_name: 'merged_verdict', schema_fallback_reason: 'Native schema unavailable', transport_request_count: 1, raw_output_digest: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', reused: false },
       ],
     }],
   }],
