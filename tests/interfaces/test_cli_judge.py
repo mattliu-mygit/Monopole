@@ -8,7 +8,7 @@ import pytest
 
 from weave_agent_signals import cli
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
-from weave_agent_signals.models import Score
+from weave_agent_signals.models import Score, SessionView
 
 
 def _catalog():
@@ -55,8 +55,15 @@ def test_default_policy_resolves_catalog_recommendations(monkeypatch):
 
 def test_direct_cli_uses_one_session_plan_runner_and_in_memory_artifacts(monkeypatch, capsys):
     turn = _turn()
+    session = SessionView(
+        conversation_id="session-1",
+        turns=[turn],
+        config_version="cfg",
+        git_branch="main",
+    )
     weave = MagicMock()
     weave.query_turns.return_value = [turn]
+    weave.query_session.return_value = session
     weave.__enter__.return_value = weave
     inference = MagicMock()
     inference.__enter__.return_value = inference
@@ -79,7 +86,82 @@ def test_direct_cli_uses_one_session_plan_runner_and_in_memory_artifacts(monkeyp
     assert kwargs["judging_plan"] is plan
     assert callable(kwargs["artifact_loader"])
     assert callable(kwargs["artifact_recorder"])
+    weave.query_session.assert_called_once_with("session-1")
+    weave.hydrate_turns_batch.assert_called_once_with([turn])
     assert "1 sessions across 2 reviewer windows" in capsys.readouterr().out
+
+
+def test_direct_cli_discovers_conversations_then_judges_complete_hydrated_sessions(monkeypatch):
+    recent_one = _turn()
+    recent_one.trace_id = "session-1-recent"
+    duplicate_one = _turn()
+    duplicate_one.trace_id = "session-1-other-recent"
+    recent_two = _turn()
+    recent_two.trace_id = "session-2-recent"
+    recent_two.conversation_id = "session-2"
+    older_one = _turn()
+    older_one.trace_id = "session-1-older"
+    older_one.started_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+
+    session_one = SessionView(
+        conversation_id="session-1",
+        turns=[older_one, recent_one],
+        config_version="cfg",
+        git_branch="main",
+    )
+    session_two = SessionView(
+        conversation_id="session-2",
+        turns=[recent_two],
+        config_version="cfg",
+        git_branch="main",
+    )
+    weave = MagicMock()
+    weave.query_turns.return_value = [recent_two, recent_one, duplicate_one]
+    weave.query_session.side_effect = [session_one, session_two]
+    weave.query_existing_feedback.return_value = []
+    weave.__enter__.return_value = weave
+    inference = MagicMock()
+    inference.__enter__.return_value = inference
+    plan = {
+        "plan_id": "plan",
+        "totals": {"sessions_planned": 2, "windows_planned": 2},
+        "sessions": [],
+    }
+    captured_sessions = []
+
+    def build_plan(sessions, **_kwargs):
+        captured_sessions.extend(sessions)
+        return plan
+
+    score = Score("judge.session_outcome", 0.75, [], {}, "session")
+    judge = MagicMock(side_effect=[[score], []])
+    monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
+    monkeypatch.setattr(cli, "build_model_catalog", _catalog)
+    monkeypatch.setattr(cli, "build_judging_plan", build_plan)
+    monkeypatch.setattr(cli, "_make_model_client", lambda *_args: inference)
+    monkeypatch.setattr(cli, "judge_session", judge)
+
+    since = datetime(2026, 7, 14, tzinfo=timezone.utc)
+    assert cli.cmd_judge(_args(limit=3, since=since, rubric="judge.session_outcome")) == 0
+
+    weave.query_turns.assert_called_once_with(limit=3, since=since)
+    assert [call.args[0] for call in weave.query_session.call_args_list] == [
+        "session-1",
+        "session-2",
+    ]
+    hydrated = weave.hydrate_turns_batch.call_args.args[0]
+    assert [turn.trace_id for turn in hydrated] == [
+        "session-1-older",
+        "session-1-recent",
+        "session-2-recent",
+    ]
+    assert captured_sessions == [session_one, session_two]
+    assert judge.call_args_list[0].args[0] is session_one
+    assert [turn.trace_id for turn in judge.call_args_list[0].args[0].turns] == [
+        "session-1-older",
+        "session-1-recent",
+    ]
+    assert weave.write_score.call_count == 1
 
 
 def test_direct_cli_rejects_unknown_rubric_before_reading_weave(monkeypatch, capsys):
@@ -92,8 +174,15 @@ def test_direct_cli_rejects_unknown_rubric_before_reading_weave(monkeypatch, cap
 
 
 def test_hydration_failure_aborts_before_inference(monkeypatch):
+    turn = _turn()
     weave = MagicMock()
-    weave.query_turns.return_value = [_turn()]
+    weave.query_turns.return_value = [turn]
+    weave.query_session.return_value = SessionView(
+        conversation_id="session-1",
+        turns=[turn],
+        config_version="cfg",
+        git_branch="main",
+    )
     weave.hydrate_turns_batch.side_effect = RuntimeError("detail hydration truncated")
     weave.__enter__.return_value = weave
     make_client = MagicMock()
@@ -107,6 +196,7 @@ def test_hydration_failure_aborts_before_inference(monkeypatch):
 
 def test_direct_cli_buffers_all_sessions_and_writes_nothing_on_later_failure(monkeypatch):
     turns = [_turn(), _turn()]
+    turns[1].trace_id = "turn-2"
     turns[1].conversation_id = "session-2"
     weave = MagicMock()
     weave.query_turns.return_value = turns
@@ -122,6 +212,7 @@ def test_direct_cli_buffers_all_sessions_and_writes_nothing_on_later_failure(mon
         session.git_branch = "main"
         session.ref_for.return_value = f"weave:///session-{index}"
         sessions.append(session)
+    weave.query_session.side_effect = sessions
     plan = {
         "plan_id": "plan",
         "totals": {"sessions_planned": 2, "windows_planned": 2},
@@ -132,7 +223,6 @@ def test_direct_cli_buffers_all_sessions_and_writes_nothing_on_later_failure(mon
     monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
     monkeypatch.setattr(cli, "build_model_catalog", _catalog)
     monkeypatch.setattr(cli, "build_judging_plan", lambda *_args, **_kwargs: plan)
-    monkeypatch.setattr(cli, "_group_sessions", lambda _turns: sessions)
     monkeypatch.setattr(cli, "_make_model_client", lambda *_args: inference)
     monkeypatch.setattr(cli, "judge_session", judge)
 

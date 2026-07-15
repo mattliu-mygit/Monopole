@@ -435,21 +435,37 @@ def cmd_judge(args: argparse.Namespace) -> int:
         selected_rubrics = rubric_catalog.rubrics
 
     with WeaveClient(entity=args.entity, project=args.project) as client:
-        turns = client.query_turns(limit=args.limit, since=since)
+        discovery_turns = client.query_turns(limit=args.limit, since=since)
 
-        if not turns:
+        if not discovery_turns:
             print("No turns found.")
             return 0
 
         stats = _WriteStats()
 
-        # Session windows are built from the turns' tool/chat children. Batch
-        # hydration validates completeness before any judge call, so a partial
-        # trace cannot produce durable feedback.
+        conversation_ids = sorted({turn.conversation_id for turn in discovery_turns})
+        if not conversation_ids or any(not conversation_id for conversation_id in conversation_ids):
+            raise RuntimeError("Discovered turns require nonblank conversation IDs")
+        sessions = [client.query_session(conversation_id) for conversation_id in conversation_ids]
+        if any(not session.turns for session in sessions):
+            raise RuntimeError("Discovered conversation has no complete session turns")
+        if any(
+            turn.conversation_id != session.conversation_id
+            for session in sessions
+            for turn in session.turns
+        ):
+            raise RuntimeError("Complete session query returned a mismatched conversation")
+        turns = [turn for session in sessions for turn in session.turns]
+        trace_ids = [turn.trace_id for turn in turns]
+        if len(trace_ids) != len(set(trace_ids)):
+            raise RuntimeError("Complete session queries returned duplicate trace IDs")
+
+        # Session windows require every root and its tool/chat children. Hydrate
+        # the complete selected sessions as one validated batch before planning,
+        # so discovery cutoffs cannot produce partial durable feedback.
         client.hydrate_turns_batch(turns)
 
-        sessions = _group_sessions(turns)
-        cohort_id = "cli-direct:" + ",".join(sorted(turn.trace_id for turn in turns))
+        cohort_id = "cli-direct:" + ",".join(sorted(trace_ids))
         judging_plan = build_judging_plan(
             sessions,
             cohort_id=cohort_id,
@@ -760,7 +776,12 @@ def build_parser() -> argparse.ArgumentParser:
     # judge
     p_judge = subs.add_parser("judge", help="Run sliding-window LLM judges on sessions")
     p_judge.add_argument("--since", type=_parse_datetime, default=None)
-    p_judge.add_argument("--limit", type=int, default=10)
+    p_judge.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="Recent root turns used to discover complete sessions (default: 10)",
+    )
     p_judge.add_argument(
         "--rubric",
         type=str,
