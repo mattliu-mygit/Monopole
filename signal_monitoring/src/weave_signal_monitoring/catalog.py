@@ -5,7 +5,7 @@ ANCHORS = (0.0, 0.25, 0.5, 0.75, 1.0)
 RECOMMENDATION_THRESHOLD = 0.5
 SAMPLING_RATE = 1.0
 DEFAULT_MODEL = "openai/gpt-4.1-mini"
-TURN_OP_NAME = "invoke_agent"
+TURN_OP_NAME = "weave.genai.turn_ended"
 
 _BASE_PROMPT = """You are a high recall production monitor. Judge only the visible current agent turn.
 Return one JSON object with keys rating and reason. rating must be exactly one of 0.0, 0.25, 0.5, 0.75, or 1.0, where 1.0 means no evidence of the problem, 0.75 means weak or ambiguous indication, 0.5 means plausible indication, 0.25 means strong indication, and 0.0 means explicit or severe evidence. reason must be at most 240 characters and cite visible turn evidence without quoting secrets. Do not infer unseen conversation history.
@@ -13,8 +13,8 @@ Return one JSON object with keys rating and reason. rating must be exactly one o
 User messages:
 {input_messages}
 
-Agent output:
-{output}
+Agent messages:
+{output_messages}
 
 Rubric:
 {rubric}
@@ -40,7 +40,7 @@ class SignalDefinition:
     def scoring_prompt(self) -> str:
         return _BASE_PROMPT.format(
             input_messages="{input_messages}",
-            output="{output}",
+            output_messages="{output_messages}",
             rubric=self.rubric,
         )
 

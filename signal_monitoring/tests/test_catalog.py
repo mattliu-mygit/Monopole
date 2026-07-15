@@ -1,3 +1,5 @@
+from importlib.metadata import version
+
 import pytest
 from pydantic import ValidationError
 
@@ -7,6 +9,7 @@ from weave_signal_monitoring.catalog import (
     CATALOG_VERSION,
     RECOMMENDATION_THRESHOLD,
     SAMPLING_RATE,
+    TURN_OP_NAME,
 )
 from weave_signal_monitoring.models import ScoreOutput
 
@@ -16,6 +19,7 @@ def test_v1_catalog_is_exact_and_high_recall():
     assert ANCHORS == (0.0, 0.25, 0.5, 0.75, 1.0)
     assert RECOMMENDATION_THRESHOLD == 0.5
     assert SAMPLING_RATE == 1.0
+    assert TURN_OP_NAME == "weave.genai.turn_ended"
     assert [signal.slug for signal in CATALOG] == [
         "user-frustration",
         "user-correction-or-rejection",
@@ -26,6 +30,7 @@ def test_v1_catalog_is_exact_and_high_recall():
     assert len({signal.monitor_name for signal in CATALOG}) == 5
     assert all(signal.version == "v1" for signal in CATALOG)
     assert all("high recall" in signal.scoring_prompt.lower() for signal in CATALOG)
+    assert all("{output_messages}" in signal.scoring_prompt for signal in CATALOG)
 
 
 @pytest.mark.parametrize("rating", (0.0, 0.25, 0.5, 0.75, 1.0))
@@ -49,3 +54,8 @@ def test_score_output_requires_short_nonempty_reason():
 def test_score_output_strips_reason_whitespace():
     output = ScoreOutput(rating=0.5, reason="  Visible evidence.  ")
     assert output.reason == "Visible evidence."
+
+
+def test_runtime_weave_meets_complete_mode_floor():
+    runtime = tuple(int(part) for part in version("weave").split(".")[:3])
+    assert runtime >= (0, 52, 26)

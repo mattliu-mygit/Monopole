@@ -95,7 +95,7 @@ def test_build_monitor_uses_one_local_llm_judge_without_scorer_extras():
     assert monitor.name == definition.monitor_name
     assert monitor.active is False
     assert monitor.sampling_rate == 1.0
-    assert monitor.op_names == ["invoke_agent"]
+    assert monitor.op_names == ["weave.genai.turn_ended"]
     assert monitor.description.endswith(f"catalog_sha256={fingerprint}")
     assert len(monitor.scorers) == 1
     scorer = monitor.scorers[0]
