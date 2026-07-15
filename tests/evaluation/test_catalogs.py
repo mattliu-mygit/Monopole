@@ -217,3 +217,16 @@ def test_model_descriptor_serializes_only_its_public_fields():
         "supported_roles": ["judge"],
         "max_input_tokens": 128_000,
     }
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "128000"])
+def test_model_descriptor_rejects_invalid_input_token_limits(value):
+    with pytest.raises(ValidationError):
+        ModelDescriptor(
+            id="example",
+            label="Example",
+            family="example-family",
+            backend="example-backend",
+            supported_roles=("judge",),
+            max_input_tokens=value,
+        )

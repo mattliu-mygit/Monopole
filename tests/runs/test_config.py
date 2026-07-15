@@ -160,6 +160,19 @@ def test_judging_context_policy_requires_raw_input_capacity():
         JudgingContextPolicy(target_input_tokens=19_750)
 
 
+def test_effective_config_rejects_selected_model_below_context_target():
+    models, rubrics, request = _catalog_request()
+    effective = resolve_run_config(request, model_catalog=models, rubric_catalog=rubrics)
+    artifact = effective.model_dump(mode="json")
+    artifact["models"]["proposal_writer"]["max_input_tokens"] = 99_999
+
+    with pytest.raises(
+        ValidationError,
+        match="selected model max_input_tokens is below judging_context.target_input_tokens",
+    ):
+        EffectiveRunConfig.model_validate(artifact)
+
+
 def test_resolve_run_config_pins_exact_order_descriptors_and_pipeline_version():
     models, rubrics, request = _catalog_request(
         judge_models=("gpt-5.6-sol", "claude-sonnet-5"),

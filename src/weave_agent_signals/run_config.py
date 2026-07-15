@@ -80,7 +80,7 @@ class ModelDescriptor(StrictFrozenModel):
     family: StrictStr
     backend: StrictStr
     supported_roles: tuple[ModelRole, ...]
-    max_input_tokens: int = 128_000
+    max_input_tokens: Annotated[int, Field(strict=True, ge=1)] = 128_000
 
     @model_validator(mode="after")
     def validate_descriptor(self) -> ModelDescriptor:
@@ -364,6 +364,23 @@ class EffectiveRunConfig(StrictFrozenModel):
         _require_nonblank(self.model_catalog_version, "model_catalog_version")
         _require_nonblank(self.rubric_catalog_version, "rubric_catalog_version")
         _require_nonblank(self.judge_backend, "judge_backend")
+        selected_models = (
+            self.models.proposal_writer,
+            self.models.proposal_evaluator,
+            *self.models.judges,
+        )
+        undersized_model_ids = sorted(
+            {
+                model.id
+                for model in selected_models
+                if model.max_input_tokens < self.judging_context.target_input_tokens
+            }
+        )
+        if undersized_model_ids:
+            raise ValueError(
+                "selected model max_input_tokens is below "
+                "judging_context.target_input_tokens: " + ", ".join(undersized_model_ids)
+            )
         if not self.rubrics:
             raise ValueError("effective configuration must contain at least one rubric")
         if self.models.proposal_evaluator.backend != self.judge_backend or any(
