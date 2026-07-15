@@ -29,6 +29,7 @@ from weave_agent_signals.patterns import (
     coaching_digest,
     detect_config_regressions,
     detect_regressions,
+    is_evaluation_feedback_eligible,
 )
 from weave_agent_signals.run_config import (
     DEFAULT_JUDGING_CONTEXT_POLICY,
@@ -669,8 +670,9 @@ def cmd_reflect(args: argparse.Namespace) -> int:
     with WeaveClient(entity=args.entity, project=args.project) as client:
         feedback = client.query_project_feedback(limit=args.limit)
 
+    feedback = [item for item in feedback if is_evaluation_feedback_eligible(item)]
     if not feedback:
-        print("No scored feedback found. Run 'score' or 'judge' first.")
+        print("No eligible scored feedback found. Run 'score' or 'judge' first.")
         return 0
 
     coaching = coaching_digest(feedback)
