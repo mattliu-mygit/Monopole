@@ -55,6 +55,9 @@ Implemented the session-only sliding-window judging replacement.
   authoritative completed-work source.
 - Strengthened store validation for exact plan/window/reviewer/rubric/policy/protocol
   shapes, hashes, coverage geometry, work bounds, and recomputed totals.
+- Closed the remaining self-rehash gap by enforcing maximum chunk count, merge/input
+  and raw-window budgets, canonical raw-turn SHA-256 digests, and the tight raw-window
+  token range derivable from per-turn estimates plus separator overhead.
 - Restored session-only safety coverage for cancellation, durable cancellation/write
   races, fail-closed buffering, force replacement ordering, write and cleanup failure
   behavior, bounded audits/failures, and monotonic resumed artifact progress.

@@ -227,6 +227,24 @@ def _rehash_plan(plan: dict) -> dict:
     return value
 
 
+def _rehash_window_plan(plan: dict, reviewer_index: int = 0) -> dict:
+    value = json.loads(json.dumps(plan))
+    window_plan = value["sessions"][0]["reviewers"][reviewer_index]["window_plan"]
+    for window in window_plan["windows"]:
+        body = {key: item for key, item in window.items() if key != "window_id"}
+        window["window_id"] = _content_digest(body)
+    body = {key: item for key, item in window_plan.items() if key != "plan_id"}
+    window_plan["plan_id"] = _content_digest(body)
+    return _rehash_plan(value)
+
+
+def _content_digest(value: object) -> str:
+    canonical = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+    return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+
+
 def _reflection_evidence() -> dict:
     return {
         "baseline": {"revision": "baseline-rev"},
@@ -923,6 +941,37 @@ def test_judging_plan_and_reflection_input_are_validated_and_write_once(store):
     inconsistent["sessions"][0]["reviewers"][0]["work_bounds"]["digest_calls"] += 1
     with pytest.raises(ValueError, match="work bounds"):
         store.pin_judging_plan(started.run_id, _rehash_plan(inconsistent))
+
+    inconsistent = json.loads(json.dumps(plan))
+    inconsistent["input_policy"]["max_chunks"] = 1
+    inconsistent["sessions"][0]["reviewers"][0]["window_plan"]["chunk_count"] = 2
+    with pytest.raises(ValueError, match="maximum chunk"):
+        store.pin_judging_plan(started.run_id, _rehash_window_plan(inconsistent))
+
+    inconsistent = json.loads(json.dumps(plan))
+    window_plan = inconsistent["sessions"][0]["reviewers"][0]["window_plan"]
+    window_plan["merge_input_tokens"] = window_plan["input_cap_tokens"] + 1
+    with pytest.raises(ValueError, match="merge|token bounds"):
+        store.pin_judging_plan(started.run_id, _rehash_window_plan(inconsistent))
+
+    inconsistent = json.loads(json.dumps(plan))
+    window_plan = inconsistent["sessions"][0]["reviewers"][0]["window_plan"]
+    window_plan["windows"][0]["raw_tokens"] = window_plan["raw_budget_tokens"] + 1
+    with pytest.raises(ValueError, match="raw_tokens|raw budget"):
+        store.pin_judging_plan(started.run_id, _rehash_window_plan(inconsistent))
+
+    inconsistent = json.loads(json.dumps(plan))
+    window_plan = inconsistent["sessions"][0]["reviewers"][0]["window_plan"]
+    window_plan["windows"][0]["raw_tokens"] = 0
+    with pytest.raises(ValueError, match="estimated raw turns"):
+        store.pin_judging_plan(started.run_id, _rehash_window_plan(inconsistent))
+
+    inconsistent = json.loads(json.dumps(plan))
+    window_plan = inconsistent["sessions"][0]["reviewers"][0]["window_plan"]
+    window_plan["raw_turns"][0]["raw_digest"] = "not-a-digest"
+    window_plan["windows"][0]["raw_turn_digests"][0] = "not-a-digest"
+    with pytest.raises(ValueError, match="raw turn digest"):
+        store.pin_judging_plan(started.run_id, _rehash_window_plan(inconsistent))
 
     store.record_stage_result(
         started.run_id,

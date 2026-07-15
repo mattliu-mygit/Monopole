@@ -379,6 +379,15 @@ def _canonical_digest(value: object) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def _is_sha256_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and value.startswith("sha256:")
+        and len(value) == 71
+        and all(character in "0123456789abcdef" for character in value[7:])
+    )
+
+
 def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
     rubric_keys = {"id", "label", "evaluation_unit", "version", "content_digest", "pass_threshold"}
     requested = value.get("requested_rubrics")
@@ -631,6 +640,8 @@ def _validate_window_plan(
     if not isinstance(windows, list) or not isinstance(raw_turns, list):
         raise ValueError("judging plan window collections are invalid")
     chunk_count = _nonnegative_int(row["chunk_count"], "window chunk_count")
+    if chunk_count > input_policy["max_chunks"]:
+        raise ValueError("judging plan window exceeds the maximum chunk count")
     input_cap = min(input_policy["target_input_tokens"], model_limit)
     reserve = (
         input_policy["prompt_reserve_tokens"]
@@ -647,6 +658,8 @@ def _validate_window_plan(
         or row["merge_input_tokens"] != expected_merge
     ):
         raise ValueError("judging plan window token bounds are inconsistent")
+    if row["merge_input_tokens"] > row["input_cap_tokens"]:
+        raise ValueError("judging plan merge input exceeds the input cap")
     if (
         len(windows) != chunk_count
         or [item.get("trace_id") if isinstance(item, dict) else None for item in raw_turns]
@@ -662,12 +675,13 @@ def _validate_window_plan(
         if (
             raw["trace_id"] != coverage[position - 1]
             or raw["position"] != position
-            or not isinstance(raw["raw_digest"], str)
+            or not _is_sha256_digest(raw["raw_digest"])
         ):
-            raise ValueError("judging plan raw turn values are invalid")
-        _nonnegative_int(raw["estimated_tokens"], "raw turn estimated_tokens")
+            raise ValueError("judging plan raw turn digest or identity is invalid")
+        _nonnegative_int(raw["estimated_tokens"], "raw turn estimated_tokens", positive=True)
     covered: list[str] = []
     raw_digests = {raw["trace_id"]: raw["raw_digest"] for raw in raw_turns}
+    raw_estimates = {raw["trace_id"]: raw["estimated_tokens"] for raw in raw_turns}
     for index, window in enumerate(windows, start=1):
         item = _exact_keys(
             window,
@@ -693,6 +707,14 @@ def _validate_window_plan(
         if len(item["raw_trace_ids"]) != len(item["raw_turn_digests"]):
             raise ValueError("judging plan raw window digests are invalid")
         _nonnegative_int(item["raw_tokens"], "window raw_tokens")
+        if item["raw_tokens"] > row["raw_budget_tokens"]:
+            raise ValueError("judging plan window raw_tokens exceed the raw budget")
+        estimate_sum = sum(raw_estimates[trace_id] for trace_id in item["raw_trace_ids"])
+        separator_allowance = (2 * (len(item["raw_trace_ids"]) - 1) + 2) // 3
+        if not estimate_sum <= item["raw_tokens"] <= estimate_sum + separator_allowance:
+            raise ValueError(
+                "judging plan window raw_tokens are inconsistent with estimated raw turns"
+            )
         core_positions = [coverage.index(trace_id) for trace_id in item["core_trace_ids"]]
         if not core_positions or core_positions != list(
             range(core_positions[0], core_positions[-1] + 1)
