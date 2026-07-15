@@ -19,11 +19,14 @@ Implemented one reviewer's resumable digest-window-merge pipeline.
   raw-output digest while rejecting tampered audit metadata.
 - Review follow-up: artifact identity now binds the complete positioned-judge descriptor and an
   explicit, content-derived protocol contract over all phase prompt templates and JSON schemas.
+- Review follow-up: inference steps distinguish current calls from reused provenance. Reused
+  steps retain their original audit data but do not inflate top-level usage or transport counts;
+  full replay therefore charges zero calls while remaining fully auditable.
 
 ## Verification
 
-- `.venv/bin/python -m pytest -q tests/evaluation/judging/test_sliding.py tests/evaluation/judging/test_review_policy.py` — 54 passed after review fixes.
-- `.venv/bin/python -m pytest -q tests/evaluation/judging/test_sliding.py tests/evaluation/judging/test_review_policy.py tests/evaluation/judging/test_sliding_contracts.py tests/evaluation/judging/test_windowing.py tests/runs/test_store.py` — 174 passed after review fixes.
+- `.venv/bin/python -m pytest -q tests/evaluation/judging/test_sliding.py tests/evaluation/judging/test_review_policy.py` — 57 passed after review fixes.
+- `.venv/bin/python -m pytest -q tests/evaluation/judging/test_sliding.py tests/evaluation/judging/test_review_policy.py tests/evaluation/judging/test_sliding_contracts.py tests/evaluation/judging/test_windowing.py tests/runs/test_store.py` — 177 passed after review fixes.
 - Ruff check and format check passed for all four changed source/test files.
 - `git diff --check` passed.
 

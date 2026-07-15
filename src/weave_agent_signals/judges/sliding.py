@@ -6,6 +6,7 @@ import hashlib
 import json
 import threading
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from typing import Any, Literal
 
 from pydantic import ValidationError
@@ -54,10 +55,11 @@ _AUDIT_FIELDS = frozenset(
         "schema_fallback_reason",
         "transport_request_count",
         "raw_output_digest",
+        "reused",
     }
 )
 _ERROR_TEXT_LIMIT = 500
-SLIDING_PROTOCOL_VERSION = "1"
+SLIDING_PROTOCOL_VERSION = "2"
 
 _DIGEST_SYSTEM_TEMPLATE = (
     "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. "
@@ -185,6 +187,7 @@ def _audit_payload(audit: InferenceStepAudit) -> dict[str, object]:
         "schema_fallback_reason": audit.schema_fallback_reason,
         "transport_request_count": audit.transport_request_count,
         "raw_output_digest": audit.raw_output_digest,
+        "reused": audit.reused,
     }
 
 
@@ -249,9 +252,10 @@ def _artifact_payload(
         or audit.output_mode is None
         or audit.transport_request_count < 1
         or audit.raw_output_digest is None
+        or audit.reused
     ):
         raise ValueError(f"artifact {artifact_id} inference audit identity is invalid")
-    return result, audit
+    return result, replace(audit, reused=True)
 
 
 class SlidingReviewer:
@@ -474,7 +478,6 @@ class SlidingReviewer:
                 requested_model=self.judge.id,
             )
             steps.append(audit)
-            _add_usage(usage, audit.usage)
         else:
             payload = self._infer(
                 phase="digest",
@@ -515,9 +518,7 @@ class SlidingReviewer:
         if self._digests is not None:
             if self._digest_steps is None:
                 raise AssertionError("digest provenance must accompany cached digests")
-            steps.extend(self._digest_steps)
-            for audit in self._digest_steps:
-                _add_usage(usage, audit.usage)
+            steps.extend(replace(audit, reused=True) for audit in self._digest_steps)
             return self._digests
         with self._digest_lock:
             if self._digests is None:
@@ -530,9 +531,7 @@ class SlidingReviewer:
             else:
                 if self._digest_steps is None:
                     raise AssertionError("digest provenance must accompany cached digests")
-                steps.extend(self._digest_steps)
-                for audit in self._digest_steps:
-                    _add_usage(usage, audit.usage)
+                steps.extend(replace(audit, reused=True) for audit in self._digest_steps)
             return self._digests
 
     def _window_messages(
@@ -610,7 +609,6 @@ class SlidingReviewer:
                 requested_model=self.judge.id,
             )
             steps.append(audit)
-            _add_usage(usage, audit.usage)
         else:
             payload = self._infer(
                 phase="window",
@@ -718,7 +716,6 @@ class SlidingReviewer:
                 requested_model=self.judge.id,
             )
             steps.append(audit)
-            _add_usage(usage, audit.usage)
         else:
             payload = self._infer(
                 phase="merge",
@@ -773,14 +770,24 @@ class SlidingReviewer:
         except InferenceCancelled:
             raise
         except Exception as error:
+            last_step = steps[-1] if steps else None
             return AttemptObservation(
                 status="failed",
-                resolved_model=steps[-1].resolved_model if steps else None,
+                resolved_model=last_step.resolved_model if last_step is not None else None,
                 score=None,
                 rationale=None,
                 usage=usage,
                 error_type=type(error).__name__,
                 message=_bounded_error(error),
+                output_mode=last_step.output_mode if last_step is not None else None,
+                schema_name=last_step.schema_name if last_step is not None else None,
+                schema_fallback_reason=(
+                    last_step.schema_fallback_reason if last_step is not None else None
+                ),
+                transport_request_count=sum(
+                    step.transport_request_count for step in steps if not step.reused
+                ),
+                raw_output_digest=(last_step.raw_output_digest if last_step is not None else None),
                 steps=tuple(steps),
             )
 
@@ -793,7 +800,9 @@ class SlidingReviewer:
             "output_mode": steps[-1].output_mode if steps else None,
             "schema_name": MERGED_VERDICT_SCHEMA.name,
             "schema_fallback_reason": steps[-1].schema_fallback_reason if steps else None,
-            "transport_request_count": sum(step.transport_request_count for step in steps),
+            "transport_request_count": sum(
+                step.transport_request_count for step in steps if not step.reused
+            ),
             "verdict_schema_version": verdict.schema_version,
             "raw_output_digest": steps[-1].raw_output_digest if steps else None,
             "steps": tuple(steps),

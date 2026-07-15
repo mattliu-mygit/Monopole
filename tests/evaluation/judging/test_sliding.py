@@ -258,6 +258,10 @@ def test_reviewer_digests_once_then_reads_every_window_and_merges() -> None:
     assert first.behavioral_feedback is not None
     assert first.usage == {"input_tokens": 15, "total_tokens": 20}
     assert len(first.steps) == 5
+    assert not any(step.reused for step in first.steps)
+    assert second.usage == {"input_tokens": 21, "total_tokens": 24}
+    assert second.transport_request_count == 3
+    assert [step.reused for step in second.steps] == [True, True, False, False, False]
     assert all(step.requested_model == "judge-1" for step in first.steps)
     assert all(call["temperature"] == 0.0 for call in client.calls)
     assert [call["schema_name"] for call in client.calls[:5]] == [
@@ -301,9 +305,10 @@ def test_artifact_replay_makes_zero_model_calls() -> None:
     assert replay_client.calls == []
     assert replay_result.score == first_result.score
     assert replay_result.resolved_model == first_result.resolved_model
-    assert replay_result.usage == first_result.usage
-    assert replay_result.steps == first_result.steps
-    assert replay_result.transport_request_count == first_result.transport_request_count
+    assert replay_result.usage == {}
+    assert all(step.reused for step in replay_result.steps)
+    assert [replace(step, reused=False) for step in replay_result.steps] == list(first_result.steps)
+    assert replay_result.transport_request_count == 0
     assert replay_result.output_mode == first_result.output_mode
     assert replay_result.raw_output_digest == first_result.raw_output_digest
 
@@ -318,8 +323,31 @@ def test_replay_provenance_matches_a_rubric_that_reused_cached_digests() -> None
     restored = replay.review(_rubric("judge.session_autonomy"))
 
     assert replay_client.calls == []
-    assert restored.steps == original.steps
-    assert restored.usage == original.usage
+    assert all(step.reused for step in restored.steps)
+    assert [replace(step, reused=False) for step in restored.steps] == [
+        replace(step, reused=False) for step in original.steps
+    ]
+    assert restored.usage == {}
+    assert restored.transport_request_count == 0
+
+
+def test_partial_replay_charges_only_new_window_and_merge_calls() -> None:
+    first, _, artifacts, _ = _reviewer()
+    first.review(_rubric("judge.session_outcome"))
+    digest_artifacts = {
+        artifact_id: artifact
+        for artifact_id, artifact in artifacts.items()
+        if artifact_id.startswith("digest/")
+    }
+    partial_client = _ScriptedClient()
+    partial, _, _, _ = _reviewer(client=partial_client, artifacts=digest_artifacts)
+
+    result = partial.review(_rubric("judge.session_autonomy"))
+
+    assert [call["phase"] for call in partial_client.calls] == ["window", "window", "merge"]
+    assert [step.reused for step in result.steps] == [True, True, False, False, False]
+    assert result.usage == {"input_tokens": 6, "total_tokens": 9}
+    assert result.transport_request_count == 3
 
 
 def test_replay_rejects_tampered_inference_audit_without_model_call() -> None:
@@ -355,6 +383,38 @@ def test_replay_rejects_tampered_inference_audit_without_model_call() -> None:
     assert replay_client.calls == []
 
 
+def test_replay_rejects_an_artifact_persisted_as_already_reused() -> None:
+    first, _, artifacts, _ = _reviewer()
+    first.review(_rubric("judge.session_outcome"))
+    artifact_id = next(iter(artifacts))
+    artifact = dict(artifacts[artifact_id])
+    payload = dict(artifact["payload"])
+    audit = dict(payload["audit"])
+    audit["reused"] = True
+    payload["audit"] = audit
+    artifact["payload"] = payload
+    artifact["content_digest"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+    )
+    artifacts[artifact_id] = artifact
+    replay_client = _ScriptedClient()
+    replay, _, _, _ = _reviewer(client=replay_client, artifacts=artifacts)
+
+    result = replay.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    assert result.steps == ()
+    assert replay_client.calls == []
+
+
 @pytest.mark.parametrize(
     "judge",
     [
@@ -382,7 +442,7 @@ def test_protocol_contract_digest_binds_version_prompts_and_schemas(
     original_template = sliding._DIGEST_SYSTEM_TEMPLATE
     monkeypatch.setattr(sliding, "SLIDING_PROTOCOL_VERSION", "test-version")
     assert sliding_protocol_contract_digest() != original
-    monkeypatch.setattr(sliding, "SLIDING_PROTOCOL_VERSION", "1")
+    monkeypatch.setattr(sliding, "SLIDING_PROTOCOL_VERSION", "2")
     monkeypatch.setattr(
         sliding,
         "_DIGEST_SYSTEM_TEMPLATE",
@@ -428,6 +488,10 @@ def test_concurrent_rubrics_share_one_digest_generation() -> None:
 
     assert all(result.status == "succeeded" for result in results)
     assert [call["phase"] for call in client.calls].count("digest") == 2
+    digest_steps = [step for result in results for step in result.steps if step.phase == "digest"]
+    assert sum(not step.reused for step in digest_steps) == 2
+    assert sum(step.reused for step in digest_steps) == 2
+    assert sorted(result.transport_request_count for result in results) == [3, 5]
 
 
 def test_cancellation_is_checked_between_model_calls() -> None:
@@ -467,6 +531,10 @@ def test_failed_merge_returns_failed_observation() -> None:
     assert result.evidence_ids == ()
     assert result.behavioral_feedback is None
     assert result.steps[-1].phase == "merge"
+    assert result.usage == {"input_tokens": 15, "total_tokens": 20}
+    assert result.transport_request_count == 5
+    assert result.output_mode == "json_schema"
+    assert result.schema_name == "merged_verdict"
 
 
 def test_reviewer_rejects_tampered_plan_before_inference() -> None:

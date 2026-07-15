@@ -568,3 +568,20 @@ def test_inference_step_audit_rejects_non_string_output_digest() -> None:
             transport_request_count=1,
             raw_output_digest=1,  # type: ignore[arg-type]
         )
+
+
+def test_inference_step_audit_requires_a_strict_reused_flag() -> None:
+    with pytest.raises(ValueError, match="reused must be a boolean"):
+        InferenceStepAudit(
+            phase="merge",
+            artifact_id="merge/reviewer/rubric",
+            requested_model="judge-1",
+            resolved_model="judge-1",
+            usage={},
+            output_mode="json_schema",
+            schema_name="merged_verdict",
+            schema_fallback_reason=None,
+            transport_request_count=1,
+            raw_output_digest="a" * 64,
+            reused=1,  # type: ignore[arg-type]
+        )

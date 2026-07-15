@@ -92,6 +92,7 @@ class InferenceStepAudit:
     schema_fallback_reason: str | None
     transport_request_count: int
     raw_output_digest: str | None
+    reused: bool = False
 
     def __post_init__(self) -> None:
         if self.phase not in {"digest", "window", "merge"}:
@@ -116,6 +117,8 @@ class InferenceStepAudit:
             _nonblank(self.schema_fallback_reason, "schema_fallback_reason")
         if type(self.transport_request_count) is not int or self.transport_request_count < 0:
             raise ValueError("transport_request_count must be a nonnegative integer")
+        if type(self.reused) is not bool:
+            raise ValueError("reused must be a boolean")
         if self.raw_output_digest is not None and (
             not isinstance(self.raw_output_digest, str)
             or len(self.raw_output_digest) != 64
