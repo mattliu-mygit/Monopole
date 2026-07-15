@@ -180,7 +180,7 @@ export default function JudgingProgress({
           <div className="mt-1 text-xs text-gray-500">{state?.rated_rubrics ?? 0} received a rating</div>
         </div>
         <div className="rounded-lg bg-gray-50 p-3">
-          <div className="font-medium text-gray-900">{attempts} reviewer attempts so far</div>
+          <div className="font-medium text-gray-900">{attempts} reviewer attempt{attempts === 1 ? '' : 's'} so far</div>
           <div className="mt-1 text-xs text-gray-500">{minimum} minimum · {maximum} maximum</div>
         </div>
         <div className="rounded-lg bg-gray-50 p-3">

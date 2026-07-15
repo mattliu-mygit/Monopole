@@ -465,7 +465,7 @@ export interface JudgingReviewerPlan {
 }
 
 export interface SlidingProtocolManifest {
-  protocol_version: string
+  protocol_version: '2'
   prompt_templates: {
     digest_system: string
     digest_user: string

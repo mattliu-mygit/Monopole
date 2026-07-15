@@ -14,6 +14,8 @@ import type {
 } from '../../src/types'
 import { ApiError } from '../../src/api'
 import RunDetail from '../../src/pages/RunDetail'
+import persistedPlan from '../fixtures/judging-plan.json'
+import persistedCohort from '../fixtures/turn-cohort.json'
 import { renderWithQueryClient } from '../support/render'
 
 const api = vi.hoisted(() => ({
@@ -207,40 +209,7 @@ const session: SessionSummary = {
   input_preview: 'Evaluate this session',
 }
 
-const plan: JudgingPlan = {
-  plan_id: 'sha256:plan-1',
-  schema_version: '2',
-  cohort_id: 'cohort-1',
-  requested_rubrics: rubrics.rubrics,
-  review_depth: 'selective',
-  second_opinion_margin: 0.1,
-  input_policy: effectiveConfig.judging_context,
-  protocol: {
-    protocol_version: '2',
-    prompt_templates: {
-      digest_system: 'digest system', digest_user: 'digest user',
-      window_system: 'window system', window_user: 'window user',
-      merge_system: 'merge system', merge_user: 'merge user',
-    },
-    schemas: {
-      digest: { name: 'chunk_digest', schema: {} },
-      window: { name: 'window_findings', schema: {} },
-      merge: { name: 'merged_verdict', schema: {} },
-    },
-  },
-  totals: {
-    sessions_planned: 1,
-    turns_considered: 2,
-    windows_planned: 0,
-    planned_rubrics: 2,
-    minimum_reviewer_attempts: 2,
-    maximum_reviewer_attempts: 6,
-    maximum_digest_calls: 0,
-    maximum_window_calls: 0,
-    maximum_merge_calls: 0,
-  },
-  sessions: [],
-}
+const plan = persistedPlan as JudgingPlan
 
 function renderPage() {
   const router = createMemoryRouter([
@@ -277,19 +246,19 @@ function completedReflectionRun(): Run {
     },
     judging_result: {
       plan_id: plan.plan_id,
-      planned_rubrics: 2,
-      rubrics_completed: 2,
-      rated_rubrics: 2,
-      minimum_reviewer_attempts: 2,
-      maximum_reviewer_attempts: 6,
-      reviewer_attempts_completed: 3,
-      digest_steps_completed: 0,
-      maximum_digest_steps: 0,
-      window_steps_completed: 0,
-      maximum_window_steps: 0,
-      merge_steps_completed: 0,
-      maximum_merge_steps: 0,
-      scores_written: 2,
+      planned_rubrics: 1,
+      rubrics_completed: 1,
+      rated_rubrics: 1,
+      minimum_reviewer_attempts: 1,
+      maximum_reviewer_attempts: 2,
+      reviewer_attempts_completed: 1,
+      digest_steps_completed: 2,
+      maximum_digest_steps: 2,
+      window_steps_completed: 1,
+      maximum_window_steps: 2,
+      merge_steps_completed: 1,
+      maximum_merge_steps: 2,
+      scores_written: 1,
       failure_count: 0,
       write_failure_count: 0,
       coverage_complete: true,
@@ -443,42 +412,31 @@ describe('RunDetail wiring', () => {
           since: '2026-07-01T07:00:00Z',
           until: '2026-07-15T06:59:59.999999Z',
           timezone: 'America/Los_Angeles',
-          session_ids: [
-            'session-1', 'session-2', 'session-3', 'session-4',
-            'session-5', 'session-6', 'session-7',
-          ],
+          session_ids: ['session-1'],
         },
         run_config: requestedConfig,
         effective_config: effectiveConfig,
-        turn_cohort: {
-          schema_version: '1',
-          cohort_id: 'sha256:cohort-123',
-          pinned_at: '2026-07-15T07:30:00Z',
-          turn_count: 12,
-          session_count: 7,
-          turns: [],
-          sessions: [],
-        },
+        turn_cohort: persistedCohort,
         judging_plan: plan,
         judging_progress: {
           plan_id: plan.plan_id,
-          planned_rubrics: 2,
-          rubrics_completed: 2,
-          rated_rubrics: 2,
-          minimum_reviewer_attempts: 2,
-          maximum_reviewer_attempts: 6,
-          reviewer_attempts_completed: 3,
-          digest_steps_completed: 0,
-          maximum_digest_steps: 0,
-          window_steps_completed: 0,
-          maximum_window_steps: 0,
-          merge_steps_completed: 0,
-          maximum_merge_steps: 0,
+          planned_rubrics: 1,
+          rubrics_completed: 1,
+          rated_rubrics: 1,
+          minimum_reviewer_attempts: 1,
+          maximum_reviewer_attempts: 2,
+          reviewer_attempts_completed: 1,
+          digest_steps_completed: 2,
+          maximum_digest_steps: 2,
+          window_steps_completed: 1,
+          maximum_window_steps: 2,
+          merge_steps_completed: 1,
+          maximum_merge_steps: 2,
           scores_written: 0,
           failure_count: 0,
           write_failure_count: 0,
           coverage_complete: false,
-          status_message: 'Writing 2 judge scores...',
+          status_message: 'Writing 1 judge score...',
           attempt_summaries: [],
           failure_details: [],
         },
@@ -494,14 +452,14 @@ describe('RunDetail wiring', () => {
     expect(screen.getByRole('region', { name: 'Pinned selection and cohort' })).not.toBeNull()
     expect(screen.getByText('Jul 1, 2026 – Jul 14, 2026')).not.toBeNull()
     expect(screen.getByText('America/Los_Angeles')).not.toBeNull()
-    expect(screen.getByText('sha256:cohort-123')).not.toBeNull()
-    expect(screen.getByText('12 turns across 7 sessions')).not.toBeNull()
-    expect(screen.getByText('7 selected session IDs')).not.toBeNull()
-    expect(screen.getByText('session-7')).not.toBeNull()
+    expect(screen.getByText('cohort-1')).not.toBeNull()
+    expect(screen.getByText('2 turns across 1 session')).not.toBeNull()
+    expect(screen.getByText('1 selected session ID')).not.toBeNull()
+    expect(screen.getByText('session-1')).not.toBeNull()
     expect(screen.getByRole('region', { name: 'Pinned run configuration' })).not.toBeNull()
     expect(screen.getByRole('region', { name: 'Judging progress' })).not.toBeNull()
-    expect(screen.getByText('2 of 2 rubrics reviewed')).not.toBeNull()
-    expect(screen.getByText('3 reviewer attempts so far')).not.toBeNull()
+    expect(screen.getByText('1 of 1 rubrics reviewed')).not.toBeNull()
+    expect(screen.getByText('1 reviewer attempt so far')).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Judging' }).getAttribute('aria-expanded')).toBe('true')
   })
 

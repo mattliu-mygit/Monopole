@@ -4,140 +4,31 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { JudgingPlan, JudgingProgress as Progress } from '../../src/types'
 import JudgingProgress from '../../src/features/runs/JudgingProgress'
+import persistedPlan from '../fixtures/judging-plan.json'
 
 afterEach(cleanup)
 
-const rubric = {
-  id: 'judge.session_outcome',
-  label: 'Session Outcome',
-  evaluation_unit: 'session' as const,
-  version: '4',
-  content_digest: 'sha256:rubric',
-  pass_threshold: 0.7,
-}
+const plan = persistedPlan as JudgingPlan
+const rubric = plan.requested_rubrics[0]
 
-const judge = {
-  id: 'judge-a',
-  label: 'Judge A',
-  family: 'family-a',
-  backend: 'cli',
-  supported_roles: ['judge'] as const,
-  max_input_tokens: 128_000,
-  role: 'judge' as const,
-  position: 1,
-}
-
-const secondJudge = {
-  ...judge,
-  id: 'judge-b',
-  label: 'Judge B',
-  family: 'family-b',
-  position: 2,
-}
-
-const windowPlan = {
-  plan_id: 'sha256:window-plan',
-  contract_version: '1' as const,
-  conversation_id: 'session-1',
-  input_cap_tokens: 100_000,
-  raw_budget_tokens: 80_000,
-  chunk_count: 2,
-  overlap_turns: 1 as const,
-  token_estimator: 'utf8_bytes_div_3' as const,
-  merge_input_tokens: 21_500,
-  raw_turns: [
-    { trace_id: 'trace-1', position: 1, estimated_tokens: 1200, raw_digest: 'sha256:raw-1' },
-    { trace_id: 'trace-2', position: 2, estimated_tokens: 900, raw_digest: 'sha256:raw-2' },
-  ],
-  raw_coverage_trace_ids: ['trace-1', 'trace-2'],
-  windows: [
-    { window_id: 'sha256:window-1', index: 1, core_trace_ids: ['trace-1'], raw_trace_ids: ['trace-1', 'trace-2'], raw_turn_digests: ['sha256:raw-1', 'sha256:raw-2'], raw_tokens: 2100 },
-    { window_id: 'sha256:window-2', index: 2, core_trace_ids: ['trace-2'], raw_trace_ids: ['trace-1', 'trace-2'], raw_turn_digests: ['sha256:raw-1', 'sha256:raw-2'], raw_tokens: 2100 },
-  ],
-}
-
-const plan: JudgingPlan = {
-  plan_id: 'sha256:plan',
-  schema_version: '2',
-  cohort_id: 'cohort-1',
-  requested_rubrics: [rubric],
-  review_depth: 'selective',
-  second_opinion_margin: 0.1,
-  input_policy: {
-    contract_version: '1',
-    target_input_tokens: 100_000,
-    prompt_reserve_tokens: 6_000,
-    output_reserve_tokens: 4_000,
-    safety_reserve_tokens: 8_000,
-    digest_max_tokens: 1_000,
-    finding_max_tokens: 750,
-    overlap_turns: 1,
-    max_chunks: 40,
-    token_estimator: 'utf8_bytes_div_3',
-  },
-  protocol: {
-    protocol_version: '2',
-    prompt_templates: {
-      digest_system: 'digest system', digest_user: 'digest user',
-      window_system: 'window system', window_user: 'window user',
-      merge_system: 'merge system', merge_user: 'merge user',
-    },
-    schemas: {
-      digest: { name: 'chunk_digest', schema: {} },
-      window: { name: 'window_findings', schema: {} },
-      merge: { name: 'merged_verdict', schema: {} },
-    },
-  },
-  totals: {
-    sessions_planned: 1,
-    turns_considered: 2,
-    windows_planned: 4,
-    planned_rubrics: 1,
-    minimum_reviewer_attempts: 1,
-    maximum_reviewer_attempts: 2,
-    maximum_digest_calls: 4,
-    maximum_window_calls: 4,
-    maximum_merge_calls: 2,
-  },
-  sessions: [{
-    conversation_id: 'session-1',
-    turn_count: 2,
-    raw_coverage_trace_ids: ['trace-1', 'trace-2'],
-    rubrics: [{ ...rubric, minimum_reviewer_attempts: 1, maximum_reviewer_attempts: 2 }],
-    reviewers: [{
-      ordinal: 1,
-      judge,
-      work_bounds: {
-        digest_calls: 2,
-        window_calls_per_rubric: 2,
-        merge_calls_per_rubric: 1,
-      },
-      window_plan: windowPlan,
-    }, {
-      ordinal: 2,
-      judge: secondJudge,
-      work_bounds: {
-        digest_calls: 2,
-        window_calls_per_rubric: 2,
-        merge_calls_per_rubric: 1,
-      },
-      window_plan: windowPlan,
-    }],
-  }],
+const artifactIds = {
+  digest: 'digest/3d4cad9a08c2864ea29e4681d40fcb70fa9e480b89fde612e7f12656c4603f3f/5ce4a7cd255dcf2c592dc9f13e32b5451be1fc6b0471531139802018fea6520b/402ac43615e38e86f8b55fc21f94dafa89f9250f2bd5d14066131efefa465d5c/5ea68ad0356c74ecde17f41dfbaedaaab6ae8e5b4d14e34edf379b84654424e3',
+  window: 'window/3d4cad9a08c2864ea29e4681d40fcb70fa9e480b89fde612e7f12656c4603f3f/5ce4a7cd255dcf2c592dc9f13e32b5451be1fc6b0471531139802018fea6520b/402ac43615e38e86f8b55fc21f94dafa89f9250f2bd5d14066131efefa465d5c/c33641a1649d50f129bcd48bb0cdd542985616bf7a27250db7d3e2b538c925c2',
+  merge: 'merge/3d4cad9a08c2864ea29e4681d40fcb70fa9e480b89fde612e7f12656c4603f3f/5ce4a7cd255dcf2c592dc9f13e32b5451be1fc6b0471531139802018fea6520b/402ac43615e38e86f8b55fc21f94dafa89f9250f2bd5d14066131efefa465d5c/3af044b7c3ac650ced5936bf3dcec316e7f620592eb7ab2c2046a206a6cfe1ae',
 }
 
 const progress: Progress = {
-  plan_id: 'sha256:plan',
+  plan_id: plan.plan_id,
   planned_rubrics: 1,
   rubrics_completed: 1,
   rated_rubrics: 1,
   minimum_reviewer_attempts: 1,
   maximum_reviewer_attempts: 2,
   reviewer_attempts_completed: 1,
-  digest_steps_completed: 2,
-  maximum_digest_steps: 4,
-  window_steps_completed: 2,
-  maximum_window_steps: 4,
+  digest_steps_completed: 1,
+  maximum_digest_steps: 2,
+  window_steps_completed: 1,
+  maximum_window_steps: 2,
   merge_steps_completed: 1,
   maximum_merge_steps: 2,
   scores_written: 0,
@@ -172,7 +63,7 @@ const progress: Progress = {
       schema_fallback_reason: null,
       transport_request_count: 3,
       verdict_schema_version: 1,
-      raw_output_digest: 'sha256:output',
+      raw_output_digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       error_type: null,
       message: null,
       behavioral_feedback: {
@@ -181,9 +72,9 @@ const progress: Progress = {
         desired_behavior: 'Run the focused check before claiming completion.',
       },
       steps: [
-        { phase: 'digest', artifact_id: 'digest/1', requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 4 }, output_mode: 'json_schema', schema_name: 'chunk_digest', transport_request_count: 1, raw_output_digest: 'sha256:digest', reused: true },
-        { phase: 'window', artifact_id: 'window/1', requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 3 }, output_mode: 'json_schema', schema_name: 'window_findings', transport_request_count: 1, raw_output_digest: 'sha256:window', reused: false },
-        { phase: 'merge', artifact_id: 'merge/1', requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 3 }, output_mode: 'json_object_fallback', schema_name: 'merged_verdict', schema_fallback_reason: 'Native schema unavailable', transport_request_count: 1, raw_output_digest: 'sha256:merge', reused: false },
+        { phase: 'digest', artifact_id: artifactIds.digest, requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 4 }, output_mode: 'json_schema', schema_name: 'chunk_digest', transport_request_count: 1, raw_output_digest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', reused: true },
+        { phase: 'window', artifact_id: artifactIds.window, requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 3 }, output_mode: 'json_schema', schema_name: 'window_findings', transport_request_count: 1, raw_output_digest: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', reused: false },
+        { phase: 'merge', artifact_id: artifactIds.merge, requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 3 }, output_mode: 'json_object_fallback', schema_name: 'merged_verdict', schema_fallback_reason: 'Native schema unavailable', transport_request_count: 1, raw_output_digest: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', reused: false },
       ],
     }],
   }],
@@ -194,12 +85,12 @@ describe('JudgingProgress', () => {
   it('shows the sliding plan and phase work bounds', () => {
     render(<JudgingProgress plan={plan} progress={progress} result={null} />)
 
-    expect(screen.getByText('1 session · 2 turns · 4 raw windows')).not.toBeNull()
-    expect(screen.getByText('2 of 4 digests')).not.toBeNull()
-    expect(screen.getByText('2 of 4 windows')).not.toBeNull()
+    expect(screen.getByText('1 session · 2 turns · 2 raw windows')).not.toBeNull()
+    expect(screen.getByText('1 of 2 digests')).not.toBeNull()
+    expect(screen.getByText('1 of 2 windows')).not.toBeNull()
     expect(screen.getByText('1 of 2 merges')).not.toBeNull()
     expect(screen.getByText('Judge 1 · Judge A')).not.toBeNull()
-    expect(screen.getAllByText(/core trace-1/i).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/core trace-1, trace-2/i).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/raw trace-1, trace-2/i).length).toBeGreaterThan(0)
   })
 

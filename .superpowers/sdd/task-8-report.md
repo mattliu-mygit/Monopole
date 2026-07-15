@@ -37,3 +37,7 @@
 - The principal fixture now satisfies selective-review cardinality, full raw
   coverage, reviewer work bounds, recomputed totals, and the stable
   `merged_verdict` schema identity.
+- The shared plan fixture is emitted by the backend plan constructor with
+  canonical hashes, then checked through persisted-plan and cohort validation
+  in a backend cross-contract test. Run-detail tests consume that same valid
+  plan and cohort instead of hand-authored approximations.

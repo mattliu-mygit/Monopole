@@ -74,7 +74,7 @@ export default function PinnedSelectionAudit({
           <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Exact evidence</dt>
           <dd className="mt-1 text-gray-900">
             {turnCount !== null && sessionCount !== null
-              ? `${turnCount} turns across ${sessionCount} sessions`
+              ? `${turnCount} turn${turnCount === 1 ? '' : 's'} across ${sessionCount} session${sessionCount === 1 ? '' : 's'}`
               : 'Not pinned yet'}
           </dd>
         </div>
