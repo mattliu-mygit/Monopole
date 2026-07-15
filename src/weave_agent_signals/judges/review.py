@@ -13,6 +13,7 @@ from weave_agent_signals.run_config import PositionedJudge
 ReviewDepth = Literal["primary", "selective", "full_panel"]
 ObservationStatus = Literal["succeeded", "abstained", "failed"]
 ReviewStatus = Literal["complete", "degraded", "unresolved", "failed"]
+InferencePhase = Literal["digest", "window", "merge"]
 
 
 def _unit_float(value: object, field_name: str) -> float:
@@ -80,6 +81,52 @@ class ReviewPolicy:
 
 
 @dataclass(frozen=True)
+class InferenceStepAudit:
+    phase: InferencePhase
+    artifact_id: str
+    requested_model: str
+    resolved_model: str | None
+    usage: Mapping[str, int]
+    output_mode: str | None
+    schema_name: str
+    schema_fallback_reason: str | None
+    transport_request_count: int
+    raw_output_digest: str | None
+
+    def __post_init__(self) -> None:
+        if self.phase not in {"digest", "window", "merge"}:
+            raise ValueError("phase must be digest, window, or merge")
+        for name in ("artifact_id", "requested_model", "schema_name"):
+            _nonblank(getattr(self, name), name)
+        if self.resolved_model is not None:
+            _nonblank(self.resolved_model, "resolved_model")
+        usage = dict(self.usage)
+        if any(not isinstance(key, str) or not key.strip() for key in usage):
+            raise ValueError("usage keys must be nonblank strings")
+        if any(type(value) is not int or value < 0 for value in usage.values()):
+            raise ValueError("usage values must be nonnegative integers")
+        object.__setattr__(self, "usage", MappingProxyType(usage))
+        if self.output_mode is not None and self.output_mode not in {
+            "json_object",
+            "json_schema",
+            "json_object_fallback",
+        }:
+            raise ValueError("output_mode is invalid")
+        if self.schema_fallback_reason is not None:
+            _nonblank(self.schema_fallback_reason, "schema_fallback_reason")
+        if type(self.transport_request_count) is not int or self.transport_request_count < 0:
+            raise ValueError("transport_request_count must be a nonnegative integer")
+        if self.raw_output_digest is not None and (
+            not isinstance(self.raw_output_digest, str)
+            or len(self.raw_output_digest) != 64
+            or any(
+                character not in "0123456789abcdefABCDEF" for character in self.raw_output_digest
+            )
+        ):
+            raise ValueError("raw_output_digest must be a SHA-256 hex digest")
+
+
+@dataclass(frozen=True)
 class AttemptObservation:
     status: ObservationStatus
     resolved_model: str | None
@@ -95,6 +142,8 @@ class AttemptObservation:
     transport_request_count: int = 0
     verdict_schema_version: int | None = None
     raw_output_digest: str | None = None
+    behavioral_feedback: Mapping[str, str | None] | None = None
+    steps: tuple[InferenceStepAudit, ...] = ()
 
     def __post_init__(self) -> None:
         if self.status not in {"succeeded", "abstained", "failed"}:
@@ -156,12 +205,40 @@ class AttemptObservation:
             _nonblank(self.resolved_model, "resolved_model")
         if self.rationale is not None and not isinstance(self.rationale, str):
             raise ValueError("rationale must be a string or null")
+        if not isinstance(self.steps, tuple) or any(
+            not isinstance(step, InferenceStepAudit) for step in self.steps
+        ):
+            raise ValueError("steps must be a tuple of InferenceStepAudit values")
+
+        feedback = self.behavioral_feedback
+        if feedback is not None:
+            if not isinstance(feedback, Mapping):
+                raise ValueError("behavioral_feedback must be a mapping or null")
+            normalized_feedback = dict(feedback)
+            if set(normalized_feedback) != {"success", "problem", "desired_behavior"}:
+                raise ValueError("behavioral_feedback fields are invalid")
+            if any(
+                value is not None and not isinstance(value, str)
+                for value in normalized_feedback.values()
+            ):
+                raise ValueError("behavioral_feedback values must be strings or null")
+            if not any(
+                value is not None and value.strip() for value in normalized_feedback.values()
+            ):
+                raise ValueError("behavioral_feedback requires a nonblank value")
+            object.__setattr__(
+                self,
+                "behavioral_feedback",
+                MappingProxyType(normalized_feedback),
+            )
 
         if self.status == "succeeded":
             _nonblank(self.resolved_model, "resolved_model")
             object.__setattr__(self, "score", _unit_float(self.score, "score"))
             if self.error_type is not None or self.message is not None:
                 raise ValueError("successful observations cannot contain an error")
+            if self.behavioral_feedback is None:
+                raise ValueError("successful observations require behavioral feedback")
             return
 
         if self.status == "abstained":
@@ -171,10 +248,14 @@ class AttemptObservation:
             _nonblank(self.rationale, "rationale")
             if self.error_type is not None or self.message is not None:
                 raise ValueError("abstained observations cannot contain an error")
+            if self.behavioral_feedback is not None:
+                raise ValueError("abstained observations cannot contain behavioral feedback")
             return
 
         if self.score is not None or self.rationale is not None or self.evidence_ids:
             raise ValueError("failed observations cannot contain a score, rationale, or evidence")
+        if self.behavioral_feedback is not None:
+            raise ValueError("failed observations cannot contain behavioral feedback")
         _nonblank(self.error_type, "error_type")
         if not isinstance(self.message, str):
             raise ValueError("failed observations require an error message")

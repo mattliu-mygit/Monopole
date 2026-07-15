@@ -1,0 +1,400 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import threading
+from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import pytest
+
+from weave_agent_signals.catalogs import build_rubric_catalog
+from weave_agent_signals.judges.inference import InferenceCancelled, JudgeResponse
+from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
+from weave_agent_signals.judges.sliding import SlidingReviewer
+from weave_agent_signals.judges.windowing import build_window_plan, render_raw_turn
+from weave_agent_signals.models import SessionView, TurnSpan
+from weave_agent_signals.run_config import JudgingContextPolicy, PositionedJudge, RubricDescriptor
+
+
+def _turn(trace_id: str, position: int, size: int = 18_000) -> TurnSpan:
+    started = datetime(2026, 7, 15, 12, tzinfo=timezone.utc) + timedelta(minutes=position)
+    turn = TurnSpan(
+        trace_id=trace_id,
+        conversation_id="session-1",
+        started_at=started,
+        ended_at=started + timedelta(seconds=30),
+        model="hidden-generating-model",
+        input_tokens=10,
+        output_tokens=20,
+        cache_read_tokens=0,
+        status_code="OK",
+        config_version="config-1",
+        git_branch="main",
+        effort_level=None,
+        session_id="session-id",
+        steering_count=0,
+        denial_count=0,
+        tool_error_count=0,
+        events=[],
+        tool_calls=[],
+        chat_spans=[],
+        subagents=[],
+        user_input="",
+        assistant_output=f"assistant-{trace_id}",
+    )
+    overhead = len(render_raw_turn(turn, position).encode())
+    return replace(turn, user_input="x" * (size - overhead))
+
+
+def _policy(**updates: int) -> JudgingContextPolicy:
+    values = {
+        "target_input_tokens": 34_000,
+        "prompt_reserve_tokens": 3_000,
+        "output_reserve_tokens": 3_000,
+        "safety_reserve_tokens": 3_000,
+        "digest_max_tokens": 2_000,
+        "finding_max_tokens": 1_000,
+        "max_chunks": 10,
+    }
+    values.update(updates)
+    return JudgingContextPolicy(**values)
+
+
+def _judge() -> PositionedJudge:
+    return PositionedJudge(
+        id="judge-1",
+        label="Judge One",
+        family="family-1",
+        backend="openai",
+        supported_roles=("judge",),
+        max_input_tokens=60_000,
+        position=1,
+    )
+
+
+def _rubric(rubric_id: str) -> RubricDescriptor:
+    return build_rubric_catalog().rubric(rubric_id)
+
+
+def _phase(messages: list[dict[str, str]]) -> str:
+    marker = "PHASE:"
+    return messages[0]["content"].split(marker, 1)[1].splitlines()[0].strip()
+
+
+def _marker(messages: list[dict[str, str]], name: str) -> str:
+    marker = f"{name}:"
+    return messages[-1]["content"].split(marker, 1)[1].splitlines()[0].strip()
+
+
+class _ScriptedClient:
+    backend = "openai"
+
+    def __init__(
+        self,
+        *,
+        fail_merge: bool = False,
+        invalid_window_citation: bool = False,
+        large_digest: bool = False,
+    ):
+        self.calls: list[dict[str, Any]] = []
+        self.fail_merge = fail_merge
+        self.invalid_window_citation = invalid_window_citation
+        self.large_digest = large_digest
+        self._lock = threading.Lock()
+
+    def chat_json(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = 1024,
+        response_schema: object | None = None,
+    ) -> tuple[dict[str, Any], JudgeResponse]:
+        phase = _phase(messages)
+        with self._lock:
+            call_index = len(self.calls) + 1
+            self.calls.append(
+                {
+                    "phase": phase,
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "schema_name": getattr(response_schema, "name", None),
+                }
+            )
+        if phase == "digest":
+            payload = {
+                "schema_version": 1,
+                "chunk_id": _marker(messages, "EXPECTED_CHUNK_ID"),
+                "text": (
+                    "x" * 5_900
+                    if self.large_digest
+                    else "The agent handled the cited turn evidence."
+                ),
+                "evidence_ids": [_marker(messages, "EXAMPLE_EVIDENCE_ID")],
+            }
+        elif phase == "window":
+            evidence_id = "unknown-evidence" if self.invalid_window_citation else "trace-2"
+            payload = {
+                "schema_version": 1,
+                "window_id": _marker(messages, "EXPECTED_WINDOW_ID"),
+                "findings": [
+                    {
+                        "finding_id": "shared-finding",
+                        "polarity": "positive",
+                        "observation": "The agent used relevant checks.",
+                        "evidence_ids": [evidence_id],
+                    }
+                ],
+            }
+        else:
+            payload = (
+                {"not": "a verdict"}
+                if self.fail_merge
+                else {
+                    "schema_version": 1,
+                    "status": "scored",
+                    "score": 0.75,
+                    "rationale": "The session was mostly effective.",
+                    "evidence_ids": ["trace-1", "trace-2"],
+                    "feedback": {
+                        "success": "The agent used relevant checks.",
+                        "problem": "One check was not repeated after the final change.",
+                        "desired_behavior": "Repeat relevant checks after the final change.",
+                    },
+                }
+            )
+        raw = json.dumps(payload, sort_keys=True)
+        return payload, JudgeResponse(
+            content=raw,
+            model="resolved-judge-1",
+            usage={"input_tokens": call_index, "total_tokens": call_index + 1},
+            output_mode="json_schema",
+            schema_name=getattr(response_schema, "name", None),
+            transport_request_count=1,
+            raw_output_digest=hashlib.sha256(raw.encode()).hexdigest(),
+        )
+
+
+def _reviewer(
+    *,
+    client: _ScriptedClient | None = None,
+    artifacts: dict[str, Mapping[str, Any]] | None = None,
+    policy: JudgingContextPolicy | None = None,
+    cancelled=lambda: False,
+) -> tuple[SlidingReviewer, _ScriptedClient, dict[str, Mapping[str, Any]], dict[str, object]]:
+    session = SessionView(
+        "session-1",
+        [_turn(f"trace-{index}", index) for index in range(1, 5)],
+        "config-1",
+        "main",
+    )
+    active_policy = policy or _policy()
+    plan = build_window_plan(session, active_policy, _judge().max_input_tokens)
+    assert len(plan["windows"]) == 2
+    stored = {} if artifacts is None else artifacts
+    scripted = client or _ScriptedClient()
+
+    def record(artifact_id: str, artifact: Mapping[str, Any]) -> None:
+        existing = stored.setdefault(artifact_id, dict(artifact))
+        if existing != artifact:
+            raise ValueError("artifact conflict")
+
+    return (
+        SlidingReviewer(
+            session=session,
+            judge=_judge(),
+            window_plan=plan,
+            context_policy=active_policy,
+            client=scripted,
+            load_artifact=stored.get,
+            record_artifact=record,
+            is_cancelled=cancelled,
+        ),
+        scripted,
+        stored,
+        plan,
+    )
+
+
+def test_reviewer_digests_once_then_reads_every_window_and_merges() -> None:
+    reviewer, client, _, _ = _reviewer()
+
+    first = reviewer.review(_rubric("judge.session_outcome"))
+    second = reviewer.review(_rubric("judge.session_autonomy"))
+
+    assert [call["phase"] for call in client.calls] == [
+        "digest",
+        "digest",
+        "window",
+        "window",
+        "merge",
+        "window",
+        "window",
+        "merge",
+    ]
+    assert first.status == "succeeded"
+    assert second.status == "succeeded"
+    assert first.evidence_ids == ("trace-1", "trace-2")
+    assert first.behavioral_feedback is not None
+    assert first.usage == {"input_tokens": 15, "total_tokens": 20}
+    assert len(first.steps) == 5
+    assert all(step.requested_model == "judge-1" for step in first.steps)
+    assert all(call["temperature"] == 0.0 for call in client.calls)
+    assert [call["schema_name"] for call in client.calls[:5]] == [
+        "chunk_digest",
+        "chunk_digest",
+        "window_findings",
+        "window_findings",
+        "merged_verdict",
+    ]
+
+
+def test_window_replaces_own_digest_and_keeps_surrounding_digests_chronological() -> None:
+    reviewer, client, _, plan = _reviewer()
+
+    reviewer.review(_rubric("judge.session_outcome"))
+
+    windows = [call for call in client.calls if call["phase"] == "window"]
+    for index, call in enumerate(windows):
+        text = call["messages"][-1]["content"]
+        assert text.count("CONTEXT_KIND: raw_window") == 1
+        assert text.count("CONTEXT_KIND: chunk_digest") == 1
+        assert text.index("CHUNK_INDEX: 1") < text.index("CHUNK_INDEX: 2")
+        own_window_id = plan["windows"][index]["window_id"]
+        assert f"EXPECTED_WINDOW_ID: {own_window_id}" in text
+
+    merge_text = [call for call in client.calls if call["phase"] == "merge"][0]["messages"][-1][
+        "content"
+    ]
+    assert merge_text.count("shared-finding") == 1
+    assert '"raw_coverage_trace_ids":["trace-1","trace-2","trace-3","trace-4"]' in merge_text
+
+
+def test_artifact_replay_makes_zero_model_calls() -> None:
+    first, _, artifacts, _ = _reviewer()
+    first_result = first.review(_rubric("judge.session_outcome"))
+    replay_client = _ScriptedClient()
+    replay, _, _, _ = _reviewer(client=replay_client, artifacts=artifacts)
+
+    replay_result = replay.review(_rubric("judge.session_outcome"))
+
+    assert replay_client.calls == []
+    assert replay_result.score == first_result.score
+    assert replay_result.usage == {}
+    assert replay_result.steps == ()
+
+
+def test_concurrent_rubrics_share_one_digest_generation() -> None:
+    reviewer, client, _, _ = _reviewer()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(
+            executor.map(
+                reviewer.review,
+                (_rubric("judge.session_outcome"), _rubric("judge.session_autonomy")),
+            )
+        )
+
+    assert all(result.status == "succeeded" for result in results)
+    assert [call["phase"] for call in client.calls].count("digest") == 2
+
+
+def test_cancellation_is_checked_between_model_calls() -> None:
+    checks = 0
+
+    def cancelled() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks >= 2
+
+    reviewer, client, _, _ = _reviewer(cancelled=cancelled)
+
+    with pytest.raises(InferenceCancelled):
+        reviewer.review(_rubric("judge.session_outcome"))
+    assert [call["phase"] for call in client.calls] == ["digest"]
+
+
+def test_invalid_window_citation_fails_closed() -> None:
+    reviewer, _, _, _ = _reviewer(client=_ScriptedClient(invalid_window_citation=True))
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    assert result.evidence_ids == ()
+    assert result.behavioral_feedback is None
+    assert result.error_type == "ValueError"
+
+
+def test_failed_merge_returns_failed_observation() -> None:
+    reviewer, _, _, _ = _reviewer(client=_ScriptedClient(fail_merge=True))
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    assert result.score is None
+    assert result.rationale is None
+    assert result.evidence_ids == ()
+    assert result.behavioral_feedback is None
+    assert result.steps[-1].phase == "merge"
+
+
+def test_reviewer_rejects_tampered_plan_before_inference() -> None:
+    reviewer, client, artifacts, plan = _reviewer()
+    del reviewer
+    session = SessionView(
+        "session-1",
+        [_turn(f"trace-{index}", index) for index in range(1, 5)],
+        "config-1",
+        "main",
+    )
+    tampered = dict(plan)
+    tampered["plan_id"] = "sha256:" + "0" * 64
+
+    with pytest.raises(ValueError, match="pinned window plan"):
+        SlidingReviewer(
+            session=session,
+            judge=_judge(),
+            window_plan=tampered,
+            context_policy=_policy(),
+            client=client,
+            load_artifact=artifacts.get,
+            record_artifact=lambda _id, _artifact: None,
+        )
+
+
+def test_malformed_replayed_artifact_fails_without_model_call() -> None:
+    reviewer, _, artifacts, _ = _reviewer()
+    reviewer.review(_rubric("judge.session_outcome"))
+    artifact_id = next(iter(artifacts))
+    artifacts[artifact_id] = {**artifacts[artifact_id], "kind": "window_findings"}
+    replay_client = _ScriptedClient()
+    replay, _, _, _ = _reviewer(client=replay_client, artifacts=artifacts)
+
+    result = replay.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    assert replay_client.calls == []
+
+
+def test_over_budget_request_fails_before_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    rubric = SESSION_RUBRICS["judge.session_outcome"]
+    monkeypatch.setitem(
+        SESSION_RUBRICS,
+        rubric.scorer_name,
+        replace(rubric, system_prompt=rubric.system_prompt + "y" * 100_000),
+    )
+    reviewer, client, _, _ = _reviewer()
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    assert result.error_type == "ValueError"
+    assert "budget" in (result.message or "")
+    assert [call["phase"] for call in client.calls] == ["digest", "digest"]
