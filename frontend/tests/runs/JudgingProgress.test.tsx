@@ -27,6 +27,35 @@ const judge = {
   position: 1,
 }
 
+const secondJudge = {
+  ...judge,
+  id: 'judge-b',
+  label: 'Judge B',
+  family: 'family-b',
+  position: 2,
+}
+
+const windowPlan = {
+  plan_id: 'sha256:window-plan',
+  contract_version: '1' as const,
+  conversation_id: 'session-1',
+  input_cap_tokens: 100_000,
+  raw_budget_tokens: 80_000,
+  chunk_count: 2,
+  overlap_turns: 1 as const,
+  token_estimator: 'utf8_bytes_div_3' as const,
+  merge_input_tokens: 21_500,
+  raw_turns: [
+    { trace_id: 'trace-1', position: 1, estimated_tokens: 1200, raw_digest: 'sha256:raw-1' },
+    { trace_id: 'trace-2', position: 2, estimated_tokens: 900, raw_digest: 'sha256:raw-2' },
+  ],
+  raw_coverage_trace_ids: ['trace-1', 'trace-2'],
+  windows: [
+    { window_id: 'sha256:window-1', index: 1, core_trace_ids: ['trace-1'], raw_trace_ids: ['trace-1', 'trace-2'], raw_turn_digests: ['sha256:raw-1', 'sha256:raw-2'], raw_tokens: 2100 },
+    { window_id: 'sha256:window-2', index: 2, core_trace_ids: ['trace-2'], raw_trace_ids: ['trace-1', 'trace-2'], raw_turn_digests: ['sha256:raw-1', 'sha256:raw-2'], raw_tokens: 2100 },
+  ],
+}
+
 const plan: JudgingPlan = {
   plan_id: 'sha256:plan',
   schema_version: '2',
@@ -56,13 +85,13 @@ const plan: JudgingPlan = {
     schemas: {
       digest: { name: 'chunk_digest', schema: {} },
       window: { name: 'window_findings', schema: {} },
-      merge: { name: 'sliding_merged_verdict', schema: {} },
+      merge: { name: 'merged_verdict', schema: {} },
     },
   },
   totals: {
     sessions_planned: 1,
-    turns_considered: 9,
-    windows_planned: 2,
+    turns_considered: 2,
+    windows_planned: 4,
     planned_rubrics: 1,
     minimum_reviewer_attempts: 1,
     maximum_reviewer_attempts: 2,
@@ -72,7 +101,7 @@ const plan: JudgingPlan = {
   },
   sessions: [{
     conversation_id: 'session-1',
-    turn_count: 9,
+    turn_count: 2,
     raw_coverage_trace_ids: ['trace-1', 'trace-2'],
     rubrics: [{ ...rubric, minimum_reviewer_attempts: 1, maximum_reviewer_attempts: 2 }],
     reviewers: [{
@@ -83,26 +112,16 @@ const plan: JudgingPlan = {
         window_calls_per_rubric: 2,
         merge_calls_per_rubric: 1,
       },
-      window_plan: {
-        plan_id: 'sha256:window-plan',
-        contract_version: '1',
-        conversation_id: 'session-1',
-        input_cap_tokens: 100_000,
-        raw_budget_tokens: 80_000,
-        chunk_count: 2,
-        overlap_turns: 1,
-        token_estimator: 'utf8_bytes_div_3',
-        merge_input_tokens: 21_500,
-        raw_turns: [
-          { trace_id: 'trace-1', position: 1, estimated_tokens: 1200, raw_digest: 'sha256:raw-1' },
-          { trace_id: 'trace-2', position: 2, estimated_tokens: 900, raw_digest: 'sha256:raw-2' },
-        ],
-        raw_coverage_trace_ids: ['trace-1', 'trace-2'],
-        windows: [
-          { window_id: 'sha256:window-1', index: 1, core_trace_ids: ['trace-1'], raw_trace_ids: ['trace-1', 'trace-2'], raw_turn_digests: ['sha256:raw-1', 'sha256:raw-2'], raw_tokens: 2100 },
-          { window_id: 'sha256:window-2', index: 2, core_trace_ids: ['trace-2'], raw_trace_ids: ['trace-1', 'trace-2'], raw_turn_digests: ['sha256:raw-1', 'sha256:raw-2'], raw_tokens: 2100 },
-        ],
+      window_plan: windowPlan,
+    }, {
+      ordinal: 2,
+      judge: secondJudge,
+      work_bounds: {
+        digest_calls: 2,
+        window_calls_per_rubric: 2,
+        merge_calls_per_rubric: 1,
       },
+      window_plan: windowPlan,
     }],
   }],
 }
@@ -149,7 +168,7 @@ const progress: Progress = {
       evidence_ids: ['trace-1'],
       usage: { input_tokens: 10 },
       output_mode: 'json_schema',
-      schema_name: 'sliding_merged_verdict',
+      schema_name: 'merged_verdict',
       schema_fallback_reason: null,
       transport_request_count: 3,
       verdict_schema_version: 1,
@@ -164,7 +183,7 @@ const progress: Progress = {
       steps: [
         { phase: 'digest', artifact_id: 'digest/1', requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 4 }, output_mode: 'json_schema', schema_name: 'chunk_digest', transport_request_count: 1, raw_output_digest: 'sha256:digest', reused: true },
         { phase: 'window', artifact_id: 'window/1', requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 3 }, output_mode: 'json_schema', schema_name: 'window_findings', transport_request_count: 1, raw_output_digest: 'sha256:window', reused: false },
-        { phase: 'merge', artifact_id: 'merge/1', requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 3 }, output_mode: 'json_object_fallback', schema_name: 'sliding_merged_verdict', schema_fallback_reason: 'Native schema unavailable', transport_request_count: 1, raw_output_digest: 'sha256:merge', reused: false },
+        { phase: 'merge', artifact_id: 'merge/1', requested_model: 'judge-a', resolved_model: 'judge-a-resolved', usage: { input_tokens: 3 }, output_mode: 'json_object_fallback', schema_name: 'merged_verdict', schema_fallback_reason: 'Native schema unavailable', transport_request_count: 1, raw_output_digest: 'sha256:merge', reused: false },
       ],
     }],
   }],
@@ -175,7 +194,7 @@ describe('JudgingProgress', () => {
   it('shows the sliding plan and phase work bounds', () => {
     render(<JudgingProgress plan={plan} progress={progress} result={null} />)
 
-    expect(screen.getByText('1 session · 9 turns · 2 raw windows')).not.toBeNull()
+    expect(screen.getByText('1 session · 2 turns · 4 raw windows')).not.toBeNull()
     expect(screen.getByText('2 of 4 digests')).not.toBeNull()
     expect(screen.getByText('2 of 4 windows')).not.toBeNull()
     expect(screen.getByText('1 of 2 merges')).not.toBeNull()
@@ -195,6 +214,21 @@ describe('JudgingProgress', () => {
     expect(screen.getByText('window · current')).not.toBeNull()
     expect(screen.getByText('merge · current')).not.toBeNull()
     expect(screen.getByText('Native schema unavailable')).not.toBeNull()
+  })
+
+  it('renders only the non-null categories in partial behavioral feedback', () => {
+    const partial = structuredClone(progress)
+    partial.attempt_summaries[0].attempts[0].behavioral_feedback = {
+      success: null,
+      problem: 'The final verification was incomplete.',
+      desired_behavior: null,
+    }
+
+    render(<JudgingProgress plan={plan} progress={partial} result={null} />)
+
+    expect(screen.queryByText('Success:')).toBeNull()
+    expect(screen.getByText('Problem:')).not.toBeNull()
+    expect(screen.queryByText('Desired behavior:')).toBeNull()
   })
 
   it('preserves failure details and truncation notices', () => {

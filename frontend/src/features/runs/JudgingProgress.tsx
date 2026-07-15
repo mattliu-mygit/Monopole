@@ -66,9 +66,9 @@ function Attempt({ attempt }: { attempt: ReviewAttempt }) {
       {attempt.rationale && <p className="mt-1 text-gray-600">{attempt.rationale}</p>}
       {attempt.behavioral_feedback && (
         <dl className="mt-2 grid gap-1 rounded border border-purple-100 bg-purple-50 p-2 text-gray-700">
-          <div><dt className="inline font-medium text-green-700">Success: </dt><dd className="inline">{attempt.behavioral_feedback.success}</dd></div>
-          <div><dt className="inline font-medium text-red-700">Problem: </dt><dd className="inline">{attempt.behavioral_feedback.problem}</dd></div>
-          <div><dt className="inline font-medium text-purple-700">Desired behavior: </dt><dd className="inline">{attempt.behavioral_feedback.desired_behavior}</dd></div>
+          {attempt.behavioral_feedback.success && <div><dt className="inline font-medium text-green-700">Success: </dt><dd className="inline">{attempt.behavioral_feedback.success}</dd></div>}
+          {attempt.behavioral_feedback.problem && <div><dt className="inline font-medium text-red-700">Problem: </dt><dd className="inline">{attempt.behavioral_feedback.problem}</dd></div>}
+          {attempt.behavioral_feedback.desired_behavior && <div><dt className="inline font-medium text-purple-700">Desired behavior: </dt><dd className="inline">{attempt.behavioral_feedback.desired_behavior}</dd></div>}
         </dl>
       )}
       {attempt.status === 'failed' && (

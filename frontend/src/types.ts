@@ -475,9 +475,9 @@ export interface SlidingProtocolManifest {
     merge_user: string
   }
   schemas: {
-    digest: { name: string; schema: Record<string, unknown> }
-    window: { name: string; schema: Record<string, unknown> }
-    merge: { name: string; schema: Record<string, unknown> }
+    digest: { name: 'chunk_digest'; schema: Record<string, unknown> }
+    window: { name: 'window_findings'; schema: Record<string, unknown> }
+    merge: { name: 'merged_verdict'; schema: Record<string, unknown> }
   }
 }
 
@@ -503,9 +503,9 @@ export interface JudgingPlan {
 }
 
 export interface BehavioralFeedback {
-  success: string
-  problem: string
-  desired_behavior: string
+  success: string | null
+  problem: string | null
+  desired_behavior: string | null
 }
 
 export interface InferenceStepAudit {

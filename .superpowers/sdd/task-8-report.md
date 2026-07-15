@@ -29,3 +29,11 @@
 - `npm run build` — passed.
 - `rg` found no episode, selected-episode, episode-cap, applicability, or skip
   compatibility fields under `frontend/`.
+
+## Review fixes
+
+- Behavioral feedback categories now match the nullable backend contract and
+  the UI omits absent categories.
+- The principal fixture now satisfies selective-review cardinality, full raw
+  coverage, reviewer work bounds, recomputed totals, and the stable
+  `merged_verdict` schema identity.

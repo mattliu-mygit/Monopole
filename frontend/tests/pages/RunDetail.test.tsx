@@ -225,7 +225,7 @@ const plan: JudgingPlan = {
     schemas: {
       digest: { name: 'chunk_digest', schema: {} },
       window: { name: 'window_findings', schema: {} },
-      merge: { name: 'sliding_merged_verdict', schema: {} },
+      merge: { name: 'merged_verdict', schema: {} },
     },
   },
   totals: {
