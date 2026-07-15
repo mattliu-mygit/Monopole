@@ -103,7 +103,11 @@ def build_session_digest(
     """
 
     del max_turns
-    from weave_agent_signals.judges.windowing import render_raw_window
+    from weave_agent_signals.judges.windowing import (
+        _turn_evidence_ids,
+        _validate_session_evidence_ids,
+        render_raw_turn,
+    )
 
     available_ids = {turn.trace_id for turn in session.turns}
     missing_ids = [
@@ -114,9 +118,14 @@ def build_session_digest(
     if missing_ids:
         raise ValueError("missing requested evidence IDs: " + ", ".join(missing_ids))
 
-    return render_raw_window(
-        session,
-        {"raw_trace_ids": [turn.trace_id for turn in session.turns]},
+    _validate_session_evidence_ids(session)
+    return JudgeDigest(
+        text="\n\n".join(
+            render_raw_turn(turn, position) for position, turn in enumerate(session.turns, start=1)
+        ),
+        evidence_ids=tuple(
+            evidence_id for turn in session.turns for evidence_id in _turn_evidence_ids(turn)
+        ),
     )
 
 

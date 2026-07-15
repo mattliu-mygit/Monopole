@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from datetime import datetime
 
@@ -12,6 +13,17 @@ from weave_agent_signals.models import SessionView, ToolSpan, TurnSpan
 from weave_agent_signals.run_config import JudgingContextPolicy
 
 WINDOW_PLAN_CONTRACT_VERSION = "1"
+_SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_WINDOW_FIELDS = frozenset(
+    {
+        "window_id",
+        "index",
+        "core_trace_ids",
+        "raw_trace_ids",
+        "raw_turn_digests",
+        "raw_tokens",
+    }
+)
 
 
 def estimate_tokens(text: str) -> int:
@@ -117,6 +129,25 @@ def _turn_evidence_ids(turn: TurnSpan) -> tuple[str, ...]:
     return tuple(ids)
 
 
+def _validate_session_evidence_ids(session: SessionView) -> None:
+    evidence_ids = [
+        evidence_id for turn in session.turns for evidence_id in _turn_evidence_ids(turn)
+    ]
+    if any(
+        not isinstance(evidence_id, str) or not evidence_id.strip() for evidence_id in evidence_ids
+    ):
+        raise ValueError("session evidence IDs must be nonblank")
+
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for evidence_id in evidence_ids:
+        if evidence_id in seen and evidence_id not in duplicates:
+            duplicates.append(evidence_id)
+        seen.add(evidence_id)
+    if duplicates:
+        raise ValueError("session evidence IDs must be globally unique: " + ", ".join(duplicates))
+
+
 def _range_tokens(byte_prefix: list[int], start: int, end: int) -> int:
     byte_count = byte_prefix[end + 1] - byte_prefix[start] + 2 * (end - start)
     return (byte_count + 2) // 3
@@ -166,9 +197,8 @@ def build_window_plan(
 
     if isinstance(model_limit, bool) or not isinstance(model_limit, int) or model_limit <= 0:
         raise ValueError("model_limit must be a positive integer")
+    _validate_session_evidence_ids(session)
     trace_ids = [turn.trace_id for turn in session.turns]
-    if len(trace_ids) != len(set(trace_ids)):
-        raise ValueError("session turn trace IDs must be unique")
 
     input_cap = min(policy.target_input_tokens, model_limit)
     reserve_tokens = (
@@ -283,11 +313,44 @@ def render_raw_window(
 ) -> JudgeDigest:
     """Render one planned window in session order with all visible evidence IDs."""
 
-    raw_trace_ids = window.get("raw_trace_ids")
-    if not isinstance(raw_trace_ids, list) or not all(
-        isinstance(trace_id, str) for trace_id in raw_trace_ids
+    if set(window) != _WINDOW_FIELDS:
+        raise ValueError("window fields must exactly match the planned schema")
+
+    window_id = window["window_id"]
+    if not isinstance(window_id, str) or _SHA256_PATTERN.fullmatch(window_id) is None:
+        raise ValueError("window_id must be a SHA-256 digest")
+    index = window["index"]
+    if isinstance(index, bool) or not isinstance(index, int) or index <= 0:
+        raise ValueError("window index must be a positive integer")
+    core_trace_ids = window["core_trace_ids"]
+    if (
+        not isinstance(core_trace_ids, list)
+        or not core_trace_ids
+        or not all(isinstance(trace_id, str) and trace_id.strip() for trace_id in core_trace_ids)
     ):
-        raise ValueError("window raw_trace_ids must be a list of strings")
+        raise ValueError("window core_trace_ids must be a nonempty list of nonblank strings")
+    raw_trace_ids = window.get("raw_trace_ids")
+    if (
+        not isinstance(raw_trace_ids, list)
+        or not raw_trace_ids
+        or not all(isinstance(trace_id, str) and trace_id.strip() for trace_id in raw_trace_ids)
+    ):
+        raise ValueError("window raw_trace_ids must be a nonempty list of nonblank strings")
+    if len(raw_trace_ids) != len(set(raw_trace_ids)):
+        raise ValueError("window raw_trace_ids must be unique")
+    raw_turn_digests = window["raw_turn_digests"]
+    if not isinstance(raw_turn_digests, list):
+        raise ValueError("window raw_turn_digests must be a list")
+    if not all(
+        isinstance(digest, str) and _SHA256_PATTERN.fullmatch(digest) is not None
+        for digest in raw_turn_digests
+    ):
+        raise ValueError("window raw_turn_digests must contain SHA-256 digests")
+    raw_tokens = window["raw_tokens"]
+    if isinstance(raw_tokens, bool) or not isinstance(raw_tokens, int) or raw_tokens < 0:
+        raise ValueError("window raw_tokens must be a nonnegative integer")
+
+    _validate_session_evidence_ids(session)
     positions = {turn.trace_id: index for index, turn in enumerate(session.turns, start=1)}
     turns = {turn.trace_id: turn for turn in session.turns}
     missing = [trace_id for trace_id in raw_trace_ids if trace_id not in turns]
@@ -299,7 +362,24 @@ def render_raw_window(
 
     selected_turns = [turns[trace_id] for trace_id in raw_trace_ids]
     rendered = [render_raw_turn(turn, positions[turn.trace_id]) for turn in selected_turns]
+    expected_digests = [_text_digest(text) for text in rendered]
+    if raw_turn_digests != expected_digests:
+        raise ValueError("window raw_turn_digests do not match current session evidence")
+    text = "\n\n".join(rendered)
+    if raw_tokens != estimate_tokens(text):
+        raise ValueError("window raw_tokens do not match current session rendering")
+
+    window_body = {
+        "index": index,
+        "core_trace_ids": core_trace_ids,
+        "raw_trace_ids": raw_trace_ids,
+        "raw_turn_digests": raw_turn_digests,
+        "raw_tokens": raw_tokens,
+    }
+    if window_id != _canonical_digest(window_body):
+        raise ValueError("window_id does not match canonical window body")
+
     evidence_ids = tuple(
         evidence_id for turn in selected_turns for evidence_id in _turn_evidence_ids(turn)
     )
-    return JudgeDigest(text="\n\n".join(rendered), evidence_ids=evidence_ids)
+    return JudgeDigest(text=text, evidence_ids=evidence_ids)

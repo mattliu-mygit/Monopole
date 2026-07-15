@@ -85,6 +85,18 @@ def _small_policy(**overrides: int) -> JudgingContextPolicy:
     return JudgingContextPolicy(**values)
 
 
+def _tool(span_id: str) -> ToolSpan:
+    return ToolSpan(
+        span_id=span_id,
+        tool_name="Bash",
+        arguments="{}",
+        result="result",
+        status_code="OK",
+        started_at=_ts(1),
+        ended_at=_ts(1),
+    )
+
+
 def test_estimate_tokens_uses_versioned_conservative_utf8_bytes_estimator():
     assert estimate_tokens("") == 0
     assert estimate_tokens("abcd") == 2
@@ -192,6 +204,48 @@ def test_window_plan_budgets_the_final_raw_window_separators():
         build_window_plan(session, policy, model_limit=60_000)
 
 
+def test_window_plan_accepts_exact_raw_budget_equality():
+    session = _session_with_rendered_turn_sizes([18_000, 18_000])
+    policy = _small_policy(target_input_tokens=23_001)
+
+    plan = build_window_plan(session, policy, model_limit=60_000)
+
+    assert plan["raw_budget_tokens"] == 12_001
+    assert plan["windows"][0]["raw_tokens"] == 12_001
+
+
+@pytest.mark.parametrize(
+    "turn",
+    [
+        _turn(" ", position=1),
+        replace(
+            _turn("t1", position=1),
+            chat_spans=[ChatSpan("", "model", 1, 1, 0, 0, "stop")],
+        ),
+        replace(_turn("t1", position=1), tool_calls=[_tool(" ")]),
+        replace(_turn("t1", position=1), subagents=[SubagentSpan("", "reviewer", [])]),
+        replace(
+            _turn("t1", position=1),
+            subagents=[SubagentSpan("subagent-1", "reviewer", [_tool("")])],
+        ),
+    ],
+)
+def test_window_plan_rejects_blank_evidence_ids(turn: TurnSpan):
+    session = SessionView("session-1", [turn], "config-1", "main")
+
+    with pytest.raises(ValueError, match="session evidence IDs must be nonblank"):
+        build_window_plan(session, _small_policy(), model_limit=60_000)
+
+
+def test_window_plan_rejects_duplicate_evidence_ids_across_categories_and_turns():
+    first = replace(_turn("duplicate", position=1), tool_calls=[_tool("tool-1")])
+    second = replace(_turn("t2", position=2), tool_calls=[_tool("duplicate")])
+    session = SessionView("session-1", [first, second], "config-1", "main")
+
+    with pytest.raises(ValueError, match="session evidence IDs must be globally unique: duplicate"):
+        build_window_plan(session, _small_policy(), model_limit=60_000)
+
+
 def test_window_plan_rejects_empty_raw_capacity():
     session = SessionView("session-1", [], "config-1", "main")
     with pytest.raises(ValueError, match="leave no raw window capacity"):
@@ -228,3 +282,80 @@ def test_render_raw_window_uses_planned_order_and_visible_evidence_ids():
     assert digest.evidence_ids == tuple(plan["windows"][0]["raw_trace_ids"])
     assert digest.text.index("evidence_id=t1") < digest.text.index("evidence_id=t2")
     assert digest.text.index("evidence_id=t2") < digest.text.index("evidence_id=t3")
+
+
+def test_render_raw_window_rejects_stale_same_trace_evidence():
+    session = _session_with_rendered_turn_sizes([18_000])
+    plan = build_window_plan(session, _small_policy(), model_limit=60_000)
+    turn = session.turns[0]
+    changed = replace(turn, user_input="y" + (turn.user_input or "")[1:])
+    stale_session = replace(session, turns=[changed])
+
+    with pytest.raises(
+        ValueError,
+        match="window raw_turn_digests do not match current session evidence",
+    ):
+        render_raw_window(stale_session, plan["windows"][0])
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"window_id": "sha256:" + "0" * 64}, "window_id does not match canonical window body"),
+        (
+            {"raw_turn_digests": ["sha256:" + "0" * 64]},
+            "window raw_turn_digests do not match current session evidence",
+        ),
+        ({"raw_tokens": 99}, "window raw_tokens do not match current session rendering"),
+    ],
+)
+def test_render_raw_window_rejects_tampered_planned_fields(
+    mutation: dict[str, object],
+    message: str,
+):
+    session = _session_with_rendered_turn_sizes([18_000])
+    plan = build_window_plan(session, _small_policy(), model_limit=60_000)
+    window = {**plan["windows"][0], **mutation}
+
+    with pytest.raises(ValueError, match=message):
+        render_raw_window(session, window)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"window_id": None}, "window fields must exactly match the planned schema"),
+        ({"window_id": "not-a-digest"}, "window_id must be a SHA-256 digest"),
+        ({"index": True}, "window index must be a positive integer"),
+        ({"core_trace_ids": "t1"}, "window core_trace_ids must be a nonempty list"),
+        ({"raw_trace_ids": [1]}, "window raw_trace_ids must be a nonempty list"),
+        ({"raw_turn_digests": "not-a-list"}, "window raw_turn_digests must be a list"),
+        (
+            {"raw_turn_digests": ["not-a-digest"]},
+            "window raw_turn_digests must contain SHA-256 digests",
+        ),
+        ({"raw_tokens": True}, "window raw_tokens must be a nonnegative integer"),
+        ({"extra": "field"}, "window fields must exactly match the planned schema"),
+    ],
+)
+def test_render_raw_window_rejects_missing_or_malformed_planned_fields(
+    mutation: dict[str, object],
+    message: str,
+):
+    session = _session_with_rendered_turn_sizes([18_000])
+    plan = build_window_plan(session, _small_policy(), model_limit=60_000)
+    window = {**plan["windows"][0], **mutation}
+    if mutation == {"window_id": None}:
+        del window["window_id"]
+
+    with pytest.raises(ValueError, match=message):
+        render_raw_window(session, window)
+
+
+def test_render_raw_window_rejects_duplicate_raw_trace_ids():
+    session = _session_with_rendered_turn_sizes([18_000])
+    plan = build_window_plan(session, _small_policy(), model_limit=60_000)
+    window = {**plan["windows"][0], "raw_trace_ids": ["t1", "t1"]}
+
+    with pytest.raises(ValueError, match="window raw_trace_ids must be unique"):
+        render_raw_window(session, window)
