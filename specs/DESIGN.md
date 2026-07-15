@@ -47,9 +47,10 @@ Evaluation is layered:
    session views, and writes score feedback to exact refs.
 2. Deterministic evaluation extracts high-precision outcome and process signals
    without inference.
-3. Model evaluation pins a bounded, applicability-aware plan, judges selected
-   episodes and whole sessions, and retains every reviewer attempt.
-4. Analysis separates representative evidence from selected diagnostics before
+3. Model evaluation pins a bounded sliding-window plan, gives every session turn
+   raw coverage, merges each reviewer's window findings into session scores and
+   behavioral feedback, and retains every inference step and reviewer attempt.
+4. Analysis admits only complete, context-compatible session judgments before
    comparing configurations or trends.
 5. Evaluation runs pin their cohort and configuration, score and judge it, then
    evaluate complete instruction-bundle proposals.
@@ -84,8 +85,9 @@ acknowledgement but not another inference run. A later evaluation run can assess
 the promoted state.
 
 The correctness mechanisms are deliberately stronger than the local deployment
-model: pinned inputs, explicit applicability, reviewer-attempt audit, stage
-success markers, cancellation coordination, compare-and-swap review revisions,
+model: pinned inputs and judging context policy, exhaustive raw-turn coverage,
+content-authenticated resumable artifacts, reviewer-attempt audit, stage success
+markers, cancellation coordination, compare-and-swap review revisions,
 whole-scope drift detection, journaled multi-file promotion, rollback/recovery,
 and monotonic progress are required.
 
@@ -99,10 +101,11 @@ and monotonic progress are required.
   confinement cannot be established.
 - Deterministic parsers favor precision and cannot recover evidence omitted by
   the adapter or fully interpret arbitrary shell programs.
-- Model judgments are opinions over bounded evidence. There is no human-labeled
-  calibration set, held-out validation gate, or claim that review heuristics are
-  statistically optimal.
-- Trigger-selected episode judgments are diagnostic rather than representative.
+- Model judgments are opinions over bounded evidence. Sliding windows prevent a
+  long session from being silently reduced to a prefix, but reviewer-generated
+  digests and merges can still omit, distort, or overweight evidence. There is
+  no human-labeled calibration set, held-out validation gate, or claim that the
+  context budget or review heuristics are statistically optimal.
 - Reflection evaluates complete Markdown bundle revisions. The project-file
   adapter is the only promotion adapter today.
 - The frontend polls persisted state; there is no raw-log or streaming endpoint.

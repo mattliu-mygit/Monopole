@@ -443,10 +443,9 @@ def cmd_judge(args: argparse.Namespace) -> int:
 
         stats = _WriteStats()
 
-        # Session digests are built from the turns' tool/chat children, so the
-        # turns must be hydrated whenever we judge sessions — not only when we
-        # judge turns. Batch hydration validates completeness before any judge
-        # call, so a partial trace cannot produce durable feedback.
+        # Session windows are built from the turns' tool/chat children. Batch
+        # hydration validates completeness before any judge call, so a partial
+        # trace cannot produce durable feedback.
         client.hydrate_turns_batch(turns)
 
         sessions = _group_sessions(turns)
@@ -759,7 +758,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_back.add_argument("--force", action="store_true")
 
     # judge
-    p_judge = subs.add_parser("judge", help="Run LLM judges on recent turns")
+    p_judge = subs.add_parser("judge", help="Run sliding-window LLM judges on sessions")
     p_judge.add_argument("--since", type=_parse_datetime, default=None)
     p_judge.add_argument("--limit", type=int, default=10)
     p_judge.add_argument(

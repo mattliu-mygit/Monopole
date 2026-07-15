@@ -11,11 +11,13 @@ review. The Python package and CLI are named `weave-agent-signals`.
 - Extracts deterministic test, build, lint, install, Git, and command outcomes.
 - Measures correction-free rate, completion, and repeated-work efficiency while
   retaining the raw negative signals as context.
-- Uses a pinned applicability plan for selected process episodes and guided,
-  user-overridable review depth for every LLM-judged episode/session rubric.
-- Compares configuration cohorts, calculates representative trends, labels
-  trigger-selected judgments as diagnostics, produces coaching input, and
-  alerts only on new significant regressions.
+- Uses a pinned context policy to judge complete sessions through bounded raw
+  windows, surrounding chunk digests, and a final evidence-cited merge.
+- Supports guided, user-overridable review depth while retaining each
+  reviewer's digest, window, merge, and final behavioral-feedback audit.
+- Compares compatible configuration cohorts, calculates representative trends,
+  produces bounded coaching examples, and alerts only on new significant
+  regressions.
 - Runs a reproducible scoring-to-reflection pipeline over pinned Weave traces.
 - Uses a proposal evaluator that predicts a whole-bundle score for the exact
   current instruction bundle and generated candidates, then lets a user review
@@ -57,7 +59,7 @@ Run `weave-agent-signals COMMAND --help` for current arguments and defaults.
 |---|---|
 | `score` | Score recent turns and sessions deterministically |
 | `backfill` | Paginate and score a historical date range |
-| `judge` | Run selected-episode and session model rubrics |
+| `judge` | Run sliding-window session model rubrics |
 | `inspect` | Inspect recent trace/session detail and feedback |
 | `analyze` | Summarize scores, cohorts, trends, and coaching |
 | `monitor` | Alert on new significant regressions |

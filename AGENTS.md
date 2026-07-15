@@ -50,7 +50,7 @@ then run all gates before declaring completion.
 - [`specs/DESIGN.md`](specs/DESIGN.md) — product purpose and system overview
 - [`specs/01-weave-io.md`](specs/01-weave-io.md) — reads, hydration, refs, writes
 - [`specs/02-evaluation.md`](specs/02-evaluation.md) — deterministic and model
-  evaluation, applicability, review policy, and inference trust
+  evaluation, sliding context policy, review policy, and inference trust
 - [`specs/03-analysis-monitoring.md`](specs/03-analysis-monitoring.md) —
   comparable evidence, trends, coaching, and alerts
 - [`specs/04-evaluation-runs.md`](specs/04-evaluation-runs.md) — reproducible runs,
@@ -73,7 +73,7 @@ arguments and defaults.
 
 - `score` — deterministic recent scoring
 - `backfill` — paginated historical scoring
-- `judge` — turn/session rubric inference
+- `judge` — sliding-window session rubric inference
 - `inspect` — read-only trace and feedback inspection
 - `analyze` — summary, cohort, trend, and coaching analysis
 - `monitor` — deduplicated regression alerts
@@ -96,13 +96,17 @@ product behavior; standalone reflection does not mutate managed files.
 - `--force` queries matching scorer-plus-ref feedback, creates the new row, then
   purges every prior match only after creation succeeds.
 - Evaluation runs pin exact trace identities and configuration before work.
-- Judging pins a selective episode/applicability plan before inference;
-  trigger-selected scores are diagnostics, not population estimates.
+- Judging pins its context policy, complete raw-turn coverage, reviewer-specific
+  window plans, and digest/window/merge protocol before inference.
+- Judge feedback is session-only. Ordinary analysis requires a complete review
+  and a fully identified comparison context.
 - Runs pin model and rubric catalog versions, rubric thresholds, proposal
   writer, ordered judge choices, review depth, and proposal evaluator;
   recommendations never remain runtime defaults.
 - Runs pin one pipeline version in their effective configuration; each stage
   fails closed before external work when that version is incompatible.
+- Persisted judging artifacts are content-authenticated and reusable only when
+  their exact plan, reviewer, protocol, model, phase, and schema still match.
 - Explicit judge overrides are honored in order. Family overlap and low
   diversity warn for bias risk but do not silently replace selected models.
 - Review scores belong to immutable whole-bundle revisions, not individual files.

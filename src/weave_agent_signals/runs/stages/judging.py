@@ -434,7 +434,7 @@ def _run_unit(
     )
 
 
-def _applicable(
+def _planned_rubrics(
     rows: Sequence[Mapping[str, Any]],
     descriptors: Mapping[str, RubricDescriptor],
 ) -> list[RubricDescriptor]:
@@ -475,7 +475,7 @@ def run_judging_stage(
     *,
     dependencies: JudgingDependencies,
 ) -> None:
-    """Build/reuse the plan, rate every applicable rubric, then write once."""
+    """Build or reuse the plan, rate every planned session rubric, then write once."""
 
     run_id = run.run_id
     current = _active(dependencies.store, run_id, cancel)
@@ -549,7 +549,7 @@ def run_judging_stage(
             session = sessions.get(conversation_id)
             if session is None:
                 raise RuntimeError(f"Pinned judging session is missing: {conversation_id}")
-            expected = _applicable(session_plan["rubrics"], descriptors)
+            expected = _planned_rubrics(session_plan["rubrics"], descriptors)
             if not expected:
                 continue
             _active(dependencies.store, run_id, cancel)

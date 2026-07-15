@@ -21,32 +21,37 @@ Start atomically pins:
 - the ordered turn cohort and its session identities;
 - the resolved model and rubric catalogs;
 - the proposal writer, ordered run judges, review depth, and proposal evaluator;
-- rubric versions, thresholds, candidate-attempt budget, and other effective
-  configuration; and
+- rubric versions, thresholds, judging context policy, candidate-attempt budget,
+  and other effective configuration; and
 - one pipeline version.
 
 Later stages re-query only the pinned traces and restore their stored order.
 Missing or identity-changed evidence fails the run. Newly recorded turns cannot
-enter an active cohort. Judging separately pins its episode/applicability plan
-before inference. Reflection pins the exact feedback records it consumes and an
-exact baseline bundle before generating proposals.
+enter an active cohort. Before inference, judging separately pins complete raw
+session coverage, each reviewer's bounded window plan, and the exact
+digest/window/merge protocol. Reflection pins the exact feedback records it
+consumes and an exact baseline bundle before generating proposals.
 
 Each stage has an explicit success marker distinct from the presence of a
 partial result. Manual continuation requires that marker. Automatic handoff
 persists success and the next status together.
 
-After restart, compatible completed work may be finalized from persisted
-evidence without repeating paid or destructive work. Incomplete or incompatible
-work fails visibly and requires a new run. Cancellation consults durable state,
-terminates active model processes, and cannot interleave with protected external
-write batches or finalized review evidence.
+After restart, compatible digest, window, merge, reflection, and promotion work
+may be finalized or resumed from persisted evidence without repeating paid or
+destructive work. Judging artifacts are reusable only after their content,
+phase, model, schema, protocol, and exact plan identity are revalidated.
+Incomplete outcomes may resume from valid earlier artifacts; incompatible or
+tampered artifacts fail visibly instead of being adapted. Cancellation consults
+durable state, terminates active model processes, and cannot interleave with
+protected external write batches or finalized review evidence.
 
 ## Model roles and activity
 
 Runs pin three independent roles:
 
 1. the proposal writer generates candidate Markdown bundles;
-2. run judges evaluate selected episodes and sessions; and
+2. run judges evaluate complete sessions through sliding raw windows and a final
+   merge; and
 3. the proposal evaluator predicts whole-bundle scores for Past B and candidate
    C revisions.
 
@@ -65,6 +70,12 @@ credentials, or arbitrary subprocess output.
 
 Progress is observational. Failure to publish an activity update cannot change
 candidate generation, evaluation, or selection.
+
+Judging progress separately reports planned sessions, turns, raw windows,
+reviewer-attempt bounds, and unique completed digest, window, and merge
+artifacts. The maximums are pinned work bounds rather than promises that
+selective review will invoke every configured reviewer. Reused artifacts retain
+ordered inference provenance without incrementing unique completed-work counts.
 
 ## Repository Markdown scope
 
