@@ -162,12 +162,10 @@ describe('reflectionState', () => {
     expect(bundlesEqual(proposed, { ...proposed })).toBe(true)
     expect(bundlesEqual(proposed, edited)).toBe(false)
     expect(bundleActions(past, proposed).map((action) => [action.action, action.locator])).toEqual([
-      ['delete', '.claude/commands/old.md'],
       ['create', '.claude/skills/new.md'],
       ['update', 'CLAUDE.md'],
     ])
     expect(changedLocators(past, proposed)).toEqual([
-      '.claude/commands/old.md',
       '.claude/skills/new.md',
       'CLAUDE.md',
     ])
@@ -217,17 +215,14 @@ describe('reflectionState', () => {
       promotion_id: 'promotion-1',
       run_id: 'run-state',
       candidate_id: 'candidate-1',
-      target_kind: 'file',
-      target_id: '/project',
       past,
       evaluated_candidate: proposed,
       promoted: edited,
       review_revision: 2,
-      actions: [],
+      outcomes: [],
       decided_at: '2026-07-14T18:30:00Z',
       promoted_was_evaluated: false,
       unevaluated_d_acknowledged: true,
-      git_metadata: null,
     }
     expect(receiptBundles(receipt)).toEqual({ past, evaluated: proposed, promoted: edited })
   })

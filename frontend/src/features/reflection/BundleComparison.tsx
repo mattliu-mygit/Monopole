@@ -39,7 +39,7 @@ export default function BundleComparison({
   useEffect(() => {
     if (onEditedTargetsChange) {
       const firstEditable = actions.find((candidate) => candidate.action === 'update')
-        ?? actions.find((candidate) => candidate.action !== 'delete')
+        ?? actions[0]
       if (firstEditable) setSelectedLocator(firstEditable.locator)
       setView('edited')
     }
@@ -60,7 +60,7 @@ export default function BundleComparison({
     return <p className="text-sm text-gray-500">The proposed bundle has no file changes.</p>
   }
   const edited = editedTargets?.find((target) => target.locator === action.locator) ?? action.after
-  const editable = Boolean(onEditedTargetsChange && action.action !== 'delete')
+  const editable = Boolean(onEditedTargetsChange)
 
   function updateContent(content: string) {
     if (!onEditedTargetsChange || !editedTargets) return

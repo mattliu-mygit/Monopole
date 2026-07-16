@@ -1,6 +1,6 @@
 from weave_agent_signals.catalogs import build_rubric_catalog
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
-from weave_agent_signals.judges.runner import REVIEW_POLICY_VERSION
+from weave_agent_signals.judges.runner import PANEL_CONTRACT_VERSION
 
 
 def test_all_six_model_rubrics_are_authoritative_session_v4_descriptors() -> None:
@@ -15,7 +15,7 @@ def test_all_six_model_rubrics_are_authoritative_session_v4_descriptors() -> Non
     assert all(rubric.evaluation_unit == "session" for rubric in SESSION_RUBRICS.values())
     assert all(rubric.version == "v4" for rubric in SESSION_RUBRICS.values())
     assert tuple(item.id for item in build_rubric_catalog().rubrics) == tuple(SESSION_RUBRICS)
-    assert REVIEW_POLICY_VERSION == "3"
+    assert PANEL_CONTRACT_VERSION == "1"
 
 
 def test_rubric_prompts_keep_five_anchored_scores_and_insufficient_evidence() -> None:

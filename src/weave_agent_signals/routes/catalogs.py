@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Response
 
+from weave_agent_signals.routes.models import ModelCatalogResponse
 from weave_agent_signals.run_config import ModelCatalog, RubricCatalog
 
 
@@ -18,17 +18,13 @@ def create_catalogs_router(
     router = APIRouter(prefix="/api", tags=["catalogs"])
 
     @router.get("/models")
-    def get_models() -> JSONResponse:
-        return JSONResponse(
-            build_model_catalog().model_dump(mode="json"),
-            headers={"Cache-Control": "no-store"},
-        )
+    def get_models(response: Response) -> ModelCatalogResponse:
+        response.headers["Cache-Control"] = "no-store"
+        return ModelCatalogResponse.model_validate(build_model_catalog().model_dump(mode="json"))
 
     @router.get("/rubrics")
-    def get_rubrics() -> JSONResponse:
-        return JSONResponse(
-            build_rubric_catalog().model_dump(mode="json"),
-            headers={"Cache-Control": "no-store"},
-        )
+    def get_rubrics(response: Response) -> RubricCatalog:
+        response.headers["Cache-Control"] = "no-store"
+        return build_rubric_catalog()
 
     return router

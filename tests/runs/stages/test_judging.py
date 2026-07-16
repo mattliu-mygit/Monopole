@@ -72,9 +72,7 @@ def _setup(
         model_catalog_version=models.catalog_version,
         rubric_catalog_version=rubrics.catalog_version,
         judge_backend="cli",
-        review_depth="primary",
         judge_models=("claude-sonnet-5",),
-        second_opinion_margin=None,
         proposal_model="gpt-5.6-sol",
         proposal_evaluator_model="claude-sonnet-5",
         rubrics=rubric_ids,
@@ -224,6 +222,31 @@ def test_stage_does_not_write_partial_scores_when_any_session_rubric_fails(store
     )
     with pytest.raises(runner.JudgeExecutionError):
         run_judging_stage(run, effective, threading.Event(), dependencies=deps)
+    assert weave.writes == []
+
+
+def test_stage_completes_unanimous_abstention_without_writing_feedback(store, monkeypatch):
+    run, effective, turn, session = _setup(store)
+    weave = _Weave()
+    outcome = runner.JudgeNotEvaluable("judge.session_outcome", ())
+
+    def abstain(*_args, **_kwargs):
+        raise runner.JudgeExecutionError([], [], [outcome])
+
+    monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", abstain)
+    deps = JudgingDependencies(
+        store,
+        lambda: weave,
+        lambda: context(None),
+        lambda _cohort: ([turn], {"session-1": session}),
+    )
+
+    run_judging_stage(run, effective, threading.Event(), dependencies=deps)
+
+    result = store.get(run.run_id).judging_result
+    assert result["not_evaluable_rubrics"] == 1
+    assert result["failure_count"] == 0
+    assert result["coverage_complete"] is True
     assert weave.writes == []
 
 
@@ -415,8 +438,6 @@ def test_resumed_artifact_progress_is_reconstructed_and_not_double_counted(store
         [session],
         cohort_id="cohort",
         rubrics=effective.rubrics,
-        review_depth=effective.review_depth,
-        second_opinion_margin=effective.second_opinion_margin,
         judge_models=effective.models.judges,
         context_policy=effective.judging_context,
     )

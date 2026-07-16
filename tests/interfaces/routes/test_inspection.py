@@ -91,7 +91,15 @@ class FakeClient:
         return {
             ref: self.feedback_by_ref.get(
                 ref,
-                [{"id": "feedback-1", "weave_ref": ref}],
+                [
+                    {
+                        "id": "feedback-1",
+                        "weave_ref": ref,
+                        "feedback_type": "weave_agent_signals.efficiency",
+                        "payload": {"rating": 1.0},
+                        "created_at": "2026-07-14T12:05:00+00:00",
+                    }
+                ],
             )
             for ref in refs
         }

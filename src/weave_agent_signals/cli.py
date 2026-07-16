@@ -21,8 +21,7 @@ from weave_agent_signals.client import WeaveClient
 from weave_agent_signals.judges.cli_backend import CliJudgeClient
 from weave_agent_signals.judges.inference import InferenceClient
 from weave_agent_signals.judges.plan import build_judging_plan
-from weave_agent_signals.judges.review import ReviewPolicy
-from weave_agent_signals.judges.runner import judge_session
+from weave_agent_signals.judges.runner import JudgeExecutionError, judge_session
 from weave_agent_signals.models import Score, SessionView
 from weave_agent_signals.patterns import (
     ab_leaderboard,
@@ -37,8 +36,9 @@ from weave_agent_signals.run_config import (
     PositionedJudge,
 )
 from weave_agent_signals.runs.bundles import BundleSnapshot, compare_bundles
-from weave_agent_signals.runs.promotion import ProjectFileAdapter
+from weave_agent_signals.runs.promotion import TargetPromoter
 from weave_agent_signals.runs.reflection import run_reflection
+from weave_agent_signals.runs.targets import load_target_registry
 from weave_agent_signals.scorers import score_session, score_turn
 from weave_agent_signals.scorers.outcome import classify_command
 
@@ -109,8 +109,8 @@ def _positioned_judge(model: ModelDescriptor, position: int) -> PositionedJudge:
     return PositionedJudge.model_validate({**model.model_dump(mode="python"), "position": position})
 
 
-def _resolve_judge_policy(args: argparse.Namespace) -> ReviewPolicy:
-    """Resolve standalone judge options through the current guided catalog."""
+def _resolve_judge_panel(args: argparse.Namespace) -> tuple[PositionedJudge, ...]:
+    """Resolve the standalone ordered judge panel through the current catalog."""
 
     catalog = build_model_catalog()
     backend_name = args.judge_backend or catalog.recommended_judge_backend
@@ -119,10 +119,9 @@ def _resolve_judge_policy(args: argparse.Namespace) -> ReviewPolicy:
     except KeyError as exc:
         raise RuntimeError(str(exc)) from exc
 
-    depth = args.review_depth or backend.recommended_review_depth
-    if depth is None:
-        raise RuntimeError(f"Judge backend {backend_name} has no recommended review depth")
     model_ids = tuple(args.judge_models or backend.recommended_judges)
+    if not 1 <= len(model_ids) <= 3:
+        raise RuntimeError("judge_models must contain one through three models")
     judges: list[PositionedJudge] = []
     for position, model_id in enumerate(model_ids, start=1):
         try:
@@ -133,17 +132,9 @@ def _resolve_judge_policy(args: argparse.Namespace) -> ReviewPolicy:
             raise RuntimeError(f"Model {model_id} does not support judging")
         judges.append(_positioned_judge(model, position))
 
-    margin = args.second_opinion_margin
-    if depth == "selective" and margin is None:
-        margin = catalog.review_defaults["second_opinion_margin"]
-    try:
-        return ReviewPolicy(
-            depth=depth,
-            judges=tuple(judges),
-            second_opinion_margin=margin,
-        )
-    except ValueError as exc:
-        raise RuntimeError(str(exc)) from exc
+    if len({judge.id for judge in judges}) != len(judges):
+        raise RuntimeError("judge model IDs must be unique")
+    return tuple(judges)
 
 
 def _resolve_reflection_models(
@@ -421,7 +412,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 
 def cmd_judge(args: argparse.Namespace) -> int:
     since = args.since or (datetime.now(timezone.utc) - timedelta(hours=24))
-    policy = _resolve_judge_policy(args)
+    judges = _resolve_judge_panel(args)
     rubric_catalog = build_rubric_catalog()
     descriptors = {rubric.id: rubric for rubric in rubric_catalog.rubrics}
     if args.rubric:
@@ -485,12 +476,10 @@ def cmd_judge(args: argparse.Namespace) -> int:
             sessions,
             cohort_id=cohort_id,
             rubrics=selected_rubrics,
-            review_depth=policy.depth,
-            second_opinion_margin=policy.second_opinion_margin,
-            judge_models=policy.judges,
+            judge_models=judges,
             context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
         )
-        with _make_model_client(args, policy.judges[0].model) as inference:
+        with _make_model_client(args, judges[0].model) as inference:
             artifacts: dict[str, dict] = {}
 
             def record_artifact(key: str, value: dict) -> None:
@@ -508,14 +497,28 @@ def cmd_judge(args: argparse.Namespace) -> int:
                         session,
                         inference,
                         rubrics=selected_rubrics,
-                        judges=policy.judges,
-                        review_depth=policy.depth,
-                        second_opinion_margin=policy.second_opinion_margin,
+                        judges=judges,
                         judging_plan=judging_plan,
                         context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
                         artifact_loader=artifacts.get,
                         artifact_recorder=record_artifact,
                     )
+                except JudgeExecutionError as error:
+                    if error.failures:
+                        stats.errors += 1
+                        log.warning("Error judging session %s: %s", conv_id[:12], error)
+                        continue
+                    scores = list(error.scores)
+                    log.info(
+                        "Session %s had %d not-evaluable rubric(s)",
+                        conv_id[:12],
+                        len(error.not_evaluable),
+                    )
+                except Exception as error:
+                    stats.errors += 1
+                    log.warning("Error judging session %s: %s", conv_id[:12], error)
+                    continue
+                try:
                     sess_ref = session.ref_for(args.entity, args.project)
                     for score in scores:
                         score.stamp(
@@ -680,12 +683,11 @@ def cmd_reflect(args: argparse.Namespace) -> int:
     print(coaching)
     print()
 
-    project_root = args.project_root or os.getcwd()
-    adapter = ProjectFileAdapter(project_root)
+    adapter = TargetPromoter(load_target_registry(args.target_registry))
     baseline = adapter.capture()
     existing_targets = [target for target in baseline.targets if target.exists]
     if not existing_targets:
-        print(f"No managed instruction targets found in {project_root}")
+        print("No managed instruction targets found in the configured registry")
         return 2
 
     print(
@@ -714,7 +716,7 @@ def cmd_reflect(args: argparse.Namespace) -> int:
                 requested_evaluator=evaluator,
                 writer_client=writer_client,
                 evaluator_client=evaluator_client,
-                build_candidate=adapter.bundle_from_content_map,
+                resolve_locator=adapter.resolve_locator,
                 candidate_budget=args.candidate_budget,
             )
     except ModuleNotFoundError as e:
@@ -817,18 +819,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Ordered judge model ID; repeat for each reviewer (default: catalog recommendation)",
     )
-    p_judge.add_argument(
-        "--review-depth",
-        choices=("primary", "selective", "full_panel"),
-        default=None,
-        help="Reviewer escalation depth (default: catalog recommendation)",
-    )
-    p_judge.add_argument(
-        "--second-opinion-margin",
-        type=float,
-        default=None,
-        help="Selective-review threshold margin (default: catalog recommendation)",
-    )
     p_judge.add_argument("--force", action="store_true")
 
     # inspect
@@ -909,10 +899,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum generated reflection candidates (default: 3)",
     )
     p_reflect.add_argument(
-        "--project-root",
+        "--target-registry",
         type=str,
-        default=None,
-        help="Project root containing managed instruction artifacts (default: cwd)",
+        required=True,
+        help="Closed JSON registry of exact files and bounded skill collections",
     )
     # serve
     p_serve = subs.add_parser("serve", help="Start the API server and frontend")
@@ -927,10 +917,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_serve.add_argument("--port", type=int, default=8787)
     p_serve.add_argument(
-        "--project-root",
+        "--target-registry",
         type=str,
-        default=None,
-        help="Project root for artifact lookups (default: cwd)",
+        required=True,
+        help="Closed JSON registry of exact files and bounded skill collections",
     )
 
     return parser
@@ -939,8 +929,7 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
-    if args.project_root:
-        os.environ["PROJECT_ROOT"] = args.project_root
+    os.environ["TARGET_REGISTRY"] = args.target_registry
     os.environ.setdefault("WANDB_ENTITY", args.entity)
     os.environ.setdefault("WANDB_PROJECT", args.project)
 

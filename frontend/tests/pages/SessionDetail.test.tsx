@@ -63,13 +63,14 @@ beforeEach(() => {
       feedback_type: 'weave_agent_signals.judge.verification',
       payload: {
         rating: 0.5,
+        tags: [],
         reason: 'Some evidence was missing.',
         details: {
           attempts: [
             {
               position: 1,
               role: 'primary',
-              trigger: 'initial',
+              trigger: 'panel',
               requested_model: 'gpt-5.6-sol',
               requested_family: 'openai',
               requested_backend: 'cli',

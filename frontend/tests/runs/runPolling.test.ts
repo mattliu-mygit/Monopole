@@ -37,6 +37,7 @@ describe('run polling', () => {
       sessions_scored: 1,
       scores_written: 4,
       errors: 0,
+      turn_details: [],
     }
 
     expect(shouldPollRun(scoring)).toBe(true)
@@ -52,6 +53,7 @@ describe('run polling', () => {
       sessions_scored: 1,
       scores_written: 4,
       errors: 0,
+      turn_details: [],
     }
     scoring.current_stage_succeeded = true
     const judging = run('judging')
@@ -60,7 +62,8 @@ describe('run polling', () => {
       planned_rubrics: 2,
       rubrics_completed: 2,
       rated_rubrics: 2,
-      minimum_reviewer_attempts: 2,
+      not_evaluable_rubrics: 0,
+      minimum_reviewer_attempts: 4,
       maximum_reviewer_attempts: 4,
       reviewer_attempts_completed: 3,
       digest_steps_completed: 0,
@@ -75,7 +78,11 @@ describe('run polling', () => {
       coverage_complete: true,
       status_message: 'Judging complete',
       attempt_summaries: [],
+      attempt_summary_count: 0,
+      attempt_summaries_truncated: false,
       failure_details: [],
+      failure_detail_count: 0,
+      failure_details_truncated: false,
     }
     judging.current_stage_succeeded = true
 
@@ -90,6 +97,7 @@ describe('run polling', () => {
       sessions_scored: 1,
       scores_written: 4,
       errors: 0,
+      turn_details: [],
     }
 
     expect(shouldPollRun(scoring)).toBe(true)

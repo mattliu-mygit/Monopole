@@ -2,13 +2,13 @@
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ModelCatalog, RubricCatalog } from '../../src/types'
+import type { ModelCatalog, ModelDescriptor, RubricCatalog } from '../../src/types'
 import type { RunConfigState } from '../../src/features/runs/runConfigState'
 import RunConfiguration from '../../src/features/runs/RunConfiguration'
 
 afterEach(cleanup)
 
-const writerOpenAI = {
+const writerOpenAI: ModelDescriptor = {
   id: 'writer-openai',
   label: 'Writer OpenAI',
   family: 'openai',
@@ -16,7 +16,7 @@ const writerOpenAI = {
   supported_roles: ['proposal_writer'] as const,
   max_input_tokens: 128_000,
 }
-const writerAnthropic = {
+const writerAnthropic: ModelDescriptor = {
   id: 'writer-anthropic',
   label: 'Writer Anthropic',
   family: 'anthropic',
@@ -24,7 +24,7 @@ const writerAnthropic = {
   supported_roles: ['proposal_writer'] as const,
   max_input_tokens: 128_000,
 }
-const cliAnthropic = {
+const cliAnthropic: ModelDescriptor = {
   id: 'cli-anthropic',
   label: 'CLI Anthropic',
   family: 'anthropic',
@@ -32,7 +32,7 @@ const cliAnthropic = {
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
 }
-const cliOpenAI = {
+const cliOpenAI: ModelDescriptor = {
   id: 'cli-openai',
   label: 'CLI OpenAI',
   family: 'openai',
@@ -40,7 +40,7 @@ const cliOpenAI = {
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
 }
-const cliMeta = {
+const cliMeta: ModelDescriptor = {
   id: 'cli-meta',
   label: 'CLI Meta',
   family: 'meta',
@@ -48,7 +48,7 @@ const cliMeta = {
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
 }
-const cliMetaAlt = {
+const cliMetaAlt: ModelDescriptor = {
   id: 'cli-meta-alt',
   label: 'CLI Meta Alternate',
   family: 'meta',
@@ -63,22 +63,17 @@ const models: ModelCatalog = {
     available_models: [writerOpenAI, writerAnthropic],
     recommended_model: writerOpenAI.id,
   },
-  review_defaults: { second_opinion_margin: 0.1 },
   recommended_judge_backend: 'cli',
   judge_backends: {
     cli: {
       available_models: [cliAnthropic, cliOpenAI, cliMeta, cliMetaAlt],
       recommended_judges: [cliAnthropic.id, cliOpenAI.id, cliMeta.id],
       proposal_evaluator_preferences: [cliOpenAI.id, cliAnthropic.id, cliMeta.id],
-      recommended_review_depth: 'selective',
-      supported_review_depths: ['primary', 'selective', 'full_panel'],
     },
     wandb: {
       available_models: [],
       recommended_judges: [],
       proposal_evaluator_preferences: [],
-      recommended_review_depth: null,
-      supported_review_depths: [],
     },
   },
 }
@@ -108,13 +103,11 @@ const rubrics: RubricCatalog = {
 const state: RunConfigState = {
   proposalModel: { value: writerOpenAI.id, source: 'recommended' },
   judgeBackend: { value: 'cli', source: 'recommended' },
-  reviewDepth: { value: 'selective', source: 'recommended' },
   judgeModels: {
     value: [cliAnthropic.id, cliOpenAI.id, cliMeta.id],
     source: 'recommended',
   },
   proposalEvaluatorModel: { value: cliAnthropic.id, source: 'automatic' },
-  secondOpinionMargin: 0.1,
   rubricIds: ['judge.verification', 'judge.session_outcome'],
   candidateBudget: 3,
   force: false,
@@ -133,7 +126,6 @@ describe('RunConfiguration', () => {
 
     expect(screen.getByRole('combobox', { name: 'Proposal writer' })).not.toBeNull()
     expect(screen.getByRole('combobox', { name: 'Judge backend' })).not.toBeNull()
-    expect(screen.getByRole('combobox', { name: 'Review depth' })).not.toBeNull()
     expect(screen.getByRole('combobox', { name: 'Judge 1' })).not.toBeNull()
     expect(screen.getByRole('combobox', { name: 'Judge 2' })).not.toBeNull()
     expect(screen.getByRole('combobox', { name: 'Judge 3' })).not.toBeNull()
@@ -161,17 +153,11 @@ describe('RunConfiguration', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Judge backend' }), {
       target: { value: 'wandb' },
     })
-    fireEvent.change(screen.getByRole('combobox', { name: 'Review depth' }), {
-      target: { value: 'primary' },
-    })
     fireEvent.change(screen.getByRole('combobox', { name: 'Judge 1' }), {
       target: { value: cliMeta.id },
     })
     fireEvent.change(screen.getByRole('combobox', { name: 'Proposal evaluator' }), {
       target: { value: cliMeta.id },
-    })
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'Second-opinion margin' }), {
-      target: { value: '0.2' },
     })
     fireEvent.click(screen.getByRole('checkbox', { name: 'Verification discipline' }))
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Proposal attempt limit' }), {
@@ -184,10 +170,8 @@ describe('RunConfiguration', () => {
     expect(onAction.mock.calls.map(([action]) => action)).toEqual([
       { type: 'select-writer', modelId: writerAnthropic.id },
       { type: 'select-backend', backend: 'wandb' },
-      { type: 'select-depth', depth: 'primary' },
       { type: 'select-judge', position: 1, modelId: cliMeta.id },
       { type: 'select-evaluator', modelId: cliMeta.id },
-      { type: 'set-margin', value: 0.2 },
       { type: 'set-rubrics', rubricIds: ['judge.session_outcome'] },
       { type: 'set-budget', value: 5 },
       { type: 'set-force', value: true },
@@ -195,7 +179,7 @@ describe('RunConfiguration', () => {
     ])
   })
 
-  it('supports an optional third selective judge and exposes blocking errors separately from warnings', () => {
+  it('supports one through three judges and exposes blocking errors separately from warnings', () => {
     const onAction = vi.fn()
     const twoJudgeState: RunConfigState = {
       ...state,
@@ -213,7 +197,7 @@ describe('RunConfiguration', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add third judge' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add judge' }))
     expect(onAction).toHaveBeenLastCalledWith({
       type: 'select-judge',
       position: 3,
@@ -243,8 +227,8 @@ describe('RunConfiguration', () => {
     expect(screen.getByRole('status').textContent).toContain(
       'Multiple selected judges share the meta model family.',
     )
-    fireEvent.click(screen.getByRole('button', { name: 'Remove third judge' }))
-    expect(onAction).toHaveBeenLastCalledWith({ type: 'remove-third-judge' })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove last judge' }))
+    expect(onAction).toHaveBeenLastCalledWith({ type: 'remove-last-judge' })
   })
 
   it('keeps the selected rubrics explicit and restores the full catalog explicitly', () => {

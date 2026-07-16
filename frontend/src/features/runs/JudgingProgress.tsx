@@ -177,7 +177,9 @@ export default function JudgingProgress({
       <div className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-lg bg-gray-50 p-3">
           <div className="font-medium text-gray-900">{completed} of {planned} rubrics reviewed</div>
-          <div className="mt-1 text-xs text-gray-500">{state?.rated_rubrics ?? 0} received a rating</div>
+          <div className="mt-1 text-xs text-gray-500">
+            {state?.rated_rubrics ?? 0} received a rating · {state?.not_evaluable_rubrics ?? 0} not evaluable
+          </div>
         </div>
         <div className="rounded-lg bg-gray-50 p-3">
           <div className="font-medium text-gray-900">{attempts} reviewer attempt{attempts === 1 ? '' : 's'} so far</div>
@@ -185,7 +187,7 @@ export default function JudgingProgress({
         </div>
         <div className="rounded-lg bg-gray-50 p-3">
           <div className="font-medium text-gray-900">{state?.scores_written ?? 0} scores written</div>
-          <div className="mt-1 text-xs text-gray-500">Written only after complete coverage</div>
+          <div className="mt-1 text-xs text-gray-500">Ratings write only after every review resolves</div>
         </div>
         <div className={`rounded-lg p-3 ${state && (state.failure_count || state.write_failure_count) ? 'bg-red-50 text-red-800' : 'bg-gray-50'}`}>
           <div className="font-medium">{state?.failure_count ?? 0} review failures</div>

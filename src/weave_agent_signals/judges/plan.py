@@ -8,7 +8,6 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from weave_agent_signals.catalogs import build_rubric_catalog
-from weave_agent_signals.judges.review import ReviewPolicy
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.judges.sliding import sliding_protocol_contract_manifest
 from weave_agent_signals.judges.windowing import build_window_plan
@@ -16,7 +15,6 @@ from weave_agent_signals.models import SessionView
 from weave_agent_signals.run_config import (
     JudgingContextPolicy,
     PositionedJudge,
-    ReviewDepth,
     RubricDescriptor,
 )
 
@@ -28,14 +26,6 @@ def _digest(value: object) -> str:
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
     ).encode()
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
-
-
-def _attempt_bounds(depth: ReviewDepth, judge_count: int) -> tuple[int, int]:
-    if depth == "primary":
-        return 1, 1
-    if depth == "selective":
-        return 1, judge_count
-    return judge_count, judge_count
 
 
 def session_evidence_trace_ids(session_plan: Mapping[str, Any]) -> list[str]:
@@ -52,8 +42,6 @@ def build_judging_plan(
     *,
     cohort_id: str,
     rubrics: Sequence[RubricDescriptor],
-    review_depth: ReviewDepth,
-    second_opinion_margin: float | None,
     judge_models: Sequence[PositionedJudge],
     context_policy: JudgingContextPolicy,
 ) -> dict[str, Any]:
@@ -64,11 +52,14 @@ def build_judging_plan(
     if not isinstance(context_policy, JudgingContextPolicy):
         raise TypeError("context_policy must be a JudgingContextPolicy")
     judges = tuple(judge_models)
-    ReviewPolicy(
-        depth=review_depth,
-        judges=judges,
-        second_opinion_margin=second_opinion_margin,
-    )
+    if not 1 <= len(judges) <= 3:
+        raise ValueError("judge_models must contain one through three judges")
+    if any(not isinstance(judge, PositionedJudge) for judge in judges):
+        raise TypeError("judge_models must contain PositionedJudge values")
+    if tuple(judge.position for judge in judges) != tuple(range(1, len(judges) + 1)):
+        raise ValueError("judge positions must be contiguous and ordered from 1")
+    if len({judge.id for judge in judges}) != len(judges):
+        raise ValueError("judge model IDs must be unique")
     requested = tuple(rubrics)
     if not requested:
         raise ValueError("rubrics must not be empty")
@@ -85,7 +76,7 @@ def build_judging_plan(
         if descriptor != current.rubric(descriptor.id):
             raise ValueError(f"Pinned rubric {descriptor.id} does not match current content")
 
-    minimum_attempts, maximum_attempts = _attempt_bounds(review_depth, len(judges))
+    reviewer_attempts = len(judges)
     session_plans: list[dict[str, Any]] = []
     turns_considered = 0
     windows_planned = 0
@@ -125,8 +116,8 @@ def build_judging_plan(
                 "rubrics": [
                     {
                         **descriptor.model_dump(mode="json"),
-                        "minimum_reviewer_attempts": minimum_attempts,
-                        "maximum_reviewer_attempts": maximum_attempts,
+                        "minimum_reviewer_attempts": reviewer_attempts,
+                        "maximum_reviewer_attempts": reviewer_attempts,
                     }
                     for descriptor in requested
                 ],
@@ -138,8 +129,7 @@ def build_judging_plan(
     body: dict[str, Any] = {
         "schema_version": PLAN_SCHEMA_VERSION,
         "cohort_id": cohort_id,
-        "review_depth": review_depth,
-        "second_opinion_margin": second_opinion_margin,
+        "panel_size": len(judges),
         "requested_rubrics": [value.model_dump(mode="json") for value in requested],
         "input_policy": context_policy.model_dump(mode="json"),
         "protocol": sliding_protocol_contract_manifest(),
@@ -149,8 +139,8 @@ def build_judging_plan(
             "turns_considered": turns_considered,
             "windows_planned": windows_planned,
             "planned_rubrics": planned_rubrics,
-            "minimum_reviewer_attempts": planned_rubrics * minimum_attempts,
-            "maximum_reviewer_attempts": planned_rubrics * maximum_attempts,
+            "minimum_reviewer_attempts": planned_rubrics * reviewer_attempts,
+            "maximum_reviewer_attempts": planned_rubrics * reviewer_attempts,
             "maximum_digest_calls": digest_calls_planned,
             "maximum_window_calls": maximum_window_calls,
             "maximum_merge_calls": maximum_merge_calls,

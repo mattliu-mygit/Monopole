@@ -71,18 +71,22 @@ def test_snapshots_have_stable_revisions_round_trip_and_are_immutable():
         claude.content = "mutated"  # type: ignore[misc]
     with pytest.raises(BundleValidationError, match="revision mismatch"):
         BundleSnapshot.from_dict({**original.to_dict(), "revision": "sha256:tampered"})
+    assert original.target("CLAUDE.md") is claude
+    with pytest.raises(KeyError):
+        original.target("missing.md")
 
 
-def test_compare_bundles_synthesizes_only_action_sides_and_preserves_exact_bundles():
+def test_compare_bundles_supports_create_update_and_preserves_exact_bundles():
     baseline = _bundle(
         {
             "CLAUDE.md": "old",
-            ".claude/commands/remove.md": "remove me",
+            ".claude/commands/keep.md": "keep me",
         }
     )
     candidate = _bundle(
         {
             "CLAUDE.md": "new",
+            ".claude/commands/keep.md": "keep me",
             ".claude/skills/new.md": "created",
         }
     )
@@ -101,15 +105,18 @@ def test_compare_bundles_synthesizes_only_action_sides_and_preserves_exact_bundl
     assert preview.proposed.targets == candidate_targets
     assert preview.created_locators == (".claude/skills/new.md",)
     assert preview.updated_locators == ("CLAUDE.md",)
-    assert preview.deleted_locators == (".claude/commands/remove.md",)
-    assert ".claude/commands/remove.md" not in preview.proposed.by_locator
     assert ".claude/skills/new.md" not in preview.past.by_locator
     create = next(action for action in preview.actions if action.action == "create")
-    delete = next(action for action in preview.actions if action.action == "delete")
     assert create.before.exists is False
     assert create.after is candidate.by_locator[create.locator]
-    assert delete.before is baseline.by_locator[delete.locator]
-    assert delete.after.exists is False
+
+
+def test_compare_bundles_rejects_delete_actions():
+    baseline = _bundle({"CLAUDE.md": "old", "obsolete.md": "remove"})
+    candidate = _bundle({"CLAUDE.md": "new"})
+
+    with pytest.raises(BundleValidationError, match="delete"):
+        compare_bundles(baseline, candidate)
 
 
 def test_changed_locators_is_union_aware_without_conflating_missing_state():
@@ -150,12 +157,14 @@ def test_validate_edited_bundle_allows_content_only_for_the_same_action_identity
     evaluated = _bundle(
         {
             "CLAUDE.md": "candidate",
+            ".claude/commands/remove.md": "remove",
             ".claude/skills/new.md": "candidate skill",
         }
     )
     edited = _bundle(
         {
             "CLAUDE.md": "edited",
+            ".claude/commands/remove.md": "remove",
             ".claude/skills/new.md": "edited skill",
         }
     )

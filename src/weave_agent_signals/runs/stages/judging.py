@@ -15,6 +15,7 @@ from weave_agent_signals.judges.plan import build_judging_plan
 from weave_agent_signals.judges.runner import (
     JudgeExecutionError,
     JudgeFailure,
+    JudgeNotEvaluable,
     judge_session,
 )
 from weave_agent_signals.models import Score, SessionView, TurnSpan
@@ -58,6 +59,7 @@ class _State:
     maximum_window_steps: int
     maximum_merge_steps: int
     rubrics_completed: int = 0
+    not_evaluable_rubrics: int = 0
     reviewer_attempts_completed: int = 0
     digest_steps_completed: int = 0
     window_steps_completed: int = 0
@@ -85,6 +87,7 @@ class _State:
             "planned_rubrics": self.planned_rubrics,
             "rubrics_completed": self.rubrics_completed,
             "rated_rubrics": len(self.scores),
+            "not_evaluable_rubrics": self.not_evaluable_rubrics,
             "minimum_reviewer_attempts": self.minimum_reviewer_attempts,
             "maximum_reviewer_attempts": self.maximum_reviewer_attempts,
             "reviewer_attempts_completed": self.reviewer_attempts_completed,
@@ -340,11 +343,39 @@ def _record_failure(
     )
 
 
+def _record_not_evaluable(
+    state: _State,
+    outcome: JudgeNotEvaluable,
+    *,
+    unit: str,
+    trace_id: str | None,
+    conversation_id: str,
+) -> None:
+    attempts = _attempts(outcome.attempts)
+    state.not_evaluable_rubrics += 1
+    state.reviewer_attempts_completed += len(attempts)
+    state.attempt_summary_count += 1
+    _append_bounded(
+        state.attempt_summaries,
+        {
+            "scope": unit,
+            "rubric": outcome.rubric,
+            "review_status": "not_evaluable",
+            "rating": None,
+            "attempt_count": len(attempts),
+            "successful_reviewer_count": 0,
+            "attempts": attempts,
+            **_scope(trace_id, conversation_id),
+        },
+    )
+
+
 def _consume(
     state: _State,
     expected: Sequence[RubricDescriptor],
     scores: Sequence[Score],
     failures: Sequence[JudgeFailure],
+    not_evaluable: Sequence[JudgeNotEvaluable],
     *,
     unit: str,
     trace_id: str | None,
@@ -352,16 +383,20 @@ def _consume(
 ) -> list[Score]:
     score_groups: dict[str, list[Score]] = {}
     failure_groups: dict[str, list[JudgeFailure]] = {}
+    non_score_groups: dict[str, list[JudgeNotEvaluable]] = {}
     for score in scores:
         score_groups.setdefault(score.scorer, []).append(score)
     for failure in failures:
         failure_groups.setdefault(failure.rubric, []).append(failure)
+    for outcome in not_evaluable:
+        non_score_groups.setdefault(outcome.rubric, []).append(outcome)
 
     accepted: list[Score] = []
     expected_ids = {descriptor.id for descriptor in expected}
     for descriptor in expected:
         rubric_scores = score_groups.get(descriptor.id, [])
         rubric_failures = failure_groups.get(descriptor.id, [])
+        rubric_non_scores = non_score_groups.get(descriptor.id, [])
         if rubric_failures:
             _record_failure(
                 state,
@@ -370,7 +405,15 @@ def _consume(
                 trace_id=trace_id,
                 conversation_id=conversation_id,
             )
-        elif len(rubric_scores) == 1:
+        elif len(rubric_non_scores) == 1 and not rubric_scores:
+            _record_not_evaluable(
+                state,
+                rubric_non_scores[0],
+                unit=unit,
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+            )
+        elif len(rubric_scores) == 1 and not rubric_non_scores:
             score = rubric_scores[0]
             accepted.append(score)
             _record_score(
@@ -394,7 +437,9 @@ def _consume(
                 trace_id=trace_id,
                 conversation_id=conversation_id,
             )
-    for rubric_id in sorted((set(score_groups) | set(failure_groups)) - expected_ids):
+    for rubric_id in sorted(
+        (set(score_groups) | set(failure_groups) | set(non_score_groups)) - expected_ids
+    ):
         _record_failure(
             state,
             JudgeFailure(
@@ -420,14 +465,19 @@ def _run_unit(
     conversation_id: str,
 ) -> list[Score]:
     try:
-        scores, failures = invoke(), ()
+        scores, failures, not_evaluable = invoke(), (), ()
     except JudgeExecutionError as error:
-        scores, failures = list(error.scores), error.failures
+        scores, failures, not_evaluable = (
+            list(error.scores),
+            error.failures,
+            error.not_evaluable,
+        )
     return _consume(
         state,
         expected,
         scores,
         failures,
+        not_evaluable,
         unit=unit,
         trace_id=trace_id,
         conversation_id=conversation_id,
@@ -488,8 +538,6 @@ def run_judging_stage(
         list(sessions.values()),
         cohort_id=current.turn_cohort["cohort_id"],
         rubrics=config.rubrics,
-        review_depth=config.review_depth,
-        second_opinion_margin=config.second_opinion_margin,
         judge_models=config.models.judges,
         context_policy=config.judging_context,
     )
@@ -579,8 +627,6 @@ def run_judging_stage(
                     chat_client,
                     rubrics=expected,
                     judges=config.models.judges,
-                    review_depth=config.review_depth,
-                    second_opinion_margin=config.second_opinion_margin,
                     judging_plan=plan,
                     context_policy=config.judging_context,
                     artifact_loader=load_artifact,

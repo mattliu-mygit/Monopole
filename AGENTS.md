@@ -65,7 +65,7 @@ then run all gates before declaring completion.
 - [`specs/DESIGN.md`](specs/DESIGN.md) — product purpose and system overview
 - [`specs/01-weave-io.md`](specs/01-weave-io.md) — reads, hydration, refs, writes
 - [`specs/02-evaluation.md`](specs/02-evaluation.md) — deterministic and model
-  evaluation, sliding context policy, review policy, and inference trust
+  evaluation, sliding context policy, fixed-panel aggregation, and inference trust
 - [`specs/03-analysis-monitoring.md`](specs/03-analysis-monitoring.md) —
   comparable evidence, trends, coaching, and alerts
 - [`specs/04-evaluation-runs.md`](specs/04-evaluation-runs.md) — reproducible runs,
@@ -116,7 +116,7 @@ product behavior; standalone reflection does not mutate managed files.
 - Judge feedback is session-only. Ordinary analysis requires a complete review
   and a fully identified comparison context.
 - Runs pin model and rubric catalog versions, rubric thresholds, proposal
-  writer, ordered judge choices, review depth, and proposal evaluator;
+  writer, one through three ordered judge choices, and proposal evaluator;
   recommendations never remain runtime defaults.
 - Runs pin one pipeline version in their effective configuration; each stage
   fails closed before external work when that version is incompatible.
@@ -168,8 +168,10 @@ These constraints are operationally dangerous to get wrong:
 
 Do not simplify away cohort/config pinning, reflection-input provenance, review
 compare-and-swap revisions, cancellation coordination, whole-scope drift checks,
-promotion journaling, rollback/recovery, or monotonic progress accounting. They
-protect current correctness and auditability.
+per-file atomic writes and outcomes, or monotonic progress accounting. They
+protect current correctness and auditability. Promotion intentionally does not
+journal, roll back, or recover a multi-file transaction; completed files may
+remain applied when a later file fails.
 
 The local run database is disposable pre-release state. Do not add schema
 migrations or retired payload adapters unless the product support policy changes.

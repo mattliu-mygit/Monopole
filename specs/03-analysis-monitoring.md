@@ -12,20 +12,19 @@ ordinary summaries when their rating is valid.
 Sliding judge scores describe complete sessions: every captured turn receives
 raw coverage in one core chunk, while the final verdict is merged from all
 windows. They may enter ordinary analysis only when their review is complete
-and their comparison context is fully identified. Degraded, unresolved, failed,
-or incompletely described judgments remain available for audit but do not
-support ordinary quality claims. Historical episode or turn judgments and
-judge records without a current session evaluation unit are likewise audit-only.
-Complete coverage improves comparability; it does not make the observed sessions
-a random or causally representative sample.
+and their comparison context is fully identified. Degraded, failed, or
+incompletely described judgments remain available for audit but do not
+support ordinary quality claims. Historical non-session judgments and judge
+records without a current session evaluation unit are likewise audit-only.
+Complete coverage improves comparability; it does not make the observed
+sessions a random or causally representative sample.
 
 ## Comparable cohorts
 
 Judged session scores are compared only when they share:
 
 - rubric version and threshold;
-- review depth and policy version;
-- selective-review margin; and
+- panel contract version; and
 - ordered requested judge selection.
 
 The runtime-dependent number of reviewer attempts is evidence about a review,

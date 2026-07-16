@@ -20,7 +20,7 @@ Start atomically pins:
 
 - the ordered turn cohort and its session identities;
 - the resolved model and rubric catalogs;
-- the proposal writer, ordered run judges, review depth, and proposal evaluator;
+- the proposal writer, one through three ordered run judges, and proposal evaluator;
 - rubric versions, thresholds, judging context policy, candidate-attempt budget,
   and other effective configuration; and
 - one pipeline version.
@@ -38,14 +38,14 @@ Each stage has an explicit success marker distinct from the presence of a
 partial result. Manual continuation requires that marker. Automatic handoff
 persists success and the next status together.
 
-After restart, compatible digest, window, merge, reflection, and promotion work
-may be finalized or resumed from persisted evidence without repeating paid or
-destructive work. Judging artifacts are reusable only after their content,
-phase, model, schema, protocol, and exact plan identity are revalidated.
-Incomplete outcomes may resume from valid earlier artifacts; incompatible or
-tampered artifacts fail visibly instead of being adapted. Cancellation consults
-durable state, terminates active model processes, and cannot interleave with
-protected external write batches or finalized review evidence.
+After restart, compatible digest, window, merge, and reflection work may be
+finalized or resumed from persisted evidence without repeating paid work.
+Judging artifacts are reusable only after their content, phase, model, schema,
+protocol, and exact plan identity are revalidated. Incomplete outcomes may
+resume from valid earlier artifacts; incompatible or tampered artifacts fail
+visibly instead of being adapted. Cancellation consults durable state,
+terminates active model processes, and cannot interleave with protected
+external write batches or finalized review evidence.
 
 ## Model roles and activity
 
@@ -74,35 +74,34 @@ Progress is observational. Failure to publish an activity update cannot change
 candidate generation, evaluation, or selection.
 
 Judging progress separately reports planned sessions, turns, raw windows,
-reviewer-attempt bounds, and unique completed digest, window, and merge
-artifacts. The maximums are pinned work bounds rather than promises that
-selective review will invoke every configured reviewer. Reused artifacts retain
-ordered inference provenance without incrementing unique completed-work counts.
+reviewer attempts, and unique completed digest, window, and merge artifacts.
+Reused artifacts retain ordered inference provenance without incrementing
+unique completed-work counts.
 
-## Repository Markdown scope
+## Managed instruction targets
 
-The current project-file adapter manages lowercase `.md` files recursively
-from the repository root, including root-level Markdown. It skips named VCS,
-product-state, temporary-planning, virtual-environment, dependency, cache,
-coverage, and build directories.
+`serve` and standalone `reflect` require one closed, versioned JSON target
+registry. Exact file entries admit one Markdown file and may point inside or
+outside Git. Skill collection entries admit only direct
+`<validated-skill-name>/SKILL.md` children beneath one configured root; they do
+not grant recursive or wildcard Markdown access. Markdown-root entries capture
+and update only their explicit relative `files`. When `allow_create` is true,
+they admit new recursive `.md` paths beneath the root.
 
-The scope is deliberately bounded:
+The service exposes stable registry locators to models, not absolute paths.
+Relative configured paths resolve from the registry document, while absolute
+and tilde paths support global instruction files. Duplicate or overlapping
+targets, path escape, non-Markdown exact files, invalid UTF-8, and symlinks at a
+target or existing parent fail before model work. The registry manifest and
+digest are pinned with reflection input.
 
-- at most 500 files;
-- at most 256 KiB per file;
-- at most 512 KiB across the captured bundle;
-- UTF-8 regular files only; and
-- paths represented as sorted repository-relative POSIX locators.
-
-Non-excluded symlinks, cross-filesystem entries, unreadable files or
-directories, case-folding collisions, non-file collisions at Markdown paths,
-and ambiguous or escaping locators fail closed. The exact adapter contract and
-scope policy are pinned with reflection input so later review does not reinterpret
-what B contained.
-
-A proposal may create, update, or delete several managed Markdown files. The
-same policy governs baseline capture, proposal validation, drift detection, and
-promotion.
+A proposal may create or update admitted files. Before target publication, new
+Markdown-root paths are added to the registry with an atomic compare-and-swap
+write. Registry drift or registration failure blocks every target write. A
+failure before any target is published restores registrations added by that
+attempt so the pending review can retry against the same B. A partial terminal
+promotion may retain an explicitly registered absent target. Delete, archive,
+rename, and broad update discovery are not supported.
 
 ## Reflection
 
@@ -114,8 +113,8 @@ score; rejected or duplicate revisions do not falsely count as scored
 non-improvements.
 
 Every proposal is a complete action set against B, not an unstructured patch.
-The writer must return valid create, update, or delete actions for managed
-Markdown paths, and a no-op proposal is rejected. Candidate provenance must map
+The writer must return valid create or update actions for registry locators,
+and a no-op proposal is rejected. Candidate provenance must map
 unambiguously to a successful generation attempt.
 
 The proposal evaluator scores exact immutable bundle revisions. Its output is a
@@ -147,7 +146,7 @@ review keeps relevant Markdown snapshots and diffs beside the whole-bundle
 scores so a user can audit interactions across multiple changed files.
 
 D can alter file contents but must preserve C's target membership and
-create/update/delete action set. Promoting D requires explicit acknowledgement
+create/update action set. Promoting D requires explicit acknowledgement
 that it was not evaluated. There is no mandatory pre-promotion inference run:
 the user accepts the deviation and can start a later evaluation run after
 promotion.
@@ -159,31 +158,41 @@ resolved decision. Evidence is immutable once review begins.
 ## Drift and promotion
 
 The only product-level blocking promotion precheck is whole-scope drift from B.
-Before candidate selection, draft mutation, or promotion, the adapter compares
-the complete live Markdown scope—including membership—with evaluated B. Any
+Before candidate selection, draft mutation, or promotion, the registry compares
+the complete live target scope—including skill membership—with evaluated B. Any
 change makes the review stale. Detail view then shows B, C, optional D, the
 changed locators, and Current when it can be captured; editing and promotion
 remain disabled and a new run is required. Dismissal remains available because
 it does not mutate managed files.
 
-Promotion applies the approved multi-file bundle as one locked, journaled
-transaction. Its durability contract is:
+The local service serializes promotion for one loaded registry. Promotion
+validates every action against B before writing, stages every complete UTF-8
+file on the destination filesystem, and then rechecks each target immediately
+before publication. Updates use atomic replacement; creates publish without
+overwriting an independently created destination. No file is exposed with
+partial contents.
 
-- validate the complete decision and live baseline before mutation;
-- stage durable new contents and backups;
-- recheck each live target immediately before its change;
-- durably apply every create, update, or delete;
-- persist an immutable receipt; and
-- roll back safely on partial failure without overwriting later user edits.
+Files are applied independently in deterministic order. A later drift or write
+failure stops the remaining actions but does not roll back earlier complete
+files. An all-applied receipt resolves the review as `promoted`; a mixed receipt
+resolves it as terminal `partial`; failure before the first write leaves the
+review pending. There is no filesystem journal, backup transaction, restart
+recovery, or multi-file rollback.
 
-Restart recovery handles the narrow window between committed files and receipt
-persistence. Promotion IDs are idempotency keys: an identical repeated success
-returns its receipt, while a different later decision is rejected.
+The receipt anchors exact B, selected C, requested C-or-D, the review revision,
+and an applied/not-applied outcome for every file. A repeated decision is
+idempotent only after its receipt is persisted. If persistence fails after a
+write, later reads report ordinary source drift rather than inferring or
+recovering an unrecorded transaction. Git is not required.
 
-The receipt anchors exact B, selected C, promoted C-or-D, every file action,
-whether promoted content was evaluated, the D acknowledgement, and the review
-revision that authorized it. Git metadata is supporting context, not the source
-of truth, because managed instructions may live outside a useful Git workflow.
+## HTTP contract
+
+FastAPI response models are the authority for transported run, review, catalog,
+inspection, and analysis data. The repository deterministically exports OpenAPI
+and generates the frontend transport types into `frontend/src/generated/`.
+Generated files are never edited by hand, and the freshness check fails when
+backend models and committed TypeScript output differ. Handwritten TypeScript
+types remain only where the UI needs richer local view state.
 
 ## List and detail views
 
@@ -191,8 +200,9 @@ The run list is a compact persisted summary used for polling. It reads only
 scalar status, selection, success, and review-summary fields and does not load
 full evidence or inspect the live repository.
 
-Run detail is the authoritative full evidence view. It can recover a committed
-receipt and derives live drift by comparing the current Markdown scope with B.
+Run detail is the authoritative full evidence view. It derives live drift by
+comparing the current registry scope with B and displays exact per-file receipt
+outcomes.
 This separation keeps list polling cheap without weakening promotion safety.
 
 The local run database is disposable pre-release state. The product supports

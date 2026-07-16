@@ -18,7 +18,7 @@ from typing import Any
 from weave_agent_signals.run_config import EffectiveRunConfig, RunConfig
 
 _DEFAULT_DB_DIR = Path.home() / ".weave-agent-signals"
-RUN_DB_SCHEMA_VERSION = 5
+RUN_DB_SCHEMA_VERSION = 6
 
 
 def _default_db_path() -> Path:
@@ -61,8 +61,8 @@ _STAGE_SUCCESSORS = {
     RunStatus.JUDGING: RunStatus.REFLECTING,
     RunStatus.REFLECTING: RunStatus.COMPLETE,
 }
-_REFLECTION_REVIEW_STATUSES = frozenset({"pending", "promoted", "dismissed"})
-_RESOLVED_REFLECTION_REVIEW_STATUSES = frozenset({"promoted", "dismissed"})
+_REFLECTION_REVIEW_STATUSES = frozenset({"pending", "promoted", "partial", "dismissed"})
+_RESOLVED_REFLECTION_REVIEW_STATUSES = frozenset({"promoted", "partial", "dismissed"})
 
 
 class RunStoreConflictError(ValueError):
@@ -323,8 +323,7 @@ def _encode_judging_plan(judging_plan: Mapping[str, Any]) -> str:
         "plan_id",
         "schema_version",
         "cohort_id",
-        "review_depth",
-        "second_opinion_margin",
+        "panel_size",
         "requested_rubrics",
         "input_policy",
         "protocol",
@@ -411,19 +410,9 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
     if len({row["id"] for row in requested}) != len(requested):
         raise ValueError("judging plan requested rubric IDs must be unique")
 
-    depth = value.get("review_depth")
-    if depth not in {"primary", "selective", "full_panel"}:
-        raise ValueError("judging plan review_depth is invalid")
-    margin = value.get("second_opinion_margin")
-    if depth == "selective":
-        if (
-            isinstance(margin, bool)
-            or not isinstance(margin, (int, float))
-            or not 0 <= margin <= 0.5
-        ):
-            raise ValueError("judging plan second_opinion_margin is invalid")
-    elif margin is not None:
-        raise ValueError("judging plan second_opinion_margin must be null")
+    panel_size = _nonnegative_int(value.get("panel_size"), "panel_size", positive=True)
+    if panel_size > 3:
+        raise ValueError("judging plan panel_size must be between one and three")
     input_policy = _exact_keys(
         value.get("input_policy"),
         {
@@ -486,8 +475,6 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
         raise ValueError("judging plan protocol schema names are invalid")
 
     sessions = value["sessions"]
-    minimum = None
-    maximum = None
     totals_expected = {
         "sessions_planned": len(sessions),
         "turns_considered": 0,
@@ -524,23 +511,22 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
         ):
             raise ValueError("judging plan session raw coverage is invalid")
         reviewers = row["reviewers"]
-        if not isinstance(reviewers, list):
-            raise ValueError("judging plan reviewers must be a list")
+        if not isinstance(reviewers, list) or len(reviewers) != panel_size:
+            raise ValueError("judging plan reviewers must match panel_size")
         judge_count = len(reviewers)
-        valid_counts = {"primary": {1}, "selective": {2, 3}, "full_panel": {3}}
-        if judge_count not in valid_counts[depth]:
-            raise ValueError("judging plan reviewer count is invalid for review depth")
-        minimum = judge_count if depth == "full_panel" else 1
-        maximum = 1 if depth == "primary" else judge_count
         expected_rubrics = [
-            {**rubric, "minimum_reviewer_attempts": minimum, "maximum_reviewer_attempts": maximum}
+            {
+                **rubric,
+                "minimum_reviewer_attempts": judge_count,
+                "maximum_reviewer_attempts": judge_count,
+            }
             for rubric in requested
         ]
         if row["rubrics"] != expected_rubrics:
             raise ValueError("judging plan session rubrics or attempt bounds are invalid")
         totals_expected["turns_considered"] += turn_count
-        totals_expected["minimum_reviewer_attempts"] += len(requested) * minimum
-        totals_expected["maximum_reviewer_attempts"] += len(requested) * maximum
+        totals_expected["minimum_reviewer_attempts"] += len(requested) * judge_count
+        totals_expected["maximum_reviewer_attempts"] += len(requested) * judge_count
         for ordinal, reviewer in enumerate(reviewers, start=1):
             reviewer_row = _exact_keys(
                 reviewer, {"ordinal", "judge", "window_plan", "work_bounds"}, "reviewer"
@@ -731,11 +717,20 @@ def _validate_window_plan(
             range(core_positions[0], core_positions[-1] + 1)
         ):
             raise ValueError("judging plan core window geometry is invalid")
-        expected_raw_ids = coverage[
-            max(0, core_positions[0] - 1) : min(len(coverage), core_positions[-1] + 2)
-        ]
-        if item["raw_trace_ids"] != expected_raw_ids or item["raw_turn_digests"] != [
-            raw_digests[trace_id] for trace_id in expected_raw_ids
+        raw_positions = [coverage.index(trace_id) for trace_id in item["raw_trace_ids"]]
+        allowed_raw_starts = {core_positions[0], max(0, core_positions[0] - 1)}
+        allowed_raw_ends = {
+            core_positions[-1],
+            min(len(coverage) - 1, core_positions[-1] + 1),
+        }
+        raw_geometry_valid = (
+            raw_positions
+            and raw_positions == list(range(raw_positions[0], raw_positions[-1] + 1))
+            and raw_positions[0] in allowed_raw_starts
+            and raw_positions[-1] in allowed_raw_ends
+        )
+        if not raw_geometry_valid or item["raw_turn_digests"] != [
+            raw_digests[trace_id] for trace_id in item["raw_trace_ids"]
         ]:
             raise ValueError("judging plan raw window geometry is invalid")
         window_body = {key: part for key, part in item.items() if key != "window_id"}

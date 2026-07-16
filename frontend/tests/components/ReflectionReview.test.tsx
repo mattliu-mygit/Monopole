@@ -151,22 +151,20 @@ function receipt(): PromotionReceipt {
     promotion_id: 'promotion-1',
     run_id: 'run-review',
     candidate_id: 'candidate-one',
-    target_kind: 'file',
-    target_id: '/project',
     past,
     evaluated_candidate: proposed,
     promoted: edited,
     review_revision: 2,
-    actions: [{
+    outcomes: [{
       action: 'update',
       locator: 'CLAUDE.md',
-      before: past.targets[0],
-      after: edited.targets[0],
+      status: 'applied',
+      reason: null,
+      message: null,
     }],
     decided_at: '2026-07-14T18:30:00Z',
     promoted_was_evaluated: false,
     unevaluated_d_acknowledged: true,
-    git_metadata: { branch: 'main' },
   }
 }
 
@@ -660,12 +658,10 @@ describe('ReflectionReview', () => {
     expect(screen.getByText('Unevaluated edited D was promoted.')).not.toBeNull()
     expect(screen.getAllByText('Past B').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Evaluated C').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Promoted D').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Requested D').length).toBeGreaterThan(0)
     expect(screen.getByText('promotion-1')).not.toBeNull()
     expect(screen.getAllByText('candidate-one').length).toBeGreaterThan(0)
-    expect(screen.getByText('/project')).not.toBeNull()
     expect(screen.getByText(/unevaluated D acknowledgement recorded/i)).not.toBeNull()
-    expect(screen.getAllByText(/Diff C → D/i).length).toBeGreaterThan(0)
   })
 
   it('blocks stale review mutations and names changed managed files', () => {

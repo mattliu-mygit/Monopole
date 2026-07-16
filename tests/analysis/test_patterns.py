@@ -58,10 +58,9 @@ def _session_judge_fb(
             "review_status": review_status,
             "rubric_version": "v2",
             "rubric_threshold": 0.5,
-            "review_depth": "selective",
-            "review_policy_version": "2",
-            "second_opinion_margin": 0.1,
+            "panel_contract_version": "1",
             "requested_judge_models": ["judge-a", "judge-b", "judge-c"],
+            "panel_size": 3,
             "behavioral_feedback": behavioral_feedback or [],
             "evidence_trace_ids": evidence_ids or [],
         }
@@ -167,8 +166,7 @@ def test_population_summary_excludes_noncomplete_session_judgments():
     result = aggregate_scores(
         [
             _session_judge_fb("judge.session_outcome", 0.8, review_status="complete"),
-            _session_judge_fb("judge.session_outcome", 0.2, review_status="degraded"),
-            _session_judge_fb("judge.session_outcome", 0.5, review_status="unresolved"),
+            _session_judge_fb("judge.session_outcome", 0.2, review_status="failed"),
         ]
     )
 
@@ -183,12 +181,6 @@ def test_population_summary_excludes_noncomplete_session_judgments():
     [
         {"rubric_version": "v3"},
         {"rubric_threshold": 0.6},
-        {
-            "review_depth": "full_panel",
-            "second_opinion_margin": None,
-        },
-        {"review_policy_version": "3"},
-        {"second_opinion_margin": 0.2},
         {"requested_judge_models": ["judge-b", "judge-a", "judge-c"]},
     ],
 )
@@ -247,8 +239,8 @@ def test_session_judge_context_label_explains_what_was_compared():
     )
 
     assert list(result) == [
-        "judge.session_outcome [rubric v2, threshold 0.5; selective, "
-        "policy 2, margin 0.1; judges judge-a → judge-b → judge-c]"
+        "judge.session_outcome [rubric v2, threshold 0.5; panel 1; "
+        "judges judge-a → judge-b → judge-c]"
     ]
 
 
@@ -258,7 +250,7 @@ def test_incomplete_session_judge_context_is_audit_only():
         1.0,
         review_status="complete",
     )
-    del incomplete["payload"]["details"]["review_policy_version"]
+    del incomplete["payload"]["details"]["panel_contract_version"]
     canonical = _session_judge_fb(
         "judge.session_outcome",
         0.0,
@@ -269,6 +261,16 @@ def test_incomplete_session_judge_context_is_audit_only():
 
     assert len(result) == 1
     assert next(iter(result.values())).mean == 0.0
+
+
+def test_degraded_session_judgment_is_audit_only():
+    degraded = _session_judge_fb(
+        "judge.session_outcome",
+        0.75,
+        review_status="degraded",
+    )
+
+    assert aggregate_scores([degraded]) == {}
 
 
 def test_session_judge_without_review_status_is_audit_only():
@@ -344,29 +346,17 @@ def test_legacy_episode_judgments_do_not_enter_any_ordinary_analytics():
     [
         {"rubric_threshold": -0.1},
         {"rubric_threshold": 1.1},
-        {"review_depth": "selective", "second_opinion_margin": None},
-        {"review_depth": "selective", "second_opinion_margin": 0.51},
-        {
-            "review_depth": "primary",
-            "second_opinion_margin": 0.1,
-            "requested_judge_models": ["judge-a"],
-        },
-        {
-            "review_depth": "primary",
-            "second_opinion_margin": None,
-            "requested_judge_models": ["judge-a", "judge-b"],
-        },
-        {
-            "review_depth": "full_panel",
-            "second_opinion_margin": None,
-            "requested_judge_models": ["judge-a", "judge-b"],
-        },
+        {"panel_contract_version": ""},
+        {"panel_contract_version": "2"},
+        {"panel_size": 2},
+        {"panel_size": True},
+        {"requested_judge_models": ["judge-a", "judge-b", "judge-c", "judge-d"], "panel_size": 4},
         {"requested_judge_models": ["judge-a", "judge-a"]},
         {"requested_judge_models": ["judge-a", " "]},
         {"requested_judge_models": ("judge-a", "judge-b")},
     ],
 )
-def test_invalid_session_review_policy_context_is_audit_only(context_overrides):
+def test_invalid_session_evaluation_context_is_audit_only(context_overrides):
     feedback = _session_judge_fb(
         "judge.session_outcome",
         0.2,
@@ -405,28 +395,28 @@ def test_noncomplete_session_judgments_do_not_enter_ab_or_trend_analysis():
         _session_judge_fb(
             "judge.session_outcome",
             0.0,
-            review_status="unresolved",
+            review_status="failed",
             config_version="v2",
             scored_at="2026-07-09T00:00:00",
         ),
         _session_judge_fb(
             "judge.session_outcome",
             0.0,
-            review_status="degraded",
+            review_status="failed",
             config_version="v2",
             scored_at="2026-07-10T00:00:00",
         ),
         _session_judge_fb(
             "judge.session_outcome",
             0.0,
-            review_status="unresolved",
+            review_status="failed",
             config_version="v2",
             scored_at="2026-07-11T00:00:00",
         ),
         _session_judge_fb(
             "judge.session_outcome",
             0.0,
-            review_status="degraded",
+            review_status="failed",
             config_version="v2",
             scored_at="2026-07-12T00:00:00",
         ),
@@ -631,10 +621,7 @@ def test_config_regression_does_not_compare_different_session_evaluation_context
             review_status="complete",
             config_version="v_new",
             scored_at="2026-07-09T00:00:00",
-            context_overrides={
-                "review_depth": "full_panel",
-                "second_opinion_margin": None,
-            },
+            context_overrides={"panel_contract_version": "2"},
         )
         for _ in range(6)
     ]

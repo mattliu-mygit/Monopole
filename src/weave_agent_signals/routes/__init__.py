@@ -41,7 +41,7 @@ def serialize_run(run: Run) -> dict:
 def _review_state(summary: RunSummarySource) -> str:
     if summary.review_status == "pending":
         return "review-needed"
-    if summary.review_status in {"promoted", "dismissed"}:
+    if summary.review_status in {"promoted", "partial", "dismissed"}:
         return summary.review_status
     if summary.status.value == "complete":
         if summary.reflection_reason == NO_VALID_PROPOSAL_REASON:

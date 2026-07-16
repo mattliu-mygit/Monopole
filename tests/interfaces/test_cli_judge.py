@@ -24,8 +24,6 @@ def _args(**updates):
         "rubric": None,
         "judge_backend": "cli",
         "judge_models": ["claude-sonnet-5", "gpt-5.6-sol"],
-        "review_depth": "selective",
-        "second_opinion_margin": 0.1,
         "force": False,
     }
     values.update(updates)
@@ -42,15 +40,12 @@ def _turn():
     return turn
 
 
-def test_default_policy_resolves_catalog_recommendations(monkeypatch):
+def test_default_panel_resolves_catalog_recommendations(monkeypatch):
     catalog = _catalog()
     monkeypatch.setattr(cli, "build_model_catalog", lambda: catalog)
-    policy = cli._resolve_judge_policy(
-        _args(judge_backend=None, judge_models=None, review_depth=None, second_opinion_margin=None)
-    )
+    judges = cli._resolve_judge_panel(_args(judge_backend=None, judge_models=None))
     backend = catalog.backend(catalog.recommended_judge_backend)
-    assert [judge.id for judge in policy.judges] == list(backend.recommended_judges)
-    assert policy.depth == backend.recommended_review_depth
+    assert [judge.id for judge in judges] == list(backend.recommended_judges)
 
 
 def test_group_sessions_breaks_equal_timestamp_ties_by_trace_id():
@@ -95,6 +90,10 @@ def test_direct_cli_uses_one_session_plan_runner_and_in_memory_artifacts(monkeyp
     assert judge.call_count == 1
     kwargs = judge.call_args.kwargs
     assert kwargs["judging_plan"] is plan
+    assert [item.id for item in kwargs["judges"]] == [
+        "claude-sonnet-5",
+        "gpt-5.6-sol",
+    ]
     assert callable(kwargs["artifact_loader"])
     assert callable(kwargs["artifact_recorder"])
     weave.query_session.assert_called_once_with("session-1")

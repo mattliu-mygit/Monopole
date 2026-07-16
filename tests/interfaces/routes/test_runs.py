@@ -65,10 +65,49 @@ def route_context(tmp_path):
         }
 
     def stage(run, _config, _cancel):
+        if run.status is RunStatus.JUDGING:
+            store.record_stage_result(
+                run.run_id,
+                stage=run.status,
+                result={
+                    "plan_id": "plan-1",
+                    "planned_rubrics": 0,
+                    "rubrics_completed": 0,
+                    "rated_rubrics": 0,
+                    "not_evaluable_rubrics": 0,
+                    "minimum_reviewer_attempts": 0,
+                    "maximum_reviewer_attempts": 0,
+                    "reviewer_attempts_completed": 0,
+                    "digest_steps_completed": 0,
+                    "maximum_digest_steps": 0,
+                    "window_steps_completed": 0,
+                    "maximum_window_steps": 0,
+                    "merge_steps_completed": 0,
+                    "maximum_merge_steps": 0,
+                    "scores_written": 0,
+                    "failure_count": 0,
+                    "write_failure_count": 0,
+                    "coverage_complete": True,
+                    "status_message": "Judging complete",
+                    "attempt_summary_count": 0,
+                    "attempt_summaries_truncated": False,
+                    "attempt_summaries": [],
+                    "failure_detail_count": 0,
+                    "failure_details_truncated": False,
+                    "failure_details": [],
+                },
+            )
+            return
         store.record_stage_result(
             run.run_id,
             stage=run.status,
-            result={"stage": run.status.value},
+            result={
+                "turns_scored": 0,
+                "sessions_scored": 0,
+                "scores_written": 0,
+                "errors": 0,
+                "turn_details": [],
+            },
         )
 
     service = RunService(
@@ -93,9 +132,7 @@ def _config(models, rubrics, **updates) -> dict:
         model_catalog_version=models.catalog_version,
         rubric_catalog_version=rubrics.catalog_version,
         judge_backend="cli",
-        review_depth="selective",
         judge_models=("claude-sonnet-5", "gpt-5.6-sol"),
-        second_opinion_margin=0.1,
         proposal_model="gpt-5.6-sol",
         proposal_evaluator_model="claude-sonnet-5",
         rubrics=("judge.verification", "judge.session_outcome"),
@@ -136,7 +173,13 @@ def test_run_routes_accept_exact_setup_contract_and_return_pinned_run(route_cont
     assert body["current_stage_succeeded"] is True
     assert body["effective_config"]["pipeline_version"]
     assert body["effective_config"]["rubrics"][0]["id"] == "judge.verification"
-    assert body["scoring_result"] == {"stage": "scoring"}
+    assert body["scoring_result"] == {
+        "turns_scored": 0,
+        "sessions_scored": 0,
+        "scores_written": 0,
+        "errors": 0,
+        "turn_details": [],
+    }
     assert client.get("/api/runs").json()["runs"] == [
         {
             "run_id": created["run_id"],

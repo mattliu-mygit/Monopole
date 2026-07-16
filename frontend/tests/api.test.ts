@@ -12,6 +12,7 @@ import {
 } from '../src/api'
 import type {
   EffectiveRunConfig,
+  ModelDescriptor,
   ModelCatalog,
   RubricCatalog,
   Run,
@@ -32,7 +33,7 @@ function mockFetch(payload: unknown = {}) {
   return fetch
 }
 
-const writer = {
+const writer: ModelDescriptor = {
   id: 'writer-openai',
   label: 'Writer OpenAI',
   family: 'openai',
@@ -41,7 +42,7 @@ const writer = {
   max_input_tokens: 128_000,
 }
 
-const judge = {
+const judge: ModelDescriptor = {
   id: 'judge-anthropic',
   label: 'Judge Anthropic',
   family: 'anthropic',
@@ -65,15 +66,12 @@ const modelCatalog: ModelCatalog = {
     available_models: [writer],
     recommended_model: writer.id,
   },
-  review_defaults: { second_opinion_margin: 0.1 },
   recommended_judge_backend: 'cli',
   judge_backends: {
     cli: {
       available_models: [judge],
       recommended_judges: [judge.id],
       proposal_evaluator_preferences: [judge.id],
-      recommended_review_depth: 'primary',
-      supported_review_depths: ['primary'],
     },
   },
 }
@@ -87,9 +85,7 @@ const runConfig: RunConfig = {
   model_catalog_version: modelCatalog.catalog_version,
   rubric_catalog_version: rubricCatalog.catalog_version,
   judge_backend: 'cli',
-  review_depth: 'primary',
   judge_models: [judge.id],
-  second_opinion_margin: null,
   proposal_model: writer.id,
   proposal_evaluator_model: judge.id,
   rubrics: [],
@@ -103,8 +99,6 @@ const effectiveConfig: EffectiveRunConfig = {
   model_catalog_version: modelCatalog.catalog_version,
   rubric_catalog_version: rubricCatalog.catalog_version,
   judge_backend: 'cli',
-  review_depth: 'primary',
-  second_opinion_margin: null,
   models: {
     proposal_writer: writer,
     judges: [{ ...judge, role: 'judge', position: 1 }],
@@ -139,6 +133,7 @@ const effectiveRunFixture: Run = {
   run_config: runConfig,
   effective_config: effectiveConfig,
   turn_cohort: null,
+  judging_plan: null,
   reflection_input: null,
   scoring_progress: null,
   scoring_result: null,

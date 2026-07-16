@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -17,12 +15,11 @@ from weave_agent_signals.runs.bundles import (
     validate_edited_bundle,
 )
 from weave_agent_signals.runs.promotion import (
-    ProjectFileAdapter,
     PromotionError,
     PromotionReceipt,
-    PromotionTransactionError,
     PromotionValidationError,
     StaleBaseError,
+    TargetPromoter,
 )
 from weave_agent_signals.runs.store import (
     Run,
@@ -30,8 +27,6 @@ from weave_agent_signals.runs.store import (
     RunStore,
     RunStoreConflictError,
 )
-
-log = logging.getLogger(__name__)
 
 
 class ReviewServiceError(Exception):
@@ -66,14 +61,14 @@ class ReviewOperationError(ReviewServiceError):
 def _operation(
     code: str,
     source: str | Exception,
-    recovery: bool,
+    manual_inspection: bool,
     changed: tuple[str, ...] | None = None,
 ) -> ReviewOperationError:
     return ReviewOperationError(
         code,
         str(source),
         changed_targets=list(changed or getattr(source, "changed_locators", ())),
-        recovery_required=recovery,
+        manual_inspection_required=manual_inspection,
     )
 
 
@@ -82,7 +77,7 @@ class ReviewService:
     """Own mutable review state while adapters own target transactions."""
 
     store: RunStore
-    adapter_factory: Callable[[], ProjectFileAdapter]
+    adapter_factory: Callable[[], TargetPromoter]
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
     def select_candidate(
@@ -177,9 +172,8 @@ class ReviewService:
         expected_revision: int,
         expected_draft_revision: str | None,
         acknowledge_unevaluated: bool = False,
-        git_metadata: Mapping[str, Any] | None = None,
     ) -> Run:
-        run = self._recover_for_read(self._load(run_id))
+        run = self._load(run_id)
         if self._is_idempotent_promotion(
             run,
             promotion_id=promotion_id,
@@ -214,7 +208,6 @@ class ReviewService:
                 promoted=promoted,
                 review_revision=run.reflection_review_revision,
                 acknowledge_unevaluated=acknowledge_unevaluated,
-                git_metadata=git_metadata,
             )
         except StaleBaseError as error:
             raise self._stale_error(
@@ -229,18 +222,25 @@ class ReviewService:
                 str(error),
                 changed_targets=list(error.changed_locators),
             ) from error
-        except PromotionTransactionError as error:
+        except PromotionError as error:
             raise _operation(
-                "promotion_transaction_failed",
+                "promotion_not_applied",
                 error,
-                error.rollback_error is not None,
+                False,
             ) from error
+        if receipt.status == "not_applied":
+            raise _operation(
+                "promotion_not_applied",
+                receipt.outcomes[0].message or "Promotion was not applied",
+                False,
+                receipt.not_applied_locators,
+            )
         return self._persist_receipt(run, review, receipt, adapter)
 
     def read(self, run_id: str) -> Run:
-        """Load one run, finish safe receipt recovery, and derive live drift."""
+        """Load one run and derive live target drift for pending review."""
 
-        return self.overlay(self._recover_for_read(self._load(run_id)))
+        return self.overlay(self._load(run_id))
 
     def overlay(self, run: Run) -> Run:
         """Return a nonpersistent live-drift view of a pending review."""
@@ -274,22 +274,6 @@ class ReviewService:
                 stale_reason=reason,
             )
         return replace(run, reflection_review=derived)
-
-    def _recover_for_read(self, run: Run) -> Run:
-        review = run.reflection_review
-        status = review.get("status") if isinstance(review, Mapping) else None
-        if status == "promoted":
-            receipt = review.get("receipt") if isinstance(review, Mapping) else None
-            if isinstance(receipt, Mapping) and isinstance(receipt.get("promotion_id"), str):
-                self._acknowledge(receipt["promotion_id"])
-            return run
-        if status != "pending" or run.status is not RunStatus.COMPLETE:
-            return run
-        try:
-            adapter = self.adapter_factory()
-        except PromotionError as error:
-            raise _operation("promotion_recovery_failed", error, True) from error
-        return self._recover(run, adapter)
 
     def _load(self, run_id: str) -> Run:
         run = self.store.get(run_id)
@@ -557,109 +541,26 @@ class ReviewService:
         run: Run,
         review: Mapping[str, Any],
         receipt: PromotionReceipt,
-        adapter: ProjectFileAdapter,
+        adapter: TargetPromoter,
     ) -> Run:
+        del adapter
         receipt_dict = receipt.to_dict()
         try:
-            updated = self._store(
+            return self._store(
                 run,
-                {**review, "status": "promoted", "receipt": receipt_dict},
+                {
+                    **review,
+                    "status": "partial" if receipt.status == "partial" else "promoted",
+                    "receipt": receipt_dict,
+                },
             )
         except ReviewServiceError as persistence_error:
-            try:
-                winner = self._matching_persisted_receipt(run.run_id, receipt_dict)
-            except Exception as read_error:
-                raise _operation(
-                    "promotion_receipt_persist_failed",
-                    "Promotion changed the target but its durable receipt could not be verified",
-                    True,
-                    receipt.promoted.locators,
-                ) from read_error
-            if winner is not None:
-                self._acknowledge(receipt.promotion_id, adapter)
-                return winner
-            try:
-                adapter.rollback_committed(receipt.promotion_id)
-            except PromotionTransactionError as rollback_error:
-                raise _operation(
-                    "promotion_receipt_persist_failed",
-                    rollback_error,
-                    True,
-                ) from persistence_error
-            self._acknowledge(receipt.promotion_id, adapter)
-            if isinstance(persistence_error, ReviewConflictError):
-                raise persistence_error
             raise _operation(
                 "promotion_receipt_persist_failed",
-                "Promotion receipt could not be persisted; committed files were rolled back",
-                False,
-                receipt.promoted.locators,
-            ) from persistence_error
-        self._acknowledge(receipt.promotion_id, adapter)
-        return updated
-
-    def _matching_persisted_receipt(
-        self,
-        run_id: str,
-        receipt: Mapping[str, Any],
-    ) -> Run | None:
-        latest = self.store.get(run_id)
-        if latest is None:
-            return None
-        review = latest.reflection_review
-        return (
-            latest
-            if isinstance(review, Mapping)
-            and review.get("status") == "promoted"
-            and review.get("receipt") == receipt
-            else None
-        )
-
-    def _recover(self, run: Run, adapter: ProjectFileAdapter) -> Run:
-        try:
-            receipt = adapter.find_committed_receipt(run.run_id)
-        except PromotionError as error:
-            raise _operation(
-                "promotion_recovery_failed",
-                error,
+                "Promotion changed one or more files but its receipt could not be persisted",
                 True,
-            ) from error
-        if receipt is None:
-            return run
-        review = run.reflection_review
-        if not isinstance(review, Mapping) or not self._receipt_matches(run, review, receipt):
-            try:
-                adapter.rollback_committed(receipt.promotion_id)
-            except PromotionTransactionError as error:
-                raise _operation(
-                    "promotion_recovery_failed",
-                    error,
-                    True,
-                ) from error
-            self._acknowledge(receipt.promotion_id, adapter)
-            return run
-        return self._persist_receipt(run, review, receipt, adapter)
-
-    def _receipt_matches(
-        self,
-        run: Run,
-        review: Mapping[str, Any],
-        receipt: PromotionReceipt,
-    ) -> bool:
-        try:
-            baseline, candidate_id, candidate = self._decision_candidate(run, review)
-            promoted = self._draft_bundle(review, candidate_id) or candidate
-        except ReviewServiceError:
-            return False
-        return (
-            receipt.run_id == run.run_id
-            and receipt.candidate_id == candidate_id
-            and receipt.review_revision == run.reflection_review_revision
-            and receipt.past == baseline
-            and receipt.evaluated_candidate == candidate
-            and receipt.promoted == promoted
-            and receipt.unevaluated_d_acknowledged == (promoted != candidate)
-        )
+                receipt.applied_locators,
+            ) from persistence_error
 
     def _is_idempotent_promotion(
         self,
@@ -671,7 +572,10 @@ class ReviewService:
         acknowledge_unevaluated: bool,
     ) -> bool:
         review = run.reflection_review
-        if not isinstance(review, Mapping) or review.get("status") != "promoted":
+        if not isinstance(review, Mapping) or review.get("status") not in {
+            "promoted",
+            "partial",
+        }:
             return False
         raw_receipt = review.get("receipt")
         try:
@@ -708,18 +612,6 @@ class ReviewService:
                 committed_draft_revision=committed_draft_revision,
             )
         return True
-
-    def _acknowledge(
-        self,
-        promotion_id: str,
-        adapter: ProjectFileAdapter | None = None,
-    ) -> None:
-        try:
-            target = adapter or self.adapter_factory()
-            if os.path.lexists(target.transaction_path(promotion_id)):
-                target.acknowledge(promotion_id)
-        except PromotionError:
-            log.warning("Could not clean promotion journal %s", promotion_id, exc_info=True)
 
     def _timestamp(self) -> str:
         value = self.clock()

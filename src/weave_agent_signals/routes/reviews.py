@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Annotated, Any, TypeVar
+from typing import Annotated, TypeVar
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 
 from weave_agent_signals.routes import serialize_run
+from weave_agent_signals.routes.models import RunResponse
 from weave_agent_signals.runs.review import (
     ReviewConflictError,
     ReviewNotFoundError,
@@ -52,7 +53,6 @@ class PromoteRequest(BaseModel):
     expected_draft_revision: StrictStr | None = None
     idempotency_key: Identifier
     acknowledge_unevaluated: StrictBool = False
-    git_metadata: dict[str, Any] | None = None
 
 
 class DismissRequest(BaseModel):
@@ -78,65 +78,74 @@ def create_reviews_router(service: ReviewService) -> APIRouter:
     router = APIRouter(prefix="/api/runs", tags=["reviews"])
 
     @router.put("/{run_id}/reflection_selection")
-    def select_candidate(run_id: str, request: SelectionRequest) -> dict:
-        return serialize_run(
-            call_review(
-                lambda: service.select_candidate(
-                    run_id,
-                    candidate_id=request.candidate_id,
-                    expected_revision=request.expected_revision,
-                    discard_draft=request.discard_draft,
+    def select_candidate(run_id: str, request: SelectionRequest) -> RunResponse:
+        return RunResponse.model_validate(
+            serialize_run(
+                call_review(
+                    lambda: service.select_candidate(
+                        run_id,
+                        candidate_id=request.candidate_id,
+                        expected_revision=request.expected_revision,
+                        discard_draft=request.discard_draft,
+                    )
                 )
             )
         )
 
     @router.put("/{run_id}/reflection_draft")
-    def save_draft(run_id: str, request: DraftRequest) -> dict:
-        return serialize_run(
-            call_review(
-                lambda: service.save_draft(
-                    run_id,
-                    contents=request.contents,
-                    expected_revision=request.expected_revision,
-                    expected_draft_revision=request.expected_draft_revision,
+    def save_draft(run_id: str, request: DraftRequest) -> RunResponse:
+        return RunResponse.model_validate(
+            serialize_run(
+                call_review(
+                    lambda: service.save_draft(
+                        run_id,
+                        contents=request.contents,
+                        expected_revision=request.expected_revision,
+                        expected_draft_revision=request.expected_draft_revision,
+                    )
                 )
             )
         )
 
     @router.delete("/{run_id}/reflection_draft")
-    def reset_draft(run_id: str, request: DraftResetRequest) -> dict:
-        return serialize_run(
-            call_review(
-                lambda: service.reset_draft(
-                    run_id,
-                    expected_revision=request.expected_revision,
-                    expected_draft_revision=request.expected_draft_revision,
+    def reset_draft(run_id: str, request: DraftResetRequest) -> RunResponse:
+        return RunResponse.model_validate(
+            serialize_run(
+                call_review(
+                    lambda: service.reset_draft(
+                        run_id,
+                        expected_revision=request.expected_revision,
+                        expected_draft_revision=request.expected_draft_revision,
+                    )
                 )
             )
         )
 
     @router.post("/{run_id}/promote")
-    def promote(run_id: str, request: PromoteRequest) -> dict:
-        return serialize_run(
-            call_review(
-                lambda: service.promote(
-                    run_id,
-                    promotion_id=request.idempotency_key,
-                    expected_revision=request.expected_revision,
-                    expected_draft_revision=request.expected_draft_revision,
-                    acknowledge_unevaluated=request.acknowledge_unevaluated,
-                    git_metadata=request.git_metadata,
+    def promote(run_id: str, request: PromoteRequest) -> RunResponse:
+        return RunResponse.model_validate(
+            serialize_run(
+                call_review(
+                    lambda: service.promote(
+                        run_id,
+                        promotion_id=request.idempotency_key,
+                        expected_revision=request.expected_revision,
+                        expected_draft_revision=request.expected_draft_revision,
+                        acknowledge_unevaluated=request.acknowledge_unevaluated,
+                    )
                 )
             )
         )
 
     @router.post("/{run_id}/dismiss")
-    def dismiss(run_id: str, request: DismissRequest) -> dict:
-        return serialize_run(
-            call_review(
-                lambda: service.dismiss(
-                    run_id,
-                    expected_revision=request.expected_revision,
+    def dismiss(run_id: str, request: DismissRequest) -> RunResponse:
+        return RunResponse.model_validate(
+            serialize_run(
+                call_review(
+                    lambda: service.dismiss(
+                        run_id,
+                        expected_revision=request.expected_revision,
+                    )
                 )
             )
         )

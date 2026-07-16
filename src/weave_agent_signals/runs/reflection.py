@@ -38,40 +38,35 @@ MAX_REJECTED_RESPONSE_EXCERPT = 1_000
 _CORRECTION_CONTEXT_LIMIT = 500
 
 _PROPOSAL_LAYOUT = """{
-  "schema_version": 2,
+  "schema_version": 3,
   "changes": [
     {
       "action": "update",
-      "path": "AGENTS.md",
+      "locator": "file:project-agents",
       "content": "Complete replacement content for AGENTS.md"
-    },
-    {
-      "action": "delete",
-      "path": "docs/obsolete.md",
-      "content": null
     }
   ]
 }"""
 _GEPA_OBJECTIVE_TEMPLATE = (
     "Improve the complete managed instruction bundle to increase the agent's "
-    "evaluation scores. Treat every path as part of one coherent configuration. "
+    "evaluation scores. Treat every target as part of one coherent configuration. "
     "The bundle may contain project instructions, commands, skills, and other "
     "adapter-managed prompt files.\n\n"
     "Current evaluation summary:\n{coaching_text}\n\n"
     "Propose specific, actionable edits to the lowest-scoring dimensions. Use "
     "this exact JSON layout:\n{proposal_layout}\n\n"
     "Contract rules:\n"
-    "- `changes` contains only files changed by the proposal, and each path "
+    "- `changes` contains only files changed by the proposal, and each locator "
     "appears once.\n"
-    "- create requires a path absent from baseline B and complete string content.\n"
-    "- update requires a path present in baseline B and changed complete "
+    "- create requires a locator admitted by the pinned target registry and absent "
+    "from baseline B, with complete string content.\n"
+    "- update requires a locator present in baseline B and changed complete "
     "replacement string content.\n"
-    "- delete requires a path present in baseline B and null content.\n"
     "- The complete change list is one atomic multi-file proposal; every change "
     "must be valid together.\n"
     "- An empty or no-op writer proposal is invalid.\n"
     "- Return JSON only, with exactly `schema_version` and `changes` at the top "
-    "level and exactly `action`, `path`, and `content` for every change.\n"
+    "level and exactly `action`, `locator`, and `content` for every change.\n"
     "- Do not change unrelated documentation merely to improve an evaluator score.\n"
 )
 _GEPA_BACKGROUND_TEMPLATE = (
@@ -96,7 +91,7 @@ _EVALUATOR_USER = (
 )
 
 ProgressCallback = Callable[[dict[str, Any]], None]
-CandidateBuilder = Callable[[Mapping[str, str]], BundleSnapshot]
+LocatorResolver = Callable[..., object]
 Optimizer = Callable[..., Any]
 AttemptStatus = Literal["succeeded", "failed", "cancelled"]
 
@@ -180,8 +175,8 @@ _SECRET_ASSIGNMENT = re.compile(
 _BEARER_SECRET = re.compile(r"(?i)\bbearer\s+[^\s,}\]\\\"']+")
 _URL_CREDENTIALS = re.compile(r"(?i)(https?://)[^/@\s]+:[^/@\s]+@")
 _JUDGE_PROCESS_FAILURE = re.compile(r"(?i)\b[\w.-]+\s+judge exited\s+(-?\d+)\b")
-_PROPOSAL_FIELD_NAMES = ("schema_version", "changes", "action", "path", "content")
-_SAFE_PROPOSAL_STRING_FIELDS = frozenset({"action", "path"})
+_PROPOSAL_FIELD_NAMES = ("schema_version", "changes", "action", "locator", "content")
+_SAFE_PROPOSAL_STRING_FIELDS = frozenset({"action", "locator"})
 
 
 def _sanitized_text(value: object, *, limit: int) -> str:
@@ -289,11 +284,11 @@ def _best_effort_changed_paths(response: str) -> tuple[str, ...]:
     return tuple(
         sorted(
             {
-                path
+                locator
                 for item in changes
                 if isinstance(item, Mapping)
-                and isinstance((path := item.get("path")), str)
-                and path
+                and isinstance((locator := item.get("locator")), str)
+                and locator
             }
         )
     )
@@ -727,14 +722,14 @@ class _AttemptLedger:
         baseline: BundleSnapshot,
         writer: ModelDescriptor,
         evaluator: ModelDescriptor,
-        build_candidate: CandidateBuilder,
+        resolve_locator: LocatorResolver,
         progress: ProgressCallback | None,
         total_attempts: int,
     ) -> None:
         self.baseline = baseline
         self.writer = writer
         self.evaluator = evaluator
-        self.build_candidate = build_candidate
+        self.resolve_locator = resolve_locator
         self.progress = progress
         self.total_attempts = total_attempts
         self.attempts: list[_AttemptState] = []
@@ -844,11 +839,11 @@ class _AttemptLedger:
         changed_paths = _best_effort_changed_paths(response)
         try:
             proposal = parse_candidate_proposal(response)
-            changed_paths = tuple(change.path for change in proposal.changes)
+            changed_paths = tuple(change.locator for change in proposal.changes)
             bundle = materialize_candidate_proposal(
                 proposal,
                 baseline=self.baseline,
-                build_candidate=self.build_candidate,
+                resolve_locator=self.resolve_locator,
             )
             if bundle.revision in self.candidates_by_revision:
                 attempt.bundle = bundle
@@ -917,7 +912,7 @@ class _AttemptLedger:
         )
 
     def claim(self, candidate: str) -> tuple[BundleSnapshot, _AttemptState | None]:
-        if candidate == serialize_candidate_proposal(CandidateProposal(2, ())):
+        if candidate == serialize_candidate_proposal(CandidateProposal(3, ())):
             return self.baseline, None
         attempt = self.candidates_by_transport.get(candidate)
         if attempt is None or attempt.bundle is None:
@@ -1186,7 +1181,7 @@ def run_reflection(
     requested_evaluator: ModelDescriptor,
     writer_client: ChatClient,
     evaluator_client: ChatClient,
-    build_candidate: CandidateBuilder,
+    resolve_locator: LocatorResolver,
     candidate_budget: int = 3,
     progress_callback: ProgressCallback | None = None,
     cancel_requested: Callable[[], bool] | None = None,
@@ -1223,7 +1218,7 @@ def run_reflection(
         baseline,
         requested_writer,
         requested_evaluator,
-        build_candidate,
+        resolve_locator,
         progress_callback,
         candidate_budget,
     )
@@ -1249,7 +1244,7 @@ def run_reflection(
     )
     optimize = optimizer or gepa_optimize
     optimize(
-        seed_candidate=serialize_candidate_proposal(CandidateProposal(2, ())),
+        seed_candidate=serialize_candidate_proposal(CandidateProposal(3, ())),
         evaluator=evaluator,
         objective=_GEPA_OBJECTIVE_TEMPLATE.format(
             coaching_text=coaching_text,

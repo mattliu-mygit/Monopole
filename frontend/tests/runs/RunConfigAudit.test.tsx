@@ -13,8 +13,6 @@ const config: EffectiveRunConfig = {
   model_catalog_version: 'models-v4',
   rubric_catalog_version: 'rubrics-v9',
   judge_backend: 'cli',
-  review_depth: 'selective',
-  second_opinion_margin: 0.12,
   models: {
     proposal_writer: {
       id: 'writer-openai',
@@ -101,8 +99,8 @@ describe('RunConfigAudit', () => {
     expect(screen.getAllByText('Judge Meta').length).toBe(2)
     expect(screen.getByText('Judge 1')).not.toBeNull()
     expect(screen.getByText('Judge 2')).not.toBeNull()
-    expect(screen.getByText('Selective')).not.toBeNull()
-    expect(screen.getByText('0.12')).not.toBeNull()
+    expect(screen.getByText('Judge panel')).not.toBeNull()
+    expect(screen.getByText('2 judges')).not.toBeNull()
     expect(screen.getByText('Verification discipline')).not.toBeNull()
     expect(screen.getByText('v3 · whole session · threshold 0.65')).not.toBeNull()
     expect(screen.getByText('v2 · whole session · threshold 0.50')).not.toBeNull()

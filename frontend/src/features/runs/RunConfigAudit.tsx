@@ -5,12 +5,6 @@ export interface RunConfigAuditProps {
   config: EffectiveRunConfig
 }
 
-function reviewDepthLabel(depth: EffectiveRunConfig['review_depth']): string {
-  if (depth === 'primary') return 'Primary'
-  if (depth === 'selective') return 'Selective'
-  return 'Full panel'
-}
-
 function ModelCard({
   title,
   model,
@@ -86,9 +80,8 @@ export default function RunConfigAudit({ config }: RunConfigAuditProps) {
       </div>
 
       <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <AuditItem label="Review depth">{reviewDepthLabel(config.review_depth)}</AuditItem>
-        <AuditItem label="Second-opinion margin">
-          {config.second_opinion_margin === null ? 'Not used' : config.second_opinion_margin}
+        <AuditItem label="Judge panel">
+          {config.models.judges.length} judge{config.models.judges.length === 1 ? '' : 's'}
         </AuditItem>
         <AuditItem label="Proposal attempt limit">
           {config.candidate_budget} attempt{config.candidate_budget === 1 ? '' : 's'}

@@ -13,7 +13,7 @@ review. The Python package and CLI are named `weave-agent-signals`.
   retaining the raw negative signals as context.
 - Uses a pinned context policy to judge complete sessions through bounded raw
   windows, surrounding chunk digests, and a final evidence-cited merge.
-- Supports guided, user-overridable review depth while retaining each
+- Uses an explicit ordered panel of one through three judges while retaining each
   reviewer's digest, window, merge, and final behavioral-feedback audit.
 - Compares compatible configuration cohorts, calculates representative trends,
   produces bounded coaching examples, and alerts only on new significant
@@ -22,8 +22,8 @@ review. The Python package and CLI are named `weave-agent-signals`.
 - Uses a proposal evaluator that predicts a whole-bundle score for the exact
   current instruction bundle and generated candidates, then lets a user review
   Past B, scored candidate C, and optional unevaluated edit D before promotion.
-- Applies approved multi-file changes through drift-checked, journaled promotion
-  with an immutable receipt.
+- Applies approved create/update changes as complete atomic file writes, with
+  source-drift checks and exact per-file outcomes when a bundle is only partly applied.
 
 Scores are custom Weave feedback attached to the turn or conversation they
 describe. Local SQLite state tracks evaluation runs and review audit evidence.
@@ -50,6 +50,29 @@ cd frontend && npm ci
 
 The default Weave scope is `weave-team/agent-sessions`; global CLI arguments can
 override the entity and project.
+
+Reflection requires a closed target registry. Markdown roots capture and update
+only their explicit `files`; `allow_create` permits recursive `.md` creation
+beneath that root. A successful create is added to `files` automatically:
+
+```json
+{
+  "schema_version": "1",
+  "targets": [
+    {
+      "kind": "markdown_root",
+      "id": "project",
+      "root": ".",
+      "files": ["AGENTS.md", ".agents/skills/reviewer/SKILL.md"],
+      "allow_create": true
+    }
+  ]
+}
+```
+
+Locators use `markdown:<id>/<relative-path.md>`. Paths cannot escape the root,
+cross symlinks, enter dependency/cache directories, or target non-Markdown
+files. Exact-file and direct skill-collection entries remain supported.
 
 ## CLI
 
@@ -80,7 +103,7 @@ runs.
 For development, run the API and Vite in separate terminals:
 
 ```bash
-weave-agent-signals serve
+weave-agent-signals serve --target-registry targets.json
 ```
 
 ```bash
@@ -94,7 +117,7 @@ Vite serves `http://localhost:5173`. For one-process serving, build first:
 cd frontend
 npm run build
 cd ..
-weave-agent-signals serve
+weave-agent-signals serve --target-registry targets.json
 ```
 
 The UI includes dashboard, session list/detail, run list/detail, and analysis

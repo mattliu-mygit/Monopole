@@ -1,4 +1,4 @@
-"""Pure reviewer escalation and score aggregation policy."""
+"""Pure fixed-panel reviewer execution and score aggregation."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ from typing import Literal
 
 from weave_agent_signals.run_config import PositionedJudge
 
-ReviewDepth = Literal["primary", "selective", "full_panel"]
 ObservationStatus = Literal["succeeded", "abstained", "failed"]
-ReviewStatus = Literal["complete", "degraded", "unresolved", "failed"]
+ReviewStatus = Literal["complete", "degraded", "not_evaluable", "failed"]
 InferencePhase = Literal["digest", "window", "merge"]
 _SCHEMA_FALLBACK_REASON = "schema_output_unsupported"
+PANEL_CONTRACT_VERSION = "1"
 
 
 def _unit_float(value: object, field_name: str) -> float:
@@ -39,55 +39,6 @@ def _validate_schema_fallback_metadata(
     expected_reason = _SCHEMA_FALLBACK_REASON if output_mode == "json_object_fallback" else None
     if schema_fallback_reason != expected_reason:
         raise ValueError("schema fallback metadata is invalid")
-
-
-@dataclass(frozen=True)
-class ReviewPolicy:
-    depth: ReviewDepth
-    judges: tuple[PositionedJudge, ...]
-    second_opinion_margin: float | None
-
-    def __post_init__(self) -> None:
-        if self.depth not in {"primary", "selective", "full_panel"}:
-            raise ValueError("depth must be primary, selective, or full_panel")
-        if not isinstance(self.judges, tuple) or any(
-            not isinstance(judge, PositionedJudge) for judge in self.judges
-        ):
-            raise ValueError("judges must be a tuple of PositionedJudge values")
-
-        judge_count = len(self.judges)
-        expected_counts = {
-            "primary": {1},
-            "selective": {2, 3},
-            "full_panel": {3},
-        }
-        if judge_count not in expected_counts[self.depth]:
-            requirement = {
-                "primary": "exactly 1 judge",
-                "selective": "2 or 3 judges",
-                "full_panel": "exactly 3 judges",
-            }[self.depth]
-            raise ValueError(f"{self.depth} review requires {requirement}")
-
-        expected_positions = tuple(range(1, judge_count + 1))
-        if tuple(judge.position for judge in self.judges) != expected_positions:
-            raise ValueError("judge positions must be contiguous and ordered from 1")
-        judge_ids = tuple(judge.id for judge in self.judges)
-        if len(judge_ids) != len(set(judge_ids)):
-            raise ValueError("judge model IDs must be unique")
-
-        if self.depth == "selective":
-            margin = self.second_opinion_margin
-            if margin is None:
-                raise ValueError("selective review requires second_opinion_margin")
-            if isinstance(margin, bool) or not isinstance(margin, (int, float)):
-                raise ValueError("second_opinion_margin must be between 0 and 0.5")
-            normalized_margin = float(margin)
-            if not isfinite(normalized_margin) or not 0 <= normalized_margin <= 0.5:
-                raise ValueError("second_opinion_margin must be between 0 and 0.5")
-            object.__setattr__(self, "second_opinion_margin", normalized_margin)
-        elif self.second_opinion_margin is not None:
-            raise ValueError("second_opinion_margin must be null outside selective review")
 
 
 @dataclass(frozen=True)
@@ -281,65 +232,38 @@ class ReviewAttempt:
 
 
 @dataclass(frozen=True)
-class ReviewOutcome:
+class PanelOutcome:
     rating: float | None
     status: ReviewStatus
     attempts: tuple[ReviewAttempt, ...]
     successful_count: int
+    minimum: float | None
+    maximum: float | None
+    spread: float | None
 
 
-def _near_boundary(score: float, threshold: float, margin: float) -> bool:
-    return abs(score - threshold) <= margin
-
-
-def _split_across_threshold(scores: tuple[float, ...], threshold: float) -> bool:
-    return len(scores) == 2 and (scores[0] >= threshold) != (scores[1] >= threshold)
-
-
-def _outcome(attempts: list[ReviewAttempt], threshold: float) -> ReviewOutcome:
-    successful_scores = tuple(
-        attempt.observation.score
-        for attempt in attempts
-        if attempt.observation.status == "succeeded" and attempt.observation.score is not None
-    )
-    successful_count = len(successful_scores)
-    if not successful_scores:
-        return ReviewOutcome(
-            rating=None,
-            status="failed",
-            attempts=tuple(attempts),
-            successful_count=0,
-        )
-
-    rating = sum(successful_scores) / successful_count
-    if _split_across_threshold(successful_scores, threshold):
-        status: ReviewStatus = "unresolved"
-    elif any(attempt.observation.status != "succeeded" for attempt in attempts):
-        status = "degraded"
-    else:
-        status = "complete"
-    return ReviewOutcome(
-        rating=rating,
-        status=status,
-        attempts=tuple(attempts),
-        successful_count=successful_count,
-    )
-
-
-def execute_review(
-    policy: ReviewPolicy,
+def execute_panel(
+    judges: tuple[PositionedJudge, ...],
+    invoke: Callable[[PositionedJudge], AttemptObservation],
     *,
     threshold: float,
-    invoke: Callable[[PositionedJudge], AttemptObservation],
-) -> ReviewOutcome:
-    """Execute one ordered review without performing or converting model I/O."""
+) -> PanelOutcome:
+    """Invoke every selected judge and aggregate valid scores when safe."""
 
-    if not isinstance(policy, ReviewPolicy):
-        raise TypeError("policy must be a ReviewPolicy")
-    normalized_threshold = _unit_float(threshold, "threshold")
+    _unit_float(threshold, "threshold")
+    if not isinstance(judges, tuple) or any(
+        not isinstance(judge, PositionedJudge) for judge in judges
+    ):
+        raise ValueError("judges must be a tuple of PositionedJudge values")
+    if not 1 <= len(judges) <= 3:
+        raise ValueError("judges must contain one through three models")
+    if tuple(judge.position for judge in judges) != tuple(range(1, len(judges) + 1)):
+        raise ValueError("judge positions must be contiguous and ordered from 1")
+    if len({judge.id for judge in judges}) != len(judges):
+        raise ValueError("judge model IDs must be unique")
+
     attempts: list[ReviewAttempt] = []
-
-    def attempt(judge: PositionedJudge, trigger: str) -> AttemptObservation:
+    for judge in judges:
         observation = invoke(judge)
         if not isinstance(observation, AttemptObservation):
             raise TypeError("invoke must return an AttemptObservation")
@@ -347,67 +271,30 @@ def execute_review(
             ReviewAttempt(
                 position=judge.position,
                 role=judge.role,
-                trigger=trigger,
+                trigger="panel",
                 requested_model=judge.id,
                 requested_family=judge.family,
                 requested_backend=judge.backend,
                 observation=observation,
             )
         )
-        return observation
-
-    first = attempt(policy.judges[0], "initial")
-    if policy.depth == "primary":
-        return _outcome(attempts, normalized_threshold)
-
-    if policy.depth == "full_panel":
-        attempt(policy.judges[1], "full_panel")
-        attempt(policy.judges[2], "full_panel")
-        return _outcome(attempts, normalized_threshold)
-
-    margin = policy.second_opinion_margin
-    if margin is None:  # ReviewPolicy validation makes this unreachable.
-        raise AssertionError("selective review requires a margin")
-    if first.status == "failed":
-        second_trigger = "judge_1_failed"
-    elif first.status == "abstained":
-        second_trigger = "judge_1_abstained"
-    elif first.score is not None and _near_boundary(
-        first.score,
-        normalized_threshold,
-        margin,
-    ):
-        second_trigger = "near_boundary"
-    else:
-        return _outcome(attempts, normalized_threshold)
-
-    second = attempt(policy.judges[1], second_trigger)
-    if len(policy.judges) == 2:
-        return _outcome(attempts, normalized_threshold)
-
-    first_two_scores = tuple(
-        observation.score
-        for observation in (first, second)
-        if observation.status == "succeeded" and observation.score is not None
+    scores = tuple(
+        attempt.observation.score
+        for attempt in attempts
+        if attempt.observation.status == "succeeded" and attempt.observation.score is not None
     )
-    third_trigger: str | None = None
-    if _split_across_threshold(first_two_scores, normalized_threshold):
-        third_trigger = "threshold_disagreement"
-    elif len(first_two_scores) == 1 and _near_boundary(
-        first_two_scores[0],
-        normalized_threshold,
-        margin,
-    ):
-        third_trigger = "only_success_near_boundary"
-    elif not first_two_scores:
-        statuses = (first.status, second.status)
-        if statuses == ("failed", "failed"):
-            third_trigger = "both_prior_failed"
-        elif statuses == ("abstained", "abstained"):
-            third_trigger = "both_prior_abstained"
-        else:
-            third_trigger = "both_prior_unsuccessful"
-
-    if third_trigger is not None:
-        attempt(policy.judges[2], third_trigger)
-    return _outcome(attempts, normalized_threshold)
+    if attempts and all(attempt.observation.status == "abstained" for attempt in attempts):
+        return PanelOutcome(None, "not_evaluable", tuple(attempts), 0, None, None, None)
+    if any(attempt.observation.status == "failed" for attempt in attempts) or not scores:
+        return PanelOutcome(None, "failed", tuple(attempts), len(scores), None, None, None)
+    minimum = min(scores)
+    maximum = max(scores)
+    return PanelOutcome(
+        rating=sum(scores) / len(scores),
+        status="complete" if len(scores) == len(judges) else "degraded",
+        attempts=tuple(attempts),
+        successful_count=len(scores),
+        minimum=minimum,
+        maximum=maximum,
+        spread=maximum - minimum,
+    )

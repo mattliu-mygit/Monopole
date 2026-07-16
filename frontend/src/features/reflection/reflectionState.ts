@@ -12,6 +12,7 @@ export type ReviewState =
   | 'none'
   | 'review-needed'
   | 'promoted'
+  | 'partial'
   | 'dismissed'
   | 'stale'
   | 'no-change'
@@ -55,6 +56,7 @@ export function reviewState(run: Run): ReviewState {
   if (run.reflection_review?.stale) return 'stale'
   if (run.reflection_review?.status === 'pending') return 'review-needed'
   if (run.reflection_review?.status === 'promoted') return 'promoted'
+  if (run.reflection_review?.status === 'partial') return 'partial'
   if (run.reflection_review?.status === 'dismissed') return 'dismissed'
   if (
     run.reflecting_result &&
@@ -101,7 +103,6 @@ export function bundleActions(
     const right = afterTarget ?? missingLike(beforeTarget!)
     let action: PromotionReceiptAction['action'] | null = null
     if (!left.exists && right.exists) action = 'create'
-    else if (left.exists && !right.exists) action = 'delete'
     else if (left.exists && right.exists && left.content !== right.content) action = 'update'
     if (action) actions.push({ action, locator, before: left, after: right })
   }
@@ -140,7 +141,7 @@ export function promotionAvailability(run: Run, mutating = false): PromotionAvai
   if (review?.stale) {
     return { ...base, enabled: false, reason: 'Managed instructions changed after evaluation.' }
   }
-  if (review?.status === 'promoted' || review?.status === 'dismissed') {
+  if (review?.status === 'promoted' || review?.status === 'partial' || review?.status === 'dismissed') {
     return { ...base, enabled: false, reason: `This review is already resolved as ${review.status}.` }
   }
   if (review?.status !== 'pending') {

@@ -38,10 +38,12 @@ class ReflectionTargetAdapter(Protocol):
 
     def capture(self) -> BundleSnapshot: ...
 
-    def bundle_from_content_map(
+    def resolve_locator(
         self,
-        contents: Mapping[str, str],
-    ) -> BundleSnapshot: ...
+        locator: str,
+        *,
+        require_absent_for_create: bool = False,
+    ) -> object: ...
 
 
 ReflectionRunner = Callable[..., ReflectionResult]
@@ -222,10 +224,10 @@ def _selected_feedback(
     )
 
 
-def _target_adapter_contract(adapter: ReflectionTargetAdapter) -> dict[str, Any]:
+def _target_registry(adapter: ReflectionTargetAdapter) -> dict[str, Any]:
     manifest = adapter.contract_manifest()
     if not isinstance(manifest, Mapping):
-        raise ValueError("Target adapter contract manifest must be an object")
+        raise ValueError("Target registry manifest must be an object")
     try:
         return json.loads(
             json.dumps(
@@ -236,19 +238,19 @@ def _target_adapter_contract(adapter: ReflectionTargetAdapter) -> dict[str, Any]
             )
         )
     except (TypeError, ValueError) as exc:
-        raise ValueError("Target adapter contract manifest must contain JSON values") from exc
+        raise ValueError("Target registry manifest must contain JSON values") from exc
 
 
-def _require_pinned_adapter_contract(
+def _require_pinned_registry(
     reflection_input: Mapping[str, Any],
-    target_adapter_contract: Mapping[str, Any],
+    target_registry: Mapping[str, Any],
 ) -> None:
     if (
-        reflection_input.get("schema_version") != "2"
-        or reflection_input.get("target_adapter_contract") != target_adapter_contract
+        reflection_input.get("schema_version") != "3"
+        or reflection_input.get("target_registry") != target_registry
     ):
         raise ReflectionInputMismatchError(
-            "Pinned reflection target adapter contract does not match the current adapter contract"
+            "Pinned reflection target registry does not match the current registry"
         )
 
 
@@ -256,18 +258,18 @@ def _new_reflection_input(
     cohort: Mapping[str, Any],
     identities: list[dict[str, Any]],
     baseline: BundleSnapshot,
-    target_adapter_contract: Mapping[str, Any],
+    target_registry: Mapping[str, Any],
     captured_at: str,
 ) -> dict[str, Any]:
     return {
-        "schema_version": "2",
+        "schema_version": "3",
         "cohort_id": cohort.get("cohort_id"),
         "captured_at": captured_at,
         "turn_count": cohort.get("turn_count"),
         "session_count": cohort.get("session_count"),
         "feedback_count": len(identities),
         "feedback": identities,
-        "target_adapter_contract": dict(target_adapter_contract),
+        "target_registry": dict(target_registry),
         "baseline": baseline.to_dict(),
     }
 
@@ -276,7 +278,7 @@ def _pinned_baseline(
     reflection_input: Mapping[str, Any],
     cohort: Mapping[str, Any],
     identities: list[dict[str, Any]],
-    target_adapter_contract: Mapping[str, Any],
+    target_registry: Mapping[str, Any],
 ) -> BundleSnapshot:
     expected_keys = {
         "schema_version",
@@ -286,12 +288,12 @@ def _pinned_baseline(
         "session_count",
         "feedback_count",
         "feedback",
-        "target_adapter_contract",
+        "target_registry",
         "baseline",
     }
     if set(reflection_input) != expected_keys:
         raise ReflectionInputMismatchError("Pinned reflection input has an invalid shape")
-    if reflection_input.get("schema_version") != "2" or any(
+    if reflection_input.get("schema_version") != "3" or any(
         reflection_input.get(key) != cohort.get(key)
         for key in ("cohort_id", "turn_count", "session_count")
     ):
@@ -302,7 +304,7 @@ def _pinned_baseline(
         raise ReflectionInputMismatchError(
             "Evaluation feedback changed after the reflection input was pinned"
         )
-    _require_pinned_adapter_contract(reflection_input, target_adapter_contract)
+    _require_pinned_registry(reflection_input, target_registry)
     raw_baseline = reflection_input.get("baseline")
     if not isinstance(raw_baseline, Mapping):
         raise ReflectionInputMismatchError("Pinned reflection baseline is invalid")
@@ -377,15 +379,15 @@ def _execute_reflection_stage(
 
     current = run
     adapter = dependencies.adapter_factory()
-    target_adapter_contract = _target_adapter_contract(adapter)
+    target_registry = _target_registry(adapter)
     if current.reflection_input is not None:
-        _require_pinned_adapter_contract(
+        _require_pinned_registry(
             current.reflection_input,
-            target_adapter_contract,
+            target_registry,
         )
     elif current.reflecting_result is not None:
         raise ReflectionInputMismatchError(
-            "Persisted reflection result has no pinned target adapter contract"
+            "Persisted reflection result has no pinned target registry"
         )
     if _finalize_persisted_result(current, dependencies.store):
         return
@@ -414,7 +416,7 @@ def _execute_reflection_stage(
             cohort,
             identities,
             baseline,
-            target_adapter_contract,
+            target_registry,
             dependencies.clock().isoformat(),
         )
         try:
@@ -430,7 +432,7 @@ def _execute_reflection_stage(
             current.reflection_input,
             cohort,
             identities,
-            target_adapter_contract,
+            target_registry,
         )
 
     recorder.record(
@@ -484,12 +486,12 @@ def _execute_reflection_stage(
             baseline=baseline,
             feedback=feedback,
             coaching_text=coaching_text,
-            scope_policy=target_adapter_contract,
+            scope_policy=target_registry,
             requested_writer=config.models.proposal_writer,
             requested_evaluator=config.models.proposal_evaluator,
             writer_client=writer_client,
             evaluator_client=evaluator_client,
-            build_candidate=adapter.bundle_from_content_map,
+            resolve_locator=adapter.resolve_locator,
             candidate_budget=config.candidate_budget,
             progress_callback=recorder.handle,
             cancel_requested=cancel.is_set,

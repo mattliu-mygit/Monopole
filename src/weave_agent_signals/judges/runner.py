@@ -10,18 +10,20 @@ from datetime import datetime, timezone
 from weave_agent_signals.catalogs import build_rubric_catalog
 from weave_agent_signals.judges.families import model_family
 from weave_agent_signals.judges.inference import ChatClient, InferenceCancelled
-from weave_agent_signals.judges.review import ReviewAttempt, ReviewPolicy, execute_review
+from weave_agent_signals.judges.review import (
+    PANEL_CONTRACT_VERSION,
+    ReviewAttempt,
+    execute_panel,
+)
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.judges.sliding import ArtifactLoader, ArtifactRecorder, SlidingReviewer
 from weave_agent_signals.models import Score, SessionView
 from weave_agent_signals.run_config import (
     JudgingContextPolicy,
     PositionedJudge,
-    ReviewDepth,
     RubricDescriptor,
 )
 
-REVIEW_POLICY_VERSION = "3"
 _REASON_LIMIT = 1200
 
 
@@ -38,17 +40,11 @@ def _authenticate_plan_policy(
     session: SessionView,
     rubrics: Sequence[RubricDescriptor],
     judges: Sequence[PositionedJudge],
-    review_depth: ReviewDepth,
-    second_opinion_margin: float | None,
     context_policy: JudgingContextPolicy,
 ) -> Mapping[str, object]:
     body = {key: value for key, value in plan.items() if key != "plan_id"}
     if plan.get("schema_version") != "2" or plan.get("plan_id") != _plan_digest(body):
         raise ValueError("judging plan schema or content digest is invalid")
-    if plan.get("review_depth") != review_depth:
-        raise ValueError("review depth does not match the pinned judging plan")
-    if plan.get("second_opinion_margin") != second_opinion_margin:
-        raise ValueError("second opinion margin does not match the pinned judging plan")
     if plan.get("input_policy") != context_policy.model_dump(mode="json"):
         raise ValueError("context policy does not match the pinned judging plan")
     sessions = plan.get("sessions")
@@ -67,13 +63,11 @@ def _authenticate_plan_policy(
         value.get("judge") if isinstance(value, Mapping) else None for value in reviewers
     ] != [judge.model_dump(mode="json") for judge in judges]:
         raise ValueError("ordered judges do not match the pinned judging plan")
-    minimum = len(judges) if review_depth == "full_panel" else 1
-    maximum = 1 if review_depth == "primary" else len(judges)
     expected_rows = [
         {
             **descriptor.model_dump(mode="json"),
-            "minimum_reviewer_attempts": minimum,
-            "maximum_reviewer_attempts": maximum,
+            "minimum_reviewer_attempts": len(judges),
+            "maximum_reviewer_attempts": len(judges),
         }
         for descriptor in rubrics
     ]
@@ -96,13 +90,29 @@ class JudgeFailure:
         self.attempts = attempts
 
 
+class JudgeNotEvaluable:
+    def __init__(
+        self,
+        rubric: str,
+        attempts: tuple[dict[str, object], ...],
+    ) -> None:
+        self.rubric = rubric
+        self.attempts = attempts
+
+
 class JudgeExecutionError(RuntimeError):
-    def __init__(self, scores: Sequence[Score], failures: Sequence[JudgeFailure]) -> None:
+    def __init__(
+        self,
+        scores: Sequence[Score],
+        failures: Sequence[JudgeFailure],
+        not_evaluable: Sequence[JudgeNotEvaluable] = (),
+    ) -> None:
         self.scores = tuple(scores)
         self.failures = tuple(failures)
+        self.not_evaluable = tuple(not_evaluable)
         super().__init__(
-            f"{len(self.failures)} rubric(s) failed: "
-            + "; ".join(f"{item.rubric} ({item.message})" for item in self.failures)
+            f"{len(self.failures)} rubric(s) failed and "
+            f"{len(self.not_evaluable)} were not evaluable"
         )
 
 
@@ -194,8 +204,6 @@ def judge_session(
     *,
     rubrics: Sequence[RubricDescriptor],
     judges: Sequence[PositionedJudge],
-    review_depth: ReviewDepth,
-    second_opinion_margin: float | None,
     judging_plan: Mapping[str, object],
     context_policy: JudgingContextPolicy,
     artifact_loader: ArtifactLoader,
@@ -206,18 +214,12 @@ def judge_session(
 
     if not rubrics:
         return []
-    policy = ReviewPolicy(
-        depth=review_depth,
-        judges=tuple(judges),
-        second_opinion_margin=second_opinion_margin,
-    )
+    panel = tuple(judges)
     session_row = _authenticate_plan_policy(
         judging_plan,
         session=session,
         rubrics=rubrics,
         judges=judges,
-        review_depth=review_depth,
-        second_opinion_margin=second_opinion_margin,
         context_policy=context_policy,
     )
 
@@ -241,20 +243,24 @@ def judge_session(
 
     scores: list[Score] = []
     failures: list[JudgeFailure] = []
+    not_evaluable: list[JudgeNotEvaluable] = []
     evaluated_models = sorted({turn.model for turn in session.turns if turn.model})
     evaluated_families = sorted({model_family(turn.model or "") for turn in session.turns})
     for descriptor in rubrics:
         rubric = _resolve(descriptor)
         try:
-            outcome = execute_review(
-                policy,
-                threshold=descriptor.pass_threshold,
+            outcome = execute_panel(
+                panel,
                 invoke=lambda judge: reviewer(judge).review(descriptor),
+                threshold=descriptor.pass_threshold,
             )
         except InferenceCancelled:
             raise
         attempts = tuple(_attempt_record(value) for value in outcome.attempts)
         if outcome.rating is None:
+            if outcome.status == "not_evaluable":
+                not_evaluable.append(JudgeNotEvaluable(descriptor.id, attempts))
+                continue
             failures.append(
                 JudgeFailure(
                     descriptor.id,
@@ -264,9 +270,7 @@ def judge_session(
                 )
             )
             continue
-        if outcome.status == "unresolved":
-            tags = ["unresolved"]
-        elif outcome.rating < descriptor.pass_threshold:
+        if outcome.rating < descriptor.pass_threshold:
             tags = list(rubric.tags_on_low)
         else:
             tags = list(rubric.tags_on_high)
@@ -294,12 +298,14 @@ def judge_session(
                     "rubric_version": descriptor.version,
                     "rubric_threshold": descriptor.pass_threshold,
                     "evaluation_unit": "session",
-                    "review_depth": policy.depth,
-                    "review_policy_version": REVIEW_POLICY_VERSION,
-                    "second_opinion_margin": policy.second_opinion_margin,
-                    "requested_judge_models": [judge.id for judge in policy.judges],
+                    "panel_contract_version": PANEL_CONTRACT_VERSION,
+                    "requested_judge_models": [judge.id for judge in panel],
+                    "panel_size": len(panel),
                     "aggregate": "mean",
                     "review_status": outcome.status,
+                    "minimum": outcome.minimum,
+                    "maximum": outcome.maximum,
+                    "spread": outcome.spread,
                     "attempt_count": len(outcome.attempts),
                     "successful_reviewer_count": outcome.successful_count,
                     "attempts": list(attempts),
@@ -319,6 +325,6 @@ def judge_session(
                 },
             )
         )
-    if failures:
-        raise JudgeExecutionError(scores, failures)
+    if failures or not_evaluable:
+        raise JudgeExecutionError(scores, failures, not_evaluable)
     return scores
