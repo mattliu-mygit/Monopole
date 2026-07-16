@@ -31,20 +31,30 @@ causal attribution for all work that led to an observed result.
 ## Planned model evaluation
 
 Before inference, an evaluation run derives and pins a versioned judging plan
-from its immutable cohort. The plan pins the context policy, ordered judges,
-rubric descriptors, complete session trace identities, reviewer-specific window
-manifests, and exact digest/window/merge protocol.
-Changes to any of those inputs produce a different plan or artifact identity.
+from its immutable cohort. The plan pins the context policy, ordered model
+descriptors including context capacity and token-counter identity, rubric
+descriptors, complete session trace identities, each reviewer's planned-or-
+skipped disposition, reviewer-specific window manifests, and the exact
+digest/window/merge protocol. Changes to any of those inputs produce a different
+plan or artifact identity. Authentication recomputes each reviewer's
+applicability and exact window plan from the pinned session, descriptor, and
+policy before external work.
 
-All model rubrics are session-level. Each reviewer gets a window plan sized to
-the smaller of the configured target and that model's context limit. Reserved
-space for prompts, outputs, safety, surrounding digests, and findings leaves a
-bounded raw budget. Contiguous core chunks partition every session turn exactly
-once. Each raw window includes up to one neighboring turn on either side for
-continuity when that expansion fits its raw budget; overlap can shrink to zero
-at an oversized boundary without removing any turn's core raw coverage. A
-single turn that cannot fit, too many required chunks, or a worst-case merge
-that exceeds the input cap fails planning before model work begins.
+All model rubrics are session-level. Each applicable reviewer gets a window plan
+sized to its pinned context capacity. Models above 200,000 input tokens reserve
+at least 100,000 tokens; models at or below 200,000 reserve at least 50,000.
+Prompt, output, safety, surrounding-digest, and finding overhead may increase
+that reserve. OpenAI catalog entries use their explicitly pinned `tiktoken`
+encoding; other model families use the conservative UTF-8 byte estimator.
+
+The resulting raw budget partitions contiguous core chunks so every session
+turn has exact core coverage. Each raw window includes up to one neighboring
+turn on either side for continuity when that expansion fits; overlap can shrink
+to zero at an oversized boundary without removing core coverage. A captured raw
+turn is indivisible: planning never splits, truncates, deduplicates, or
+summarizes it. When an intact turn, the required chunk count, or the worst-case
+merge cannot fit, that reviewer alone is skipped for the session with
+`insufficient_context_capacity`.
 
 For each reviewer, the pipeline first creates one rubric-neutral factual digest
 per core chunk. A rubric evaluation then slides across every window: the active
@@ -104,20 +114,19 @@ Runs use guided model catalogs with recommended selections, but the saved
 ordered choices are explicit and user-overridable. Start-time validation pins
 the model and rubric catalog versions, exact descriptors, rubric thresholds,
 the ordered panel, and visible family-overlap warnings. A panel contains one,
-two, or three unique judges. The runtime honors the chosen order, runs every
-judge for every session rubric, and never silently replaces a judge.
+two, or three unique judges. The runtime honors the chosen order, plans or skips
+each selected judge per session, and never silently replaces one.
 
-A scored rubric is complete when every selected judge returns a valid score. If
-at least one judge returns a valid score and every remaining judge returns a
-schema-valid `insufficient_evidence` verdict, the rubric is accepted as
-`degraded`. Its rating is the arithmetic mean of the available scores, with
-minimum, maximum, spread, and every abstention retained for audit. When every
-selected judge abstains this way, the rubric is not evaluable: it completes the
-planned evaluation as a non-scored audit outcome and writes no feedback. This
-is expected when a retained trace genuinely lacks enough evidence, such as tool
-activity without a captured assistant conclusion. It counts as completed
-evaluation coverage, not scored coverage. A failed invocation or invalid
-attempt still fails coverage even when another judge returned a valid score.
+Only planned reviewers call inference. A capacity skip remains in the judging
+plan and attempt audit, but does not count as a completed reviewer attempt or an
+inference failure. A scored rubric is complete when every selected reviewer
+returns a valid score. It is `degraded` when at least one reviewer scores and
+the rest either validly abstain or were skipped; its rating is the arithmetic
+mean of available scores, with minimum, maximum, spread, abstentions, and skips
+retained for audit. When no reviewer is applicable, or every applicable
+reviewer validly abstains, the rubric is not evaluable and writes no feedback.
+A failed invocation or invalid attempt by an applicable reviewer still fails
+coverage even when another reviewer returned a valid score.
 
 Every attempt retains its requested and resolved model, outcome, rationale or
 safe error, evidence citations, structured-output mode, usage, bounded

@@ -19,7 +19,8 @@ an explicit nonempty session selection.
 Start atomically pins:
 
 - the ordered turn cohort and its session identities;
-- the resolved model and rubric catalogs;
+- the resolved model and rubric catalogs, including each model's context
+  capacity and token-counter identity;
 - the proposal writer, one through three ordered run judges, and proposal evaluator;
 - rubric versions, thresholds, judging context policy, candidate-attempt budget,
   and other effective configuration; and
@@ -28,11 +29,14 @@ Start atomically pins:
 Later stages re-query only the pinned traces and restore their stored order.
 Missing or identity-changed evidence fails the run. Newly recorded turns cannot
 enter an active cohort. Before inference, judging separately pins complete raw
-session coverage, each reviewer's bounded window plan, and the exact
-digest/window/merge protocol. Reflection applies the same evidence-eligibility
-boundary as analysis, then pins the exact eligible feedback records it consumes
-and an exact baseline bundle before generating proposals. Audit-only judgment
-rows are neither pinned as reflection evidence nor sent to proposal models.
+session coverage, a planned-or-skipped disposition for every selected reviewer
+per session, every applicable reviewer's bounded window plan, and the exact
+digest/window/merge protocol. Authentication recomputes applicability and the
+window plan before external work rather than trusting a self-consistent stored
+disposition. Reflection applies the same evidence-eligibility boundary as
+analysis, then pins the exact eligible feedback records it consumes and an
+exact baseline bundle before generating proposals. Audit-only judgment rows are
+neither pinned as reflection evidence nor sent to proposal models.
 
 Each stage has an explicit success marker distinct from the presence of a
 partial result. Manual continuation requires that marker. Automatic handoff
@@ -74,7 +78,12 @@ Progress is observational. Failure to publish an activity update cannot change
 candidate generation, evaluation, or selection.
 
 Judging progress separately reports planned sessions, turns, raw windows,
-reviewer attempts, and unique completed digest, window, and merge artifacts.
+applicable reviewer attempts, and unique completed digest, window, and merge
+artifacts. Capacity-skipped reviewers remain visible with the sole skip reason
+`insufficient_context_capacity`, but perform no inference, do not count as
+failed or completed attempts, and have zero planned model work. If every
+reviewer for a session is skipped, its rubrics are auditable not-evaluable
+outcomes and the run continues without opening a model client for that work.
 Reused artifacts retain ordered inference provenance without incrementing
 unique completed-work counts.
 
