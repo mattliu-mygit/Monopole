@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from urllib.parse import unquote, urlparse
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -21,6 +23,101 @@ _SYNTHETIC_SESSION_PREFIXES = (
     "## Scoring criteria",
     "You are an expert optimization assistant.",
 )
+_SIGNAL_SCORER_RE = re.compile(
+    r"^agent-signal-(?P<signal>.+)-(?P<version>v[1-9][0-9]*)-scorer(?::.+)?$"
+)
+_SIGNAL_ANCHORS = {0.0, 0.25, 0.5, 0.75, 1.0}
+_SIGNAL_THRESHOLD = 0.5
+
+
+def _signal_identity(runnable_ref: object) -> tuple[str, str] | None:
+    if not isinstance(runnable_ref, str):
+        return None
+    parts = [unquote(part) for part in urlparse(runnable_ref).path.split("/") if part]
+    if not parts:
+        return None
+    match = _SIGNAL_SCORER_RE.fullmatch(parts[-1])
+    if match is None:
+        return None
+    return match.group("signal"), match.group("version")
+
+
+def _signal_rating(row: dict) -> tuple[float, str, datetime]:
+    payload = row.get("payload")
+    output = payload.get("output") if isinstance(payload, dict) else None
+    if not isinstance(output, dict):
+        raise ValueError("eligible Signal feedback has no output object")
+    rating_value = output.get("rating")
+    value_value = output.get("value")
+    if rating_value is not None and value_value is not None and rating_value != value_value:
+        raise ValueError("eligible Signal feedback has conflicting rating aliases")
+    rating = rating_value if rating_value is not None else value_value
+    if isinstance(rating, bool) or not isinstance(rating, (int, float)):
+        raise ValueError("eligible Signal feedback has a non-numeric rating")
+    rating = float(rating)
+    if rating not in _SIGNAL_ANCHORS:
+        raise ValueError("eligible Signal feedback has an invalid rating anchor")
+    scorer_ratings = row.get("scorer_ratings")
+    if not isinstance(scorer_ratings, dict) or scorer_ratings.get("_rating_") != rating:
+        raise ValueError("eligible Signal feedback has inconsistent typed rating")
+    reason = output.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("eligible Signal feedback has no grounded reason")
+    created_at = row.get("created_at")
+    if isinstance(created_at, str):
+        try:
+            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("eligible Signal feedback has invalid score time") from error
+    if not isinstance(created_at, datetime) or created_at.tzinfo is None:
+        raise ValueError("eligible Signal feedback has invalid score time")
+    return rating, reason.strip(), created_at.astimezone(timezone.utc)
+
+
+def _signal_evidence(
+    turns: list[TurnSpan],
+    feedback_by_ref: dict[str, list[dict]],
+    *,
+    entity: str,
+    project: str,
+) -> list[dict]:
+    selected: dict[tuple[str, str, str], tuple[datetime, str, dict]] = {}
+    for turn in turns:
+        turn_ref = turn.ref_for(entity, project)
+        for row in feedback_by_ref.get(turn_ref, []):
+            if row.get("feedback_type") != "wandb.agent_monitor":
+                continue
+            identity = _signal_identity(row.get("runnable_ref"))
+            if identity is None:
+                continue
+            rating, reason, created_at = _signal_rating(row)
+            if rating > _SIGNAL_THRESHOLD:
+                continue
+            feedback_id = row.get("id")
+            if not isinstance(feedback_id, str) or not feedback_id:
+                raise ValueError("eligible Signal feedback has no id")
+            signal, version = identity
+            evidence = {
+                "signal": signal,
+                "version": version,
+                "rating": rating,
+                "reason": reason,
+                "turn_id": turn.trace_id,
+                "turn_started_at": turn.started_at.isoformat(),
+            }
+            key = (signal, version, turn.trace_id)
+            existing = selected.get(key)
+            if existing is None or (created_at, feedback_id) > existing[:2]:
+                selected[key] = (created_at, feedback_id, evidence)
+    return sorted(
+        (item[2] for item in selected.values()),
+        key=lambda item: (
+            item["turn_started_at"],
+            item["signal"],
+            item["version"],
+            item["turn_id"],
+        ),
+    )
 
 
 def _turn_json(turn: TurnSpan, *, include_children: bool = False) -> dict:
@@ -159,13 +256,29 @@ def create_inspection_router(
         filtered = [turn for turn in turns if turn.started_at >= since_value]
         if until_value is not None:
             filtered = [turn for turn in filtered if turn.started_at <= until_value]
+        grouped = _group_sessions(filtered)
         sessions = [
-            _session_summary(conversation_id, session_turns)
-            for conversation_id, session_turns in _group_sessions(filtered).items()
+            (_session_summary(conversation_id, session_turns), session_turns)
+            for conversation_id, session_turns in grouped.items()
         ]
-        sessions.sort(key=lambda item: item["last_activity"], reverse=True)
+        sessions.sort(key=lambda item: item[0]["last_activity"], reverse=True)
+        visible = sessions[:limit]
+        with client_factory() as feedback_client:
+            refs = [
+                turn.ref_for(feedback_client.entity, feedback_client.project)
+                for _summary, session_turns in visible
+                for turn in session_turns
+            ]
+            feedback_by_ref = feedback_client.query_all_feedback_batch(refs)
+            for summary, session_turns in visible:
+                summary["signal_evidence"] = _signal_evidence(
+                    session_turns,
+                    feedback_by_ref,
+                    entity=feedback_client.entity,
+                    project=feedback_client.project,
+                )
         return {
-            "sessions": sessions[:limit],
+            "sessions": [summary for summary, _turns in visible],
             "total": len(sessions),
             "truncated": len(sessions) > limit,
             "limit": limit,
