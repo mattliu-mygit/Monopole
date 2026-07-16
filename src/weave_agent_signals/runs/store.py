@@ -18,7 +18,7 @@ from typing import Any
 from weave_agent_signals.run_config import EffectiveRunConfig, RunConfig
 
 _DEFAULT_DB_DIR = Path.home() / ".weave-agent-signals"
-RUN_DB_SCHEMA_VERSION = 6
+RUN_DB_SCHEMA_VERSION = 7
 
 
 def _default_db_path() -> Path:
