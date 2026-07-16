@@ -28,7 +28,7 @@ from weave_agent_signals.models import SessionView, TurnSpan
 from weave_agent_signals.run_config import JudgingContextPolicy, PositionedJudge, RubricDescriptor
 
 
-def _turn(trace_id: str, position: int, size: int = 18_000) -> TurnSpan:
+def _turn(trace_id: str, position: int, size: int = 9_000) -> TurnSpan:
     started = datetime(2026, 7, 15, 12, tzinfo=timezone.utc) + timedelta(minutes=position)
     turn = TurnSpan(
         trace_id=trace_id,
@@ -60,7 +60,6 @@ def _turn(trace_id: str, position: int, size: int = 18_000) -> TurnSpan:
 
 def _policy(**updates: int) -> JudgingContextPolicy:
     values = {
-        "target_input_tokens": 34_000,
         "prompt_reserve_tokens": 3_000,
         "output_reserve_tokens": 3_000,
         "safety_reserve_tokens": 3_000,
@@ -231,7 +230,12 @@ def _reviewer(
     )
     active_policy = policy or _policy()
     active_judge = judge or _judge()
-    plan = build_window_plan(session, active_policy, active_judge.max_input_tokens)
+    plan = build_window_plan(
+        session,
+        active_policy,
+        active_judge.max_input_tokens,
+        active_judge.token_counter,
+    )
     judging_plan = build_judging_plan(
         [session],
         cohort_id="cohort",
@@ -785,7 +789,7 @@ def test_over_budget_request_fails_before_transport(monkeypatch: pytest.MonkeyPa
     monkeypatch.setitem(
         SESSION_RUBRICS,
         rubric.scorer_name,
-        replace(rubric, system_prompt=rubric.system_prompt + "y" * 100_000),
+        replace(rubric, system_prompt=rubric.system_prompt + "y" * 200_000),
     )
     reviewer, client, _, _ = _reviewer()
 

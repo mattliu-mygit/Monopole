@@ -11,7 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr
 
 from weave_agent_signals.judges.inference import JsonSchemaSpec
-from weave_agent_signals.judges.windowing import estimate_tokens
+from weave_agent_signals.judges.tokens import count_tokens
 
 SLIDING_CONTRACT_SCHEMA_VERSION = 1
 MAX_WINDOW_FINDINGS = 4
@@ -192,7 +192,7 @@ def parse_chunk_digest(
     ):
         raise ValueError("unexpected chunk ID")
     text = _normalized_text(digest.text, field="digest text")
-    if estimate_tokens(text) > max_tokens:
+    if count_tokens(text, "utf8_bytes_div_3") > max_tokens:
         raise ValueError("digest text exceeds the configured token limit")
     evidence_ids = _validated_evidence_ids(
         digest.evidence_ids,
@@ -260,7 +260,7 @@ def parse_window_findings(
     if len(finding_keys) != len(set(finding_keys)):
         raise ValueError("duplicate findings are not allowed within a window")
     normalized = parsed.model_copy(update={"window_id": window_id, "findings": findings})
-    if estimate_tokens(render_window_findings(normalized)) > max_tokens:
+    if count_tokens(render_window_findings(normalized), "utf8_bytes_div_3") > max_tokens:
         raise ValueError("complete window findings artifact exceeds the configured token limit")
     return normalized
 

@@ -7,9 +7,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from weave_agent_signals.judges.tokens import count_tokens
 from weave_agent_signals.judges.windowing import (
+    WindowPlanInapplicable,
     build_window_plan,
-    estimate_tokens,
     render_raw_turn,
     render_raw_window,
 )
@@ -75,7 +76,6 @@ def _session_with_text(text: str) -> SessionView:
 
 def _small_policy(**overrides: int) -> JudgingContextPolicy:
     values = {
-        "target_input_tokens": 34_000,
         "prompt_reserve_tokens": 3_000,
         "output_reserve_tokens": 3_000,
         "safety_reserve_tokens": 3_000,
@@ -115,7 +115,7 @@ def _self_consistent_window(
         "raw_turn_digests": [
             "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest() for text in rendered
         ],
-        "raw_tokens": estimate_tokens("\n\n".join(rendered)),
+        "raw_tokens": count_tokens("\n\n".join(rendered), "utf8_bytes_div_3"),
     }
     encoded = json.dumps(
         body,
@@ -138,10 +138,49 @@ def _rehash_window(window: dict[str, object], **updates: object) -> dict[str, ob
     return {"window_id": "sha256:" + hashlib.sha256(encoded).hexdigest(), **body}
 
 
-def test_estimate_tokens_uses_versioned_conservative_utf8_bytes_estimator():
-    assert estimate_tokens("") == 0
-    assert estimate_tokens("abcd") == 2
-    assert estimate_tokens("é") == 1
+def test_window_plan_persists_counter_capacity_and_full_model_cap():
+    session = _session_with_rendered_turn_sizes([18_000])
+
+    plan = build_window_plan(
+        session,
+        JudgingContextPolicy(),
+        model_limit=200_000,
+        token_counter="o200k_base",
+    )
+
+    assert plan["contract_version"] == "2"
+    assert plan["input_cap_tokens"] == 200_000
+    assert plan["token_counter"] == "o200k_base"
+    assert plan["capacity_reserve_tokens"] == 50_000
+    assert plan["raw_budget_tokens"] == 150_000
+
+
+def test_window_plan_uses_large_capacity_tier_above_threshold():
+    session = _session_with_rendered_turn_sizes([18_000])
+
+    plan = build_window_plan(
+        session,
+        JudgingContextPolicy(),
+        model_limit=200_001,
+        token_counter="utf8_bytes_div_3",
+    )
+
+    assert plan["capacity_reserve_tokens"] == 100_000
+    assert plan["raw_budget_tokens"] == 100_001
+
+
+def test_capacity_failures_use_stable_inapplicable_reason():
+    session = _session_with_text("x" * 400_000)
+
+    with pytest.raises(WindowPlanInapplicable) as raised:
+        build_window_plan(
+            session,
+            JudgingContextPolicy(),
+            model_limit=60_000,
+            token_counter="utf8_bytes_div_3",
+        )
+
+    assert raised.value.reason == "insufficient_context_capacity"
 
 
 def test_raw_turn_renders_complete_evidence_without_model_identity():
@@ -187,7 +226,9 @@ def test_raw_turn_renders_complete_evidence_without_model_identity():
 
 def test_window_plan_covers_every_turn_raw_and_overlaps_one_turn():
     session = _session_with_rendered_turn_sizes([18_000, 18_000, 18_000, 18_000])
-    plan = build_window_plan(session, _small_policy(), model_limit=60_000)
+    plan = build_window_plan(
+        session, _small_policy(), model_limit=70_000, token_counter="utf8_bytes_div_3"
+    )
     cores = [window["core_trace_ids"] for window in plan["windows"]]
     assert [trace for core in cores for trace in core] == ["t1", "t2", "t3", "t4"]
     assert plan["windows"][0]["raw_trace_ids"][-1] == "t3"
@@ -202,8 +243,12 @@ def test_window_plan_covers_every_turn_raw_and_overlaps_one_turn():
 def test_window_plan_preserves_session_order_and_is_deterministic():
     session = _session_with_rendered_turn_sizes([18_000, 18_000, 18_000, 18_000])
 
-    first = build_window_plan(session, _small_policy(), model_limit=60_000)
-    second = build_window_plan(session, _small_policy(), model_limit=60_000)
+    first = build_window_plan(
+        session, _small_policy(), model_limit=60_000, token_counter="utf8_bytes_div_3"
+    )
+    second = build_window_plan(
+        session, _small_policy(), model_limit=60_000, token_counter="utf8_bytes_div_3"
+    )
 
     assert first == second
     assert first["plan_id"].startswith("sha256:")
@@ -224,8 +269,15 @@ def test_window_plan_id_changes_when_same_size_raw_evidence_changes():
     )
     changed_session = replace(session, turns=[changed_turn])
 
-    original = build_window_plan(session, _small_policy(), model_limit=60_000)
-    changed = build_window_plan(changed_session, _small_policy(), model_limit=60_000)
+    original = build_window_plan(
+        session, _small_policy(), model_limit=60_000, token_counter="utf8_bytes_div_3"
+    )
+    changed = build_window_plan(
+        changed_session,
+        _small_policy(),
+        model_limit=60_000,
+        token_counter="utf8_bytes_div_3",
+    )
 
     assert original["plan_id"] != changed["plan_id"]
     assert original["windows"][0]["window_id"] != changed["windows"][0]["window_id"]
@@ -233,26 +285,28 @@ def test_window_plan_id_changes_when_same_size_raw_evidence_changes():
 
 def test_window_plan_rejects_a_turn_that_cannot_fit_with_reserves():
     session = _session_with_text("x" * 400_000)
-    with pytest.raises(ValueError, match="single turn exceeds the raw window budget"):
-        build_window_plan(session, _small_policy(), model_limit=60_000)
+    with pytest.raises(WindowPlanInapplicable):
+        build_window_plan(
+            session, _small_policy(), model_limit=60_000, token_counter="utf8_bytes_div_3"
+        )
 
 
 def test_window_plan_drops_overlap_when_neighbors_exceed_the_raw_budget():
     session = _session_with_rendered_turn_sizes([18_000, 18_000])
-    policy = _small_policy(target_input_tokens=23_000)
+    policy = _small_policy()
 
-    plan = build_window_plan(session, policy, model_limit=60_000)
+    plan = build_window_plan(session, policy, model_limit=61_999, token_counter="utf8_bytes_div_3")
 
-    assert plan["raw_budget_tokens"] == 10_000
+    assert plan["raw_budget_tokens"] == 11_999
     assert [window["core_trace_ids"] for window in plan["windows"]] == [["t1"], ["t2"]]
     assert [window["raw_trace_ids"] for window in plan["windows"]] == [["t1"], ["t2"]]
 
 
 def test_window_plan_accepts_exact_raw_budget_equality():
     session = _session_with_rendered_turn_sizes([18_000, 18_000])
-    policy = _small_policy(target_input_tokens=23_001)
+    policy = _small_policy()
 
-    plan = build_window_plan(session, policy, model_limit=60_000)
+    plan = build_window_plan(session, policy, model_limit=62_001, token_counter="utf8_bytes_div_3")
 
     assert plan["raw_budget_tokens"] == 12_001
     assert plan["windows"][0]["raw_tokens"] == 12_001
@@ -278,7 +332,9 @@ def test_window_plan_rejects_blank_evidence_ids(turn: TurnSpan):
     session = SessionView("session-1", [turn], "config-1", "main")
 
     with pytest.raises(ValueError, match="session evidence IDs must be nonblank"):
-        build_window_plan(session, _small_policy(), model_limit=60_000)
+        build_window_plan(
+            session, _small_policy(), model_limit=60_000, token_counter="utf8_bytes_div_3"
+        )
 
 
 def test_window_plan_rejects_duplicate_evidence_ids_across_categories_and_turns():
@@ -287,41 +343,51 @@ def test_window_plan_rejects_duplicate_evidence_ids_across_categories_and_turns(
     session = SessionView("session-1", [first, second], "config-1", "main")
 
     with pytest.raises(ValueError, match="session evidence IDs must be globally unique: duplicate"):
-        build_window_plan(session, _small_policy(), model_limit=60_000)
+        build_window_plan(
+            session, _small_policy(), model_limit=60_000, token_counter="utf8_bytes_div_3"
+        )
 
 
 def test_window_plan_rejects_empty_raw_capacity():
     session = SessionView("session-1", [], "config-1", "main")
-    with pytest.raises(ValueError, match="leave no raw window capacity"):
-        build_window_plan(session, _small_policy(), model_limit=9_000)
+    with pytest.raises(WindowPlanInapplicable):
+        build_window_plan(
+            session, _small_policy(), model_limit=9_000, token_counter="utf8_bytes_div_3"
+        )
 
 
 def test_window_plan_rejects_more_than_max_chunks():
     session = _session_with_rendered_turn_sizes([18_000, 18_000, 18_000, 18_000])
-    with pytest.raises(ValueError, match="maximum chunk count"):
-        build_window_plan(session, _small_policy(max_chunks=1), model_limit=60_000)
+    with pytest.raises(WindowPlanInapplicable):
+        build_window_plan(
+            session,
+            _small_policy(max_chunks=1),
+            model_limit=70_000,
+            token_counter="utf8_bytes_div_3",
+        )
 
 
 def test_window_plan_rejects_worst_case_merge_input_over_model_cap():
     session = _session_with_rendered_turn_sizes([18_000, 18_000, 18_000, 18_000])
     policy = _small_policy(
-        target_input_tokens=30_000,
         prompt_reserve_tokens=1_000,
         output_reserve_tokens=1_000,
         safety_reserve_tokens=1_000,
         digest_max_tokens=4_000,
-        finding_max_tokens=10_000,
+        finding_max_tokens=15_000,
     )
 
-    with pytest.raises(ValueError, match="worst-case merge input exceeds the input cap"):
-        build_window_plan(session, policy, model_limit=30_000)
+    with pytest.raises(WindowPlanInapplicable):
+        build_window_plan(session, policy, model_limit=60_000, token_counter="utf8_bytes_div_3")
 
 
 def test_render_raw_window_uses_planned_order_and_visible_evidence_ids():
     session = _session_with_rendered_turn_sizes([18_000, 18_000, 18_000, 18_000])
-    plan = build_window_plan(session, _small_policy(), model_limit=60_000)
+    plan = build_window_plan(
+        session, _small_policy(), model_limit=70_000, token_counter="utf8_bytes_div_3"
+    )
 
-    digest = render_raw_window(session, plan["windows"][0])
+    digest = render_raw_window(session, plan["windows"][0], "utf8_bytes_div_3")
 
     assert digest.evidence_ids == tuple(plan["windows"][0]["raw_trace_ids"])
     assert digest.text.index("evidence_id=t1") < digest.text.index("evidence_id=t2")
@@ -330,7 +396,9 @@ def test_render_raw_window_uses_planned_order_and_visible_evidence_ids():
 
 def test_render_raw_window_rejects_stale_same_trace_evidence():
     session = _session_with_rendered_turn_sizes([18_000])
-    plan = build_window_plan(session, _small_policy(), model_limit=60_000)
+    plan = build_window_plan(
+        session, _small_policy(), model_limit=60_000, token_counter="utf8_bytes_div_3"
+    )
     turn = session.turns[0]
     changed = replace(turn, user_input="y" + (turn.user_input or "")[1:])
     stale_session = replace(session, turns=[changed])
@@ -339,7 +407,7 @@ def test_render_raw_window_rejects_stale_same_trace_evidence():
         ValueError,
         match="window raw_turn_digests do not match current session evidence",
     ):
-        render_raw_window(stale_session, plan["windows"][0])
+        render_raw_window(stale_session, plan["windows"][0], "utf8_bytes_div_3")
 
 
 @pytest.mark.parametrize(
@@ -358,11 +426,13 @@ def test_render_raw_window_rejects_tampered_planned_fields(
     message: str,
 ):
     session = _session_with_rendered_turn_sizes([18_000])
-    plan = build_window_plan(session, _small_policy(), model_limit=60_000)
+    plan = build_window_plan(
+        session, _small_policy(), model_limit=60_000, token_counter="utf8_bytes_div_3"
+    )
     window = {**plan["windows"][0], **mutation}
 
     with pytest.raises(ValueError, match=message):
-        render_raw_window(session, window)
+        render_raw_window(session, window, "utf8_bytes_div_3")
 
 
 @pytest.mark.parametrize(
@@ -387,22 +457,26 @@ def test_render_raw_window_rejects_missing_or_malformed_planned_fields(
     message: str,
 ):
     session = _session_with_rendered_turn_sizes([18_000])
-    plan = build_window_plan(session, _small_policy(), model_limit=60_000)
+    plan = build_window_plan(
+        session, _small_policy(), model_limit=60_000, token_counter="utf8_bytes_div_3"
+    )
     window = {**plan["windows"][0], **mutation}
     if mutation == {"window_id": None}:
         del window["window_id"]
 
     with pytest.raises(ValueError, match=message):
-        render_raw_window(session, window)
+        render_raw_window(session, window, "utf8_bytes_div_3")
 
 
 def test_render_raw_window_rejects_duplicate_raw_trace_ids():
     session = _session_with_rendered_turn_sizes([18_000])
-    plan = build_window_plan(session, _small_policy(), model_limit=60_000)
+    plan = build_window_plan(
+        session, _small_policy(), model_limit=60_000, token_counter="utf8_bytes_div_3"
+    )
     window = {**plan["windows"][0], "raw_trace_ids": ["t1", "t1"]}
 
     with pytest.raises(ValueError, match="window raw_trace_ids must be unique"):
-        render_raw_window(session, window)
+        render_raw_window(session, window, "utf8_bytes_div_3")
 
 
 @pytest.mark.parametrize(
@@ -426,7 +500,7 @@ def test_render_raw_window_rejects_self_consistent_invalid_core_geometry(
     )
 
     with pytest.raises(ValueError, match=message):
-        render_raw_window(session, window)
+        render_raw_window(session, window, "utf8_bytes_div_3")
 
 
 @pytest.mark.parametrize(
@@ -452,7 +526,7 @@ def test_render_raw_window_rejects_self_consistent_invalid_raw_geometry(
     )
 
     with pytest.raises(ValueError, match=message):
-        render_raw_window(session, window)
+        render_raw_window(session, window, "utf8_bytes_div_3")
 
 
 def test_render_raw_window_rejects_rehashed_bogus_raw_geometry():
@@ -465,4 +539,4 @@ def test_render_raw_window_rejects_rehashed_bogus_raw_geometry():
     window = _rehash_window(valid, raw_trace_ids=["missing"])
 
     with pytest.raises(ValueError, match="window references missing trace IDs: missing"):
-        render_raw_window(session, window)
+        render_raw_window(session, window, "utf8_bytes_div_3")

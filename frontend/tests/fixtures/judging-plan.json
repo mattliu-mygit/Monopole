@@ -1,6 +1,6 @@
 {
-  "plan_id": "sha256:7440679abe1a989b531ad9140afaf60633d0e1f863499e9048cadb93ef39a691",
-  "schema_version": "2",
+  "plan_id": "sha256:174a29c638a99a18dace1256c729ebf9cc03bf52f7f005c62df654b17ba68d2f",
+  "schema_version": "3",
   "cohort_id": "cohort-1",
   "panel_size": 2,
   "requested_rubrics": [
@@ -14,16 +14,17 @@
     }
   ],
   "input_policy": {
-    "contract_version": "1",
-    "target_input_tokens": 100000,
+    "contract_version": "2",
+    "large_model_threshold_tokens": 200000,
+    "large_model_reserve_tokens": 100000,
+    "small_model_reserve_tokens": 50000,
     "prompt_reserve_tokens": 6000,
     "output_reserve_tokens": 4000,
     "safety_reserve_tokens": 8000,
     "digest_max_tokens": 1000,
     "finding_max_tokens": 750,
     "overlap_turns": 1,
-    "max_chunks": 40,
-    "token_estimator": "utf8_bytes_div_3"
+    "max_chunks": 40
   },
   "protocol": {
     "protocol_version": "2",
@@ -289,18 +290,22 @@
               "judge"
             ],
             "max_input_tokens": 128000,
+            "token_counter": "utf8_bytes_div_3",
             "role": "judge",
             "position": 1
           },
+          "status": "planned",
+          "skip_reason": null,
           "window_plan": {
-            "plan_id": "sha256:3d4cad9a08c2864ea29e4681d40fcb70fa9e480b89fde612e7f12656c4603f3f",
-            "contract_version": "1",
+            "plan_id": "sha256:df9516db69e0869783d323b5d988473839df83c20f818c1fb6f3a97836617e12",
+            "contract_version": "2",
             "conversation_id": "session-1",
-            "input_cap_tokens": 100000,
-            "raw_budget_tokens": 81000,
+            "input_cap_tokens": 128000,
+            "raw_budget_tokens": 78000,
             "chunk_count": 1,
             "overlap_turns": 1,
-            "token_estimator": "utf8_bytes_div_3",
+            "token_counter": "utf8_bytes_div_3",
+            "capacity_reserve_tokens": 50000,
             "merge_input_tokens": 19750,
             "raw_turns": [
               {
@@ -357,18 +362,22 @@
               "judge"
             ],
             "max_input_tokens": 128000,
+            "token_counter": "utf8_bytes_div_3",
             "role": "judge",
             "position": 2
           },
+          "status": "planned",
+          "skip_reason": null,
           "window_plan": {
-            "plan_id": "sha256:3d4cad9a08c2864ea29e4681d40fcb70fa9e480b89fde612e7f12656c4603f3f",
-            "contract_version": "1",
+            "plan_id": "sha256:df9516db69e0869783d323b5d988473839df83c20f818c1fb6f3a97836617e12",
+            "contract_version": "2",
             "conversation_id": "session-1",
-            "input_cap_tokens": 100000,
-            "raw_budget_tokens": 81000,
+            "input_cap_tokens": 128000,
+            "raw_budget_tokens": 78000,
             "chunk_count": 1,
             "overlap_turns": 1,
-            "token_estimator": "utf8_bytes_div_3",
+            "token_counter": "utf8_bytes_div_3",
+            "capacity_reserve_tokens": 50000,
             "merge_input_tokens": 19750,
             "raw_turns": [
               {

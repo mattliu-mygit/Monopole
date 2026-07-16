@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
+from weave_agent_signals.routes.models import ReviewAttemptResponse
 from weave_agent_signals.routes.runs import create_runs_router
 from weave_agent_signals.run_config import RunConfig
 from weave_agent_signals.runs.service import RunService
@@ -27,6 +28,40 @@ class SynchronousExecutor:
         except BaseException as error:
             future.set_exception(error)
         return future
+
+
+def test_route_attempt_model_exposes_skipped_disposition() -> None:
+    attempt = ReviewAttemptResponse.model_validate(
+        {
+            "position": 1,
+            "role": "judge",
+            "trigger": "panel",
+            "requested_model": "small",
+            "requested_family": "family",
+            "requested_backend": "cli",
+            "status": "skipped",
+            "skip_reason": "insufficient_context_capacity",
+            "resolved_model": None,
+            "resolved_family": None,
+            "score": None,
+            "rationale": None,
+            "evidence_ids": [],
+            "usage": {},
+            "output_mode": None,
+            "schema_name": None,
+            "schema_fallback_reason": None,
+            "transport_request_count": 0,
+            "verdict_schema_version": None,
+            "raw_output_digest": None,
+            "error_type": None,
+            "message": None,
+            "behavioral_feedback": None,
+            "steps": [],
+        }
+    )
+
+    assert attempt.status == "skipped"
+    assert attempt.skip_reason == "insufficient_context_capacity"
 
 
 @pytest.fixture

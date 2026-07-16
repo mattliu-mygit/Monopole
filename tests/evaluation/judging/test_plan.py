@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from weave_agent_signals.catalogs import build_rubric_catalog
+from weave_agent_signals.judges import plan as plan_module
 from weave_agent_signals.judges.plan import build_judging_plan
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.models import SessionView, TurnSpan
@@ -73,7 +74,7 @@ def _plan(
 
 def test_plan_is_session_only_and_covers_every_turn() -> None:
     plan = _plan(judges=(_judge("judge-1", 1), _judge("judge-2", 2)))
-    assert plan["schema_version"] == "2"
+    assert plan["schema_version"] == "3"
     assert plan["totals"]["planned_rubrics"] == 6
     assert plan["totals"]["sessions_planned"] == 1
     session = plan["sessions"][0]
@@ -105,3 +106,44 @@ def test_plan_rejects_non_session_or_stale_rubrics() -> None:
             judge_models=(_judge("judge-1", 1),),
             context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
         )
+
+
+def test_plan_pins_incapable_reviewer_as_skipped_and_excludes_its_work(
+    monkeypatch,
+) -> None:
+    original = plan_module.build_window_plan
+
+    def build(session, policy, limit, counter):
+        if limit == 64_000:
+            from weave_agent_signals.judges.windowing import WindowPlanInapplicable
+
+            raise WindowPlanInapplicable()
+        return original(session, policy, limit, counter)
+
+    monkeypatch.setattr(plan_module, "build_window_plan", build)
+    plan = _plan(judges=(_judge("small", 1, 64_000), _judge("large", 2)))
+
+    assert plan["schema_version"] == "3"
+    skipped, planned = plan["sessions"][0]["reviewers"]
+    assert skipped["status"] == "skipped"
+    assert skipped["skip_reason"] == "insufficient_context_capacity"
+    assert skipped["window_plan"] is None
+    assert skipped["work_bounds"] == {
+        "digest_calls": 0,
+        "window_calls_per_rubric": 0,
+        "merge_calls_per_rubric": 0,
+    }
+    assert planned["status"] == "planned"
+    assert planned["skip_reason"] is None
+    assert planned["window_plan"] is not None
+    assert all(row["minimum_reviewer_attempts"] == 1 for row in plan["sessions"][0]["rubrics"])
+    assert plan["totals"]["maximum_reviewer_attempts"] == len(plan["requested_rubrics"])
+
+
+def test_plan_does_not_convert_unexpected_window_planning_errors(monkeypatch) -> None:
+    def fail(*_args):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(plan_module, "build_window_plan", fail)
+    with pytest.raises(RuntimeError, match="unexpected"):
+        _plan()

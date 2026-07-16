@@ -61,6 +61,7 @@ const writer: ModelDescriptor = {
   backend: 'cli',
   supported_roles: ['proposal_writer'] as const,
   max_input_tokens: 128_000,
+  token_counter: 'utf8_bytes_div_3',
 }
 const judgeOne: ModelDescriptor = {
   id: 'judge-anthropic',
@@ -69,6 +70,7 @@ const judgeOne: ModelDescriptor = {
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
+  token_counter: 'utf8_bytes_div_3',
 }
 const judgeTwo: ModelDescriptor = {
   id: 'judge-openai',
@@ -77,6 +79,7 @@ const judgeTwo: ModelDescriptor = {
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
+  token_counter: 'utf8_bytes_div_3',
 }
 const judgeThree: ModelDescriptor = {
   id: 'judge-meta',
@@ -85,6 +88,7 @@ const judgeThree: ModelDescriptor = {
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
+  token_counter: 'utf8_bytes_div_3',
 }
 
 const models: ModelCatalog = {
@@ -135,7 +139,7 @@ const requestedConfig: RunConfig = {
 }
 
 const effectiveConfig: EffectiveRunConfig = {
-  schema_version: '2',
+  schema_version: '3',
   pipeline_version: 'pipeline-v1',
   model_catalog_version: models.catalog_version,
   rubric_catalog_version: rubrics.catalog_version,
@@ -152,9 +156,11 @@ const effectiveConfig: EffectiveRunConfig = {
   rubrics: rubrics.rubrics,
   selection_warnings: [],
   judging_context: {
-    contract_version: '1', target_input_tokens: 100_000, prompt_reserve_tokens: 6_000,
+    contract_version: '2', large_model_threshold_tokens: 200_000,
+    large_model_reserve_tokens: 100_000, small_model_reserve_tokens: 50_000,
+    prompt_reserve_tokens: 6_000,
     output_reserve_tokens: 4_000, safety_reserve_tokens: 8_000, digest_max_tokens: 1_000,
-    finding_max_tokens: 750, overlap_turns: 1, max_chunks: 40, token_estimator: 'utf8_bytes_div_3',
+    finding_max_tokens: 750, overlap_turns: 1, max_chunks: 40,
   },
   candidate_budget: 3,
   force: false,

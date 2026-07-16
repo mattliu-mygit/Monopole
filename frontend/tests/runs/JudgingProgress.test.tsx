@@ -109,6 +109,31 @@ describe('JudgingProgress', () => {
     expect(screen.queryByText(/episode/i)).toBeNull()
   })
 
+  it('shows capacity-skipped reviewers without trying to render windows', () => {
+    const skippedPlan: JudgingPlan = {
+      ...plan,
+      sessions: [{
+        ...plan.sessions[0],
+        reviewers: [{
+          ...plan.sessions[0].reviewers[0],
+          status: 'skipped',
+          skip_reason: 'insufficient_context_capacity',
+          window_plan: null,
+          work_bounds: {
+            digest_calls: 0,
+            window_calls_per_rubric: 0,
+            merge_calls_per_rubric: 0,
+          },
+        }],
+      }],
+    }
+
+    render(<JudgingProgress plan={skippedPlan} progress={null} result={null} />)
+
+    expect(screen.getByText('Skipped · insufficient context capacity')).not.toBeNull()
+    expect(screen.queryByText(/Window 1/)).toBeNull()
+  })
+
   it('shows final behavioral feedback and the ordered inference audit', () => {
     render(<JudgingProgress plan={plan} progress={progress} result={null} />)
 
@@ -119,6 +144,45 @@ describe('JudgingProgress', () => {
     expect(screen.getAllByText('digest · reused')).toHaveLength(2)
     expect(screen.getAllByText('window · current')).toHaveLength(2)
     expect(screen.getAllByText('merge · current')).toHaveLength(2)
+  })
+
+  it('shows skipped attempt status and reason without success styling', () => {
+    const skippedAttempt: ReviewAttempt = {
+      ...attempt,
+      status: 'skipped',
+      skip_reason: 'insufficient_context_capacity',
+      resolved_model: null,
+      resolved_family: null,
+      score: null,
+      rationale: null,
+      evidence_ids: [],
+      usage: {},
+      output_mode: null,
+      schema_name: null,
+      schema_fallback_reason: null,
+      transport_request_count: 0,
+      verdict_schema_version: null,
+      raw_output_digest: null,
+      behavioral_feedback: null,
+      steps: [],
+    }
+    const skippedProgress: Progress = {
+      ...progress,
+      attempt_summaries: [{
+        ...progress.attempt_summaries[0],
+        review_status: 'not_evaluable',
+        rating: null,
+        successful_reviewer_count: 0,
+        attempts: [skippedAttempt],
+      }],
+    }
+
+    render(<JudgingProgress plan={plan} progress={skippedProgress} result={null} />)
+
+    const status = screen.getByText('panel · skipped')
+    expect(status.className).toContain('text-amber-700')
+    expect(status.className).not.toContain('text-green-700')
+    expect(screen.getByText('Skipped: insufficient context capacity')).not.toBeNull()
   })
 
   it('keeps failure details and the pre-plan empty state visible', () => {

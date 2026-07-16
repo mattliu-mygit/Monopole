@@ -402,10 +402,10 @@ export interface components {
             rubrics: components["schemas"]["RubricDescriptor"][];
             /**
              * Schema Version
-             * @default 2
+             * @default 3
              * @constant
              */
-            schema_version: "2";
+            schema_version: "3";
             /** Selection Warnings */
             selection_warnings: components["schemas"]["SelectionWarning"][];
         };
@@ -587,10 +587,10 @@ export interface components {
         JudgingContextPolicy: {
             /**
              * Contract Version
-             * @default 1
+             * @default 2
              * @constant
              */
-            contract_version: "1";
+            contract_version: "2";
             /**
              * Digest Max Tokens
              * @default 1000
@@ -601,6 +601,17 @@ export interface components {
              * @default 750
              */
             finding_max_tokens: number;
+            /**
+             * Large Model Reserve Tokens
+             * @default 100000
+             */
+            large_model_reserve_tokens: number;
+            /**
+             * Large Model Threshold Tokens
+             * @default 200000
+             * @constant
+             */
+            large_model_threshold_tokens: 200000;
             /**
              * Max Chunks
              * @default 40
@@ -628,16 +639,10 @@ export interface components {
              */
             safety_reserve_tokens: number;
             /**
-             * Target Input Tokens
-             * @default 100000
+             * Small Model Reserve Tokens
+             * @default 50000
              */
-            target_input_tokens: number;
-            /**
-             * Token Estimator
-             * @default utf8_bytes_div_3
-             * @constant
-             */
-            token_estimator: "utf8_bytes_div_3";
+            small_model_reserve_tokens: number;
         };
         /** JudgingFailureDetailResponse */
         JudgingFailureDetailResponse: {
@@ -805,15 +810,27 @@ export interface components {
             judge: components["schemas"]["PositionedJudge"];
             /** Ordinal */
             ordinal: number;
-            window_plan: components["schemas"]["JudgingWindowPlanResponse"];
+            /** Skip Reason */
+            skip_reason: "insufficient_context_capacity" | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "planned" | "skipped";
+            window_plan: components["schemas"]["JudgingWindowPlanResponse"] | null;
             work_bounds: components["schemas"]["JudgingWorkBoundsResponse"];
         };
         /** JudgingWindowPlanResponse */
         JudgingWindowPlanResponse: {
+            /** Capacity Reserve Tokens */
+            capacity_reserve_tokens: number;
             /** Chunk Count */
             chunk_count: number;
-            /** Contract Version */
-            contract_version: string;
+            /**
+             * Contract Version
+             * @constant
+             */
+            contract_version: "2";
             /** Conversation Id */
             conversation_id: string;
             /** Input Cap Tokens */
@@ -830,8 +847,11 @@ export interface components {
             raw_coverage_trace_ids: string[];
             /** Raw Turns */
             raw_turns: components["schemas"]["JudgingRawTurnResponse"][];
-            /** Token Estimator */
-            token_estimator: string;
+            /**
+             * Token Counter
+             * @enum {string}
+             */
+            token_counter: "utf8_bytes_div_3" | "o200k_base" | "o200k_harmony";
             /** Windows */
             windows: components["schemas"]["JudgingWindowResponse"][];
         };
@@ -895,6 +915,12 @@ export interface components {
             max_input_tokens: number;
             /** Supported Roles */
             supported_roles: ("proposal_writer" | "judge" | "proposal_evaluator")[];
+            /**
+             * Token Counter
+             * @default utf8_bytes_div_3
+             * @enum {string}
+             */
+            token_counter: "utf8_bytes_div_3" | "o200k_base" | "o200k_harmony";
         };
         /** PositionedJudge */
         PositionedJudge: {
@@ -921,6 +947,12 @@ export interface components {
             role: "judge";
             /** Supported Roles */
             supported_roles: ("proposal_writer" | "judge" | "proposal_evaluator")[];
+            /**
+             * Token Counter
+             * @default utf8_bytes_div_3
+             * @enum {string}
+             */
+            token_counter: "utf8_bytes_div_3" | "o200k_base" | "o200k_harmony";
         };
         /** PromoteRequest */
         PromoteRequest: {
@@ -1128,11 +1160,13 @@ export interface components {
             schema_name: string | null;
             /** Score */
             score: number | null;
+            /** Skip Reason */
+            skip_reason?: "insufficient_context_capacity" | null;
             /**
              * Status
              * @enum {string}
              */
-            status: "succeeded" | "abstained" | "failed";
+            status: "succeeded" | "abstained" | "failed" | "skipped";
             /** Steps */
             steps: components["schemas"]["InferenceStepAuditResponse"][];
             /** Transport Request Count */

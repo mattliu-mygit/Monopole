@@ -27,10 +27,10 @@ from weave_agent_signals.judges.sliding_contracts import (
     parse_merged_verdict,
     parse_window_findings,
 )
+from weave_agent_signals.judges.tokens import count_tokens
 from weave_agent_signals.judges.windowing import (
     _turn_evidence_ids,
     build_window_plan,
-    estimate_tokens,
     render_raw_turn,
     render_raw_window,
 )
@@ -307,7 +307,7 @@ class SlidingReviewer:
         body = {key: value for key, value in plan.items() if key != "plan_id"}
         if plan_id != _sha256(body):
             raise ValueError("pinned judging plan ID does not match its full content")
-        if plan.get("schema_version") != "2":
+        if plan.get("schema_version") != "3":
             raise ValueError("pinned judging plan schema is unsupported")
         if plan.get("input_policy") != context_policy.model_dump(mode="json"):
             raise ValueError("pinned judging context policy does not match")
@@ -336,10 +336,17 @@ class SlidingReviewer:
         reviewer_row = reviewer_rows[judge.position - 1]
         if reviewer_row.get("judge") != judge.model_dump(mode="json"):
             raise ValueError("reviewer is not the exact pinned plan member at this ordinal")
+        if reviewer_row.get("status") != "planned" or reviewer_row.get("skip_reason") is not None:
+            raise ValueError("reviewer is not planned for this session")
         window_plan = reviewer_row.get("window_plan")
         if not isinstance(window_plan, Mapping):
             raise ValueError("pinned reviewer window plan is invalid")
-        expected_plan = build_window_plan(session, context_policy, judge.max_input_tokens)
+        expected_plan = build_window_plan(
+            session,
+            context_policy,
+            judge.max_input_tokens,
+            judge.token_counter,
+        )
         if dict(window_plan) != expected_plan:
             raise ValueError(
                 "pinned window plan does not match current session evidence and policy"
@@ -412,12 +419,11 @@ class SlidingReviewer:
             raise InferenceCancelled("sliding reviewer inference cancelled")
 
     def _messages_fit(self, messages: list[dict[str, str]], max_tokens: int) -> None:
-        input_tokens = estimate_tokens(_canonical_json(messages))
-        input_cap = min(
-            self.context_policy.target_input_tokens,
-            self.judge.max_input_tokens,
-        )
-        if input_tokens + max_tokens + self.context_policy.safety_reserve_tokens > input_cap:
+        input_tokens = count_tokens(_canonical_json(messages), self.judge.token_counter)
+        if (
+            input_tokens + max_tokens + self.context_policy.safety_reserve_tokens
+            > self.judge.max_input_tokens
+        ):
             raise ValueError("rendered inference request exceeds the configured context budget")
 
     def _infer(
@@ -603,7 +609,7 @@ class SlidingReviewer:
         window: Mapping[str, object],
         digests: Sequence[ChunkDigest],
     ) -> tuple[list[dict[str, str]], tuple[str, ...]]:
-        raw = render_raw_window(self.session, window)
+        raw = render_raw_window(self.session, window, self.judge.token_counter)
         sections: list[str] = []
         for index, digest in enumerate(digests):
             sections.append(f"CHUNK_INDEX: {index + 1}")

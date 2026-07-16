@@ -5,14 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 
 from weave_agent_signals.judges.digest import JudgeDigest
+from weave_agent_signals.judges.tokens import TokenCounterName, count_tokens
 from weave_agent_signals.models import SessionView, ToolSpan, TurnSpan
 from weave_agent_signals.run_config import JudgingContextPolicy
 
-WINDOW_PLAN_CONTRACT_VERSION = "1"
+WINDOW_PLAN_CONTRACT_VERSION = "2"
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _WINDOW_FIELDS = frozenset(
     {
@@ -26,12 +27,13 @@ _WINDOW_FIELDS = frozenset(
 )
 
 
-def estimate_tokens(text: str) -> int:
-    """Estimate tokens conservatively using the pinned UTF-8 byte heuristic."""
+class WindowPlanInapplicable(RuntimeError):
+    """Signal that valid raw evidence cannot fit the judge's context capacity."""
 
-    if not text:
-        return 0
-    return (len(text.encode("utf-8")) + 2) // 3
+    reason = "insufficient_context_capacity"
+
+    def __init__(self) -> None:
+        super().__init__(self.reason)
 
 
 def _timestamp(value: datetime | None) -> str | None:
@@ -152,24 +154,21 @@ def _validate_session_evidence_ids(session: SessionView) -> None:
     _validate_evidence_ids(evidence_ids, scope="session evidence")
 
 
-def _range_tokens(byte_prefix: list[int], start: int, end: int) -> int:
-    byte_count = byte_prefix[end + 1] - byte_prefix[start] + 2 * (end - start)
-    return (byte_count + 2) // 3
-
-
 def _partition_cores(
-    byte_prefix: list[int], raw_budget: int, overlap_turns: int
+    turn_count: int,
+    range_tokens: Callable[[int, int], int],
+    raw_budget: int,
+    overlap_turns: int,
 ) -> list[tuple[int, int]]:
     cores: list[tuple[int, int]] = []
-    turn_count = len(byte_prefix) - 1
     start = 0
     while start < turn_count:
         accepted_end: int | None = None
         for end in range(start, turn_count):
             preferred_start = max(0, start - overlap_turns)
             preferred_end = min(turn_count - 1, end + overlap_turns)
-            if _range_tokens(byte_prefix, preferred_start, preferred_end) > raw_budget:
-                if accepted_end is None and _range_tokens(byte_prefix, start, end) <= raw_budget:
+            if range_tokens(preferred_start, preferred_end) > raw_budget:
+                if accepted_end is None and range_tokens(start, end) <= raw_budget:
                     accepted_end = end
                 break
             accepted_end = end
@@ -181,7 +180,8 @@ def _partition_cores(
 
 
 def _expand_raw_bounds(
-    byte_prefix: list[int],
+    turn_count: int,
+    range_tokens: Callable[[int, int], int],
     core_start: int,
     core_end: int,
     raw_budget: int,
@@ -191,14 +191,10 @@ def _expand_raw_bounds(
 
     raw_start = core_start
     raw_end = core_end
-    turn_count = len(byte_prefix) - 1
     for _ in range(overlap_turns):
-        if raw_start > 0 and _range_tokens(byte_prefix, raw_start - 1, raw_end) <= raw_budget:
+        if raw_start > 0 and range_tokens(raw_start - 1, raw_end) <= raw_budget:
             raw_start -= 1
-        if (
-            raw_end < turn_count - 1
-            and _range_tokens(byte_prefix, raw_start, raw_end + 1) <= raw_budget
-        ):
+        if raw_end < turn_count - 1 and range_tokens(raw_start, raw_end + 1) <= raw_budget:
             raw_end += 1
     return raw_start, raw_end
 
@@ -221,6 +217,7 @@ def build_window_plan(
     session: SessionView,
     policy: JudgingContextPolicy,
     model_limit: int,
+    token_counter: TokenCounterName,
 ) -> dict[str, object]:
     """Build a deterministic overlap-aware fixed-point raw-window plan."""
 
@@ -229,18 +226,23 @@ def build_window_plan(
     _validate_session_evidence_ids(session)
     trace_ids = [turn.trace_id for turn in session.turns]
 
-    input_cap = min(policy.target_input_tokens, model_limit)
-    reserve_tokens = (
+    input_cap = model_limit
+    base_reserve = (
         policy.prompt_reserve_tokens + policy.output_reserve_tokens + policy.safety_reserve_tokens
     )
     rendered_turns = [
         render_raw_turn(turn, position) for position, turn in enumerate(session.turns, start=1)
     ]
-    turn_bytes = [len(rendered.encode("utf-8")) for rendered in rendered_turns]
-    byte_prefix = [0]
-    for byte_count in turn_bytes:
-        byte_prefix.append(byte_prefix[-1] + byte_count)
-    turn_tokens = [estimate_tokens(rendered) for rendered in rendered_turns]
+    range_cache: dict[tuple[int, int], int] = {}
+
+    def range_tokens(start: int, end: int) -> int:
+        key = (start, end)
+        if key not in range_cache:
+            rendered_range = "\n\n".join(rendered_turns[start : end + 1])
+            range_cache[key] = count_tokens(rendered_range, token_counter)
+        return range_cache[key]
+
+    turn_tokens = [count_tokens(rendered, token_counter) for rendered in rendered_turns]
     raw_turns = [
         {
             "trace_id": turn.trace_id,
@@ -251,19 +253,22 @@ def build_window_plan(
         for position, turn in enumerate(session.turns, start=1)
     ]
 
-    if input_cap - reserve_tokens <= 0:
-        raise ValueError("judging reserves leave no raw window capacity")
+    tier_reserve = policy.capacity_reserve(model_limit)
+    capacity_reserve = max(tier_reserve, base_reserve)
+    if input_cap - capacity_reserve <= 0:
+        raise WindowPlanInapplicable()
 
     if not session.turns:
         body: dict[str, object] = {
             "contract_version": WINDOW_PLAN_CONTRACT_VERSION,
             "conversation_id": session.conversation_id,
             "input_cap_tokens": input_cap,
-            "raw_budget_tokens": input_cap - reserve_tokens,
+            "raw_budget_tokens": input_cap - capacity_reserve,
             "chunk_count": 0,
             "overlap_turns": policy.overlap_turns,
-            "token_estimator": policy.token_estimator,
-            "merge_input_tokens": reserve_tokens,
+            "token_counter": token_counter,
+            "capacity_reserve_tokens": capacity_reserve,
+            "merge_input_tokens": base_reserve,
             "raw_turns": raw_turns,
             "raw_coverage_trace_ids": [],
             "windows": [],
@@ -276,37 +281,45 @@ def build_window_plan(
         if chunk_count in seen_counts:
             raise ValueError("window planning did not converge")
         seen_counts.add(chunk_count)
-        raw_budget = input_cap - (reserve_tokens + chunk_count * policy.digest_max_tokens)
+        protocol_overhead = base_reserve + max(0, chunk_count - 1) * policy.digest_max_tokens
+        capacity_reserve = max(tier_reserve, protocol_overhead)
+        raw_budget = input_cap - capacity_reserve
         if raw_budget <= 0:
-            raise ValueError("judging reserves leave no raw window capacity")
+            raise WindowPlanInapplicable()
         if any(tokens > raw_budget for tokens in turn_tokens):
-            raise ValueError("single turn exceeds the raw window budget")
+            raise WindowPlanInapplicable()
 
-        cores = _partition_cores(byte_prefix, raw_budget, policy.overlap_turns)
+        cores = _partition_cores(
+            len(rendered_turns),
+            range_tokens,
+            raw_budget,
+            policy.overlap_turns,
+        )
         planned_count = len(cores)
         if planned_count > policy.max_chunks:
-            raise ValueError("window plan exceeds the maximum chunk count")
+            raise WindowPlanInapplicable()
         if planned_count == chunk_count:
             break
         chunk_count = planned_count
 
-    merge_input_tokens = reserve_tokens + chunk_count * (
+    merge_input_tokens = base_reserve + chunk_count * (
         policy.digest_max_tokens + policy.finding_max_tokens
     )
     if merge_input_tokens > input_cap:
-        raise ValueError("worst-case merge input exceeds the input cap")
+        raise WindowPlanInapplicable()
 
     windows: list[dict[str, object]] = []
     covered_trace_ids: list[str] = []
     for index, (core_start, core_end) in enumerate(cores, start=1):
         raw_start, raw_end = _expand_raw_bounds(
-            byte_prefix,
+            len(rendered_turns),
+            range_tokens,
             core_start,
             core_end,
             raw_budget,
             policy.overlap_turns,
         )
-        raw_tokens = _range_tokens(byte_prefix, raw_start, raw_end)
+        raw_tokens = range_tokens(raw_start, raw_end)
         core_trace_ids = trace_ids[core_start : core_end + 1]
         raw_trace_ids = trace_ids[raw_start : raw_end + 1]
         covered_trace_ids.extend(core_trace_ids)
@@ -328,7 +341,8 @@ def build_window_plan(
         "raw_budget_tokens": raw_budget,
         "chunk_count": chunk_count,
         "overlap_turns": policy.overlap_turns,
-        "token_estimator": policy.token_estimator,
+        "token_counter": token_counter,
+        "capacity_reserve_tokens": capacity_reserve,
         "merge_input_tokens": merge_input_tokens,
         "raw_turns": raw_turns,
         "raw_coverage_trace_ids": covered_trace_ids,
@@ -340,6 +354,7 @@ def build_window_plan(
 def render_raw_window(
     session: SessionView,
     window: Mapping[str, object],
+    token_counter: TokenCounterName,
 ) -> JudgeDigest:
     """Render one planned window in session order with all visible evidence IDs."""
 
@@ -423,7 +438,7 @@ def render_raw_window(
     if raw_turn_digests != expected_digests:
         raise ValueError("window raw_turn_digests do not match current session evidence")
     text = "\n\n".join(rendered)
-    if raw_tokens != estimate_tokens(text):
+    if raw_tokens != count_tokens(text, token_counter):
         raise ValueError("window raw_tokens do not match current session rendering")
 
     window_body = {

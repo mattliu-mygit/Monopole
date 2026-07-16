@@ -44,7 +44,7 @@ function Step({ step }: { step: InferenceStepAudit }) {
 function Attempt({ attempt }: { attempt: ReviewAttempt }) {
   const statusClass = attempt.status === 'failed'
     ? 'text-red-700'
-    : attempt.status === 'abstained'
+    : attempt.status === 'abstained' || attempt.status === 'skipped'
       ? 'text-amber-700'
       : 'text-green-700'
   return (
@@ -74,6 +74,11 @@ function Attempt({ attempt }: { attempt: ReviewAttempt }) {
       {attempt.status === 'failed' && (
         <p className="mt-1 text-red-700">
           {attempt.error_type ?? 'Error'}: {attempt.message ?? 'No error detail returned'}
+        </p>
+      )}
+      {attempt.status === 'skipped' && (
+        <p className="mt-1 text-amber-700">
+          Skipped: {words(attempt.skip_reason ?? 'insufficient_context_capacity')}
         </p>
       )}
       <details className="mt-2 rounded border border-gray-100 bg-gray-50 p-2 text-[0.6875rem] text-gray-600">
@@ -220,20 +225,28 @@ export default function JudgingProgress({
                   {session.reviewers.map((reviewer) => (
                     <div key={reviewer.ordinal}>
                       <div className="font-medium text-gray-800">Judge {reviewer.ordinal} · {reviewer.judge.label}</div>
-                      <div className="mt-0.5 text-gray-500">
-                        maximum {reviewer.work_bounds.digest_calls} digests ·{' '}
-                        {reviewer.work_bounds.window_calls_per_rubric} windows per rubric ·{' '}
-                        {reviewer.work_bounds.merge_calls_per_rubric} merge per rubric
-                      </div>
-                      <ol className="mt-2 space-y-1">
-                        {reviewer.window_plan.windows.map((window) => (
-                          <li key={window.window_id} className="rounded border border-gray-200 bg-white p-2">
-                            <span className="font-medium">Window {window.index}</span>{' · '}
-                            core {window.core_trace_ids.join(', ')} · raw {window.raw_trace_ids.join(', ')} ·{' '}
-                            {window.raw_tokens.toLocaleString()} estimated tokens
-                          </li>
-                        ))}
-                      </ol>
+                      {reviewer.status === 'skipped' ? (
+                        <div className="mt-0.5 text-amber-700">
+                          Skipped · {words(reviewer.skip_reason ?? 'insufficient_context_capacity')}
+                        </div>
+                      ) : (
+                        <>
+                          <div className="mt-0.5 text-gray-500">
+                            maximum {reviewer.work_bounds.digest_calls} digests ·{' '}
+                            {reviewer.work_bounds.window_calls_per_rubric} windows per rubric ·{' '}
+                            {reviewer.work_bounds.merge_calls_per_rubric} merge per rubric
+                          </div>
+                          <ol className="mt-2 space-y-1">
+                            {reviewer.window_plan?.windows.map((window) => (
+                              <li key={window.window_id} className="rounded border border-gray-200 bg-white p-2">
+                                <span className="font-medium">Window {window.index}</span>{' · '}
+                                core {window.core_trace_ids.join(', ')} · raw {window.raw_trace_ids.join(', ')} ·{' '}
+                                {window.raw_tokens.toLocaleString()} estimated tokens
+                              </li>
+                            ))}
+                          </ol>
+                        </>
+                      )}
                     </div>
                   ))}
                 </div>

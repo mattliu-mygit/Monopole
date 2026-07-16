@@ -75,7 +75,12 @@ def _cohort() -> dict[str, Any]:
     }
 
 
-def _reflecting_run(store: RunStore, *, candidate_budget: int = 2):
+def _reflecting_run(
+    store: RunStore,
+    *,
+    candidate_budget: int = 2,
+    judging_result: dict[str, Any] | None = None,
+):
     models = build_model_catalog(which=lambda name: f"/bin/{name}")
     rubrics = build_rubric_catalog()
     requested = RunConfig(
@@ -118,7 +123,7 @@ def _reflecting_run(store: RunStore, *, candidate_budget: int = 2):
     store.record_stage_result(
         started.run_id,
         stage=RunStatus.JUDGING,
-        result={"written": 1},
+        result=judging_result if judging_result is not None else {"written": 1},
     )
     reflecting = store.finalize_stage_success(
         started.run_id,
@@ -864,6 +869,46 @@ def test_stage_records_no_feedback_without_opening_model_clients(store):
         "reason": "No evaluation feedback was found for the pinned cohort.",
     }
     assert updated.reflection_review is None
+
+
+def test_zero_applicable_judging_pins_no_judge_feedback_identity(store):
+    run, config = _reflecting_run(
+        store,
+        judging_result={
+            "planned_rubrics": 1,
+            "not_evaluable_rubrics": 1,
+            "reviewer_attempts_completed": 0,
+            "scores_written": 0,
+            "attempt_summaries": [
+                {
+                    "rubric": "judge.verification",
+                    "review_status": "not_evaluable",
+                    "attempts": [
+                        {
+                            "status": "skipped",
+                            "skip_reason": "insufficient_context_capacity",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    baseline = bundle_from_content_map({"CLAUDE.md": "old"}, scope=SCOPE)
+    dependencies = ReflectionDependencies(
+        store=store,
+        client_factory=lambda: WeaveClient([]),
+        adapter_factory=lambda: Adapter(baseline),
+        writer_client_factory=lambda _descriptor: pytest.fail("writer must not open"),
+        evaluator_client_factory=lambda _descriptor: pytest.fail("evaluator must not open"),
+        coaching_digest=lambda _feedback: pytest.fail("no feedback should be digested"),
+        reflect=lambda **_kwargs: pytest.fail("reflection should not start"),
+    )
+
+    run_reflection_stage(run, config, threading.Event(), dependencies=dependencies)
+
+    updated = store.get(run.run_id)
+    assert updated.reflection_input["feedback_count"] == 0
+    assert updated.reflection_input["feedback"] == []
 
 
 @pytest.mark.parametrize(

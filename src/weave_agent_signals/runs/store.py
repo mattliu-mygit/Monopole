@@ -331,9 +331,9 @@ def _encode_judging_plan(judging_plan: Mapping[str, Any]) -> str:
         "totals",
     }
     if set(value) != required:
-        raise ValueError("judging plan fields do not match schema version 2")
-    if value["schema_version"] != "2":
-        raise ValueError("judging plan schema_version must be '2'")
+        raise ValueError("judging plan fields do not match schema version 3")
+    if value["schema_version"] != "3":
+        raise ValueError("judging plan schema_version must be '3'")
     if not isinstance(value["plan_id"], str) or not value["plan_id"]:
         raise ValueError("judging plan must have a plan_id")
     if not isinstance(value["cohort_id"], str) or not value["cohort_id"]:
@@ -417,7 +417,9 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
         value.get("input_policy"),
         {
             "contract_version",
-            "target_input_tokens",
+            "large_model_threshold_tokens",
+            "large_model_reserve_tokens",
+            "small_model_reserve_tokens",
             "prompt_reserve_tokens",
             "output_reserve_tokens",
             "safety_reserve_tokens",
@@ -425,14 +427,15 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
             "finding_max_tokens",
             "overlap_turns",
             "max_chunks",
-            "token_estimator",
         },
         "input policy",
     )
-    if input_policy["contract_version"] != "1" or input_policy["overlap_turns"] != 1:
+    if input_policy["contract_version"] != "2" or input_policy["overlap_turns"] != 1:
         raise ValueError("judging plan input policy contract is invalid")
     for key in (
-        "target_input_tokens",
+        "large_model_threshold_tokens",
+        "large_model_reserve_tokens",
+        "small_model_reserve_tokens",
         "prompt_reserve_tokens",
         "output_reserve_tokens",
         "safety_reserve_tokens",
@@ -441,8 +444,12 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
         "max_chunks",
     ):
         _nonnegative_int(input_policy[key], f"input policy {key}", positive=True)
-    if input_policy["token_estimator"] != "utf8_bytes_div_3":
-        raise ValueError("judging plan token estimator is invalid")
+    if (
+        input_policy["large_model_threshold_tokens"] != 200_000
+        or input_policy["large_model_reserve_tokens"] < 100_000
+        or input_policy["small_model_reserve_tokens"] < 50_000
+    ):
+        raise ValueError("judging plan input policy capacity tiers are invalid")
     protocol = _exact_keys(
         value.get("protocol"), {"protocol_version", "prompt_templates", "schemas"}, "protocol"
     )
@@ -513,23 +520,28 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
         reviewers = row["reviewers"]
         if not isinstance(reviewers, list) or len(reviewers) != panel_size:
             raise ValueError("judging plan reviewers must match panel_size")
-        judge_count = len(reviewers)
+        applicable_count = sum(
+            isinstance(reviewer, dict) and reviewer.get("status") == "planned"
+            for reviewer in reviewers
+        )
         expected_rubrics = [
             {
                 **rubric,
-                "minimum_reviewer_attempts": judge_count,
-                "maximum_reviewer_attempts": judge_count,
+                "minimum_reviewer_attempts": applicable_count,
+                "maximum_reviewer_attempts": applicable_count,
             }
             for rubric in requested
         ]
         if row["rubrics"] != expected_rubrics:
             raise ValueError("judging plan session rubrics or attempt bounds are invalid")
         totals_expected["turns_considered"] += turn_count
-        totals_expected["minimum_reviewer_attempts"] += len(requested) * judge_count
-        totals_expected["maximum_reviewer_attempts"] += len(requested) * judge_count
+        totals_expected["minimum_reviewer_attempts"] += len(requested) * applicable_count
+        totals_expected["maximum_reviewer_attempts"] += len(requested) * applicable_count
         for ordinal, reviewer in enumerate(reviewers, start=1):
             reviewer_row = _exact_keys(
-                reviewer, {"ordinal", "judge", "window_plan", "work_bounds"}, "reviewer"
+                reviewer,
+                {"ordinal", "judge", "status", "skip_reason", "window_plan", "work_bounds"},
+                "reviewer",
             )
             judge = _exact_keys(
                 reviewer_row["judge"],
@@ -540,6 +552,7 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
                     "backend",
                     "supported_roles",
                     "max_input_tokens",
+                    "token_counter",
                     "role",
                     "position",
                 },
@@ -566,14 +579,12 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
             ):
                 raise ValueError("judging plan reviewer judge values are invalid")
             _nonnegative_int(judge["max_input_tokens"], "judge max_input_tokens", positive=True)
-            window_plan = _validate_window_plan(
-                reviewer_row["window_plan"],
-                conversation_id,
-                coverage,
-                input_policy,
-                judge["max_input_tokens"],
-            )
-            chunk_count = window_plan["chunk_count"]
+            if judge["token_counter"] not in {
+                "utf8_bytes_div_3",
+                "o200k_base",
+                "o200k_harmony",
+            }:
+                raise ValueError("judging plan reviewer token counter is invalid")
             bounds = _exact_keys(
                 reviewer_row["work_bounds"],
                 {"digest_calls", "window_calls_per_rubric", "merge_calls_per_rubric"},
@@ -581,6 +592,25 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
             )
             for key in bounds:
                 _nonnegative_int(bounds[key], f"reviewer work bound {key}")
+            if reviewer_row["status"] == "skipped":
+                if (
+                    reviewer_row["skip_reason"] != "insufficient_context_capacity"
+                    or reviewer_row["window_plan"] is not None
+                    or any(bounds.values())
+                ):
+                    raise ValueError("judging plan skipped reviewer disposition is invalid")
+                continue
+            if reviewer_row["status"] != "planned" or reviewer_row["skip_reason"] is not None:
+                raise ValueError("judging plan reviewer disposition is invalid")
+            window_plan = _validate_window_plan(
+                reviewer_row["window_plan"],
+                conversation_id,
+                coverage,
+                input_policy,
+                judge["max_input_tokens"],
+                judge["token_counter"],
+            )
+            chunk_count = window_plan["chunk_count"]
             if bounds != {
                 "digest_calls": chunk_count,
                 "window_calls_per_rubric": chunk_count,
@@ -603,6 +633,7 @@ def _validate_window_plan(
     coverage: list[str],
     input_policy: dict[str, Any],
     model_limit: int,
+    token_counter: str,
 ) -> dict[str, Any]:
     keys = {
         "plan_id",
@@ -612,7 +643,8 @@ def _validate_window_plan(
         "raw_budget_tokens",
         "chunk_count",
         "overlap_turns",
-        "token_estimator",
+        "token_counter",
+        "capacity_reserve_tokens",
         "merge_input_tokens",
         "raw_turns",
         "raw_coverage_trace_ids",
@@ -620,14 +652,19 @@ def _validate_window_plan(
     }
     row = _exact_keys(value, keys, "window plan")
     if (
-        row["contract_version"] != "1"
+        row["contract_version"] != "2"
         or row["conversation_id"] != conversation_id
         or row["raw_coverage_trace_ids"] != coverage
     ):
         raise ValueError("judging plan window identity is invalid")
-    for key in ("input_cap_tokens", "raw_budget_tokens", "merge_input_tokens"):
+    for key in (
+        "input_cap_tokens",
+        "raw_budget_tokens",
+        "capacity_reserve_tokens",
+        "merge_input_tokens",
+    ):
         _nonnegative_int(row[key], f"window {key}")
-    if row["overlap_turns"] != 1 or row["token_estimator"] != "utf8_bytes_div_3":
+    if row["overlap_turns"] != 1 or row["token_counter"] != token_counter:
         raise ValueError("judging plan window policy is invalid")
     body = {key: item for key, item in row.items() if key != "plan_id"}
     if row["plan_id"] != _canonical_digest(body):
@@ -639,18 +676,28 @@ def _validate_window_plan(
     chunk_count = _nonnegative_int(row["chunk_count"], "window chunk_count")
     if chunk_count > input_policy["max_chunks"]:
         raise ValueError("judging plan window exceeds the maximum chunk count")
-    input_cap = min(input_policy["target_input_tokens"], model_limit)
-    reserve = (
+    input_cap = model_limit
+    base_reserve = (
         input_policy["prompt_reserve_tokens"]
         + input_policy["output_reserve_tokens"]
         + input_policy["safety_reserve_tokens"]
     )
-    expected_raw_budget = input_cap - reserve - chunk_count * input_policy["digest_max_tokens"]
-    expected_merge = reserve + chunk_count * (
+    tier_reserve = (
+        input_policy["large_model_reserve_tokens"]
+        if model_limit > input_policy["large_model_threshold_tokens"]
+        else input_policy["small_model_reserve_tokens"]
+    )
+    expected_capacity_reserve = max(
+        tier_reserve,
+        base_reserve + max(0, chunk_count - 1) * input_policy["digest_max_tokens"],
+    )
+    expected_raw_budget = input_cap - expected_capacity_reserve
+    expected_merge = base_reserve + chunk_count * (
         input_policy["digest_max_tokens"] + input_policy["finding_max_tokens"]
     )
     if (
         row["input_cap_tokens"] != input_cap
+        or row["capacity_reserve_tokens"] != expected_capacity_reserve
         or row["raw_budget_tokens"] != expected_raw_budget
         or row["merge_input_tokens"] != expected_merge
     ):
@@ -678,7 +725,6 @@ def _validate_window_plan(
         _nonnegative_int(raw["estimated_tokens"], "raw turn estimated_tokens", positive=True)
     covered: list[str] = []
     raw_digests = {raw["trace_id"]: raw["raw_digest"] for raw in raw_turns}
-    raw_estimates = {raw["trace_id"]: raw["estimated_tokens"] for raw in raw_turns}
     for index, window in enumerate(windows, start=1):
         item = _exact_keys(
             window,
@@ -706,12 +752,6 @@ def _validate_window_plan(
         _nonnegative_int(item["raw_tokens"], "window raw_tokens")
         if item["raw_tokens"] > row["raw_budget_tokens"]:
             raise ValueError("judging plan window raw_tokens exceed the raw budget")
-        estimate_sum = sum(raw_estimates[trace_id] for trace_id in item["raw_trace_ids"])
-        separator_allowance = (2 * (len(item["raw_trace_ids"]) - 1) + 2) // 3
-        if not estimate_sum <= item["raw_tokens"] <= estimate_sum + separator_allowance:
-            raise ValueError(
-                "judging plan window raw_tokens are inconsistent with estimated raw turns"
-            )
         core_positions = [coverage.index(trace_id) for trace_id in item["core_trace_ids"]]
         if not core_positions or core_positions != list(
             range(core_positions[0], core_positions[-1] + 1)
@@ -911,19 +951,21 @@ def _judging_plan_matches_cohort(
                 return False
             ordinal = reviewer.get("ordinal")
             judge = reviewer.get("judge")
+            status = reviewer.get("status")
             window_plan = reviewer.get("window_plan")
-            if (
-                type(ordinal) is not int
-                or not isinstance(judge, dict)
-                or not isinstance(window_plan, dict)
-            ):
+            if type(ordinal) is not int or not isinstance(judge, dict):
                 return False
-            if (
-                judge.get("position") != ordinal
-                or window_plan.get("conversation_id") != conversation_id
-            ):
+            if judge.get("position") != ordinal:
                 return False
-            if window_plan.get("raw_coverage_trace_ids") != coverage:
+            if status == "skipped":
+                if window_plan is not None:
+                    return False
+            elif status != "planned" or not isinstance(window_plan, dict):
+                return False
+            elif (
+                window_plan.get("conversation_id") != conversation_id
+                or window_plan.get("raw_coverage_trace_ids") != coverage
+            ):
                 return False
             ordinals.append(ordinal)
         if ordinals != list(range(1, len(reviewers) + 1)):

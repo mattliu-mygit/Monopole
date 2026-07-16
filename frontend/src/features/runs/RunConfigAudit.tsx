@@ -107,7 +107,8 @@ export default function RunConfigAudit({ config }: RunConfigAuditProps) {
         </h5>
         <div className="rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-600">
           <div className="font-medium text-gray-900">
-            {config.judging_context.target_input_tokens.toLocaleString()} target input tokens
+            {config.judging_context.small_model_reserve_tokens.toLocaleString()} small-model ·{' '}
+            {config.judging_context.large_model_reserve_tokens.toLocaleString()} large-model reserve
           </div>
           <div className="mt-1">
             {config.judging_context.digest_max_tokens.toLocaleString()} digest ·{' '}

@@ -17,10 +17,12 @@ from pydantic import (
     model_validator,
 )
 
-PIPELINE_VERSION = "4"
-MODEL_CATALOG_SCHEMA_VERSION = "2"
+from weave_agent_signals.judges.tokens import TokenCounterName
+
+PIPELINE_VERSION = "5"
+MODEL_CATALOG_SCHEMA_VERSION = "3"
 RUBRIC_CATALOG_SCHEMA_VERSION = "1"
-EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION = "2"
+EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION = "3"
 MAX_CANDIDATE_BUDGET = 10
 
 ModelRole = Literal["proposal_writer", "judge", "proposal_evaluator"]
@@ -45,8 +47,10 @@ class StrictFrozenModel(BaseModel):
 
 
 class JudgingContextPolicy(StrictFrozenModel):
-    contract_version: Literal["1"] = "1"
-    target_input_tokens: Annotated[int, Field(strict=True, ge=1)] = 100_000
+    contract_version: Literal["2"] = "2"
+    large_model_threshold_tokens: Literal[200_000] = 200_000
+    large_model_reserve_tokens: Annotated[int, Field(strict=True, ge=100_000)] = 100_000
+    small_model_reserve_tokens: Annotated[int, Field(strict=True, ge=50_000)] = 50_000
     prompt_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 6_000
     output_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 4_000
     safety_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 8_000
@@ -54,20 +58,15 @@ class JudgingContextPolicy(StrictFrozenModel):
     finding_max_tokens: Annotated[int, Field(strict=True, ge=1)] = 750
     overlap_turns: Literal[1] = 1
     max_chunks: Annotated[int, Field(strict=True, ge=1)] = 40
-    token_estimator: Literal["utf8_bytes_div_3"] = "utf8_bytes_div_3"
 
-    @model_validator(mode="after")
-    def validate_raw_capacity(self) -> JudgingContextPolicy:
-        reserved_tokens = (
-            self.prompt_reserve_tokens
-            + self.output_reserve_tokens
-            + self.safety_reserve_tokens
-            + self.digest_max_tokens
-            + self.finding_max_tokens
-        )
-        if reserved_tokens >= self.target_input_tokens:
-            raise ValueError("judging context reserves must leave raw input capacity")
-        return self
+    def capacity_reserve(self, model_limit: int) -> int:
+        """Return the configured reserve tier for a validated model capacity."""
+
+        if isinstance(model_limit, bool) or not isinstance(model_limit, int) or model_limit <= 0:
+            raise ValueError("model_limit must be a positive integer")
+        if model_limit > self.large_model_threshold_tokens:
+            return self.large_model_reserve_tokens
+        return self.small_model_reserve_tokens
 
 
 DEFAULT_JUDGING_CONTEXT_POLICY = JudgingContextPolicy()
@@ -80,6 +79,7 @@ class ModelDescriptor(StrictFrozenModel):
     backend: StrictStr
     supported_roles: tuple[ModelRole, ...]
     max_input_tokens: Annotated[int, Field(strict=True, ge=1)] = 128_000
+    token_counter: TokenCounterName = "utf8_bytes_div_3"
 
     @model_validator(mode="after")
     def validate_descriptor(self) -> ModelDescriptor:
@@ -307,7 +307,7 @@ class EffectiveModelSelection(StrictFrozenModel):
 
 
 class EffectiveRunConfig(StrictFrozenModel):
-    schema_version: Literal["2"] = "2"
+    schema_version: Literal["3"] = "3"
     pipeline_version: StrictStr
     model_catalog_version: StrictStr
     rubric_catalog_version: StrictStr
@@ -328,23 +328,6 @@ class EffectiveRunConfig(StrictFrozenModel):
         _require_nonblank(self.model_catalog_version, "model_catalog_version")
         _require_nonblank(self.rubric_catalog_version, "rubric_catalog_version")
         _require_nonblank(self.judge_backend, "judge_backend")
-        selected_models = (
-            self.models.proposal_writer,
-            self.models.proposal_evaluator,
-            *self.models.judges,
-        )
-        undersized_model_ids = sorted(
-            {
-                model.id
-                for model in selected_models
-                if model.max_input_tokens < self.judging_context.target_input_tokens
-            }
-        )
-        if undersized_model_ids:
-            raise ValueError(
-                "selected model max_input_tokens is below "
-                "judging_context.target_input_tokens: " + ", ".join(undersized_model_ids)
-            )
         if not self.rubrics:
             raise ValueError("effective configuration must contain at least one rubric")
         if self.models.proposal_evaluator.backend != self.judge_backend or any(

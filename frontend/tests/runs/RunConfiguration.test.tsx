@@ -15,6 +15,7 @@ const writerOpenAI: ModelDescriptor = {
   backend: 'cli',
   supported_roles: ['proposal_writer'] as const,
   max_input_tokens: 128_000,
+  token_counter: 'utf8_bytes_div_3',
 }
 const writerAnthropic: ModelDescriptor = {
   id: 'writer-anthropic',
@@ -23,6 +24,7 @@ const writerAnthropic: ModelDescriptor = {
   backend: 'cli',
   supported_roles: ['proposal_writer'] as const,
   max_input_tokens: 128_000,
+  token_counter: 'utf8_bytes_div_3',
 }
 const cliAnthropic: ModelDescriptor = {
   id: 'cli-anthropic',
@@ -31,6 +33,7 @@ const cliAnthropic: ModelDescriptor = {
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
+  token_counter: 'utf8_bytes_div_3',
 }
 const cliOpenAI: ModelDescriptor = {
   id: 'cli-openai',
@@ -39,6 +42,7 @@ const cliOpenAI: ModelDescriptor = {
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
+  token_counter: 'utf8_bytes_div_3',
 }
 const cliMeta: ModelDescriptor = {
   id: 'cli-meta',
@@ -47,6 +51,7 @@ const cliMeta: ModelDescriptor = {
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
+  token_counter: 'utf8_bytes_div_3',
 }
 const cliMetaAlt: ModelDescriptor = {
   id: 'cli-meta-alt',
@@ -55,6 +60,7 @@ const cliMetaAlt: ModelDescriptor = {
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
+  token_counter: 'utf8_bytes_div_3',
 }
 
 const models: ModelCatalog = {

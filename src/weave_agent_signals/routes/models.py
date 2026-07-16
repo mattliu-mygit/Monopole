@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, RootModel
 
+from weave_agent_signals.judges.tokens import TokenCounterName
 from weave_agent_signals.run_config import (
     EffectiveRunConfig,
     JudgeBackendCatalog,
@@ -225,13 +226,14 @@ class JudgingWindowResponse(ResponseModel):
 
 class JudgingWindowPlanResponse(ResponseModel):
     plan_id: str
-    contract_version: str
+    contract_version: Literal["2"]
     conversation_id: str
     input_cap_tokens: int
     raw_budget_tokens: int
     chunk_count: int
     overlap_turns: int
-    token_estimator: str
+    token_counter: TokenCounterName
+    capacity_reserve_tokens: int
     merge_input_tokens: int
     raw_turns: list[JudgingRawTurnResponse]
     raw_coverage_trace_ids: list[str]
@@ -247,7 +249,9 @@ class JudgingWorkBoundsResponse(ResponseModel):
 class JudgingReviewerPlanResponse(ResponseModel):
     ordinal: int
     judge: PositionedJudge
-    window_plan: JudgingWindowPlanResponse
+    status: Literal["planned", "skipped"]
+    skip_reason: Literal["insufficient_context_capacity"] | None
+    window_plan: JudgingWindowPlanResponse | None
     work_bounds: JudgingWorkBoundsResponse
 
 
@@ -298,7 +302,8 @@ class ReviewAttemptResponse(ResponseModel):
     requested_model: str
     requested_family: str
     requested_backend: str
-    status: Literal["succeeded", "abstained", "failed"]
+    status: Literal["succeeded", "abstained", "failed", "skipped"]
+    skip_reason: Literal["insufficient_context_capacity"] | None = None
     resolved_model: str | None
     resolved_family: str | None
     score: float | None
