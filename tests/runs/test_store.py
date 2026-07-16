@@ -12,6 +12,7 @@ from weave_agent_signals.judges.plan import build_judging_plan
 from weave_agent_signals.models import SessionView, TurnSpan
 from weave_agent_signals.run_config import RunConfig, resolve_run_config
 from weave_agent_signals.runs.store import (
+    _SCHEMA,
     RUN_DB_SCHEMA_VERSION,
     DataSelection,
     ReflectionReviewLifecycleConflictError,
@@ -186,7 +187,7 @@ def _reflection_evidence() -> dict:
     }
 
 
-def test_schema_v5_resets_disposable_database_on_version_mismatch(tmp_path):
+def test_schema_v6_resets_disposable_database_on_version_mismatch(tmp_path):
     path = tmp_path / "runs.db"
     connection = sqlite3.connect(path)
     connection.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, obsolete TEXT)")
@@ -198,10 +199,32 @@ def test_schema_v5_resets_disposable_database_on_version_mismatch(tmp_path):
     store = RunStore(path)
     columns = {row[1] for row in store._conn.execute("PRAGMA table_info(runs)").fetchall()}
 
-    assert RUN_DB_SCHEMA_VERSION == 5
+    assert RUN_DB_SCHEMA_VERSION == 6
     assert store.get("legacy") is None
     assert {"run_id", "run_config", "effective_config"} <= columns
-    assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    store.close()
+
+
+def test_schema_v6_resets_collided_v5_database_missing_judging_artifacts(tmp_path):
+    path = tmp_path / "runs.db"
+    connection = sqlite3.connect(path)
+    legacy_schema = _SCHEMA.replace("    judging_artifacts TEXT,\n", "")
+    connection.execute(legacy_schema)
+    connection.execute(
+        "INSERT INTO runs (run_id, status, created_at) VALUES (?, ?, ?)",
+        ("legacy-active", "judging", "2026-07-15T00:00:00+00:00"),
+    )
+    connection.execute("PRAGMA user_version = 5")
+    connection.commit()
+    connection.close()
+
+    store = RunStore(path)
+    columns = {row[1] for row in store._conn.execute("PRAGMA table_info(runs)").fetchall()}
+
+    assert RUN_DB_SCHEMA_VERSION == 6
+    assert "judging_artifacts" in columns
+    assert store.list_active() == []
     store.close()
 
 
