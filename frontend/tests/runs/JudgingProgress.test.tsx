@@ -146,6 +146,45 @@ describe('JudgingProgress', () => {
     expect(screen.getAllByText('merge · current')).toHaveLength(2)
   })
 
+  it('shows skipped attempt status and reason without success styling', () => {
+    const skippedAttempt: ReviewAttempt = {
+      ...attempt,
+      status: 'skipped',
+      skip_reason: 'insufficient_context_capacity',
+      resolved_model: null,
+      resolved_family: null,
+      score: null,
+      rationale: null,
+      evidence_ids: [],
+      usage: {},
+      output_mode: null,
+      schema_name: null,
+      schema_fallback_reason: null,
+      transport_request_count: 0,
+      verdict_schema_version: null,
+      raw_output_digest: null,
+      behavioral_feedback: null,
+      steps: [],
+    }
+    const skippedProgress: Progress = {
+      ...progress,
+      attempt_summaries: [{
+        ...progress.attempt_summaries[0],
+        review_status: 'not_evaluable',
+        rating: null,
+        successful_reviewer_count: 0,
+        attempts: [skippedAttempt],
+      }],
+    }
+
+    render(<JudgingProgress plan={plan} progress={skippedProgress} result={null} />)
+
+    const status = screen.getByText('panel · skipped')
+    expect(status.className).toContain('text-amber-700')
+    expect(status.className).not.toContain('text-green-700')
+    expect(screen.getByText('Skipped: insufficient context capacity')).not.toBeNull()
+  })
+
   it('keeps failure details and the pre-plan empty state visible', () => {
     const failed: Progress = {
       ...progress,

@@ -17,7 +17,12 @@ from weave_agent_signals.judges.review import (
     execute_panel,
 )
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
-from weave_agent_signals.judges.sliding import ArtifactLoader, ArtifactRecorder, SlidingReviewer
+from weave_agent_signals.judges.sliding import (
+    ArtifactLoader,
+    ArtifactRecorder,
+    SlidingReviewer,
+    sliding_protocol_contract_manifest,
+)
 from weave_agent_signals.judges.windowing import WindowPlanInapplicable, build_window_plan
 from weave_agent_signals.models import Score, SessionView
 from weave_agent_signals.run_config import (
@@ -49,6 +54,8 @@ def _authenticate_plan_policy(
         raise ValueError("judging plan schema or content digest is invalid")
     if plan.get("input_policy") != context_policy.model_dump(mode="json"):
         raise ValueError("context policy does not match the pinned judging plan")
+    if plan.get("protocol") != sliding_protocol_contract_manifest():
+        raise ValueError("protocol does not match the pinned judging plan")
     sessions = plan.get("sessions")
     if not isinstance(sessions, list):
         raise ValueError("pinned judging sessions are invalid")
@@ -60,6 +67,10 @@ def _authenticate_plan_policy(
     if len(matches) != 1:
         raise ValueError("session is not uniquely pinned in the judging plan")
     session_row = matches[0]
+    if session_row.get("turn_count") != len(session.turns):
+        raise ValueError("session turn count does not match the pinned judging plan")
+    if session_row.get("raw_coverage_trace_ids") != [turn.trace_id for turn in session.turns]:
+        raise ValueError("session raw coverage does not match the pinned judging plan")
     reviewers = session_row.get("reviewers")
     if not isinstance(reviewers, list) or [
         value.get("judge") if isinstance(value, Mapping) else None for value in reviewers

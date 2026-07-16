@@ -44,7 +44,7 @@ function Step({ step }: { step: InferenceStepAudit }) {
 function Attempt({ attempt }: { attempt: ReviewAttempt }) {
   const statusClass = attempt.status === 'failed'
     ? 'text-red-700'
-    : attempt.status === 'abstained'
+    : attempt.status === 'abstained' || attempt.status === 'skipped'
       ? 'text-amber-700'
       : 'text-green-700'
   return (
@@ -74,6 +74,11 @@ function Attempt({ attempt }: { attempt: ReviewAttempt }) {
       {attempt.status === 'failed' && (
         <p className="mt-1 text-red-700">
           {attempt.error_type ?? 'Error'}: {attempt.message ?? 'No error detail returned'}
+        </p>
+      )}
+      {attempt.status === 'skipped' && (
+        <p className="mt-1 text-amber-700">
+          Skipped: {words(attempt.skip_reason ?? 'insufficient_context_capacity')}
         </p>
       )}
       <details className="mt-2 rounded border border-gray-100 bg-gray-50 p-2 text-[0.6875rem] text-gray-600">

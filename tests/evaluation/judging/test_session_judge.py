@@ -10,6 +10,7 @@ from weave_agent_signals.judges import runner
 from weave_agent_signals.judges.plan import build_judging_plan
 from weave_agent_signals.judges.review import AttemptObservation
 from weave_agent_signals.judges.runner import JudgeExecutionError, judge_session
+from weave_agent_signals.judges.sliding import sliding_protocol_contract_manifest
 from weave_agent_signals.models import SessionView, TurnSpan
 from weave_agent_signals.run_config import DEFAULT_JUDGING_CONTEXT_POLICY, PositionedJudge
 
@@ -290,6 +291,65 @@ def test_runner_synthesizes_authenticated_skip_without_creating_reviewer(monkeyp
         "succeeded",
     ]
     assert scores[0].metadata["attempts"][0]["skip_reason"] == ("insufficient_context_capacity")
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        ("protocol", "protocol"),
+        ("turn_count", "turn count"),
+        ("raw_coverage_trace_ids", "raw coverage"),
+    ],
+)
+def test_runner_rejects_rehashed_all_skipped_session_tampering_before_outcomes(
+    monkeypatch, tamper, message
+) -> None:
+    session = _session()
+    judges = (_judge("incapable", 1).model_copy(update={"max_input_tokens": 16_000}),)
+    rubrics = build_rubric_catalog().rubrics[:1]
+    plan = build_judging_plan(
+        [session],
+        cohort_id="cohort",
+        rubrics=rubrics,
+        judge_models=judges,
+        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
+    )
+    assert plan["sessions"][0]["reviewers"][0]["status"] == "skipped"
+    forged = copy.deepcopy(plan)
+    if tamper == "protocol":
+        forged["protocol"] = {
+            **sliding_protocol_contract_manifest(),
+            "protocol_version": "forged",
+        }
+    elif tamper == "turn_count":
+        forged["sessions"][0]["turn_count"] += 1
+    else:
+        forged["sessions"][0]["raw_coverage_trace_ids"] = ["forged-trace"]
+    _rehash(forged)
+    monkeypatch.setattr(
+        runner,
+        "execute_panel",
+        lambda *_args, **_kwargs: pytest.fail("tampering must fail before outcome recording"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "SlidingReviewer",
+        lambda **_kwargs: pytest.fail("tampering must fail before model-client work"),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        judge_session(
+            session,
+            object(),
+            rubrics=rubrics,
+            judges=judges,
+            judging_plan=forged,
+            context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
+            artifact_loader=lambda _: pytest.fail("tampering must fail before artifact loading"),
+            artifact_recorder=lambda *_: pytest.fail(
+                "tampering must fail before outcome recording"
+            ),
+        )
 
 
 def test_runner_rejects_forged_skip_for_capable_reviewer(monkeypatch) -> None:
