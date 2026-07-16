@@ -63,6 +63,52 @@ def test_reflection_model_defaults_come_from_the_selected_catalog_backend(monkey
     assert evaluator.id == catalog.backend("cli").proposal_evaluator_preferences[0]
 
 
+def test_standalone_reflect_stops_before_local_or_model_setup_for_audit_only_feedback(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    weave = MagicMock()
+    weave.__enter__.return_value.query_project_feedback.return_value = [
+        {
+            "feedback_type": "weave_agent_signals.judge.verification",
+            "payload": {
+                "rating": 0.2,
+                "granularity": "turn",
+                "details": {"evaluation_unit": "episode"},
+            },
+        }
+    ]
+
+    monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
+    monkeypatch.setattr(
+        cli,
+        "ProjectFileAdapter",
+        lambda _root: pytest.fail("audit-only feedback must stop before target setup"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_make_model_client",
+        lambda *_args: pytest.fail("audit-only feedback must not open model clients"),
+    )
+
+    rc = cli.cmd_reflect(
+        argparse.Namespace(
+            entity="entity",
+            project="project",
+            limit=10,
+            project_root=str(tmp_path),
+            model="gpt-5.6-sol",
+            judge_backend="cli",
+            proposal_evaluator_model="claude-sonnet-5",
+            candidate_budget=3,
+        )
+    )
+
+    assert rc == 0
+    assert "No eligible scored feedback found" in capsys.readouterr().out
+
+
 def test_standalone_reflect_always_infers_with_resolved_roles_and_only_prints_diff(
     tmp_path,
     monkeypatch,
@@ -87,7 +133,18 @@ def test_standalone_reflect_always_infers_with_resolved_roles_and_only_prints_di
     )
     weave = MagicMock()
     weave.__enter__.return_value.query_project_feedback.return_value = [
-        {"payload": {"rating": 0.5}}
+        {
+            "feedback_type": "weave_agent_signals.outcome.test",
+            "payload": {"rating": 0.5},
+        },
+        {
+            "feedback_type": "weave_agent_signals.judge.verification",
+            "payload": {
+                "rating": 0.2,
+                "granularity": "turn",
+                "details": {"evaluation_unit": "episode"},
+            },
+        },
     ]
     adapter = MagicMock()
     adapter.capture.return_value = baseline
@@ -115,6 +172,12 @@ def test_standalone_reflect_always_infers_with_resolved_roles_and_only_prints_di
 
     assert rc == 0
     call = reflect.call_args.kwargs
+    assert call["feedback"] == [
+        {
+            "feedback_type": "weave_agent_signals.outcome.test",
+            "payload": {"rating": 0.5},
+        }
+    ]
     assert call["baseline"] is baseline
     assert call["requested_writer"].id == "gpt-5.6-sol"
     assert call["requested_evaluator"].id == "claude-sonnet-5"

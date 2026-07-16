@@ -1,0 +1,32 @@
+{
+  "schema_version": "1",
+  "pinned_at": "2026-07-15T12:00:00+00:00",
+  "cohort_id": "cohort-1",
+  "turn_count": 2,
+  "session_count": 1,
+  "turns": [
+    {
+      "trace_id": "trace-1",
+      "weave_ref": "weave:///weave-team/agent-sessions/agent_turn/trace-1",
+      "conversation_id": "session-1",
+      "started_at": "2026-07-15T12:00:00+00:00",
+      "model": "agent-model",
+      "model_family": "unknown"
+    },
+    {
+      "trace_id": "trace-2",
+      "weave_ref": "weave:///weave-team/agent-sessions/agent_turn/trace-2",
+      "conversation_id": "session-1",
+      "started_at": "2026-07-15T12:00:00+00:00",
+      "model": "agent-model",
+      "model_family": "unknown"
+    }
+  ],
+  "sessions": [
+    {
+      "conversation_id": "session-1",
+      "weave_ref": "weave:///weave-team/agent-sessions/agent_conversation/session-1",
+      "turn_count": 2
+    }
+  ]
+}

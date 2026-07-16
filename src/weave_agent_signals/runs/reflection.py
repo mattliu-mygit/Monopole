@@ -18,6 +18,7 @@ from weave_agent_signals.judges.inference import (
     InferenceCancelled,
     JudgeResponse,
 )
+from weave_agent_signals.patterns import is_evaluation_feedback_eligible
 from weave_agent_signals.run_config import MAX_CANDIDATE_BUDGET, ModelDescriptor
 from weave_agent_signals.runs.bundles import BundleSnapshot
 from weave_agent_signals.runs.proposals import (
@@ -621,17 +622,8 @@ class ReflectionResult:
         return cls(**data)
 
 
-def _has_rated_signal(feedback: Sequence[Mapping[str, Any]]) -> bool:
-    for item in feedback:
-        payload = item.get("payload")
-        if not isinstance(payload, Mapping):
-            continue
-        try:
-            _score(payload.get("rating"), "feedback rating")
-        except ValueError:
-            continue
-        return True
-    return False
+def _has_eligible_signal(feedback: Sequence[Mapping[str, Any]]) -> bool:
+    return any(is_evaluation_feedback_eligible(item) for item in feedback)
 
 
 def _emit(callback: ProgressCallback | None, phase: str, message: str, **details: Any) -> None:
@@ -1220,7 +1212,7 @@ def run_reflection(
         raise ValueError("coaching_text must be a string")
     baseline_contents_text = _prompt_json(_content_map(baseline), "baseline contents")
     scope_policy_text = _prompt_json(scope_policy, "scope policy")
-    if not _has_rated_signal(feedback):
+    if not _has_eligible_signal(feedback):
         raise ReflectionEvaluationError("Reflection requires at least one valid rated signal")
     _check_cancel(cancel_requested)
 

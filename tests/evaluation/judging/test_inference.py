@@ -149,7 +149,8 @@ def test_http_chat_json_does_not_fallback_for_auth_rate_or_server_errors(
 
 
 def test_http_schema_fallback_is_audited(client, monkeypatch):
-    rejection = "response_format json_schema is not supported for this model"
+    secret = "SENTINEL_PRIVATE_PROVIDER_DETAIL"
+    rejection = f"response_format json_schema is not supported for this model: {secret}"
     calls = 0
 
     def fake_post(_path, _body):
@@ -169,7 +170,8 @@ def test_http_schema_fallback_is_audited(client, monkeypatch):
 
     assert response.output_mode == "json_object_fallback"
     assert response.schema_name == "judge_verdict"
-    assert response.schema_fallback_reason == rejection
+    assert response.schema_fallback_reason == "schema_output_unsupported"
+    assert secret not in response.schema_fallback_reason
     assert response.transport_request_count == 2
     assert response.raw_output_digest == hashlib.sha256(b'{"score":1}').hexdigest()
 
@@ -328,6 +330,138 @@ def test_http_schema_fallback_count_includes_prior_rate_retry(client, monkeypatc
     ]
     assert response.output_mode == "json_object_fallback"
     assert response.transport_request_count == 3
+
+
+def test_http_failed_fallback_preserves_all_transport_attempts(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    responses = iter(
+        [
+            httpx.Response(
+                400,
+                request=request,
+                json={
+                    "error": {
+                        "message": "response_format json_schema is not supported",
+                        "param": "response_format",
+                        "code": "unsupported_value",
+                        "type": "invalid_request_error",
+                    }
+                },
+            ),
+            httpx.Response(429, request=request),
+            httpx.Response(500, request=request),
+        ]
+    )
+    calls = 0
+
+    def fake_post(_path, *, json):
+        nonlocal calls
+        calls += 1
+        return next(responses)
+
+    monkeypatch.setattr(client._http, "post", fake_post)
+    monkeypatch.setattr(inference.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(httpx.HTTPStatusError) as captured:
+        client.chat_json(
+            model="gpt-pinned",
+            messages=_messages(),
+            response_schema=_schema(),
+        )
+
+    assert calls == 3
+    assert getattr(captured.value, "_transport_request_count", None) == 3
+
+
+def test_http_malformed_json_preserves_rate_limit_attempts(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    responses = iter(
+        [
+            httpx.Response(429, request=request),
+            httpx.Response(200, request=request, content=b"not-json"),
+        ]
+    )
+    calls = 0
+
+    def fake_post(_path, *, json):
+        nonlocal calls
+        calls += 1
+        return next(responses)
+
+    monkeypatch.setattr(client._http, "post", fake_post)
+    monkeypatch.setattr(inference.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(ValueError) as captured:
+        client.chat_json(model="gpt-pinned", messages=_messages())
+
+    assert calls == 2
+    assert getattr(captured.value, "_transport_request_count", None) == 2
+
+
+def test_http_malformed_response_shape_preserves_rate_limit_attempts(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    responses = iter(
+        [
+            httpx.Response(429, request=request),
+            httpx.Response(200, request=request, json={"choices": []}),
+        ]
+    )
+    calls = 0
+
+    def fake_post(_path, *, json):
+        nonlocal calls
+        calls += 1
+        return next(responses)
+
+    monkeypatch.setattr(client._http, "post", fake_post)
+    monkeypatch.setattr(inference.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(IndexError) as captured:
+        client.chat_json(model="gpt-pinned", messages=_messages())
+
+    assert calls == 2
+    assert getattr(captured.value, "_transport_request_count", None) == 2
+
+
+def test_http_schema_fallback_malformed_success_preserves_all_attempts(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    responses = iter(
+        [
+            httpx.Response(
+                400,
+                request=request,
+                json={
+                    "error": {
+                        "message": "response_format json_schema is not supported",
+                        "param": "response_format",
+                        "code": "unsupported_value",
+                        "type": "invalid_request_error",
+                    }
+                },
+            ),
+            httpx.Response(429, request=request),
+            httpx.Response(200, request=request, content=b"not-json"),
+        ]
+    )
+    calls = 0
+
+    def fake_post(_path, *, json):
+        nonlocal calls
+        calls += 1
+        return next(responses)
+
+    monkeypatch.setattr(client._http, "post", fake_post)
+    monkeypatch.setattr(inference.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(ValueError) as captured:
+        client.chat_json(
+            model="gpt-pinned",
+            messages=_messages(),
+            response_schema=_schema(),
+        )
+
+    assert calls == 3
+    assert getattr(captured.value, "_transport_request_count", None) == 3
 
 
 def test_http_invalid_output_log_contains_metadata_not_model_output(client, monkeypatch, caplog):

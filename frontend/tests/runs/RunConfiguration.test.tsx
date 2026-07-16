@@ -14,6 +14,7 @@ const writerOpenAI = {
   family: 'openai',
   backend: 'cli',
   supported_roles: ['proposal_writer'] as const,
+  max_input_tokens: 128_000,
 }
 const writerAnthropic = {
   id: 'writer-anthropic',
@@ -21,6 +22,7 @@ const writerAnthropic = {
   family: 'anthropic',
   backend: 'cli',
   supported_roles: ['proposal_writer'] as const,
+  max_input_tokens: 128_000,
 }
 const cliAnthropic = {
   id: 'cli-anthropic',
@@ -28,6 +30,7 @@ const cliAnthropic = {
   family: 'anthropic',
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
+  max_input_tokens: 128_000,
 }
 const cliOpenAI = {
   id: 'cli-openai',
@@ -35,6 +38,7 @@ const cliOpenAI = {
   family: 'openai',
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
+  max_input_tokens: 128_000,
 }
 const cliMeta = {
   id: 'cli-meta',
@@ -42,6 +46,7 @@ const cliMeta = {
   family: 'meta',
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
+  max_input_tokens: 128_000,
 }
 const cliMetaAlt = {
   id: 'cli-meta-alt',
@@ -49,6 +54,7 @@ const cliMetaAlt = {
   family: 'meta',
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
+  max_input_tokens: 128_000,
 }
 
 const models: ModelCatalog = {
@@ -83,7 +89,7 @@ const rubrics: RubricCatalog = {
     {
       id: 'judge.verification',
       label: 'Verification discipline',
-      evaluation_unit: 'episode',
+      evaluation_unit: 'session',
       version: 'v1',
       content_digest: 'verification-digest',
       pass_threshold: 0.5,

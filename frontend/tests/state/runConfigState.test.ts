@@ -13,6 +13,7 @@ const writerOpenAI = {
   family: 'openai',
   backend: 'cli',
   supported_roles: ['proposal_writer'] as const,
+  max_input_tokens: 128_000,
 }
 
 const writerAnthropic = {
@@ -21,6 +22,7 @@ const writerAnthropic = {
   family: 'anthropic',
   backend: 'cli',
   supported_roles: ['proposal_writer'] as const,
+  max_input_tokens: 128_000,
 }
 
 const cliAnthropic = {
@@ -29,6 +31,7 @@ const cliAnthropic = {
   family: 'anthropic',
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
+  max_input_tokens: 128_000,
 }
 
 const cliOpenAI = {
@@ -37,6 +40,7 @@ const cliOpenAI = {
   family: 'openai',
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
+  max_input_tokens: 128_000,
 }
 
 const cliMeta = {
@@ -45,6 +49,7 @@ const cliMeta = {
   family: 'meta',
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
+  max_input_tokens: 128_000,
 }
 
 const cliMetaAlt = {
@@ -53,6 +58,7 @@ const cliMetaAlt = {
   family: 'meta',
   backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
+  max_input_tokens: 128_000,
 }
 
 const wandbMeta = {
@@ -61,6 +67,7 @@ const wandbMeta = {
   family: 'meta',
   backend: 'wandb',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
+  max_input_tokens: 128_000,
 }
 
 const wandbOpenAI = {
@@ -69,6 +76,7 @@ const wandbOpenAI = {
   family: 'openai',
   backend: 'wandb',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
+  max_input_tokens: 128_000,
 }
 
 const wandbIbm = {
@@ -77,6 +85,7 @@ const wandbIbm = {
   family: 'ibm',
   backend: 'wandb',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
+  max_input_tokens: 128_000,
 }
 
 const models: ModelCatalog = {
@@ -111,7 +120,7 @@ const rubrics: RubricCatalog = {
     {
       id: 'judge.verification',
       label: 'Verification discipline',
-      evaluation_unit: 'episode',
+      evaluation_unit: 'session',
       version: 'v1',
       content_digest: 'sha256:verification',
       pass_threshold: 0.5,

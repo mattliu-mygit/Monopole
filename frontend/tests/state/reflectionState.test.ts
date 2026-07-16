@@ -23,6 +23,7 @@ const writer: ModelDescriptor = {
   family: 'writer-family',
   backend: 'cli',
   supported_roles: ['proposal_writer'],
+  max_input_tokens: 128_000,
 }
 
 function bundle(revision: string, contents: Record<string, string | null>): ReflectionBundleSnapshot {

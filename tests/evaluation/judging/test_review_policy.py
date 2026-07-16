@@ -7,6 +7,7 @@ import pytest
 
 from weave_agent_signals.judges.review import (
     AttemptObservation,
+    InferenceStepAudit,
     ReviewOutcome,
     ReviewPolicy,
     execute_review,
@@ -47,6 +48,11 @@ def _success(score: float, *, model: str = "resolved-model") -> AttemptObservati
         usage={"total_tokens": 10},
         error_type=None,
         message=None,
+        behavioral_feedback={
+            "success": "The agent used relevant evidence.",
+            "problem": None,
+            "desired_behavior": None,
+        },
     )
 
 
@@ -465,9 +471,177 @@ def test_attempt_observation_freezes_validated_usage() -> None:
         usage=usage,
         error_type=None,
         message=None,
+        behavioral_feedback={
+            "success": "Grounded work.",
+            "problem": None,
+            "desired_behavior": None,
+        },
     )
     usage["input_tokens"] = 8
 
     assert observation.usage == {"input_tokens": 4}
     with pytest.raises(TypeError):
         observation.usage["input_tokens"] = 8  # type: ignore[index]
+
+
+def test_attempt_observation_requires_feedback_only_for_success() -> None:
+    with pytest.raises(ValueError, match="successful observations require behavioral feedback"):
+        AttemptObservation(
+            status="succeeded",
+            resolved_model="resolved-model",
+            score=0.5,
+            rationale="Grounded verdict.",
+            usage={},
+            error_type=None,
+            message=None,
+        )
+
+    for status in ("abstained", "failed"):
+        values = {
+            "status": status,
+            "resolved_model": "resolved-model" if status == "abstained" else None,
+            "score": None,
+            "rationale": "Insufficient evidence." if status == "abstained" else None,
+            "usage": {},
+            "error_type": None if status == "abstained" else "ValueError",
+            "message": None if status == "abstained" else "invalid",
+            "behavioral_feedback": {
+                "success": None,
+                "problem": "Should not be present.",
+                "desired_behavior": None,
+            },
+        }
+        with pytest.raises(ValueError, match="cannot contain behavioral feedback"):
+            AttemptObservation(**values)  # type: ignore[arg-type]
+
+
+def test_attempt_observation_freezes_feedback_and_step_audits() -> None:
+    feedback = {"success": "Good recovery.", "problem": None, "desired_behavior": None}
+    step = InferenceStepAudit(
+        phase="merge",
+        artifact_id="merge/reviewer/rubric",
+        requested_model="judge-1",
+        resolved_model="judge-1-resolved",
+        usage={"total_tokens": 12},
+        output_mode="json_schema",
+        schema_name="merged_verdict",
+        schema_fallback_reason=None,
+        transport_request_count=1,
+        raw_output_digest="a" * 64,
+    )
+
+    observation = AttemptObservation(
+        status="succeeded",
+        resolved_model="judge-1-resolved",
+        score=0.75,
+        rationale="Grounded verdict.",
+        usage={"total_tokens": 12},
+        error_type=None,
+        message=None,
+        evidence_ids=("trace-1",),
+        behavioral_feedback=feedback,
+        steps=(step,),
+    )
+    feedback["success"] = "mutated"
+
+    assert observation.behavioral_feedback == {
+        "success": "Good recovery.",
+        "problem": None,
+        "desired_behavior": None,
+    }
+    assert observation.steps == (step,)
+    with pytest.raises(TypeError):
+        observation.behavioral_feedback["success"] = "mutated"  # type: ignore[index]
+
+
+def test_inference_step_audit_rejects_non_string_output_digest() -> None:
+    with pytest.raises(ValueError, match="raw_output_digest"):
+        InferenceStepAudit(
+            phase="merge",
+            artifact_id="merge/reviewer/rubric",
+            requested_model="judge-1",
+            resolved_model="judge-1",
+            usage={},
+            output_mode="json_schema",
+            schema_name="merged_verdict",
+            schema_fallback_reason=None,
+            transport_request_count=1,
+            raw_output_digest=1,  # type: ignore[arg-type]
+        )
+
+
+def test_inference_step_audit_requires_a_strict_reused_flag() -> None:
+    with pytest.raises(ValueError, match="reused must be a boolean"):
+        InferenceStepAudit(
+            phase="merge",
+            artifact_id="merge/reviewer/rubric",
+            requested_model="judge-1",
+            resolved_model="judge-1",
+            usage={},
+            output_mode="json_schema",
+            schema_name="merged_verdict",
+            schema_fallback_reason=None,
+            transport_request_count=1,
+            raw_output_digest="a" * 64,
+            reused=1,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    ("output_mode", "fallback_reason"),
+    [
+        ("json_schema", "schema_output_unsupported"),
+        ("json_object", "schema_output_unsupported"),
+        ("json_object_fallback", None),
+        ("json_object_fallback", "provider said SENTINEL_PRIVATE_DETAIL"),
+    ],
+)
+def test_inference_step_audit_enforces_closed_schema_fallback_metadata(
+    output_mode: str,
+    fallback_reason: str | None,
+) -> None:
+    with pytest.raises(ValueError, match="schema fallback metadata is invalid"):
+        InferenceStepAudit(
+            phase="merge",
+            artifact_id="merge/reviewer/rubric",
+            requested_model="judge-1",
+            resolved_model="judge-1",
+            usage={},
+            output_mode=output_mode,
+            schema_name="merged_verdict",
+            schema_fallback_reason=fallback_reason,
+            transport_request_count=1,
+            raw_output_digest="a" * 64,
+        )
+
+
+def test_inference_step_audit_accepts_the_categorical_schema_fallback() -> None:
+    step = InferenceStepAudit(
+        phase="merge",
+        artifact_id="merge/reviewer/rubric",
+        requested_model="judge-1",
+        resolved_model="judge-1",
+        usage={},
+        output_mode="json_object_fallback",
+        schema_name="merged_verdict",
+        schema_fallback_reason="schema_output_unsupported",
+        transport_request_count=2,
+        raw_output_digest="a" * 64,
+    )
+
+    assert step.schema_fallback_reason == "schema_output_unsupported"
+
+
+def test_attempt_observation_enforces_closed_schema_fallback_metadata() -> None:
+    with pytest.raises(ValueError, match="schema fallback metadata is invalid"):
+        AttemptObservation(
+            status="failed",
+            resolved_model=None,
+            score=None,
+            rationale=None,
+            usage={},
+            error_type="ValueError",
+            message="failed",
+            output_mode="json_object_fallback",
+            schema_fallback_reason="SENTINEL_PRIVATE_DETAIL",
+        )

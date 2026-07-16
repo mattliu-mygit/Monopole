@@ -13,7 +13,7 @@ from weave_agent_signals.catalogs import (
     build_model_catalog,
     build_rubric_catalog,
 )
-from weave_agent_signals.judges.rubrics import RUBRICS, SESSION_RUBRICS
+from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.run_config import ModelDescriptor
 
 
@@ -57,7 +57,14 @@ def test_model_catalog_is_stable_role_oriented_and_immutable():
         if "proposal_evaluator" in model["supported_roles"]
     }
     for model in data["proposal"]["available_models"]:
-        assert set(model) == {"id", "label", "family", "backend", "supported_roles"}
+        assert set(model) == {
+            "id",
+            "label",
+            "family",
+            "backend",
+            "supported_roles",
+            "max_input_tokens",
+        }
         assert "proposal_writer" in model["supported_roles"]
 
     with pytest.raises(ValidationError):
@@ -89,6 +96,20 @@ def test_model_catalog_version_tracks_local_availability():
     )
 
 
+def test_every_model_declares_enough_input_context():
+    catalog = build_model_catalog(which=lambda _name: "/usr/bin/model")
+    models = [
+        *catalog.proposal.available_models,
+        *(
+            model
+            for backend in catalog.judge_backends.values()
+            for model in backend.available_models
+        ),
+    ]
+    assert models
+    assert all(model.max_input_tokens >= 128_000 for model in models)
+
+
 def test_model_catalog_version_tracks_recommendations_and_evaluator_order():
     base = build_model_catalog(which=_all_executables)
     cli = base.model_dump(mode="json")["judge_backends"]["cli"]
@@ -114,10 +135,7 @@ def test_rubric_catalog_is_stable_and_descriptors_have_exact_shape():
     _assert_sha256_version(first.catalog_version)
     data = first.model_dump(mode="json")
     assert set(data) == {"catalog_version", "rubrics"}
-    assert {descriptor["id"] for descriptor in data["rubrics"]} == {
-        *RUBRICS,
-        *SESSION_RUBRICS,
-    }
+    assert {descriptor["id"] for descriptor in data["rubrics"]} == set(SESSION_RUBRICS)
     for descriptor in data["rubrics"]:
         assert set(descriptor) == {
             "id",
@@ -127,13 +145,13 @@ def test_rubric_catalog_is_stable_and_descriptors_have_exact_shape():
             "content_digest",
             "pass_threshold",
         }
-        assert descriptor["evaluation_unit"] in {"episode", "session"}
-        assert descriptor["version"] == "v3"
+        assert descriptor["evaluation_unit"] == "session"
+        assert descriptor["version"] == "v4"
         _assert_sha256_version(descriptor["content_digest"])
 
 
 def test_rubric_and_catalog_digests_track_content_and_version_deterministically():
-    rubrics = [*RUBRICS.values(), *SESSION_RUBRICS.values()]
+    rubrics = list(SESSION_RUBRICS.values())
     base = build_rubric_catalog(rubrics=rubrics)
     repeated = build_rubric_catalog(rubrics=rubrics)
     threshold_changed = build_rubric_catalog(
@@ -194,4 +212,18 @@ def test_model_descriptor_serializes_only_its_public_fields():
         "family": "example-family",
         "backend": "example-backend",
         "supported_roles": ["judge"],
+        "max_input_tokens": 128_000,
     }
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "128000"])
+def test_model_descriptor_rejects_invalid_input_token_limits(value):
+    with pytest.raises(ValidationError):
+        ModelDescriptor(
+            id="example",
+            label="Example",
+            family="example-family",
+            backend="example-backend",
+            supported_roles=("judge",),
+            max_input_tokens=value,
+        )

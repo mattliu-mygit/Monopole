@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from types import MappingProxyType
 
 from weave_agent_signals.judges.families import model_family
-from weave_agent_signals.judges.rubrics import RUBRICS, SESSION_RUBRICS, Rubric
+from weave_agent_signals.judges.rubrics import SESSION_RUBRICS, Rubric
 from weave_agent_signals.run_config import (
     MODEL_CATALOG_SCHEMA_VERSION,
     RUBRIC_CATALOG_SCHEMA_VERSION,
@@ -52,6 +52,7 @@ _MODEL_DESCRIPTORS = (
         family="anthropic",
         backend="cli",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=128_000,
     ),
     ModelDescriptor(
         id="gpt-5.6-sol",
@@ -59,6 +60,7 @@ _MODEL_DESCRIPTORS = (
         family="openai",
         backend="cli",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=128_000,
     ),
     ModelDescriptor(
         id="claude-haiku-4-5",
@@ -66,6 +68,7 @@ _MODEL_DESCRIPTORS = (
         family="anthropic",
         backend="cli",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=128_000,
     ),
     ModelDescriptor(
         id="gpt-oss-20b",
@@ -73,6 +76,7 @@ _MODEL_DESCRIPTORS = (
         family="openai",
         backend="wandb",
         supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=128_000,
     ),
     ModelDescriptor(
         id="Llama-3.1-8B",
@@ -80,6 +84,7 @@ _MODEL_DESCRIPTORS = (
         family="meta",
         backend="wandb",
         supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=128_000,
     ),
     ModelDescriptor(
         id="granite-4.1-8b",
@@ -87,6 +92,7 @@ _MODEL_DESCRIPTORS = (
         family="ibm",
         backend="wandb",
         supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=128_000,
     ),
     ModelDescriptor(
         id="gpt-oss-120b",
@@ -94,6 +100,7 @@ _MODEL_DESCRIPTORS = (
         family="openai",
         backend="wandb",
         supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=128_000,
     ),
     ModelDescriptor(
         id="gpt-4o-mini",
@@ -101,6 +108,7 @@ _MODEL_DESCRIPTORS = (
         family="openai",
         backend="openai",
         supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=128_000,
     ),
     ModelDescriptor(
         id="gpt-4o",
@@ -108,6 +116,7 @@ _MODEL_DESCRIPTORS = (
         family="openai",
         backend="openai",
         supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=128_000,
     ),
 )
 
@@ -421,7 +430,7 @@ def build_rubric_catalog(
     """Build descriptors from the rubric objects that remain the prompt source."""
 
     if rubrics is None:
-        source = [*RUBRICS.values(), *SESSION_RUBRICS.values()]
+        source = list(SESSION_RUBRICS.values())
     elif isinstance(rubrics, Mapping):
         source = list(rubrics.values())
     else:
@@ -432,7 +441,7 @@ def build_rubric_catalog(
     for rubric in source:
         if rubric.scorer_name in seen:
             raise ValueError(f"duplicate rubric ID: {rubric.scorer_name}")
-        if rubric.evaluation_unit not in {"episode", "session"}:
+        if rubric.evaluation_unit != "session":
             raise ValueError(
                 f"rubric {rubric.scorer_name} has invalid evaluation unit: {rubric.evaluation_unit}"
             )

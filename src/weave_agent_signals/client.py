@@ -597,7 +597,7 @@ class WeaveClient:
                 conversation_id=conversation_id,
                 include_details=False,
             ),
-            key=lambda turn: turn.started_at,
+            key=lambda turn: (turn.started_at, turn.trace_id),
         )
         return SessionView(
             conversation_id=conversation_id,

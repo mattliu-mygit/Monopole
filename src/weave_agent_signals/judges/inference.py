@@ -23,6 +23,7 @@ OPENAI_BASE = "https://api.openai.com/v1"
 
 DEFAULT_ENTITY = "weave-team"
 DEFAULT_PROJECT = "agent-sessions"
+SCHEMA_FALLBACK_UNSUPPORTED = "schema_output_unsupported"
 
 
 @dataclass(frozen=True)
@@ -189,10 +190,19 @@ def _http_schema_rejection_reason(error: httpx.HTTPStatusError) -> str | None:
         "unknown_parameter",
         "unsupported_response_format",
     }:
-        return " ".join(reason.split())[:500]
+        return SCHEMA_FALLBACK_UNSUPPORTED
     if _explicit_schema_rejection_reason(message) is None:
         return None
-    return " ".join(reason.split())[:500]
+    return SCHEMA_FALLBACK_UNSUPPORTED
+
+
+def _add_transport_request_count(error: Exception, additional: int) -> None:
+    """Attach a cumulative safe transport-attempt count to a raised error."""
+
+    current = getattr(error, "_transport_request_count", 0)
+    if type(current) is not int or current < 0:
+        current = 0
+    error._transport_request_count = current + additional  # type: ignore[attr-defined]
 
 
 def _resolve_backend(
@@ -280,7 +290,11 @@ class InferenceClient:
             except httpx.HTTPStatusError as error:
                 error._transport_request_count = attempt + 1  # type: ignore[attr-defined]
                 raise
-            return resp.json(), attempt + 1
+            try:
+                return resp.json(), attempt + 1
+            except ValueError as error:
+                _add_transport_request_count(error, attempt + 1)
+                raise
         raise AssertionError("HTTP retry loop exhausted without a response")
 
     def chat(
@@ -302,18 +316,22 @@ class InferenceClient:
 
         data, request_count = self._post_with_retry("/chat/completions", body)
 
-        choice = data["choices"][0]
-        usage = data.get("usage", {})
-        content = choice["message"]["content"]
-        if not isinstance(content, str):
-            content = ""
-        return JudgeResponse(
-            content=content,
-            model=data.get("model", model),
-            usage=usage if isinstance(usage, Mapping) else {},
-            transport_request_count=request_count,
-            raw_output_digest=_raw_output_digest(content),
-        )
+        try:
+            choice = data["choices"][0]
+            usage = data.get("usage", {})
+            content = choice["message"]["content"]
+            if not isinstance(content, str):
+                content = ""
+            return JudgeResponse(
+                content=content,
+                model=data.get("model", model),
+                usage=usage if isinstance(usage, Mapping) else {},
+                transport_request_count=request_count,
+                raw_output_digest=_raw_output_digest(content),
+            )
+        except Exception as error:
+            _add_transport_request_count(error, request_count)
+            raise
 
     def chat_json(
         self,
@@ -353,13 +371,17 @@ class InferenceClient:
             if fallback_reason is None:
                 raise
             schema_request_count = getattr(error, "_transport_request_count", 1)
-            resp = self.chat(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                response_format={"type": "json_object"},
-            )
+            try:
+                resp = self.chat(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    response_format={"type": "json_object"},
+                )
+            except Exception as fallback_error:
+                _add_transport_request_count(fallback_error, schema_request_count)
+                raise
 
         if fallback_reason is not None:
             resp.output_mode = "json_object_fallback"

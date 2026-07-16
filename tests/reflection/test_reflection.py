@@ -132,7 +132,7 @@ def _evaluator_client(*scores: float) -> SequenceClient:
 def _feedback() -> list[dict[str, Any]]:
     return [
         {
-            "feedback_type": "weave_agent_signals.judge.verification",
+            "feedback_type": "weave_agent_signals.outcome.test",
             "payload": {
                 "rating": 0.25,
                 "tags": ["missing_verification"],
@@ -842,6 +842,10 @@ def test_reflection_requires_at_least_one_finite_rated_signal():
         {"feedback_type": "bad.bool", "payload": {"rating": True}},
         {"feedback_type": "bad.nan", "payload": {"rating": float("nan")}},
         {"feedback_type": "bad.range", "payload": {"rating": 1.01}},
+        {
+            "feedback_type": "weave_agent_signals.judge.verification",
+            "payload": {"rating": 0.5, "details": {"evaluation_unit": "episode"}},
+        },
     ]
 
     with pytest.raises(ReflectionEvaluationError, match="valid rated signal"):

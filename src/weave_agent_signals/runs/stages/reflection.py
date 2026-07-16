@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from weave_agent_signals.judges.inference import ChatClient, InferenceCancelled
+from weave_agent_signals.patterns import is_evaluation_feedback_eligible
 from weave_agent_signals.run_config import EffectiveRunConfig, ModelDescriptor
 from weave_agent_signals.runs.bundles import BundleSnapshot
 from weave_agent_signals.runs.progress import ReflectionProgressRecorder
@@ -204,9 +205,7 @@ def _selected_feedback(
     selected = [
         item
         for item in records
-        if item.get("weave_ref") in valid_refs
-        and isinstance(item.get("feedback_type"), str)
-        and item["feedback_type"].startswith("weave_agent_signals.")
+        if item.get("weave_ref") in valid_refs and is_evaluation_feedback_eligible(item)
     ]
     identified = [(item, _feedback_identity(item)) for item in selected]
     identified.sort(

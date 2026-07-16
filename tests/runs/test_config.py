@@ -9,6 +9,7 @@ from weave_agent_signals.run_config import (
     RUBRIC_CATALOG_SCHEMA_VERSION,
     EffectiveRunConfig,
     EvaluatedModelIdentity,
+    JudgingContextPolicy,
     ModelDescriptor,
     RunConfig,
     resolve_run_config,
@@ -135,6 +136,43 @@ def _catalog_request(**changes):
     return models, rubrics, request
 
 
+def test_effective_config_pins_sliding_window_context_policy():
+    models, rubrics, request = _catalog_request()
+    effective = resolve_run_config(request, model_catalog=models, rubric_catalog=rubrics)
+    assert effective.schema_version == "2"
+    assert effective.pipeline_version == "4"
+    assert effective.judging_context.model_dump(mode="json") == {
+        "contract_version": "1",
+        "target_input_tokens": 100_000,
+        "prompt_reserve_tokens": 6_000,
+        "output_reserve_tokens": 4_000,
+        "safety_reserve_tokens": 8_000,
+        "digest_max_tokens": 1_000,
+        "finding_max_tokens": 750,
+        "overlap_turns": 1,
+        "max_chunks": 40,
+        "token_estimator": "utf8_bytes_div_3",
+    }
+
+
+def test_judging_context_policy_requires_raw_input_capacity():
+    with pytest.raises(ValidationError, match="must leave raw input capacity"):
+        JudgingContextPolicy(target_input_tokens=19_750)
+
+
+def test_effective_config_rejects_selected_model_below_context_target():
+    models, rubrics, request = _catalog_request()
+    effective = resolve_run_config(request, model_catalog=models, rubric_catalog=rubrics)
+    artifact = effective.model_dump(mode="json")
+    artifact["models"]["proposal_writer"]["max_input_tokens"] = 99_999
+
+    with pytest.raises(
+        ValidationError,
+        match="selected model max_input_tokens is below judging_context.target_input_tokens",
+    ):
+        EffectiveRunConfig.model_validate(artifact)
+
+
 def test_resolve_run_config_pins_exact_order_descriptors_and_pipeline_version():
     models, rubrics, request = _catalog_request(
         judge_models=("gpt-5.6-sol", "claude-sonnet-5"),
@@ -147,7 +185,7 @@ def test_resolve_run_config_pins_exact_order_descriptors_and_pipeline_version():
         rubric_catalog=rubrics,
     )
 
-    assert effective.pipeline_version == PIPELINE_VERSION == "3"
+    assert effective.pipeline_version == PIPELINE_VERSION == "4"
     assert [judge.id for judge in effective.models.judges] == [
         "gpt-5.6-sol",
         "claude-sonnet-5",
@@ -161,11 +199,11 @@ def test_resolve_run_config_pins_exact_order_descriptors_and_pipeline_version():
     assert restored == effective
 
 
-def test_pipeline_bump_keeps_shape_only_config_schema_versions_unchanged():
-    assert MODEL_CATALOG_SCHEMA_VERSION == "1"
+def test_context_policy_bump_updates_shape_schema_versions():
+    assert MODEL_CATALOG_SCHEMA_VERSION == "2"
     assert RUBRIC_CATALOG_SCHEMA_VERSION == "1"
-    assert EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION == "1"
-    assert EffectiveRunConfig.model_fields["schema_version"].default == "1"
+    assert EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION == "2"
+    assert EffectiveRunConfig.model_fields["schema_version"].default == "2"
 
 
 def test_resolve_run_config_defaults_empty_rubrics_to_exact_catalog_snapshot():

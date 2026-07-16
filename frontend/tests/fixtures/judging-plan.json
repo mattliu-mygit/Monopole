@@ -1,0 +1,432 @@
+{
+  "plan_id": "sha256:c6b778389dc0bb1a7e028ca9a342d4fa5737c9c8edccbb47bc11cbd967626e4c",
+  "schema_version": "2",
+  "cohort_id": "cohort-1",
+  "review_depth": "selective",
+  "second_opinion_margin": 0.1,
+  "requested_rubrics": [
+    {
+      "id": "judge.verification",
+      "label": "Verification Discipline",
+      "evaluation_unit": "session",
+      "version": "v4",
+      "content_digest": "sha256:0ab923e793746072a990ded875108dd4cff701ce0bb9e5a4691babc2a8585326",
+      "pass_threshold": 0.5
+    }
+  ],
+  "input_policy": {
+    "contract_version": "1",
+    "target_input_tokens": 100000,
+    "prompt_reserve_tokens": 6000,
+    "output_reserve_tokens": 4000,
+    "safety_reserve_tokens": 8000,
+    "digest_max_tokens": 1000,
+    "finding_max_tokens": 750,
+    "overlap_turns": 1,
+    "max_chunks": 40,
+    "token_estimator": "utf8_bytes_div_3"
+  },
+  "protocol": {
+    "protocol_version": "2",
+    "prompt_templates": {
+      "digest_system": "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. Preserve important actions, results, omissions, corrections, and constraints. Cite only allowed evidence IDs. Return the requested JSON.",
+      "digest_user": "EXPECTED_CHUNK_ID: {chunk_id}\nEXAMPLE_EVIDENCE_ID: {example_evidence_id}\nALLOWED_EVIDENCE_IDS: {allowed_evidence_ids}\nRAW_CHUNK:\n{raw_text}",
+      "window_system": "PHASE: window\n{rubric_system}\nReturn bounded findings, not a score. Cite only evidence IDs visible in the active raw window.",
+      "window_user": "EXPECTED_WINDOW_ID: {window_id}\nEXAMPLE_EVIDENCE_ID: {example_evidence_id}\nALLOWED_FINDING_EVIDENCE_IDS: {allowed_evidence_ids}\nRUBRIC_CRITERIA:\n{rubric_criteria}\n{sections}",
+      "merge_system": "PHASE: merge\n{rubric_system}\nReturn one anchored session verdict with evidence-cited behavioral feedback.",
+      "merge_user": "COVERAGE_MANIFEST: {coverage_manifest}\nORDERED_CHUNK_DIGESTS: {digest_context}\nORDERED_DEDUPLICATED_FINDINGS: {finding_context}\nALLOWED_EVIDENCE_IDS: {allowed_evidence_ids}\nRUBRIC_CRITERIA:\n{rubric_criteria}"
+    },
+    "schemas": {
+      "digest": {
+        "name": "chunk_digest",
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "schema_version": {
+              "const": 1,
+              "title": "Schema Version",
+              "type": "integer"
+            },
+            "chunk_id": {
+              "title": "Chunk Id",
+              "type": "string"
+            },
+            "text": {
+              "title": "Text",
+              "type": "string"
+            },
+            "evidence_ids": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Evidence Ids",
+              "type": "array"
+            }
+          },
+          "required": [
+            "schema_version",
+            "chunk_id",
+            "text",
+            "evidence_ids"
+          ],
+          "title": "ChunkDigest",
+          "type": "object"
+        }
+      },
+      "window": {
+        "name": "window_findings",
+        "schema": {
+          "$defs": {
+            "WindowFinding": {
+              "additionalProperties": false,
+              "properties": {
+                "finding_id": {
+                  "title": "Finding Id",
+                  "type": "string"
+                },
+                "polarity": {
+                  "enum": [
+                    "positive",
+                    "negative"
+                  ],
+                  "title": "Polarity",
+                  "type": "string"
+                },
+                "observation": {
+                  "title": "Observation",
+                  "type": "string"
+                },
+                "evidence_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Evidence Ids",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "finding_id",
+                "polarity",
+                "observation",
+                "evidence_ids"
+              ],
+              "title": "WindowFinding",
+              "type": "object"
+            }
+          },
+          "additionalProperties": false,
+          "properties": {
+            "schema_version": {
+              "const": 1,
+              "title": "Schema Version",
+              "type": "integer"
+            },
+            "window_id": {
+              "title": "Window Id",
+              "type": "string"
+            },
+            "findings": {
+              "items": {
+                "$ref": "#/$defs/WindowFinding"
+              },
+              "maxItems": 4,
+              "title": "Findings",
+              "type": "array"
+            }
+          },
+          "required": [
+            "schema_version",
+            "window_id",
+            "findings"
+          ],
+          "title": "WindowFindings",
+          "type": "object"
+        }
+      },
+      "merge": {
+        "name": "merged_verdict",
+        "schema": {
+          "$defs": {
+            "BehavioralFeedback": {
+              "additionalProperties": false,
+              "properties": {
+                "success": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Success"
+                },
+                "problem": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Problem"
+                },
+                "desired_behavior": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Desired Behavior"
+                }
+              },
+              "required": [
+                "success",
+                "problem",
+                "desired_behavior"
+              ],
+              "title": "BehavioralFeedback",
+              "type": "object"
+            }
+          },
+          "additionalProperties": false,
+          "properties": {
+            "schema_version": {
+              "const": 1,
+              "title": "Schema Version",
+              "type": "integer"
+            },
+            "status": {
+              "enum": [
+                "scored",
+                "insufficient_evidence"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "score": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Score"
+            },
+            "rationale": {
+              "title": "Rationale",
+              "type": "string"
+            },
+            "evidence_ids": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Evidence Ids",
+              "type": "array"
+            },
+            "feedback": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BehavioralFeedback"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "schema_version",
+            "status",
+            "score",
+            "rationale",
+            "evidence_ids",
+            "feedback"
+          ],
+          "title": "MergedVerdict",
+          "type": "object"
+        }
+      }
+    }
+  },
+  "sessions": [
+    {
+      "conversation_id": "session-1",
+      "turn_count": 2,
+      "raw_coverage_trace_ids": [
+        "trace-1",
+        "trace-2"
+      ],
+      "rubrics": [
+        {
+          "id": "judge.verification",
+          "label": "Verification Discipline",
+          "evaluation_unit": "session",
+          "version": "v4",
+          "content_digest": "sha256:0ab923e793746072a990ded875108dd4cff701ce0bb9e5a4691babc2a8585326",
+          "pass_threshold": 0.5,
+          "minimum_reviewer_attempts": 1,
+          "maximum_reviewer_attempts": 2
+        }
+      ],
+      "reviewers": [
+        {
+          "ordinal": 1,
+          "judge": {
+            "id": "judge-a",
+            "label": "Judge A",
+            "family": "family-a",
+            "backend": "cli",
+            "supported_roles": [
+              "judge"
+            ],
+            "max_input_tokens": 128000,
+            "role": "judge",
+            "position": 1
+          },
+          "window_plan": {
+            "plan_id": "sha256:3d4cad9a08c2864ea29e4681d40fcb70fa9e480b89fde612e7f12656c4603f3f",
+            "contract_version": "1",
+            "conversation_id": "session-1",
+            "input_cap_tokens": 100000,
+            "raw_budget_tokens": 81000,
+            "chunk_count": 1,
+            "overlap_turns": 1,
+            "token_estimator": "utf8_bytes_div_3",
+            "merge_input_tokens": 19750,
+            "raw_turns": [
+              {
+                "trace_id": "trace-1",
+                "position": 1,
+                "estimated_tokens": 159,
+                "raw_digest": "sha256:4e9e3baa7a804d8a1dfbda252d2c4eb6340b4da6dac3c6ace9f01b97f43c6c99"
+              },
+              {
+                "trace_id": "trace-2",
+                "position": 2,
+                "estimated_tokens": 159,
+                "raw_digest": "sha256:c24fc57ebad97afe398989dbf764c572c82c4dd40f2d58d4dfead4761bc894fc"
+              }
+            ],
+            "raw_coverage_trace_ids": [
+              "trace-1",
+              "trace-2"
+            ],
+            "windows": [
+              {
+                "window_id": "sha256:2b1404d7275509f557fc7f26fa465d7778ee148e03421bcffde76e1485278907",
+                "index": 1,
+                "core_trace_ids": [
+                  "trace-1",
+                  "trace-2"
+                ],
+                "raw_trace_ids": [
+                  "trace-1",
+                  "trace-2"
+                ],
+                "raw_turn_digests": [
+                  "sha256:4e9e3baa7a804d8a1dfbda252d2c4eb6340b4da6dac3c6ace9f01b97f43c6c99",
+                  "sha256:c24fc57ebad97afe398989dbf764c572c82c4dd40f2d58d4dfead4761bc894fc"
+                ],
+                "raw_tokens": 319
+              }
+            ]
+          },
+          "work_bounds": {
+            "digest_calls": 1,
+            "window_calls_per_rubric": 1,
+            "merge_calls_per_rubric": 1
+          }
+        },
+        {
+          "ordinal": 2,
+          "judge": {
+            "id": "judge-b",
+            "label": "Judge B",
+            "family": "family-b",
+            "backend": "cli",
+            "supported_roles": [
+              "judge"
+            ],
+            "max_input_tokens": 128000,
+            "role": "judge",
+            "position": 2
+          },
+          "window_plan": {
+            "plan_id": "sha256:3d4cad9a08c2864ea29e4681d40fcb70fa9e480b89fde612e7f12656c4603f3f",
+            "contract_version": "1",
+            "conversation_id": "session-1",
+            "input_cap_tokens": 100000,
+            "raw_budget_tokens": 81000,
+            "chunk_count": 1,
+            "overlap_turns": 1,
+            "token_estimator": "utf8_bytes_div_3",
+            "merge_input_tokens": 19750,
+            "raw_turns": [
+              {
+                "trace_id": "trace-1",
+                "position": 1,
+                "estimated_tokens": 159,
+                "raw_digest": "sha256:4e9e3baa7a804d8a1dfbda252d2c4eb6340b4da6dac3c6ace9f01b97f43c6c99"
+              },
+              {
+                "trace_id": "trace-2",
+                "position": 2,
+                "estimated_tokens": 159,
+                "raw_digest": "sha256:c24fc57ebad97afe398989dbf764c572c82c4dd40f2d58d4dfead4761bc894fc"
+              }
+            ],
+            "raw_coverage_trace_ids": [
+              "trace-1",
+              "trace-2"
+            ],
+            "windows": [
+              {
+                "window_id": "sha256:2b1404d7275509f557fc7f26fa465d7778ee148e03421bcffde76e1485278907",
+                "index": 1,
+                "core_trace_ids": [
+                  "trace-1",
+                  "trace-2"
+                ],
+                "raw_trace_ids": [
+                  "trace-1",
+                  "trace-2"
+                ],
+                "raw_turn_digests": [
+                  "sha256:4e9e3baa7a804d8a1dfbda252d2c4eb6340b4da6dac3c6ace9f01b97f43c6c99",
+                  "sha256:c24fc57ebad97afe398989dbf764c572c82c4dd40f2d58d4dfead4761bc894fc"
+                ],
+                "raw_tokens": 319
+              }
+            ]
+          },
+          "work_bounds": {
+            "digest_calls": 1,
+            "window_calls_per_rubric": 1,
+            "merge_calls_per_rubric": 1
+          }
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "sessions_planned": 1,
+    "turns_considered": 2,
+    "windows_planned": 2,
+    "planned_rubrics": 1,
+    "minimum_reviewer_attempts": 1,
+    "maximum_reviewer_attempts": 2,
+    "maximum_digest_calls": 2,
+    "maximum_window_calls": 2,
+    "maximum_merge_calls": 2
+  }
+}

@@ -11,6 +11,7 @@ from weave_agent_signals.patterns import (
     coaching_digest,
     detect_config_regressions,
     detect_regressions,
+    is_evaluation_feedback_eligible,
 )
 
 
@@ -39,24 +40,14 @@ def _fb(
     }
 
 
-def _diagnostic_fb(scorer, rating, **kwargs):
-    feedback = _fb(scorer, rating, **kwargs)
-    feedback["payload"]["details"].update(
-        {
-            "evaluation_unit": "episode",
-            "selection_kind": "deterministic_trigger",
-            "selection_reasons": ["tool_error"],
-        }
-    )
-    return feedback
-
-
 def _session_judge_fb(
     scorer,
     rating,
     *,
     review_status,
     context_overrides=None,
+    behavioral_feedback=None,
+    evidence_ids=None,
     **kwargs,
 ):
     feedback = _fb(scorer, rating, **kwargs)
@@ -71,9 +62,23 @@ def _session_judge_fb(
             "review_policy_version": "2",
             "second_opinion_margin": 0.1,
             "requested_judge_models": ["judge-a", "judge-b", "judge-c"],
+            "behavioral_feedback": behavioral_feedback or [],
+            "evidence_trace_ids": evidence_ids or [],
         }
     )
     feedback["payload"]["details"].update(context_overrides or {})
+    return feedback
+
+
+def _legacy_episode_judge_fb(scorer, rating, **kwargs):
+    feedback = _fb(scorer, rating, **kwargs)
+    feedback["payload"]["details"].update(
+        {
+            "evaluation_unit": "episode",
+            "selection_kind": "deterministic_trigger",
+            "selection_reasons": ["tool_error"],
+        }
+    )
     return feedback
 
 
@@ -127,15 +132,35 @@ def test_coaching_digest_counts_only_strict_numeric_ratings():
     assert "n=1" in summary_line
 
 
-def test_population_summary_excludes_trigger_selected_episode_diagnostics():
-    result = aggregate_scores(
-        [
-            _fb("outcome.test", 1.0),
-            _diagnostic_fb("judge.verification", 0.25),
-        ]
+def test_evaluation_feedback_eligibility_is_shared_by_deterministic_and_judge_scores():
+    deterministic = _fb("outcome.test", 0.75)
+    current_judge = _session_judge_fb(
+        "judge.session_outcome",
+        0.25,
+        review_status="complete",
     )
+    invalid_deterministic = _fb("outcome.test", float("nan"))
+    legacy_judge = _legacy_episode_judge_fb("judge.session_outcome", 1.0)
 
-    assert set(result) == {"outcome.test"}
+    assert is_evaluation_feedback_eligible(deterministic)
+    assert is_evaluation_feedback_eligible(current_judge)
+    assert not is_evaluation_feedback_eligible(invalid_deterministic)
+    assert not is_evaluation_feedback_eligible(legacy_judge)
+
+
+@pytest.mark.parametrize(
+    "feedback",
+    [
+        {"feedback_type": 7, "payload": {"rating": 1.0}},
+        {"feedback_type": "weave_agent_signals.outcome.test", "payload": "invalid"},
+        {
+            "feedback_type": "weave_agent_signals.judge.session_outcome",
+            "payload": {"rating": 1.0, "details": "invalid"},
+        },
+    ],
+)
+def test_evaluation_feedback_eligibility_rejects_malformed_records(feedback):
+    assert not is_evaluation_feedback_eligible(feedback)
 
 
 def test_population_summary_excludes_noncomplete_session_judgments():
@@ -158,7 +183,10 @@ def test_population_summary_excludes_noncomplete_session_judgments():
     [
         {"rubric_version": "v3"},
         {"rubric_threshold": 0.6},
-        {"review_depth": "full_panel"},
+        {
+            "review_depth": "full_panel",
+            "second_opinion_margin": None,
+        },
         {"review_policy_version": "3"},
         {"second_opinion_margin": 0.2},
         {"requested_judge_models": ["judge-b", "judge-a", "judge-c"]},
@@ -248,6 +276,121 @@ def test_session_judge_without_review_status_is_audit_only():
     incomplete["payload"]["granularity"] = "session"
 
     assert aggregate_scores([incomplete]) == {}
+
+
+@pytest.mark.parametrize(
+    ("granularity", "evaluation_unit"),
+    [
+        ("turn", "episode"),
+        ("turn", "turn"),
+        ("turn", None),
+        (None, None),
+    ],
+)
+def test_non_session_judge_records_are_audit_only(granularity, evaluation_unit):
+    feedback = _fb("judge.verification", 1.0)
+    if granularity is None:
+        del feedback["payload"]["granularity"]
+    else:
+        feedback["payload"]["granularity"] = granularity
+    if evaluation_unit is not None:
+        feedback["payload"]["details"]["evaluation_unit"] = evaluation_unit
+
+    assert aggregate_scores([feedback]) == {}
+
+
+def test_legacy_episode_judgments_do_not_enter_any_ordinary_analytics():
+    current = _session_judge_fb(
+        "judge.verification",
+        0.8,
+        review_status="complete",
+        config_version="current",
+        tags=["current-only"],
+        scored_at="2026-07-01T00:00:00",
+    )
+    legacy = [
+        _legacy_episode_judge_fb(
+            "judge.verification",
+            rating,
+            config_version=config,
+            tags=["legacy-only"],
+            conversation_id=f"legacy-{index}",
+            scored_at=scored_at,
+        )
+        for index, (rating, config, scored_at) in enumerate(
+            (
+                (1.0, "legacy-old", "2026-07-02T00:00:00"),
+                (1.0, "legacy-old", "2026-07-03T00:00:00"),
+                (0.0, "legacy-new", "2026-07-10T00:00:00"),
+                (0.0, "legacy-new", "2026-07-11T00:00:00"),
+            )
+        )
+    ]
+    feedback = [current, *legacy]
+
+    summaries = aggregate_scores(feedback)
+    assert len(summaries) == 1
+    assert next(iter(summaries.values())).mean == 0.8
+    assert [result.config_version for result in ab_leaderboard(feedback)] == ["current"]
+    assert detect_regressions(feedback) == []
+    assert detect_config_regressions(feedback, min_samples=2) == []
+    digest = coaching_digest(feedback)
+    assert "current-only" in digest
+    assert "legacy-only" not in digest
+
+
+@pytest.mark.parametrize(
+    "context_overrides",
+    [
+        {"rubric_threshold": -0.1},
+        {"rubric_threshold": 1.1},
+        {"review_depth": "selective", "second_opinion_margin": None},
+        {"review_depth": "selective", "second_opinion_margin": 0.51},
+        {
+            "review_depth": "primary",
+            "second_opinion_margin": 0.1,
+            "requested_judge_models": ["judge-a"],
+        },
+        {
+            "review_depth": "primary",
+            "second_opinion_margin": None,
+            "requested_judge_models": ["judge-a", "judge-b"],
+        },
+        {
+            "review_depth": "full_panel",
+            "second_opinion_margin": None,
+            "requested_judge_models": ["judge-a", "judge-b"],
+        },
+        {"requested_judge_models": ["judge-a", "judge-a"]},
+        {"requested_judge_models": ["judge-a", " "]},
+        {"requested_judge_models": ("judge-a", "judge-b")},
+    ],
+)
+def test_invalid_session_review_policy_context_is_audit_only(context_overrides):
+    feedback = _session_judge_fb(
+        "judge.session_outcome",
+        0.2,
+        review_status="complete",
+        context_overrides=context_overrides,
+    )
+
+    assert aggregate_scores([feedback]) == {}
+
+
+@pytest.mark.parametrize(
+    ("granularity", "evaluation_unit"),
+    [("turn", "session"), ("session", "turn")],
+)
+def test_conflicting_session_markers_are_audit_only(granularity, evaluation_unit):
+    feedback = _session_judge_fb(
+        "judge.session_outcome",
+        0.2,
+        review_status="complete",
+    )
+    feedback["payload"]["granularity"] = granularity
+    feedback["payload"]["details"]["evaluation_unit"] = evaluation_unit
+
+    assert aggregate_scores([feedback]) == {}
 
 
 def test_noncomplete_session_judgments_do_not_enter_ab_or_trend_analysis():
@@ -372,16 +515,6 @@ def test_detect_regressions_no_change():
     assert detect_regressions(feedback) == []
 
 
-def test_trigger_selected_episode_scores_are_not_used_as_population_trends():
-    feedback = [
-        _diagnostic_fb("judge.error_recovery", 1.0, scored_at="2026-07-01T00:00:00"),
-        _diagnostic_fb("judge.error_recovery", 1.0, scored_at="2026-07-02T00:00:00"),
-        _diagnostic_fb("judge.error_recovery", 0.0, scored_at="2026-07-08T00:00:00"),
-        _diagnostic_fb("judge.error_recovery", 0.0, scored_at="2026-07-09T00:00:00"),
-    ]
-    assert detect_regressions(feedback) == []
-
-
 def test_session_trends_do_not_compare_different_evaluation_contexts():
     older = [
         _session_judge_fb(
@@ -480,23 +613,6 @@ def test_detect_config_regressions_ignores_improvement():
     assert detect_config_regressions(old + new) == []
 
 
-def test_trigger_selected_episode_scores_are_not_used_for_ab_regression():
-    old = [
-        _diagnostic_fb(
-            "judge.verification", 1.0, config_version="v_old", scored_at="2026-07-01T00:00:00"
-        )
-        for _ in range(6)
-    ]
-    new = [
-        _diagnostic_fb(
-            "judge.verification", 0.0, config_version="v_new", scored_at="2026-07-09T00:00:00"
-        )
-        for _ in range(6)
-    ]
-    assert detect_config_regressions(old + new) == []
-    assert ab_leaderboard(old + new) == []
-
-
 def test_config_regression_does_not_compare_different_session_evaluation_contexts():
     old = [
         _session_judge_fb(
@@ -515,7 +631,10 @@ def test_config_regression_does_not_compare_different_session_evaluation_context
             review_status="complete",
             config_version="v_new",
             scored_at="2026-07-09T00:00:00",
-            context_overrides={"review_depth": "full_panel"},
+            context_overrides={
+                "review_depth": "full_panel",
+                "second_opinion_margin": None,
+            },
         )
         for _ in range(6)
     ]
@@ -572,8 +691,10 @@ def test_coaching_digest_structure():
     feedback = [
         _fb("outcome.test", 1.0, tags=["pass"]),
         _fb("outcome.test", 0.0, tags=["fail", "timeout"]),
-        _fb("judge.verification", 0.8, tags=["verified"]),
-        _fb("judge.verification", 0.2, tags=["no_verification"]),
+        _session_judge_fb("judge.verification", 0.8, review_status="complete", tags=["verified"]),
+        _session_judge_fb(
+            "judge.verification", 0.2, review_status="complete", tags=["no_verification"]
+        ),
     ]
     digest = coaching_digest(feedback)
     assert "Summary" in digest
@@ -586,19 +707,202 @@ def test_coaching_digest_empty():
     assert "No scores" in digest
 
 
-def test_coaching_digest_labels_trigger_selected_scores_as_diagnostics():
+def test_coaching_digest_includes_bounded_low_score_behavioral_feedback():
     digest = coaching_digest(
         [
-            _fb("outcome.test", 1.0),
-            _diagnostic_fb("judge.verification", 0.25),
+            _session_judge_fb(
+                "judge.verification",
+                0.25,
+                review_status="complete",
+                conversation_id="session-1",
+                behavioral_feedback=[
+                    {
+                        "success": "It changed approach after the failure.",
+                        "problem": "Completion was claimed before the final check.",
+                        "desired_behavior": "Run relevant checks after the final change.",
+                    }
+                ],
+                evidence_ids=["trace-7"],
+            ),
         ]
     )
 
-    assert "Selected episode diagnostics" in digest
-    assert "not a population estimate" in digest
-    assert "judge.verification" in digest
-    diagnostic_line = next(line for line in digest.splitlines() if "judge.verification" in line)
-    assert "95% CI" not in diagnostic_line
+    assert "## Behavioral feedback" in digest
+    assert "Completion was claimed before the final check." in digest
+    assert "Run relevant checks after the final change." in digest
+    assert "It changed approach after the failure." in digest
+    assert "session-1" in digest
+    assert "trace-7" in digest
+
+
+def test_behavioral_feedback_is_complete_low_scoring_bounded_and_deterministic():
+    examples = []
+    for index, rating in enumerate((0.4, 0.1, 0.1, 0.2, 0.0), start=1):
+        examples.append(
+            _session_judge_fb(
+                "judge.verification",
+                rating,
+                review_status="complete",
+                conversation_id=f"session-{index}",
+                scored_at=f"2026-07-0{index}T00:00:00",
+                behavioral_feedback=[
+                    {
+                        "success": None,
+                        "problem": f"problem-{index} " + "x" * 1000,
+                        "desired_behavior": f"desired-{index} " + "y" * 1000,
+                    }
+                ],
+                evidence_ids=[f"trace-{index}", "z" * 1000],
+            )
+        )
+    examples.extend(
+        [
+            _session_judge_fb(
+                "judge.verification",
+                0.0,
+                review_status=status,
+                conversation_id=f"excluded-{status}",
+                behavioral_feedback=[
+                    {
+                        "success": None,
+                        "problem": f"excluded {status}",
+                        "desired_behavior": "excluded desired",
+                    }
+                ],
+            )
+            for status in ("unresolved", "degraded")
+        ]
+    )
+    examples.append(
+        _session_judge_fb(
+            "judge.verification",
+            0.6,
+            review_status="complete",
+            conversation_id="above-pinned-threshold",
+            behavioral_feedback=[
+                {
+                    "success": None,
+                    "problem": "high score problem",
+                    "desired_behavior": "high score desired",
+                }
+            ],
+        )
+    )
+    digest = coaching_digest(examples)
+
+    assert digest.index("session-5") < digest.index("session-2") < digest.index("session-3")
+    assert "session-4" not in digest
+    assert "session-1" not in digest
+    assert "excluded unresolved" not in digest
+    assert "excluded degraded" not in digest
+    assert "above-pinned-threshold" not in digest
+    assert "x" * 500 not in digest
+    assert "z" * 500 not in digest
+
+
+def test_behavioral_feedback_uses_only_merged_fields_not_raw_or_findings():
+    feedback = _session_judge_fb(
+        "judge.verification",
+        0.2,
+        review_status="complete",
+        behavioral_feedback=[
+            {
+                "success": "   ",
+                "problem": "  missed   verification  ",
+                "desired_behavior": " rerun   checks ",
+            },
+            {
+                "success": None,
+                "problem": "missed verification",
+                "desired_behavior": "rerun checks",
+            },
+        ],
+        evidence_ids=["trace-1"],
+    )
+    feedback["payload"]["reason"] = "RAW CONVERSATION SECRET"
+    feedback["payload"]["details"]["attempts"] = [{"steps": [{"findings": "RAW WINDOW FINDING"}]}]
+
+    digest = coaching_digest([feedback])
+
+    assert "Problem: missed verification" in digest
+    assert "Desired behavior: rerun checks" in digest
+    assert digest.count("Problem: missed verification") == 1
+    assert "Success:" not in digest
+    assert "RAW CONVERSATION SECRET" not in digest
+    assert "RAW WINDOW FINDING" not in digest
+
+
+def test_behavioral_feedback_caps_and_authenticates_reviewer_items():
+    huge_feedback = [
+        {
+            "success": None,
+            "problem": "ignored malformed",
+            "desired_behavior": "ignored malformed desired",
+            "raw_window": "must not be accepted",
+        },
+        {
+            "success": None,
+            "problem": "reviewer two problem",
+            "desired_behavior": "reviewer two desired",
+        },
+        {
+            "success": None,
+            "problem": "reviewer three problem",
+            "desired_behavior": "reviewer three desired",
+        },
+    ] + [
+        {
+            "success": None,
+            "problem": f"excess problem {index}",
+            "desired_behavior": f"excess desired {index}",
+        }
+        for index in range(10_000)
+    ]
+    feedback = _session_judge_fb(
+        "judge.verification",
+        0.2,
+        review_status="complete",
+        behavioral_feedback=huge_feedback,
+    )
+
+    digest = coaching_digest([feedback])
+
+    assert "ignored malformed" not in digest
+    assert "reviewer two problem" in digest
+    assert "reviewer three problem" in digest
+    assert "excess problem" not in digest
+
+
+def test_behavioral_feedback_orders_offset_timestamps_chronologically_with_typed_fallbacks():
+    def example(session_id, started_at):
+        feedback = _session_judge_fb(
+            "judge.verification",
+            0.1,
+            review_status="complete",
+            conversation_id=session_id,
+            behavioral_feedback=[
+                {
+                    "success": None,
+                    "problem": f"problem {session_id}",
+                    "desired_behavior": f"desired {session_id}",
+                }
+            ],
+        )
+        feedback["payload"]["details"]["turn_started_at"] = started_at
+        return feedback
+
+    digest = coaching_digest(
+        [
+            example("invalid-dict", {"when": "later"}),
+            example("later-offset", "2026-07-15T01:00:00+00:00"),
+            example("earlier-offset", "2026-07-14T20:00:00-04:00"),
+            example("invalid-int", 7),
+        ]
+    )
+
+    assert digest.index("earlier-offset") < digest.index("later-offset")
+    assert "invalid-dict" in digest
+    assert "invalid-int" not in digest
 
 
 def test_coaching_digest_does_not_merge_session_evaluation_contexts():
@@ -650,13 +954,14 @@ def test_pass_rate_continuous_scorer_with_extreme_values():
 
 def test_aggregate_marks_continuous_scorer_non_binary():
     feedback = [
-        _fb("judge.verification", 0.0),
-        _fb("judge.verification", 0.5),
-        _fb("judge.verification", 1.0),
+        _session_judge_fb("judge.verification", 0.0, review_status="complete"),
+        _session_judge_fb("judge.verification", 0.5, review_status="complete"),
+        _session_judge_fb("judge.verification", 1.0, review_status="complete"),
     ]
     result = aggregate_scores(feedback)
-    assert result["judge.verification"].binary is False
-    assert result["judge.verification"].pass_rate is None
+    summary = next(iter(result.values()))
+    assert summary.binary is False
+    assert summary.pass_rate is None
 
 
 def test_aggregate_marks_binary_scorer():
