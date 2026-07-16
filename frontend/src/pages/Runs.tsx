@@ -25,6 +25,7 @@ function rangeSummary(run: RunSummary): string {
 function reviewLabel(state: RunReviewState): string {
   if (state === 'review-needed') return 'Review needed'
   if (state === 'promoted') return 'Promoted'
+  if (state === 'partial') return 'Partially applied'
   if (state === 'dismissed') return 'Dismissed'
   if (state === 'no-change') return 'No change'
   if (state === 'no-valid-proposal') return 'No valid proposal'
@@ -39,6 +40,8 @@ function ReviewBadge({ run }: { run: RunSummary }) {
       ? 'bg-indigo-100 text-indigo-800'
       : label === 'Promoted'
         ? 'bg-green-100 text-green-800'
+        : label === 'Partially applied'
+          ? 'bg-amber-100 text-amber-900'
         : label === 'Dismissed'
           ? 'bg-gray-100 text-gray-700'
           : label === 'No change'

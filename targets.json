@@ -1,0 +1,133 @@
+{
+  "schema_version": "1",
+  "targets": [
+    {
+      "kind": "markdown_root",
+      "id": "repo-core",
+      "root": "/Users/mliu/repos/core",
+      "files": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "GEMINI.md",
+        "SOUL.md",
+        "services/gorilla/AGENTS.md",
+        "services/gorilla/internal/history_sketch/AGENTS.md",
+        "services/gorilla/internal/parquet/codec/AGENTS.md",
+        "services/gorilla/internal/parquet/parquettest/AGENTS.md",
+        "services/gorilla/pkg/garrow/AGENTS.md",
+        "services/gorilla/pkg/groupsketch/AGENTS.md",
+        "services/gorilla/pkg/metrics/AGENTS.md",
+        "services/wb_agent/AGENTS.md",
+        "services/weave-trace/AGENTS.md",
+        "terraform/alerts/AGENTS.md",
+        "terraform/alerts/docs/runbooks/AGENTS.md",
+        "terraform/pasture/AGENTS.md",
+        "tests/integration/ci/AGENTS.md",
+        "tests/integration/playwright/AGENTS.md",
+        "tests/integration/playwright/integration/e2e/auth/AGENTS.md"
+      ],
+      "allow_create": true
+    },
+    {
+      "kind": "markdown_root",
+      "id": "repo-hivemind",
+      "root": "/Users/mliu/repos/hivemind",
+      "files": ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "SOUL.md"],
+      "allow_create": true
+    },
+    {
+      "kind": "markdown_root",
+      "id": "repo-hivemind-query",
+      "root": "/Users/mliu/repos/hivemind-query",
+      "files": ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "SOUL.md"],
+      "allow_create": true
+    },
+    {
+      "kind": "markdown_root",
+      "id": "repo-labs",
+      "root": "/Users/mliu/repos/labs",
+      "files": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "GEMINI.md",
+        "SOUL.md",
+        "zassistant/AGENTS.md",
+        "zassistant/CLAUDE.md",
+        "zwarm/AGENTS.md"
+      ],
+      "allow_create": true
+    },
+    {
+      "kind": "markdown_root",
+      "id": "repo-weave",
+      "root": "/Users/mliu/repos/weave",
+      "files": ["AGENTS.md", "GEMINI.md", "SOUL.md"],
+      "allow_create": true
+    },
+    {
+      "kind": "markdown_root",
+      "id": "repo-weave-agent-adapter",
+      "root": "/Users/mliu/weave-agent-adapter",
+      "files": ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "SOUL.md"],
+      "allow_create": true
+    },
+    {
+      "kind": "markdown_root",
+      "id": "repo-weave-agent-signals",
+      "root": "/Users/mliu/weave-agent-signals",
+      "files": ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "SOUL.md"],
+      "allow_create": true
+    },
+    {
+      "kind": "markdown_root",
+      "id": "global-claude",
+      "root": "~/.claude",
+      "files": ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "SOUL.md", "agents/wandb-hivemind.md"],
+      "allow_create": true
+    },
+    {
+      "kind": "markdown_root",
+      "id": "global-gemini",
+      "root": "~/.gemini",
+      "files": ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "SOUL.md"],
+      "allow_create": true
+    },
+    {
+      "kind": "markdown_root",
+      "id": "global-codex",
+      "root": "~/.codex",
+      "files": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "GEMINI.md",
+        "SOUL.md",
+        "agents/wandb-hivemind.md",
+        "skills/brainstorming/SKILL.md",
+        "skills/cli-creator/SKILL.md",
+        "skills/define-goal/SKILL.md",
+        "skills/dispatching-parallel-agents/SKILL.md",
+        "skills/executing-plans/SKILL.md",
+        "skills/finishing-a-development-branch/SKILL.md",
+        "skills/gh-address-comments/SKILL.md",
+        "skills/gh-fix-ci/SKILL.md",
+        "skills/playwright/SKILL.md",
+        "skills/receiving-code-review/SKILL.md",
+        "skills/requesting-code-review/SKILL.md",
+        "skills/security-best-practices/SKILL.md",
+        "skills/security-ownership-map/SKILL.md",
+        "skills/security-threat-model/SKILL.md",
+        "skills/sentry/SKILL.md",
+        "skills/subagent-driven-development/SKILL.md",
+        "skills/systematic-debugging/SKILL.md",
+        "skills/test-driven-development/SKILL.md",
+        "skills/using-git-worktrees/SKILL.md",
+        "skills/using-superpowers/SKILL.md",
+        "skills/verification-before-completion/SKILL.md",
+        "skills/writing-plans/SKILL.md",
+        "skills/writing-skills/SKILL.md",
+        "skills/yeet/SKILL.md"
+      ],
+      "allow_create": true
+    }
+  ]
+}

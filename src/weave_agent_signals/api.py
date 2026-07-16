@@ -28,7 +28,7 @@ from weave_agent_signals.routes.reviews import create_reviews_router
 from weave_agent_signals.routes.runs import create_runs_router
 from weave_agent_signals.run_config import EffectiveRunConfig, ModelDescriptor
 from weave_agent_signals.runs.cohort import discover_turn_cohort, hydrate_turn_cohort
-from weave_agent_signals.runs.promotion import ProjectFileAdapter
+from weave_agent_signals.runs.promotion import TargetPromoter
 from weave_agent_signals.runs.review import ReviewService
 from weave_agent_signals.runs.service import RunService
 from weave_agent_signals.runs.stages.judging import JudgingDependencies, run_judging_stage
@@ -38,6 +38,7 @@ from weave_agent_signals.runs.stages.reflection import (
 )
 from weave_agent_signals.runs.stages.scoring import ScoringDependencies, run_scoring_stage
 from weave_agent_signals.runs.store import Run, RunStore
+from weave_agent_signals.runs.targets import load_target_registry
 
 load_dotenv()
 
@@ -87,7 +88,7 @@ def _build_default_dependencies(
     *,
     entity: str,
     project: str,
-    project_root: Path,
+    target_registry: Path | None,
     db_path: str | Path | None,
 ) -> ApiDependencies:
     """Build production services once during application startup."""
@@ -149,10 +150,13 @@ def _build_default_dependencies(
             project=project,
         )
 
+    if target_registry is None:
+        raise RuntimeError("TARGET_REGISTRY is required to start the server")
+    registry = load_target_registry(target_registry)
     reflection_dependencies = ReflectionDependencies(
         store=store,
         client_factory=client_factory,
-        adapter_factory=lambda: ProjectFileAdapter(project_root),
+        adapter_factory=lambda: TargetPromoter(registry),
         writer_client_factory=model_client,
         evaluator_client_factory=model_client,
         coaching_digest=coaching_digest,
@@ -187,7 +191,7 @@ def _build_default_dependencies(
     )
     review_service = ReviewService(
         store=store,
-        adapter_factory=lambda: ProjectFileAdapter(project_root),
+        adapter_factory=lambda: TargetPromoter(registry),
     )
 
     def close() -> None:
@@ -227,7 +231,7 @@ def create_app(
     dependencies: ApiDependencies | None = None,
     entity: str | None = None,
     project: str | None = None,
-    project_root: str | Path | None = None,
+    target_registry: str | Path | None = None,
     db_path: str | Path | None = None,
     frontend_dist: str | Path | None = None,
 ) -> FastAPI:
@@ -235,7 +239,8 @@ def create_app(
 
     resolved_entity = entity or os.environ.get("WANDB_ENTITY", "weave-team")
     resolved_project = project or os.environ.get("WANDB_PROJECT", "agent-sessions")
-    resolved_root = Path(project_root or os.environ.get("PROJECT_ROOT", os.getcwd())).expanduser()
+    registry_value = target_registry or os.environ.get("TARGET_REGISTRY")
+    resolved_registry = Path(registry_value).expanduser() if registry_value else None
     resolved_db = db_path or os.environ.get("WEAVE_AGENT_SIGNALS_RUN_DB")
 
     run_reference = _LazyReference()
@@ -253,7 +258,7 @@ def create_app(
             active = _build_default_dependencies(
                 entity=resolved_entity,
                 project=resolved_project,
-                project_root=resolved_root,
+                target_registry=resolved_registry,
                 db_path=resolved_db,
             )
             run_reference.bind(active.run_service)

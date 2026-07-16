@@ -19,10 +19,6 @@ from weave_agent_signals.run_config import (
     resolve_run_config,
 )
 from weave_agent_signals.runs.bundles import ScopeDescriptor, bundle_from_content_map
-from weave_agent_signals.runs.promotion import (
-    ProjectMarkdownPolicy,
-    target_adapter_contract_manifest,
-)
 from weave_agent_signals.runs.service import RunService, _configuration_error
 from weave_agent_signals.runs.stages import StageCancelled
 from weave_agent_signals.runs.stages.reflection import (
@@ -89,9 +85,7 @@ def _request() -> RunConfig:
         model_catalog_version=models.catalog_version,
         rubric_catalog_version=rubrics.catalog_version,
         judge_backend="cli",
-        review_depth="selective",
         judge_models=("claude-sonnet-5", "gpt-5.6-sol"),
-        second_opinion_margin=0.1,
         proposal_model="gpt-5.6-sol",
         proposal_evaluator_model="claude-sonnet-5",
         rubrics=("judge.verification", "judge.session_outcome"),
@@ -527,13 +521,17 @@ def test_reflection_stage_failure_exposes_only_safe_error_through_run_service(st
 
     class Adapter:
         def contract_manifest(self):
-            return target_adapter_contract_manifest(ProjectMarkdownPolicy())
+            return {
+                "schema_version": "1",
+                "targets": [{"kind": "file", "id": "agents"}],
+                "digest": "sha256:test-registry",
+            }
 
         def capture(self):
             return baseline
 
-        def bundle_from_content_map(self, contents):
-            return bundle_from_content_map(contents, scope=scope)
+        def resolve_locator(self, locator, **_kwargs):
+            return locator
 
     dependencies = ReflectionDependencies(
         store=store,

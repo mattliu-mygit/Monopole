@@ -209,6 +209,11 @@ class BundleSnapshot:
     def locators(self) -> tuple[str, ...]:
         return tuple(target.locator for target in self.targets)
 
+    def target(self, locator: str) -> TargetSnapshot:
+        """Return one exact target or raise ``KeyError`` when it is not captured."""
+
+        return self.by_locator[locator]
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "scope": self.scope.to_dict() if self.scope else None,
@@ -307,7 +312,7 @@ def _missing_like(target: TargetSnapshot) -> TargetSnapshot:
     )
 
 
-ActionKind = Literal["create", "update", "delete"]
+ActionKind = Literal["create", "update"]
 
 
 @dataclass(frozen=True)
@@ -318,7 +323,7 @@ class PromotionAction:
     after: TargetSnapshot
 
     def __post_init__(self) -> None:
-        if self.action not in {"create", "update", "delete"}:
+        if self.action not in {"create", "update"}:
             raise BundleValidationError(
                 "invalid promotion action",
                 changed_locators=(self.locator,),
@@ -331,7 +336,6 @@ class PromotionAction:
         valid_state = {
             "create": (False, True),
             "update": (True, True),
-            "delete": (True, False),
         }[self.action]
         if (self.before.exists, self.after.exists) != valid_state:
             raise BundleValidationError(
@@ -388,10 +392,6 @@ class PromotionPreview:
     def updated_locators(self) -> tuple[str, ...]:
         return self._locators("update")
 
-    @property
-    def deleted_locators(self) -> tuple[str, ...]:
-        return self._locators("delete")
-
 
 def compare_bundles(
     past: BundleSnapshot,
@@ -423,7 +423,10 @@ def compare_bundles(
         if not before.exists and after.exists:
             action = "create"
         elif before.exists and not after.exists:
-            action = "delete"
+            raise BundleValidationError(
+                "delete actions are not supported",
+                changed_locators=(locator,),
+            )
         elif before.exists and after.exists and before.revision != after.revision:
             action = "update"
         if action is not None:
@@ -437,7 +440,15 @@ def changed_locators(
 ) -> tuple[str, ...]:
     """Return state differences while treating absent and explicit-missing as equal."""
 
-    return compare_bundles(expected, current).changed_locators
+    changed: list[str] = []
+    for locator in sorted(set(expected.locators) | set(current.locators)):
+        before = expected.by_locator.get(locator)
+        after = current.by_locator.get(locator)
+        before_state = (before.exists, before.content) if before is not None else (False, None)
+        after_state = (after.exists, after.content) if after is not None else (False, None)
+        if before_state != after_state:
+            changed.append(locator)
+    return tuple(changed)
 
 
 def validate_edited_bundle(
@@ -490,7 +501,7 @@ def validate_edited_bundle(
     }
     if evaluated_actions != edited_actions:
         raise BundleValidationError(
-            "edited bundle must preserve evaluated create/update/delete actions",
+            "edited bundle must preserve evaluated create/update actions",
             changed_locators={
                 locator for _, locator in evaluated_actions.symmetric_difference(edited_actions)
             },

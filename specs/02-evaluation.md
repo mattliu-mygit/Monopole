@@ -32,8 +32,8 @@ causal attribution for all work that led to an observed result.
 
 Before inference, an evaluation run derives and pins a versioned judging plan
 from its immutable cohort. The plan pins the context policy, ordered judges,
-review policy, rubric descriptors, complete session trace identities,
-reviewer-specific window manifests, and exact digest/window/merge protocol.
+rubric descriptors, complete session trace identities, reviewer-specific window
+manifests, and exact digest/window/merge protocol.
 Changes to any of those inputs produce a different plan or artifact identity.
 
 All model rubrics are session-level. Each reviewer gets a window plan sized to
@@ -97,42 +97,33 @@ object fallback is allowed only when the provider explicitly rejects structured
 schema capability. Invalid model content does not trigger a looser parsing
 mode.
 
-## Judge choice and review depth
+## Judge panel
 
 Runs use guided model catalogs with recommended selections, but the saved
 ordered choices are explicit and user-overridable. Start-time validation pins
 the model and rubric catalog versions, exact descriptors, rubric thresholds,
-review policy, and visible family-overlap warnings. The runtime honors the
-chosen order and never silently replaces a judge.
+the ordered panel, and visible family-overlap warnings. A panel contains one,
+two, or three unique judges. The runtime honors the chosen order, runs every
+judge for every session rubric, and never silently replaces a judge.
 
-Review depth applies independently to every session rubric:
+A scored rubric is complete when every selected judge returns a valid score. If
+at least one judge returns a valid score and every remaining judge returns a
+schema-valid `insufficient_evidence` verdict, the rubric is accepted as
+`degraded`. Its rating is the arithmetic mean of the available scores, with
+minimum, maximum, spread, and every abstention retained for audit. When every
+selected judge abstains this way, the rubric is not evaluable: it completes the
+planned evaluation as a non-scored audit outcome and writes no feedback. This
+is expected when a retained trace genuinely lacks enough evidence, such as tool
+activity without a captured assistant conclusion. It counts as completed
+evaluation coverage, not scored coverage. A failed invocation or invalid
+attempt still fails coverage even when another judge returned a valid score.
 
-- primary uses one judge;
-- selective uses two or three configured judges and normally stops after the
-  first clear result; and
-- full panel uses all three judges on every rubric.
-
-Selective review calls Judge 2 when Judge 1 fails, abstains, or scores within the
-configured margin of the rubric boundary. With a third configured judge, it may
-continue after threshold disagreement, a lone near-boundary success, or two
-unsuccessful attempts. The default margin is an explicit cost/latency heuristic,
-not calibrated confidence.
-
-All successful scores are mean-pooled. A result is:
-
-- complete when every attempted reviewer succeeded and no two-way threshold
-  split remains;
-- degraded when a rating survives a failed or abstained attempt;
-- unresolved when exactly two successful reviewers split across the threshold
-  without a successful third opinion; or
-- failed when no reviewer supplies a valid score.
-
-Every attempt retains its trigger, requested and resolved model, outcome,
-rationale or safe error, evidence citations, structured-output mode, usage,
-bounded behavioral feedback, and ordered digest/window/merge step audit. A
-rubric with zero successful reviewers fails stage coverage. Scores are buffered
-until every planned session rubric has an accepted outcome, then written under
-the run's cancellation barrier.
+Every attempt retains its requested and resolved model, outcome, rationale or
+safe error, evidence citations, structured-output mode, usage, bounded
+behavioral feedback, and ordered digest/window/merge step audit. Scores are
+buffered until every session rubric resolves to a complete or degraded rating,
+or a unanimous not-evaluable outcome. Only the resulting ratings are written
+under the run's cancellation barrier.
 
 ## Artifact resume and failure behavior
 
@@ -168,8 +159,6 @@ The design is informed by:
 
 - [PoLL](https://arxiv.org/abs/2404.18796), for heterogeneous judges and score
   pooling;
-- [Trust or Escalate](https://arxiv.org/abs/2407.18370), for selective review
-  cascades;
 - [MT-Bench judge analysis](https://arxiv.org/abs/2306.05685), for
   conversation context and boundary sensitivity;
 - [self-recognition and preference](https://arxiv.org/abs/2404.13076), for
@@ -182,5 +171,7 @@ The design is informed by:
   returns of agentic coding judges.
 
 These papers motivate the architecture but do not calibrate this product. There
-is no human-labeled validation set, and neither the selective margin nor the
-context-budget policy is claimed as an empirical optimum.
+is no human-labeled validation set, and neither the three-judge cap nor the
+context-budget policy is claimed as an empirical optimum. These are product
+cost bounds, not claims that larger contexts or another correlated judge could
+never add information.

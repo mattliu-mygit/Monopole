@@ -24,7 +24,6 @@ EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION = "2"
 MAX_CANDIDATE_BUDGET = 10
 
 ModelRole = Literal["proposal_writer", "judge", "proposal_evaluator"]
-ReviewDepth = Literal["primary", "selective", "full_panel"]
 EvaluationUnit = Literal["session"]
 
 
@@ -151,8 +150,6 @@ class JudgeBackendCatalog(StrictFrozenModel):
     available_models: tuple[ModelDescriptor, ...]
     recommended_judges: tuple[StrictStr, ...]
     proposal_evaluator_preferences: tuple[StrictStr, ...]
-    recommended_review_depth: ReviewDepth | None
-    supported_review_depths: tuple[ReviewDepth, ...]
 
     @model_validator(mode="after")
     def validate_backend(self) -> JudgeBackendCatalog:
@@ -167,13 +164,6 @@ class JudgeBackendCatalog(StrictFrozenModel):
             raise ValueError("recommended judges must be available")
         if not set(self.proposal_evaluator_preferences) <= set(ids):
             raise ValueError("proposal evaluator preferences must be available")
-        if len(self.supported_review_depths) != len(set(self.supported_review_depths)):
-            raise ValueError("supported_review_depths must be unique")
-        if (
-            self.recommended_review_depth is not None
-            and self.recommended_review_depth not in self.supported_review_depths
-        ):
-            raise ValueError("recommended review depth must be supported")
         return self
 
     def model(self, model_id: str) -> ModelDescriptor:
@@ -186,16 +176,15 @@ class JudgeBackendCatalog(StrictFrozenModel):
 class ModelCatalog(StrictFrozenModel):
     catalog_version: StrictStr
     proposal: ProposalCatalog
-    review_defaults: Mapping[StrictStr, float]
     recommended_judge_backend: StrictStr
     judge_backends: Mapping[StrictStr, JudgeBackendCatalog]
 
-    @field_validator("review_defaults", "judge_backends", mode="after")
+    @field_validator("judge_backends", mode="after")
     @classmethod
     def freeze_mapping(cls, value: Mapping) -> Mapping:
         return MappingProxyType(dict(value))
 
-    @field_serializer("review_defaults", "judge_backends")
+    @field_serializer("judge_backends")
     def serialize_mapping(self, value: Mapping) -> dict:
         return dict(value)
 
@@ -246,9 +235,7 @@ class RunConfig(StrictFrozenModel):
     model_catalog_version: StrictStr
     rubric_catalog_version: StrictStr
     judge_backend: StrictStr
-    review_depth: ReviewDepth
     judge_models: tuple[StrictStr, ...]
-    second_opinion_margin: float | None
     proposal_model: StrictStr
     proposal_evaluator_model: StrictStr
     rubrics: tuple[StrictStr, ...]
@@ -257,15 +244,6 @@ class RunConfig(StrictFrozenModel):
         Field(strict=True, ge=1, le=MAX_CANDIDATE_BUDGET),
     ]
     force: StrictBool
-
-    @field_validator("second_opinion_margin", mode="before")
-    @classmethod
-    def validate_numeric_margin(cls, value: object) -> object:
-        if value is None:
-            return None
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError("second_opinion_margin must be numeric")
-        return float(value)
 
     @model_validator(mode="after")
     def validate_request(self) -> RunConfig:
@@ -280,22 +258,8 @@ class RunConfig(StrictFrozenModel):
         _require_nonblank_unique(self.judge_models, "judge_models")
         _require_nonblank_unique(self.rubrics, "rubrics")
 
-        expected_counts = {"primary": {1}, "selective": {2, 3}, "full_panel": {3}}
-        if len(self.judge_models) not in expected_counts[self.review_depth]:
-            requirement = {
-                "primary": "exactly 1 judge",
-                "selective": "exactly 2 or 3 judges",
-                "full_panel": "exactly 3 judges",
-            }[self.review_depth]
-            raise ValueError(f"{self.review_depth} review requires {requirement}")
-
-        if self.review_depth == "selective":
-            if self.second_opinion_margin is None:
-                raise ValueError("selective review requires second_opinion_margin")
-            if not 0 <= self.second_opinion_margin <= 0.5:
-                raise ValueError("second_opinion_margin must be between 0 and 0.5")
-        elif self.second_opinion_margin is not None:
-            raise ValueError("second_opinion_margin must be null outside selective review")
+        if not 1 <= len(self.judge_models) <= 3:
+            raise ValueError("judge_models must contain one through three models")
         return self
 
 
@@ -337,6 +301,8 @@ class EffectiveModelSelection(StrictFrozenModel):
             raise ValueError("judge positions must be contiguous and 1-based")
         if len({judge.id for judge in self.judges}) != len(self.judges):
             raise ValueError("positioned judges must be unique")
+        if not 1 <= len(self.judges) <= 3:
+            raise ValueError("judges must contain one through three models")
         return self
 
 
@@ -346,8 +312,6 @@ class EffectiveRunConfig(StrictFrozenModel):
     model_catalog_version: StrictStr
     rubric_catalog_version: StrictStr
     judge_backend: StrictStr
-    review_depth: ReviewDepth
-    second_opinion_margin: float | None
     models: EffectiveModelSelection
     rubrics: tuple[RubricDescriptor, ...]
     selection_warnings: tuple[SelectionWarning, ...]
@@ -388,14 +352,6 @@ class EffectiveRunConfig(StrictFrozenModel):
         ):
             raise ValueError("judge and evaluator backends must match judge_backend")
 
-        expected_counts = {"primary": {1}, "selective": {2, 3}, "full_panel": {3}}
-        if len(self.models.judges) not in expected_counts[self.review_depth]:
-            raise ValueError("review depth has the wrong number of judges")
-        if self.review_depth == "selective":
-            if self.second_opinion_margin is None or not 0 <= self.second_opinion_margin <= 0.5:
-                raise ValueError("selective review requires a margin between 0 and 0.5")
-        elif self.second_opinion_margin is not None:
-            raise ValueError("margin must be null outside selective review")
         return self
 
 
@@ -502,11 +458,6 @@ def resolve_run_config(
         backend = model_catalog.backend(requested.judge_backend)
     except KeyError as exc:
         raise ValueError(str(exc)) from exc
-    if requested.review_depth not in backend.supported_review_depths:
-        raise ValueError(
-            f"{requested.review_depth} review is unsupported by {requested.judge_backend}"
-        )
-
     judges: list[ModelDescriptor] = []
     for model_id in requested.judge_models:
         try:
@@ -564,8 +515,6 @@ def resolve_run_config(
         model_catalog_version=model_catalog.catalog_version,
         rubric_catalog_version=rubric_catalog.catalog_version,
         judge_backend=requested.judge_backend,
-        review_depth=requested.review_depth,
-        second_opinion_margin=requested.second_opinion_margin,
         models=EffectiveModelSelection(
             proposal_writer=proposal_writer,
             judges=tuple(

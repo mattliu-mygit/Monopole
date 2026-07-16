@@ -96,7 +96,6 @@ def test_review_routes_delegate_one_service_operation_per_request():
                     "expected_draft_revision": "sha256:d",
                     "idempotency_key": "promotion-1",
                     "acknowledge_unevaluated": True,
-                    "git_metadata": {"commit": "abc"},
                 },
             ),
             client.post("/api/runs/run-1/dismiss", json={"expected_revision": 5}),
@@ -138,7 +137,6 @@ def test_review_routes_delegate_one_service_operation_per_request():
                 "expected_revision": 4,
                 "expected_draft_revision": "sha256:d",
                 "acknowledge_unevaluated": True,
-                "git_metadata": {"commit": "abc"},
             },
         ),
         ("dismiss", {"run_id": "run-1", "expected_revision": 5}),
@@ -163,7 +161,7 @@ def test_review_routes_translate_typed_domain_errors():
             ReviewOperationError(
                 "promotion_receipt_persist_failed",
                 "failed",
-                recovery_required=True,
+                manual_inspection_required=True,
             ),
             500,
             "promotion_receipt_persist_failed",
@@ -219,7 +217,15 @@ def test_run_detail_delegates_recovery_and_drift_but_list_does_not_overlay():
 
         def read(self, run_id):
             assert run_id == "run-1"
-            return replace(run, reflection_review={"status": "pending", "source": "read"})
+            return replace(
+                run,
+                reflection_review={
+                    "status": "pending",
+                    "selected_candidate_id": "candidate-1",
+                    "draft": None,
+                    "stale": True,
+                },
+            )
 
         def overlay(self, listed):
             self.overlay_calls += 1
@@ -235,4 +241,4 @@ def test_run_detail_delegates_recovery_and_drift_but_list_does_not_overlay():
     assert listed["review_state"] == "review-needed"
     assert "reflection_review" not in listed
     assert reviews.overlay_calls == 0
-    assert detail["reflection_review"]["source"] == "read"
+    assert detail["reflection_review"]["stale"] is True

@@ -16,7 +16,6 @@ from weave_agent_signals.runs.bundles import (
     bundle_from_content_map,
     compare_bundles,
 )
-from weave_agent_signals.runs.promotion import ProjectFileAdapter
 from weave_agent_signals.runs.proposals import (
     REFLECTION_PROPOSAL_SCHEMA,
     CandidateProposal,
@@ -146,11 +145,21 @@ def _build_candidate(contents: Mapping[str, str]) -> BundleSnapshot:
     return bundle_from_content_map(contents, scope=SCOPE)
 
 
+def _resolve_locator(locator: str, *, require_absent_for_create: bool = False) -> object:
+    del require_absent_for_create
+    if locator.startswith("../"):
+        raise BundleValidationError(
+            "outside managed scope",
+            changed_locators={locator},
+        )
+    return object()
+
+
 def _proposal(changes: list[dict[str, Any]]) -> str:
     return serialize_candidate_proposal(
-        parse_candidate_proposal({"schema_version": 2, "changes": changes})
+        parse_candidate_proposal({"schema_version": 3, "changes": changes})
         if changes
-        else CandidateProposal(2, ())
+        else CandidateProposal(3, ())
     )
 
 
@@ -165,7 +174,7 @@ def _baseline_only_result(seed_candidate: str, score: float = 0.3) -> SimpleName
 
 def test_invalid_writer_output_is_rejected_before_evaluator_and_retried():
     baseline = _bundle(**{"CLAUDE.md": "old"})
-    valid = _proposal([{"action": "update", "path": "CLAUDE.md", "content": "new"}])
+    valid = _proposal([{"action": "update", "locator": "CLAUDE.md", "content": "new"}])
     writer_client = _writer_outputs("not JSON", valid)
     evaluator_client = _evaluator_client(0.3, 0.8)
     prompts: list[list[dict[str, str]]] = []
@@ -189,7 +198,7 @@ def test_invalid_writer_output_is_rejected_before_evaluator_and_retried():
         requested_evaluator=EVALUATOR,
         writer_client=writer_client,
         evaluator_client=evaluator_client,
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=2,
         optimizer=optimize,
     )
@@ -202,8 +211,12 @@ def test_invalid_writer_output_is_rejected_before_evaluator_and_retried():
 
 
 def test_validation_correction_is_used_only_for_the_next_writer_attempt():
-    first_valid = _proposal([{"action": "update", "path": "CLAUDE.md", "content": "first valid"}])
-    second_valid = _proposal([{"action": "update", "path": "CLAUDE.md", "content": "second valid"}])
+    first_valid = _proposal(
+        [{"action": "update", "locator": "CLAUDE.md", "content": "first valid"}]
+    )
+    second_valid = _proposal(
+        [{"action": "update", "locator": "CLAUDE.md", "content": "second valid"}]
+    )
     writer_client = _writer_outputs("not JSON", first_valid, second_valid)
 
     def optimize(*, seed_candidate, evaluator, config, **_kwargs):
@@ -223,7 +236,7 @@ def test_validation_correction_is_used_only_for_the_next_writer_attempt():
         requested_evaluator=EVALUATOR,
         writer_client=writer_client,
         evaluator_client=_evaluator_client(0.3, 0.7, 0.8),
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=3,
         optimizer=optimize,
     )
@@ -235,7 +248,7 @@ def test_validation_correction_is_used_only_for_the_next_writer_attempt():
 
 def test_real_gepa_continues_after_invalid_first_writer_output():
     baseline = _bundle(**{"CLAUDE.md": "old"})
-    valid = _proposal([{"action": "update", "path": "CLAUDE.md", "content": "new"}])
+    valid = _proposal([{"action": "update", "locator": "CLAUDE.md", "content": "new"}])
     writer_client = _writer_outputs("not JSON", valid)
     evaluator_client = _evaluator_client(0.3, 0.8)
 
@@ -248,7 +261,7 @@ def test_real_gepa_continues_after_invalid_first_writer_output():
         requested_evaluator=EVALUATOR,
         writer_client=writer_client,
         evaluator_client=evaluator_client,
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=2,
     )
 
@@ -274,7 +287,7 @@ def test_all_invalid_outputs_finish_with_audited_baseline():
         requested_evaluator=EVALUATOR,
         writer_client=writer_client,
         evaluator_client=evaluator_client,
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=3,
     )
 
@@ -306,7 +319,7 @@ def test_writer_transport_failure_remains_terminal():
             requested_evaluator=EVALUATOR,
             writer_client=writer_client,
             evaluator_client=_evaluator_client(0.3),
-            build_candidate=_build_candidate,
+            resolve_locator=_resolve_locator,
             candidate_budget=2,
         )
 
@@ -323,7 +336,7 @@ def test_candidate_budget_counts_writer_calls():
         requested_evaluator=EVALUATOR,
         writer_client=writer_client,
         evaluator_client=_evaluator_client(0.3),
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=3,
     )
 
@@ -333,7 +346,7 @@ def test_candidate_budget_counts_writer_calls():
 
 def test_duplicate_revision_is_rejected_without_rescoring():
     baseline = _bundle(**{"CLAUDE.md": "old"})
-    proposal = _proposal([{"action": "update", "path": "CLAUDE.md", "content": "same"}])
+    proposal = _proposal([{"action": "update", "locator": "CLAUDE.md", "content": "same"}])
     writer_client = _writer_outputs(proposal, proposal)
     evaluator_client = _evaluator_client(0.3, 0.7)
 
@@ -354,7 +367,7 @@ def test_duplicate_revision_is_rejected_without_rescoring():
         requested_evaluator=EVALUATOR,
         writer_client=writer_client,
         evaluator_client=evaluator_client,
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=2,
         optimizer=optimize,
     )
@@ -368,7 +381,7 @@ def test_duplicate_revision_is_rejected_without_rescoring():
 
 def test_each_bundle_revision_is_evaluated_exactly_once():
     baseline = _bundle(**{"CLAUDE.md": "old"})
-    proposal = _proposal([{"action": "update", "path": "CLAUDE.md", "content": "new"}])
+    proposal = _proposal([{"action": "update", "locator": "CLAUDE.md", "content": "new"}])
     evaluator_client = _evaluator_client(0.3, 0.8)
     side_info: list[dict[str, Any]] = []
 
@@ -389,7 +402,7 @@ def test_each_bundle_revision_is_evaluated_exactly_once():
         requested_evaluator=EVALUATOR,
         writer_client=_writer_outputs(proposal),
         evaluator_client=evaluator_client,
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=1,
         optimizer=optimize,
     )
@@ -408,16 +421,16 @@ def test_rejected_attempt_keeps_paths_digest_and_bounded_excerpt():
         [
             {
                 "action": "create",
-                "path": "../secret.md",
+                "locator": "../secret.md",
                 "content": f'"OPENAI_API_KEY":"{secret}"\n' + ("x" * 2_000),
             }
         ]
     )
 
-    def reject_unmanaged(contents: Mapping[str, str]) -> BundleSnapshot:
+    def reject_unmanaged(locator: str, **_kwargs: object) -> object:
         raise BundleValidationError(
             "outside managed scope",
-            changed_locators=set(contents) - {"CLAUDE.md"},
+            changed_locators={locator},
         )
 
     def optimize(*, seed_candidate, evaluator, config, **_kwargs):
@@ -435,7 +448,7 @@ def test_rejected_attempt_keeps_paths_digest_and_bounded_excerpt():
         requested_evaluator=EVALUATOR,
         writer_client=_writer_outputs(invalid),
         evaluator_client=_evaluator_client(0.3),
-        build_candidate=reject_unmanaged,
+        resolve_locator=reject_unmanaged,
         candidate_budget=1,
         optimizer=optimize,
     )
@@ -453,15 +466,15 @@ def test_rejected_attempt_keeps_paths_digest_and_bounded_excerpt():
 def test_rejected_parseable_proposal_redacts_escaped_content_key():
     secret = "escaped-key-secret-must-not-leak"
     invalid = (
-        '{"schema_version":2,"changes":[{"action":"create",'
-        '"path":"../secret.md","cont\\u0065nt":"'
+        '{"schema_version":3,"changes":[{"action":"create",'
+        '"locator":"../secret.md","cont\\u0065nt":"'
         f'{secret}"}}]}}'
     )
 
-    def reject_unmanaged(contents: Mapping[str, str]) -> BundleSnapshot:
+    def reject_unmanaged(locator: str, **_kwargs: object) -> object:
         raise BundleValidationError(
             "outside managed scope",
-            changed_locators=set(contents) - {"CLAUDE.md"},
+            changed_locators={locator},
         )
 
     def optimize(*, seed_candidate, evaluator, config, **_kwargs):
@@ -479,7 +492,7 @@ def test_rejected_parseable_proposal_redacts_escaped_content_key():
         requested_evaluator=EVALUATOR,
         writer_client=_writer_outputs(invalid),
         evaluator_client=_evaluator_client(0.3),
-        build_candidate=reject_unmanaged,
+        resolve_locator=reject_unmanaged,
         candidate_budget=1,
         optimizer=optimize,
     )
@@ -493,8 +506,8 @@ def test_rejected_parseable_proposal_redacts_escaped_content_key():
 def test_rejected_malformed_single_quoted_proposal_never_persists_body():
     secret = "single-quoted-secret-must-not-leak"
     invalid = (
-        "{'schema_version': 2, 'changes': [{'action': 'update', "
-        f"'path': 'CLAUDE.md', 'content': '{secret}" + ("x" * 2_000) + "'}]}"
+        "{'schema_version': 3, 'changes': [{'action': 'update', "
+        f"'locator': 'CLAUDE.md', 'content': '{secret}" + ("x" * 2_000) + "'}]}"
     )
 
     def optimize(*, seed_candidate, evaluator, config, **_kwargs):
@@ -512,7 +525,7 @@ def test_rejected_malformed_single_quoted_proposal_never_persists_body():
         requested_evaluator=EVALUATOR,
         writer_client=_writer_outputs(invalid),
         evaluator_client=_evaluator_client(0.3),
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=1,
         optimizer=optimize,
     )
@@ -545,7 +558,7 @@ def test_writer_process_failure_is_terminal_without_persisting_raw_output():
             requested_evaluator=EVALUATOR,
             writer_client=writer_client,
             evaluator_client=_evaluator_client(0.3),
-            build_candidate=_build_candidate,
+            resolve_locator=_resolve_locator,
             candidate_budget=1,
             progress_callback=events.append,
         )
@@ -573,7 +586,7 @@ def test_evaluator_failure_remains_terminal_and_actionable():
             requested_evaluator=EVALUATOR,
             writer_client=_writer_outputs("unused"),
             evaluator_client=evaluator_client,
-            build_candidate=_build_candidate,
+            resolve_locator=_resolve_locator,
             candidate_budget=1,
             progress_callback=events.append,
         )
@@ -608,14 +621,14 @@ def test_writer_empty_or_noop_proposal_is_invalid():
                 [
                     {
                         "action": "update",
-                        "path": "AGENTS.md",
+                        "locator": "AGENTS.md",
                         "content": "old",
                     }
                 ]
             ),
         ),
         evaluator_client=_evaluator_client(0.4),
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=2,
         optimizer=optimize,
     )
@@ -645,7 +658,7 @@ def test_internal_baseline_may_use_empty_proposal():
         requested_evaluator=EVALUATOR,
         writer_client=_writer_client(),
         evaluator_client=_evaluator_client(0.4),
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=1,
         optimizer=optimize,
     )
@@ -657,17 +670,12 @@ def test_internal_baseline_may_use_empty_proposal():
 def test_writer_prompt_lists_exact_contract_scope_and_inventory():
     baseline = _bundle(**{"AGENTS.md": "alpha", "docs/check.md": "beta"})
     exact_layout = """{
-  "schema_version": 2,
+  "schema_version": 3,
   "changes": [
     {
       "action": "update",
-      "path": "AGENTS.md",
+      "locator": "file:project-agents",
       "content": "Complete replacement content for AGENTS.md"
-    },
-    {
-      "action": "delete",
-      "path": "docs/obsolete.md",
-      "content": null
     }
   ]
 }"""
@@ -678,9 +686,9 @@ def test_writer_prompt_lists_exact_contract_scope_and_inventory():
         assert '"AGENTS.md": "alpha"' in prompt
         assert '"docs/check.md": "beta"' in prompt
         assert '"suffix": ".md"' in prompt
-        assert "create requires a path absent from baseline B" in prompt
-        assert "update requires a path present in baseline B" in prompt
-        assert "delete requires a path present in baseline B" in prompt
+        assert "create requires a locator admitted by the pinned target registry" in prompt
+        assert "update requires a locator present in baseline B" in prompt
+        assert "delete requires" not in prompt
         assert "one atomic multi-file proposal" in prompt
         assert "JSON only" in prompt
         assert "unrelated documentation" in prompt
@@ -702,7 +710,7 @@ def test_writer_prompt_lists_exact_contract_scope_and_inventory():
         requested_evaluator=EVALUATOR,
         writer_client=_writer_client(),
         evaluator_client=_evaluator_client(0.4),
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=1,
         optimizer=optimize,
     )
@@ -710,7 +718,7 @@ def test_writer_prompt_lists_exact_contract_scope_and_inventory():
 
 def test_writer_passes_proposal_schema_to_chat_client():
     baseline = _bundle(**{"AGENTS.md": "old"})
-    proposal = _proposal([{"action": "update", "path": "AGENTS.md", "content": "new"}])
+    proposal = _proposal([{"action": "update", "locator": "AGENTS.md", "content": "new"}])
     writer_client = _writer_outputs(proposal)
 
     def optimize(*, seed_candidate, evaluator, config, **_kwargs):
@@ -728,7 +736,7 @@ def test_writer_passes_proposal_schema_to_chat_client():
         requested_evaluator=EVALUATOR,
         writer_client=writer_client,
         evaluator_client=_evaluator_client(0.4, 0.5),
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=1,
         optimizer=optimize,
     )
@@ -736,25 +744,15 @@ def test_writer_passes_proposal_schema_to_chat_client():
     assert writer_client.calls[0]["response_schema"] is REFLECTION_PROPOSAL_SCHEMA
 
 
-def test_gepa_applies_one_proposal_to_update_create_and_delete_paths(tmp_path):
-    (tmp_path / ".claude" / "skills").mkdir(parents=True)
-    (tmp_path / "CLAUDE.md").write_text("old")
-    (tmp_path / ".claude" / "skills" / "remove.md").write_text("remove me")
-    (tmp_path / ".claude" / "skills" / "keep.md").write_text("keep")
-    adapter = ProjectFileAdapter(tmp_path, target_id="project")
-    baseline = adapter.capture()
+def test_gepa_applies_one_proposal_to_update_and_create_targets():
+    baseline = _bundle(**{"CLAUDE.md": "old", ".claude/skills/keep.md": "keep"})
     candidate = _proposal(
         [
-            {"action": "update", "path": "CLAUDE.md", "content": "new"},
+            {"action": "update", "locator": "CLAUDE.md", "content": "new"},
             {
                 "action": "create",
-                "path": ".claude/commands/add.md",
+                "locator": ".claude/commands/add.md",
                 "content": "created",
-            },
-            {
-                "action": "delete",
-                "path": ".claude/skills/remove.md",
-                "content": None,
             },
         ]
     )
@@ -771,12 +769,12 @@ def test_gepa_applies_one_proposal_to_update_create_and_delete_paths(tmp_path):
         baseline=baseline,
         feedback=_feedback(),
         coaching_text="Improve.",
-        scope_policy=adapter.contract_manifest(),
+        scope_policy=SCOPE_POLICY,
         requested_writer=WRITER,
         requested_evaluator=EVALUATOR,
         writer_client=_writer_outputs(candidate),
         evaluator_client=_evaluator_client(0.3, 0.8),
-        build_candidate=adapter.bundle_from_content_map,
+        resolve_locator=_resolve_locator,
         candidate_budget=1,
         optimizer=optimize,
     )
@@ -786,19 +784,16 @@ def test_gepa_applies_one_proposal_to_update_create_and_delete_paths(tmp_path):
         for action in compare_bundles(baseline, result.candidates[0].bundle).actions
     ] == [
         ("create", ".claude/commands/add.md"),
-        ("delete", ".claude/skills/remove.md"),
         ("update", "CLAUDE.md"),
     ]
 
 
-def test_proposal_candidates_reject_invalid_json_and_unmanaged_locators(tmp_path):
-    (tmp_path / "CLAUDE.md").write_text("old")
-    adapter = ProjectFileAdapter(tmp_path, target_id="project")
-    baseline = adapter.capture()
+def test_proposal_candidates_reject_invalid_json_and_unmanaged_locators():
+    baseline = _bundle(**{"CLAUDE.md": "old"})
     unmanaged = _proposal(
         [
-            {"action": "update", "path": "CLAUDE.md", "content": "new"},
-            {"action": "create", "path": "../secret.md", "content": "steal"},
+            {"action": "update", "locator": "CLAUDE.md", "content": "new"},
+            {"action": "create", "locator": "../secret.md", "content": "steal"},
         ]
     )
 
@@ -806,7 +801,7 @@ def test_proposal_candidates_reject_invalid_json_and_unmanaged_locators(tmp_path
         evaluator(seed_candidate)
         with pytest.raises(ReflectionEvaluationError, match="proposal"):
             config.reflection.reflection_lm("invalid JSON")
-        with pytest.raises(ReflectionEvaluationError, match="outside the managed scope"):
+        with pytest.raises(ReflectionEvaluationError, match="outside managed scope"):
             config.reflection.reflection_lm("unmanaged path")
         return SimpleNamespace()
 
@@ -815,12 +810,12 @@ def test_proposal_candidates_reject_invalid_json_and_unmanaged_locators(tmp_path
         baseline=baseline,
         feedback=_feedback(),
         coaching_text="Improve.",
-        scope_policy=adapter.contract_manifest(),
+        scope_policy=SCOPE_POLICY,
         requested_writer=WRITER,
         requested_evaluator=EVALUATOR,
         writer_client=_writer_outputs("not JSON", unmanaged),
         evaluator_client=_evaluator_client(0.4),
-        build_candidate=adapter.bundle_from_content_map,
+        resolve_locator=_resolve_locator,
         candidate_budget=2,
         optimizer=optimize,
         progress_callback=events.append,
@@ -829,7 +824,7 @@ def test_proposal_candidates_reject_invalid_json_and_unmanaged_locators(tmp_path
     assert [attempt.status for attempt in result.generation_attempts] == ["failed", "failed"]
     assert [attempt.error_type for attempt in result.generation_attempts] == [
         "JSONDecodeError",
-        "PromotionValidationError",
+        "BundleValidationError",
     ]
     assert events[-1]["phase"] == "selection_complete"
     assert events[-1]["attempted"] == 2
@@ -858,7 +853,7 @@ def test_reflection_requires_at_least_one_finite_rated_signal():
             requested_evaluator=EVALUATOR,
             writer_client=_writer_client(),
             evaluator_client=_evaluator_client(),
-            build_candidate=_build_candidate,
+            resolve_locator=_resolve_locator,
         )
 
 
@@ -870,10 +865,10 @@ def test_reflection_records_exact_writer_evaluator_and_bundle_provenance():
     }
     proposal = _proposal(
         [
-            {"action": "update", "path": "CLAUDE.md", "content": "new"},
+            {"action": "update", "locator": "CLAUDE.md", "content": "new"},
             {
                 "action": "update",
-                "path": ".claude/skills/check.md",
+                "locator": ".claude/skills/check.md",
                 "content": "check more",
             },
         ]
@@ -904,7 +899,7 @@ def test_reflection_records_exact_writer_evaluator_and_bundle_provenance():
         requested_evaluator=EVALUATOR,
         writer_client=writer_client,
         evaluator_client=evaluator_client,
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=3,
         optimizer=optimize,
     )
@@ -982,7 +977,7 @@ def test_reflection_records_exact_writer_evaluator_and_bundle_provenance():
 
 def test_reflection_recomputes_the_winner_from_evaluated_scores():
     baseline = _bundle(**{"CLAUDE.md": "old"})
-    candidate = _proposal([{"action": "update", "path": "CLAUDE.md", "content": "worse"}])
+    candidate = _proposal([{"action": "update", "locator": "CLAUDE.md", "content": "worse"}])
 
     def optimize(*, seed_candidate, evaluator, config, **_kwargs):
         evaluator(seed_candidate)
@@ -1000,7 +995,7 @@ def test_reflection_recomputes_the_winner_from_evaluated_scores():
         requested_evaluator=EVALUATOR,
         writer_client=_writer_outputs(candidate),
         evaluator_client=_evaluator_client(0.9, 0.1),
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=1,
         optimizer=optimize,
     )
@@ -1011,7 +1006,7 @@ def test_reflection_recomputes_the_winner_from_evaluated_scores():
 
 def test_result_rejects_candidate_revision_equal_to_baseline():
     baseline = _bundle(**{"CLAUDE.md": "old"})
-    proposal = _proposal([{"action": "update", "path": "CLAUDE.md", "content": "new"}])
+    proposal = _proposal([{"action": "update", "locator": "CLAUDE.md", "content": "new"}])
 
     def optimize(*, seed_candidate, evaluator, config, **_kwargs):
         evaluator(seed_candidate)
@@ -1028,7 +1023,7 @@ def test_result_rejects_candidate_revision_equal_to_baseline():
         requested_evaluator=EVALUATOR,
         writer_client=_writer_outputs(proposal),
         evaluator_client=_evaluator_client(0.3, 0.8),
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=1,
         optimizer=optimize,
     )
@@ -1064,7 +1059,7 @@ def test_evaluator_failure_is_retained_in_progress_before_raising():
             requested_evaluator=EVALUATOR,
             writer_client=_writer_client(),
             evaluator_client=evaluator_client,
-            build_candidate=_build_candidate,
+            resolve_locator=_resolve_locator,
             candidate_budget=1,
             optimizer=optimize,
             progress_callback=events.append,
@@ -1105,7 +1100,7 @@ def test_reflection_passes_candidate_budget_and_patience_two_to_gepa():
         requested_evaluator=EVALUATOR,
         writer_client=_writer_client(),
         evaluator_client=_evaluator_client(0.4),
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=3,
         optimizer=optimize,
     )
@@ -1139,7 +1134,7 @@ def test_reflection_preserves_explicit_missing_targets_in_exact_baseline():
         requested_evaluator=EVALUATOR,
         writer_client=_writer_client(),
         evaluator_client=_evaluator_client(0.4),
-        build_candidate=_build_candidate,
+        resolve_locator=_resolve_locator,
         candidate_budget=1,
         optimizer=optimize,
     )
@@ -1176,7 +1171,7 @@ def test_reflection_cancellation_preserves_cancel_signal():
             requested_evaluator=EVALUATOR,
             writer_client=_writer_client(),
             evaluator_client=_evaluator_client(0.4),
-            build_candidate=_build_candidate,
+            resolve_locator=_resolve_locator,
             candidate_budget=1,
             optimizer=optimize,
             cancel_requested=lambda: next(cancel_checks, True),
@@ -1194,7 +1189,7 @@ def test_reflection_rejects_candidate_budget_above_ten_before_inference():
             requested_evaluator=EVALUATOR,
             writer_client=_writer_client(),
             evaluator_client=_evaluator_client(0.4),
-            build_candidate=_build_candidate,
+            resolve_locator=_resolve_locator,
             candidate_budget=11,
             optimizer=lambda **_kwargs: pytest.fail("optimizer must not run"),
         )

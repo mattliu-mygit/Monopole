@@ -8,8 +8,6 @@ from pydantic import ValidationError
 
 import weave_agent_signals.catalogs as catalogs_module
 from weave_agent_signals.catalogs import (
-    DEFAULT_SECOND_OPINION_MARGIN,
-    REVIEW_DEPTHS,
     build_model_catalog,
     build_rubric_catalog,
 )
@@ -35,22 +33,15 @@ def test_model_catalog_is_stable_role_oriented_and_immutable():
     assert set(data) == {
         "catalog_version",
         "proposal",
-        "review_defaults",
         "recommended_judge_backend",
         "judge_backends",
-    }
-    assert data["review_defaults"] == {
-        "second_opinion_margin": DEFAULT_SECOND_OPINION_MARGIN,
     }
     assert data["recommended_judge_backend"] == "cli"
 
     cli = data["judge_backends"]["cli"]
-    assert cli["recommended_review_depth"] in REVIEW_DEPTHS
-    assert cli["recommended_review_depth"] == "selective"
     assert len(cli["recommended_judges"]) == 3
-    assert cli["supported_review_depths"] == list(REVIEW_DEPTHS)
     by_id = {model["id"]: model for model in cli["available_models"]}
-    assert len({by_id[model_id]["family"] for model_id in cli["recommended_judges"][:2]}) == 2
+    assert len({by_id[model_id]["family"] for model_id in cli["recommended_judges"]}) == 2
     assert set(cli["proposal_evaluator_preferences"]) == {
         model["id"]
         for model in cli["available_models"]

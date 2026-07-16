@@ -1,0 +1,5082 @@
+{
+  "components": {
+    "schemas": {
+      "ABEntryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "config_version": {
+            "title": "Config Version",
+            "type": "string"
+          },
+          "evaluated_target_count": {
+            "title": "Evaluated Target Count",
+            "type": "integer"
+          },
+          "scores": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/MeanCountResponse"
+            },
+            "title": "Scores",
+            "type": "object"
+          }
+        },
+        "required": [
+          "config_version",
+          "evaluated_target_count",
+          "scores"
+        ],
+        "title": "ABEntryResponse",
+        "type": "object"
+      },
+      "AnalysisResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "ab_leaderboard": {
+            "items": {
+              "$ref": "#/components/schemas/ABEntryResponse"
+            },
+            "title": "Ab Leaderboard",
+            "type": "array"
+          },
+          "coaching_markdown": {
+            "title": "Coaching Markdown",
+            "type": "string"
+          },
+          "summary": {
+            "items": {
+              "$ref": "#/components/schemas/ScoreSummaryResponse"
+            },
+            "title": "Summary",
+            "type": "array"
+          },
+          "trends": {
+            "items": {
+              "$ref": "#/components/schemas/TrendEntryResponse"
+            },
+            "title": "Trends",
+            "type": "array"
+          }
+        },
+        "required": [
+          "summary",
+          "ab_leaderboard",
+          "trends",
+          "coaching_markdown"
+        ],
+        "title": "AnalysisResponse",
+        "type": "object"
+      },
+      "AutoRunRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "auto_run": {
+            "title": "Auto Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "auto_run"
+        ],
+        "title": "AutoRunRequest",
+        "type": "object"
+      },
+      "BehavioralFeedbackResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "desired_behavior": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Desired Behavior"
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Problem"
+          },
+          "success": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Success"
+          }
+        },
+        "required": [
+          "success",
+          "problem",
+          "desired_behavior"
+        ],
+        "title": "BehavioralFeedbackResponse",
+        "type": "object"
+      },
+      "BundleSnapshotResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScopeDescriptorResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/TargetSnapshotResponse"
+            },
+            "title": "Targets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "scope",
+          "targets",
+          "revision"
+        ],
+        "title": "BundleSnapshotResponse",
+        "type": "object"
+      },
+      "ChatSpanResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "cache_read_tokens": {
+            "title": "Cache Read Tokens",
+            "type": "integer"
+          },
+          "finish_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finish Reason"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "span_id": {
+            "title": "Span Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "span_id",
+          "model",
+          "input_tokens",
+          "output_tokens",
+          "cache_read_tokens",
+          "finish_reason"
+        ],
+        "title": "ChatSpanResponse",
+        "type": "object"
+      },
+      "DataSelectionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "session_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Session Ids",
+            "type": "array"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          }
+        },
+        "required": [
+          "since",
+          "until",
+          "timezone",
+          "session_ids"
+        ],
+        "title": "DataSelectionResponse",
+        "type": "object"
+      },
+      "DismissRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "DismissRequest",
+        "type": "object"
+      },
+      "DraftRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "contents": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Contents",
+            "type": "object"
+          },
+          "expected_draft_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Draft Revision"
+          },
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "contents"
+        ],
+        "title": "DraftRequest",
+        "type": "object"
+      },
+      "DraftResetRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_draft_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Draft Revision"
+          },
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "DraftResetRequest",
+        "type": "object"
+      },
+      "EffectiveModelSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "judges": {
+            "items": {
+              "$ref": "#/components/schemas/PositionedJudge"
+            },
+            "title": "Judges",
+            "type": "array"
+          },
+          "proposal_evaluator": {
+            "$ref": "#/components/schemas/ModelDescriptor"
+          },
+          "proposal_writer": {
+            "$ref": "#/components/schemas/ModelDescriptor"
+          }
+        },
+        "required": [
+          "proposal_writer",
+          "judges",
+          "proposal_evaluator"
+        ],
+        "title": "EffectiveModelSelection",
+        "type": "object"
+      },
+      "EffectiveRunConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_budget": {
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Candidate Budget",
+            "type": "integer"
+          },
+          "force": {
+            "title": "Force",
+            "type": "boolean"
+          },
+          "judge_backend": {
+            "title": "Judge Backend",
+            "type": "string"
+          },
+          "judging_context": {
+            "$ref": "#/components/schemas/JudgingContextPolicy"
+          },
+          "model_catalog_version": {
+            "title": "Model Catalog Version",
+            "type": "string"
+          },
+          "models": {
+            "$ref": "#/components/schemas/EffectiveModelSelection"
+          },
+          "pipeline_version": {
+            "title": "Pipeline Version",
+            "type": "string"
+          },
+          "rubric_catalog_version": {
+            "title": "Rubric Catalog Version",
+            "type": "string"
+          },
+          "rubrics": {
+            "items": {
+              "$ref": "#/components/schemas/RubricDescriptor"
+            },
+            "title": "Rubrics",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "2",
+            "default": "2",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "selection_warnings": {
+            "items": {
+              "$ref": "#/components/schemas/SelectionWarning"
+            },
+            "title": "Selection Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "pipeline_version",
+          "model_catalog_version",
+          "rubric_catalog_version",
+          "judge_backend",
+          "models",
+          "rubrics",
+          "selection_warnings",
+          "judging_context",
+          "candidate_budget",
+          "force"
+        ],
+        "title": "EffectiveRunConfig",
+        "type": "object"
+      },
+      "EmptyReflectionResultResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/ReflectionCandidateResponse"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidates",
+          "reason"
+        ],
+        "title": "EmptyReflectionResultResponse",
+        "type": "object"
+      },
+      "EvaluatorRecordResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "evaluation_id": {
+            "title": "Evaluation Id",
+            "type": "string"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "requested_backend": {
+            "title": "Requested Backend",
+            "type": "string"
+          },
+          "requested_family": {
+            "title": "Requested Family",
+            "type": "string"
+          },
+          "requested_model": {
+            "title": "Requested Model",
+            "type": "string"
+          },
+          "resolved_backend": {
+            "title": "Resolved Backend",
+            "type": "string"
+          },
+          "resolved_family": {
+            "title": "Resolved Family",
+            "type": "string"
+          },
+          "resolved_model": {
+            "title": "Resolved Model",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "target_revision": {
+            "title": "Target Revision",
+            "type": "string"
+          },
+          "usage": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Usage",
+            "type": "object"
+          }
+        },
+        "required": [
+          "evaluation_id",
+          "target_revision",
+          "requested_model",
+          "requested_family",
+          "requested_backend",
+          "resolved_model",
+          "resolved_family",
+          "resolved_backend",
+          "score",
+          "rationale",
+          "usage"
+        ],
+        "title": "EvaluatorRecordResponse",
+        "type": "object"
+      },
+      "FeedbackItemResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "feedback_type": {
+            "title": "Feedback Type",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/FeedbackPayloadResponse"
+          }
+        },
+        "required": [
+          "id",
+          "feedback_type",
+          "payload",
+          "created_at"
+        ],
+        "title": "FeedbackItemResponse",
+        "type": "object"
+      },
+      "FeedbackPayloadResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "details": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Details",
+            "type": "object"
+          },
+          "rating": {
+            "title": "Rating",
+            "type": "number"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "tags": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rating"
+        ],
+        "title": "FeedbackPayloadResponse",
+        "type": "object"
+      },
+      "GenerationAttemptResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_id": {
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "candidate_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Revision"
+          },
+          "changed_paths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changed Paths",
+            "type": "array"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Type"
+          },
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "requested_writer": {
+            "$ref": "#/components/schemas/ModelDescriptor"
+          },
+          "resolved_backend": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved Backend"
+          },
+          "resolved_family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved Family"
+          },
+          "resolved_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved Model"
+          },
+          "response_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Digest"
+          },
+          "response_excerpt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Excerpt"
+          },
+          "status": {
+            "enum": [
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "usage": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Usage",
+            "type": "object"
+          }
+        },
+        "required": [
+          "attempt_id",
+          "number",
+          "status",
+          "requested_writer",
+          "resolved_model",
+          "resolved_family",
+          "resolved_backend",
+          "usage",
+          "candidate_revision",
+          "changed_paths",
+          "response_digest",
+          "response_excerpt",
+          "error_type",
+          "error"
+        ],
+        "title": "GenerationAttemptResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "InferenceStepAuditResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "output_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Mode"
+          },
+          "phase": {
+            "enum": [
+              "digest",
+              "window",
+              "merge"
+            ],
+            "title": "Phase",
+            "type": "string"
+          },
+          "raw_output_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Output Digest"
+          },
+          "requested_model": {
+            "title": "Requested Model",
+            "type": "string"
+          },
+          "resolved_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved Model"
+          },
+          "reused": {
+            "title": "Reused",
+            "type": "boolean"
+          },
+          "schema_fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Fallback Reason"
+          },
+          "schema_name": {
+            "title": "Schema Name",
+            "type": "string"
+          },
+          "transport_request_count": {
+            "title": "Transport Request Count",
+            "type": "integer"
+          },
+          "usage": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Usage",
+            "type": "object"
+          }
+        },
+        "required": [
+          "phase",
+          "artifact_id",
+          "requested_model",
+          "usage",
+          "schema_name",
+          "transport_request_count",
+          "reused"
+        ],
+        "title": "InferenceStepAuditResponse",
+        "type": "object"
+      },
+      "JudgeBackendCatalog": {
+        "additionalProperties": false,
+        "properties": {
+          "available_models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelDescriptor"
+            },
+            "title": "Available Models",
+            "type": "array"
+          },
+          "proposal_evaluator_preferences": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Proposal Evaluator Preferences",
+            "type": "array"
+          },
+          "recommended_judges": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Recommended Judges",
+            "type": "array"
+          }
+        },
+        "required": [
+          "available_models",
+          "recommended_judges",
+          "proposal_evaluator_preferences"
+        ],
+        "title": "JudgeBackendCatalog",
+        "type": "object"
+      },
+      "JudgingAttemptSummaryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_count": {
+            "title": "Attempt Count",
+            "type": "integer"
+          },
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewAttemptResponse"
+            },
+            "title": "Attempts",
+            "type": "array"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "rating": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating"
+          },
+          "review_status": {
+            "enum": [
+              "complete",
+              "degraded",
+              "not_evaluable",
+              "failed"
+            ],
+            "title": "Review Status",
+            "type": "string"
+          },
+          "rubric": {
+            "title": "Rubric",
+            "type": "string"
+          },
+          "scope": {
+            "const": "session",
+            "title": "Scope",
+            "type": "string"
+          },
+          "successful_reviewer_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successful Reviewer Count"
+          }
+        },
+        "required": [
+          "scope",
+          "rubric",
+          "review_status",
+          "rating",
+          "attempt_count",
+          "successful_reviewer_count",
+          "attempts",
+          "conversation_id"
+        ],
+        "title": "JudgingAttemptSummaryResponse",
+        "type": "object"
+      },
+      "JudgingContextPolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "digest_max_tokens": {
+            "default": 1000,
+            "minimum": 1.0,
+            "title": "Digest Max Tokens",
+            "type": "integer"
+          },
+          "finding_max_tokens": {
+            "default": 750,
+            "minimum": 1.0,
+            "title": "Finding Max Tokens",
+            "type": "integer"
+          },
+          "max_chunks": {
+            "default": 40,
+            "minimum": 1.0,
+            "title": "Max Chunks",
+            "type": "integer"
+          },
+          "output_reserve_tokens": {
+            "default": 4000,
+            "minimum": 1.0,
+            "title": "Output Reserve Tokens",
+            "type": "integer"
+          },
+          "overlap_turns": {
+            "const": 1,
+            "default": 1,
+            "title": "Overlap Turns",
+            "type": "integer"
+          },
+          "prompt_reserve_tokens": {
+            "default": 6000,
+            "minimum": 1.0,
+            "title": "Prompt Reserve Tokens",
+            "type": "integer"
+          },
+          "safety_reserve_tokens": {
+            "default": 8000,
+            "minimum": 1.0,
+            "title": "Safety Reserve Tokens",
+            "type": "integer"
+          },
+          "target_input_tokens": {
+            "default": 100000,
+            "minimum": 1.0,
+            "title": "Target Input Tokens",
+            "type": "integer"
+          },
+          "token_estimator": {
+            "const": "utf8_bytes_div_3",
+            "default": "utf8_bytes_div_3",
+            "title": "Token Estimator",
+            "type": "string"
+          }
+        },
+        "title": "JudgingContextPolicy",
+        "type": "object"
+      },
+      "JudgingFailureDetailResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_count": {
+            "title": "Attempt Count",
+            "type": "integer"
+          },
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewAttemptResponse"
+            },
+            "title": "Attempts",
+            "type": "array"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "error_type": {
+            "title": "Error Type",
+            "type": "string"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "rubric": {
+            "title": "Rubric",
+            "type": "string"
+          },
+          "scope": {
+            "const": "session",
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "rubric",
+          "error_type",
+          "message",
+          "attempt_count",
+          "attempts",
+          "conversation_id"
+        ],
+        "title": "JudgingFailureDetailResponse",
+        "type": "object"
+      },
+      "JudgingPlanResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "cohort_id": {
+            "title": "Cohort Id",
+            "type": "string"
+          },
+          "input_policy": {
+            "$ref": "#/components/schemas/JudgingContextPolicy"
+          },
+          "panel_size": {
+            "title": "Panel Size",
+            "type": "integer"
+          },
+          "plan_id": {
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "protocol": {
+            "additionalProperties": true,
+            "title": "Protocol",
+            "type": "object"
+          },
+          "requested_rubrics": {
+            "items": {
+              "$ref": "#/components/schemas/RubricDescriptor"
+            },
+            "title": "Requested Rubrics",
+            "type": "array"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/JudgingPlanSessionResponse"
+            },
+            "title": "Sessions",
+            "type": "array"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/JudgingPlanTotalsResponse"
+          }
+        },
+        "required": [
+          "plan_id",
+          "schema_version",
+          "cohort_id",
+          "panel_size",
+          "requested_rubrics",
+          "input_policy",
+          "protocol",
+          "totals",
+          "sessions"
+        ],
+        "title": "JudgingPlanResponse",
+        "type": "object"
+      },
+      "JudgingPlanRubricResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "content_digest": {
+            "title": "Content Digest",
+            "type": "string"
+          },
+          "evaluation_unit": {
+            "const": "session",
+            "title": "Evaluation Unit",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "maximum_reviewer_attempts": {
+            "title": "Maximum Reviewer Attempts",
+            "type": "integer"
+          },
+          "minimum_reviewer_attempts": {
+            "title": "Minimum Reviewer Attempts",
+            "type": "integer"
+          },
+          "pass_threshold": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Pass Threshold",
+            "type": "number"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "evaluation_unit",
+          "version",
+          "content_digest",
+          "pass_threshold",
+          "minimum_reviewer_attempts",
+          "maximum_reviewer_attempts"
+        ],
+        "title": "JudgingPlanRubricResponse",
+        "type": "object"
+      },
+      "JudgingPlanSessionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "raw_coverage_trace_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Raw Coverage Trace Ids",
+            "type": "array"
+          },
+          "reviewers": {
+            "items": {
+              "$ref": "#/components/schemas/JudgingReviewerPlanResponse"
+            },
+            "title": "Reviewers",
+            "type": "array"
+          },
+          "rubrics": {
+            "items": {
+              "$ref": "#/components/schemas/JudgingPlanRubricResponse"
+            },
+            "title": "Rubrics",
+            "type": "array"
+          },
+          "turn_count": {
+            "title": "Turn Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "turn_count",
+          "raw_coverage_trace_ids",
+          "rubrics",
+          "reviewers"
+        ],
+        "title": "JudgingPlanSessionResponse",
+        "type": "object"
+      },
+      "JudgingPlanTotalsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "maximum_digest_calls": {
+            "title": "Maximum Digest Calls",
+            "type": "integer"
+          },
+          "maximum_merge_calls": {
+            "title": "Maximum Merge Calls",
+            "type": "integer"
+          },
+          "maximum_reviewer_attempts": {
+            "title": "Maximum Reviewer Attempts",
+            "type": "integer"
+          },
+          "maximum_window_calls": {
+            "title": "Maximum Window Calls",
+            "type": "integer"
+          },
+          "minimum_reviewer_attempts": {
+            "title": "Minimum Reviewer Attempts",
+            "type": "integer"
+          },
+          "planned_rubrics": {
+            "title": "Planned Rubrics",
+            "type": "integer"
+          },
+          "sessions_planned": {
+            "title": "Sessions Planned",
+            "type": "integer"
+          },
+          "turns_considered": {
+            "title": "Turns Considered",
+            "type": "integer"
+          },
+          "windows_planned": {
+            "title": "Windows Planned",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sessions_planned",
+          "turns_considered",
+          "windows_planned",
+          "planned_rubrics",
+          "minimum_reviewer_attempts",
+          "maximum_reviewer_attempts",
+          "maximum_digest_calls",
+          "maximum_window_calls",
+          "maximum_merge_calls"
+        ],
+        "title": "JudgingPlanTotalsResponse",
+        "type": "object"
+      },
+      "JudgingProgressResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_summaries": {
+            "items": {
+              "$ref": "#/components/schemas/JudgingAttemptSummaryResponse"
+            },
+            "title": "Attempt Summaries",
+            "type": "array"
+          },
+          "attempt_summaries_truncated": {
+            "title": "Attempt Summaries Truncated",
+            "type": "boolean"
+          },
+          "attempt_summary_count": {
+            "title": "Attempt Summary Count",
+            "type": "integer"
+          },
+          "coverage_complete": {
+            "title": "Coverage Complete",
+            "type": "boolean"
+          },
+          "digest_steps_completed": {
+            "title": "Digest Steps Completed",
+            "type": "integer"
+          },
+          "failure_count": {
+            "title": "Failure Count",
+            "type": "integer"
+          },
+          "failure_detail_count": {
+            "title": "Failure Detail Count",
+            "type": "integer"
+          },
+          "failure_details": {
+            "items": {
+              "$ref": "#/components/schemas/JudgingFailureDetailResponse"
+            },
+            "title": "Failure Details",
+            "type": "array"
+          },
+          "failure_details_truncated": {
+            "title": "Failure Details Truncated",
+            "type": "boolean"
+          },
+          "maximum_digest_steps": {
+            "title": "Maximum Digest Steps",
+            "type": "integer"
+          },
+          "maximum_merge_steps": {
+            "title": "Maximum Merge Steps",
+            "type": "integer"
+          },
+          "maximum_reviewer_attempts": {
+            "title": "Maximum Reviewer Attempts",
+            "type": "integer"
+          },
+          "maximum_window_steps": {
+            "title": "Maximum Window Steps",
+            "type": "integer"
+          },
+          "merge_steps_completed": {
+            "title": "Merge Steps Completed",
+            "type": "integer"
+          },
+          "minimum_reviewer_attempts": {
+            "title": "Minimum Reviewer Attempts",
+            "type": "integer"
+          },
+          "not_evaluable_rubrics": {
+            "title": "Not Evaluable Rubrics",
+            "type": "integer"
+          },
+          "plan_id": {
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "planned_rubrics": {
+            "title": "Planned Rubrics",
+            "type": "integer"
+          },
+          "rated_rubrics": {
+            "title": "Rated Rubrics",
+            "type": "integer"
+          },
+          "reviewer_attempts_completed": {
+            "title": "Reviewer Attempts Completed",
+            "type": "integer"
+          },
+          "rubrics_completed": {
+            "title": "Rubrics Completed",
+            "type": "integer"
+          },
+          "scores_written": {
+            "title": "Scores Written",
+            "type": "integer"
+          },
+          "status_message": {
+            "title": "Status Message",
+            "type": "string"
+          },
+          "window_steps_completed": {
+            "title": "Window Steps Completed",
+            "type": "integer"
+          },
+          "write_failure_count": {
+            "title": "Write Failure Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "plan_id",
+          "planned_rubrics",
+          "rubrics_completed",
+          "rated_rubrics",
+          "not_evaluable_rubrics",
+          "minimum_reviewer_attempts",
+          "maximum_reviewer_attempts",
+          "reviewer_attempts_completed",
+          "digest_steps_completed",
+          "maximum_digest_steps",
+          "window_steps_completed",
+          "maximum_window_steps",
+          "merge_steps_completed",
+          "maximum_merge_steps",
+          "scores_written",
+          "failure_count",
+          "write_failure_count",
+          "coverage_complete",
+          "status_message",
+          "attempt_summary_count",
+          "attempt_summaries_truncated",
+          "attempt_summaries",
+          "failure_detail_count",
+          "failure_details_truncated",
+          "failure_details"
+        ],
+        "title": "JudgingProgressResponse",
+        "type": "object"
+      },
+      "JudgingRawTurnResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "estimated_tokens": {
+            "title": "Estimated Tokens",
+            "type": "integer"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          },
+          "raw_digest": {
+            "title": "Raw Digest",
+            "type": "string"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "position",
+          "estimated_tokens",
+          "raw_digest"
+        ],
+        "title": "JudgingRawTurnResponse",
+        "type": "object"
+      },
+      "JudgingReviewerPlanResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "judge": {
+            "$ref": "#/components/schemas/PositionedJudge"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "window_plan": {
+            "$ref": "#/components/schemas/JudgingWindowPlanResponse"
+          },
+          "work_bounds": {
+            "$ref": "#/components/schemas/JudgingWorkBoundsResponse"
+          }
+        },
+        "required": [
+          "ordinal",
+          "judge",
+          "window_plan",
+          "work_bounds"
+        ],
+        "title": "JudgingReviewerPlanResponse",
+        "type": "object"
+      },
+      "JudgingWindowPlanResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "chunk_count": {
+            "title": "Chunk Count",
+            "type": "integer"
+          },
+          "contract_version": {
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "input_cap_tokens": {
+            "title": "Input Cap Tokens",
+            "type": "integer"
+          },
+          "merge_input_tokens": {
+            "title": "Merge Input Tokens",
+            "type": "integer"
+          },
+          "overlap_turns": {
+            "title": "Overlap Turns",
+            "type": "integer"
+          },
+          "plan_id": {
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "raw_budget_tokens": {
+            "title": "Raw Budget Tokens",
+            "type": "integer"
+          },
+          "raw_coverage_trace_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Raw Coverage Trace Ids",
+            "type": "array"
+          },
+          "raw_turns": {
+            "items": {
+              "$ref": "#/components/schemas/JudgingRawTurnResponse"
+            },
+            "title": "Raw Turns",
+            "type": "array"
+          },
+          "token_estimator": {
+            "title": "Token Estimator",
+            "type": "string"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/JudgingWindowResponse"
+            },
+            "title": "Windows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "plan_id",
+          "contract_version",
+          "conversation_id",
+          "input_cap_tokens",
+          "raw_budget_tokens",
+          "chunk_count",
+          "overlap_turns",
+          "token_estimator",
+          "merge_input_tokens",
+          "raw_turns",
+          "raw_coverage_trace_ids",
+          "windows"
+        ],
+        "title": "JudgingWindowPlanResponse",
+        "type": "object"
+      },
+      "JudgingWindowResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "core_trace_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Core Trace Ids",
+            "type": "array"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "raw_tokens": {
+            "title": "Raw Tokens",
+            "type": "integer"
+          },
+          "raw_trace_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Raw Trace Ids",
+            "type": "array"
+          },
+          "raw_turn_digests": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Raw Turn Digests",
+            "type": "array"
+          },
+          "window_id": {
+            "title": "Window Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "window_id",
+          "index",
+          "core_trace_ids",
+          "raw_trace_ids",
+          "raw_turn_digests",
+          "raw_tokens"
+        ],
+        "title": "JudgingWindowResponse",
+        "type": "object"
+      },
+      "JudgingWorkBoundsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "digest_calls": {
+            "title": "Digest Calls",
+            "type": "integer"
+          },
+          "merge_calls_per_rubric": {
+            "title": "Merge Calls Per Rubric",
+            "type": "integer"
+          },
+          "window_calls_per_rubric": {
+            "title": "Window Calls Per Rubric",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "digest_calls",
+          "window_calls_per_rubric",
+          "merge_calls_per_rubric"
+        ],
+        "title": "JudgingWorkBoundsResponse",
+        "type": "object"
+      },
+      "MeanCountResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "mean": {
+            "title": "Mean",
+            "type": "number"
+          }
+        },
+        "required": [
+          "mean",
+          "count"
+        ],
+        "title": "MeanCountResponse",
+        "type": "object"
+      },
+      "ModelCatalogResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "catalog_version": {
+            "title": "Catalog Version",
+            "type": "string"
+          },
+          "judge_backends": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JudgeBackendCatalog"
+            },
+            "title": "Judge Backends",
+            "type": "object"
+          },
+          "proposal": {
+            "$ref": "#/components/schemas/ProposalCatalog"
+          },
+          "recommended_judge_backend": {
+            "title": "Recommended Judge Backend",
+            "type": "string"
+          }
+        },
+        "required": [
+          "catalog_version",
+          "proposal",
+          "recommended_judge_backend",
+          "judge_backends"
+        ],
+        "title": "ModelCatalogResponse",
+        "type": "object"
+      },
+      "ModelDescriptor": {
+        "additionalProperties": false,
+        "properties": {
+          "backend": {
+            "title": "Backend",
+            "type": "string"
+          },
+          "family": {
+            "title": "Family",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "max_input_tokens": {
+            "default": 128000,
+            "minimum": 1.0,
+            "title": "Max Input Tokens",
+            "type": "integer"
+          },
+          "supported_roles": {
+            "items": {
+              "enum": [
+                "proposal_writer",
+                "judge",
+                "proposal_evaluator"
+              ],
+              "type": "string"
+            },
+            "title": "Supported Roles",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "family",
+          "backend",
+          "supported_roles"
+        ],
+        "title": "ModelDescriptor",
+        "type": "object"
+      },
+      "PositionedJudge": {
+        "additionalProperties": false,
+        "properties": {
+          "backend": {
+            "title": "Backend",
+            "type": "string"
+          },
+          "family": {
+            "title": "Family",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "max_input_tokens": {
+            "default": 128000,
+            "minimum": 1.0,
+            "title": "Max Input Tokens",
+            "type": "integer"
+          },
+          "position": {
+            "minimum": 1.0,
+            "title": "Position",
+            "type": "integer"
+          },
+          "role": {
+            "const": "judge",
+            "default": "judge",
+            "title": "Role",
+            "type": "string"
+          },
+          "supported_roles": {
+            "items": {
+              "enum": [
+                "proposal_writer",
+                "judge",
+                "proposal_evaluator"
+              ],
+              "type": "string"
+            },
+            "title": "Supported Roles",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "family",
+          "backend",
+          "supported_roles",
+          "position"
+        ],
+        "title": "PositionedJudge",
+        "type": "object"
+      },
+      "PromoteRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledge_unevaluated": {
+            "default": false,
+            "title": "Acknowledge Unevaluated",
+            "type": "boolean"
+          },
+          "expected_draft_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Draft Revision"
+          },
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "idempotency_key"
+        ],
+        "title": "PromoteRequest",
+        "type": "object"
+      },
+      "PromotionReceiptResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "decided_at": {
+            "title": "Decided At",
+            "type": "string"
+          },
+          "evaluated_candidate": {
+            "$ref": "#/components/schemas/BundleSnapshotResponse"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/PromotionTargetOutcomeResponse"
+            },
+            "title": "Outcomes",
+            "type": "array"
+          },
+          "past": {
+            "$ref": "#/components/schemas/BundleSnapshotResponse"
+          },
+          "promoted": {
+            "$ref": "#/components/schemas/BundleSnapshotResponse"
+          },
+          "promoted_was_evaluated": {
+            "title": "Promoted Was Evaluated",
+            "type": "boolean"
+          },
+          "promotion_id": {
+            "title": "Promotion Id",
+            "type": "string"
+          },
+          "review_revision": {
+            "title": "Review Revision",
+            "type": "integer"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "unevaluated_d_acknowledged": {
+            "title": "Unevaluated D Acknowledged",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "promotion_id",
+          "run_id",
+          "candidate_id",
+          "past",
+          "evaluated_candidate",
+          "promoted",
+          "review_revision",
+          "outcomes",
+          "decided_at",
+          "promoted_was_evaluated",
+          "unevaluated_d_acknowledged"
+        ],
+        "title": "PromotionReceiptResponse",
+        "type": "object"
+      },
+      "PromotionTargetOutcomeResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "create",
+              "update"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "locator": {
+            "title": "Locator",
+            "type": "string"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "source_drift",
+                  "write_failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "status": {
+            "enum": [
+              "applied",
+              "not_applied"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "locator",
+          "action",
+          "status",
+          "reason",
+          "message"
+        ],
+        "title": "PromotionTargetOutcomeResponse",
+        "type": "object"
+      },
+      "ProposalCatalog": {
+        "additionalProperties": false,
+        "properties": {
+          "available_models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelDescriptor"
+            },
+            "title": "Available Models",
+            "type": "array"
+          },
+          "recommended_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended Model"
+          }
+        },
+        "required": [
+          "available_models",
+          "recommended_model"
+        ],
+        "title": "ProposalCatalog",
+        "type": "object"
+      },
+      "ReflectingProgressResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "attempted": {
+            "title": "Attempted",
+            "type": "integer"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/ReflectionActivityEventResponse"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "rejected": {
+            "title": "Rejected",
+            "type": "integer"
+          },
+          "scored": {
+            "title": "Scored",
+            "type": "integer"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
+          "status_message": {
+            "title": "Status Message",
+            "type": "string"
+          },
+          "total_attempts": {
+            "title": "Total Attempts",
+            "type": "integer"
+          },
+          "valid": {
+            "title": "Valid",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "phase",
+          "status_message",
+          "started_at",
+          "attempted",
+          "valid",
+          "rejected",
+          "scored",
+          "total_attempts",
+          "events"
+        ],
+        "title": "ReflectingProgressResponse",
+        "type": "object"
+      },
+      "ReflectionActivityEventResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "acting_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acting Role"
+          },
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "attempt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Id"
+          },
+          "candidate": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate"
+          },
+          "changed_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changed Paths"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Type"
+          },
+          "evaluation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "response_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Digest"
+          },
+          "response_excerpt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Excerpt"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "phase",
+          "message"
+        ],
+        "title": "ReflectionActivityEventResponse",
+        "type": "object"
+      },
+      "ReflectionCandidateResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "bundle": {
+            "$ref": "#/components/schemas/BundleSnapshotResponse"
+          },
+          "candidate_id": {
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "evaluation": {
+            "$ref": "#/components/schemas/EvaluatorRecordResponse"
+          },
+          "generation_attempt_id": {
+            "title": "Generation Attempt Id",
+            "type": "string"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "requested_writer": {
+            "$ref": "#/components/schemas/ModelDescriptor"
+          },
+          "resolved_writer_backend": {
+            "title": "Resolved Writer Backend",
+            "type": "string"
+          },
+          "resolved_writer_family": {
+            "title": "Resolved Writer Family",
+            "type": "string"
+          },
+          "resolved_writer_model": {
+            "title": "Resolved Writer Model",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "score_delta": {
+            "title": "Score Delta",
+            "type": "number"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "bundle",
+          "score",
+          "score_delta",
+          "rationale",
+          "generation_attempt_id",
+          "requested_writer",
+          "resolved_writer_model",
+          "resolved_writer_family",
+          "resolved_writer_backend",
+          "evaluation"
+        ],
+        "title": "ReflectionCandidateResponse",
+        "type": "object"
+      },
+      "ReflectionDraftResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "bundle": {
+            "$ref": "#/components/schemas/BundleSnapshotResponse"
+          },
+          "candidate_id": {
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "revision",
+          "bundle"
+        ],
+        "title": "ReflectionDraftResponse",
+        "type": "object"
+      },
+      "ReflectionResultResponse": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/SuccessfulReflectionResultResponse"
+          },
+          {
+            "$ref": "#/components/schemas/EmptyReflectionResultResponse"
+          }
+        ],
+        "title": "ReflectionResultResponse"
+      },
+      "ReflectionReviewResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "changed_targets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changed Targets"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BundleSnapshotResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dismissed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dismissed At"
+          },
+          "draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReflectionDraftResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PromotionReceiptResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selected_candidate_id": {
+            "title": "Selected Candidate Id",
+            "type": "string"
+          },
+          "stale": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stale"
+          },
+          "stale_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stale Reason"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "promoted",
+              "partial",
+              "dismissed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "selected_candidate_id",
+          "draft"
+        ],
+        "title": "ReflectionReviewResponse",
+        "type": "object"
+      },
+      "ReviewAttemptResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "behavioral_feedback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BehavioralFeedbackResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Type"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "output_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Mode"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          },
+          "rationale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rationale"
+          },
+          "raw_output_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Output Digest"
+          },
+          "requested_backend": {
+            "title": "Requested Backend",
+            "type": "string"
+          },
+          "requested_family": {
+            "title": "Requested Family",
+            "type": "string"
+          },
+          "requested_model": {
+            "title": "Requested Model",
+            "type": "string"
+          },
+          "resolved_family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved Family"
+          },
+          "resolved_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved Model"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "schema_fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Fallback Reason"
+          },
+          "schema_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Name"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "status": {
+            "enum": [
+              "succeeded",
+              "abstained",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/InferenceStepAuditResponse"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "transport_request_count": {
+            "title": "Transport Request Count",
+            "type": "integer"
+          },
+          "trigger": {
+            "title": "Trigger",
+            "type": "string"
+          },
+          "usage": {
+            "additionalProperties": true,
+            "title": "Usage",
+            "type": "object"
+          },
+          "verdict_schema_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict Schema Version"
+          }
+        },
+        "required": [
+          "position",
+          "role",
+          "trigger",
+          "requested_model",
+          "requested_family",
+          "requested_backend",
+          "status",
+          "resolved_model",
+          "resolved_family",
+          "score",
+          "rationale",
+          "evidence_ids",
+          "usage",
+          "output_mode",
+          "schema_name",
+          "schema_fallback_reason",
+          "transport_request_count",
+          "verdict_schema_version",
+          "raw_output_digest",
+          "error_type",
+          "message",
+          "behavioral_feedback",
+          "steps"
+        ],
+        "title": "ReviewAttemptResponse",
+        "type": "object"
+      },
+      "RubricCatalog": {
+        "additionalProperties": false,
+        "properties": {
+          "catalog_version": {
+            "title": "Catalog Version",
+            "type": "string"
+          },
+          "rubrics": {
+            "items": {
+              "$ref": "#/components/schemas/RubricDescriptor"
+            },
+            "title": "Rubrics",
+            "type": "array"
+          }
+        },
+        "required": [
+          "catalog_version",
+          "rubrics"
+        ],
+        "title": "RubricCatalog",
+        "type": "object"
+      },
+      "RubricDescriptor": {
+        "additionalProperties": false,
+        "properties": {
+          "content_digest": {
+            "title": "Content Digest",
+            "type": "string"
+          },
+          "evaluation_unit": {
+            "const": "session",
+            "title": "Evaluation Unit",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "pass_threshold": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Pass Threshold",
+            "type": "number"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "evaluation_unit",
+          "version",
+          "content_digest",
+          "pass_threshold"
+        ],
+        "title": "RubricDescriptor",
+        "type": "object"
+      },
+      "RunConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_budget": {
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Candidate Budget",
+            "type": "integer"
+          },
+          "force": {
+            "title": "Force",
+            "type": "boolean"
+          },
+          "judge_backend": {
+            "title": "Judge Backend",
+            "type": "string"
+          },
+          "judge_models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Judge Models",
+            "type": "array"
+          },
+          "model_catalog_version": {
+            "title": "Model Catalog Version",
+            "type": "string"
+          },
+          "proposal_evaluator_model": {
+            "title": "Proposal Evaluator Model",
+            "type": "string"
+          },
+          "proposal_model": {
+            "title": "Proposal Model",
+            "type": "string"
+          },
+          "rubric_catalog_version": {
+            "title": "Rubric Catalog Version",
+            "type": "string"
+          },
+          "rubrics": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Rubrics",
+            "type": "array"
+          }
+        },
+        "required": [
+          "model_catalog_version",
+          "rubric_catalog_version",
+          "judge_backend",
+          "judge_models",
+          "proposal_model",
+          "proposal_evaluator_model",
+          "rubrics",
+          "candidate_budget",
+          "force"
+        ],
+        "title": "RunConfig",
+        "type": "object"
+      },
+      "RunListResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunSummaryResponse"
+            },
+            "title": "Runs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs"
+        ],
+        "title": "RunListResponse",
+        "type": "object"
+      },
+      "RunResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "auto_run": {
+            "title": "Auto Run",
+            "type": "boolean"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_stage_succeeded": {
+            "title": "Current Stage Succeeded",
+            "type": "boolean"
+          },
+          "data_selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DataSelectionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effective_config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EffectiveRunConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "judging_artifacts": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judging Artifacts"
+          },
+          "judging_plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JudgingPlanResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "judging_progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JudgingProgressResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "judging_result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JudgingProgressResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reflecting_progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReflectingProgressResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reflecting_result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReflectionResultResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reflection_input": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reflection Input"
+          },
+          "reflection_review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReflectionReviewResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reflection_review_revision": {
+            "title": "Reflection Review Revision",
+            "type": "integer"
+          },
+          "run_config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "scoring_progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScoringProgressResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scoring_result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScoringResultResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "created",
+              "scoring",
+              "judging",
+              "reflecting",
+              "complete",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "turn_cohort": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn Cohort"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "current_stage_succeeded",
+          "created_at",
+          "auto_run",
+          "data_selection",
+          "run_config",
+          "effective_config",
+          "turn_cohort",
+          "judging_plan",
+          "reflection_input",
+          "scoring_progress",
+          "scoring_result",
+          "judging_progress",
+          "judging_result",
+          "reflecting_progress",
+          "reflecting_result",
+          "reflection_review",
+          "reflection_review_revision",
+          "error"
+        ],
+        "title": "RunResponse",
+        "type": "object"
+      },
+      "RunSelectionSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "session_count": {
+            "title": "Session Count",
+            "type": "integer"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          }
+        },
+        "required": [
+          "session_count",
+          "since",
+          "until",
+          "timezone"
+        ],
+        "title": "RunSelectionSummary",
+        "type": "object"
+      },
+      "RunSummaryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_stage_succeeded": {
+            "title": "Current Stage Succeeded",
+            "type": "boolean"
+          },
+          "review_state": {
+            "enum": [
+              "none",
+              "review-needed",
+              "promoted",
+              "partial",
+              "dismissed",
+              "no-change",
+              "no-valid-proposal"
+            ],
+            "title": "Review State",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunSelectionSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "created",
+              "scoring",
+              "judging",
+              "reflecting",
+              "complete",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "current_stage_succeeded",
+          "created_at",
+          "selection",
+          "review_state"
+        ],
+        "title": "RunSummaryResponse",
+        "type": "object"
+      },
+      "ScopeDescriptorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "patterns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Patterns",
+            "type": "array"
+          },
+          "target_id": {
+            "title": "Target Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "target_id",
+          "patterns"
+        ],
+        "title": "ScopeDescriptorResponse",
+        "type": "object"
+      },
+      "ScoreSummaryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "binary": {
+            "title": "Binary",
+            "type": "boolean"
+          },
+          "ci": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Ci",
+            "type": "array"
+          },
+          "confident": {
+            "title": "Confident",
+            "type": "boolean"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "mean": {
+            "title": "Mean",
+            "type": "number"
+          },
+          "pass_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pass Rate"
+          },
+          "scorer": {
+            "title": "Scorer",
+            "type": "string"
+          },
+          "tag_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Tag Counts",
+            "type": "object"
+          }
+        },
+        "required": [
+          "scorer",
+          "count",
+          "mean",
+          "ci",
+          "binary",
+          "pass_rate",
+          "tag_counts",
+          "confident"
+        ],
+        "title": "ScoreSummaryResponse",
+        "type": "object"
+      },
+      "ScoringProgressResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "scored": {
+            "title": "Scored",
+            "type": "integer"
+          },
+          "status_message": {
+            "title": "Status Message",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "turn_details": {
+            "items": {
+              "$ref": "#/components/schemas/ScoringTurnDetailResponse"
+            },
+            "title": "Turn Details",
+            "type": "array"
+          },
+          "written": {
+            "title": "Written",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "scored",
+          "written",
+          "status_message",
+          "turn_details"
+        ],
+        "title": "ScoringProgressResponse",
+        "type": "object"
+      },
+      "ScoringResultResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "errors": {
+            "title": "Errors",
+            "type": "integer"
+          },
+          "scores_written": {
+            "title": "Scores Written",
+            "type": "integer"
+          },
+          "sessions_scored": {
+            "title": "Sessions Scored",
+            "type": "integer"
+          },
+          "turn_details": {
+            "items": {
+              "$ref": "#/components/schemas/ScoringTurnDetailResponse"
+            },
+            "title": "Turn Details",
+            "type": "array"
+          },
+          "turns_scored": {
+            "title": "Turns Scored",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "turns_scored",
+          "sessions_scored",
+          "scores_written",
+          "errors",
+          "turn_details"
+        ],
+        "title": "ScoringResultResponse",
+        "type": "object"
+      },
+      "ScoringTurnDetailResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "denials": {
+            "title": "Denials",
+            "type": "integer"
+          },
+          "errors": {
+            "title": "Errors",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "scores": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Scores",
+            "type": "object"
+          },
+          "steering": {
+            "title": "Steering",
+            "type": "integer"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          },
+          "tool_count": {
+            "title": "Tool Count",
+            "type": "integer"
+          },
+          "tools_used": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools Used",
+            "type": "array"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "user_input": {
+            "title": "User Input",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "conversation_id",
+          "model",
+          "user_input",
+          "tokens",
+          "tool_count",
+          "tools_used",
+          "errors",
+          "steering",
+          "denials",
+          "scores"
+        ],
+        "title": "ScoringTurnDetailResponse",
+        "type": "object"
+      },
+      "SelectionWarning": {
+        "additionalProperties": false,
+        "properties": {
+          "affected_roles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Affected Roles",
+            "type": "array"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "compared_families": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Compared Families",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "selected_model_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Model Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "affected_roles",
+          "selected_model_ids",
+          "compared_families"
+        ],
+        "title": "SelectionWarning",
+        "type": "object"
+      },
+      "SessionDetailResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "config_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Version"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "git_branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Git Branch"
+          },
+          "session_feedback": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackItemResponse"
+            },
+            "title": "Session Feedback",
+            "type": "array"
+          },
+          "total_tokens": {
+            "title": "Total Tokens",
+            "type": "integer"
+          },
+          "turn_count": {
+            "title": "Turn Count",
+            "type": "integer"
+          },
+          "turn_feedback": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/FeedbackItemResponse"
+              },
+              "type": "array"
+            },
+            "title": "Turn Feedback",
+            "type": "object"
+          },
+          "turns": {
+            "items": {
+              "$ref": "#/components/schemas/TurnDetailResponse"
+            },
+            "title": "Turns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "config_version",
+          "git_branch",
+          "total_tokens",
+          "turn_count",
+          "turns",
+          "session_feedback",
+          "turn_feedback"
+        ],
+        "title": "SessionDetailResponse",
+        "type": "object"
+      },
+      "SessionListResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/SessionSummaryResponse"
+            },
+            "title": "Sessions",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sessions",
+          "total",
+          "truncated",
+          "limit"
+        ],
+        "title": "SessionListResponse",
+        "type": "object"
+      },
+      "SessionSummaryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "config_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Version"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "effort_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effort Level"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "git_branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Git Branch"
+          },
+          "input_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Preview"
+          },
+          "last_activity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Activity"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "signal_evidence": {
+            "items": {
+              "$ref": "#/components/schemas/SignalEvidenceResponse"
+            },
+            "title": "Signal Evidence",
+            "type": "array"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "total_tokens": {
+            "title": "Total Tokens",
+            "type": "integer"
+          },
+          "total_tool_calls": {
+            "title": "Total Tool Calls",
+            "type": "integer"
+          },
+          "turn_count": {
+            "title": "Turn Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "session_id",
+          "turn_count",
+          "started_at",
+          "ended_at",
+          "last_activity",
+          "model",
+          "effort_level",
+          "config_version",
+          "git_branch",
+          "total_tokens",
+          "total_tool_calls",
+          "input_preview",
+          "signal_evidence"
+        ],
+        "title": "SessionSummaryResponse",
+        "type": "object"
+      },
+      "SignalEvidenceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "rating": {
+            "title": "Rating",
+            "type": "number"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "signal": {
+            "title": "Signal",
+            "type": "string"
+          },
+          "turn_id": {
+            "title": "Turn Id",
+            "type": "string"
+          },
+          "turn_started_at": {
+            "title": "Turn Started At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signal",
+          "version",
+          "rating",
+          "reason",
+          "turn_id",
+          "turn_started_at"
+        ],
+        "title": "SignalEvidenceResponse",
+        "type": "object"
+      },
+      "SubagentResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Type"
+          },
+          "span_id": {
+            "title": "Span Id",
+            "type": "string"
+          },
+          "tool_call_count": {
+            "title": "Tool Call Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "span_id",
+          "agent_type",
+          "tool_call_count"
+        ],
+        "title": "SubagentResponse",
+        "type": "object"
+      },
+      "SuccessfulReflectionResultResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline": {
+            "$ref": "#/components/schemas/BundleSnapshotResponse"
+          },
+          "baseline_evaluation": {
+            "$ref": "#/components/schemas/EvaluatorRecordResponse"
+          },
+          "baseline_score": {
+            "title": "Baseline Score",
+            "type": "number"
+          },
+          "baseline_won": {
+            "title": "Baseline Won",
+            "type": "boolean"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/ReflectionCandidateResponse"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "generation_attempts": {
+            "items": {
+              "$ref": "#/components/schemas/GenerationAttemptResponse"
+            },
+            "title": "Generation Attempts",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "recommended_candidate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended Candidate Id"
+          },
+          "score_basis": {
+            "const": "predicted_evaluator",
+            "title": "Score Basis",
+            "type": "string"
+          }
+        },
+        "required": [
+          "baseline",
+          "baseline_score",
+          "baseline_evaluation",
+          "candidates",
+          "generation_attempts",
+          "recommended_candidate_id",
+          "baseline_won",
+          "reason",
+          "score_basis"
+        ],
+        "title": "SuccessfulReflectionResultResponse",
+        "type": "object"
+      },
+      "TargetSnapshotResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "exists": {
+            "title": "Exists",
+            "type": "boolean"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "locator": {
+            "title": "Locator",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "locator",
+          "display_name",
+          "path",
+          "exists",
+          "content",
+          "revision"
+        ],
+        "title": "TargetSnapshotResponse",
+        "type": "object"
+      },
+      "ToolCallResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {
+            "title": "Arguments",
+            "type": "string"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "result": {
+            "title": "Result",
+            "type": "string"
+          },
+          "span_id": {
+            "title": "Span Id",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "string"
+          },
+          "tool_name": {
+            "title": "Tool Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "span_id",
+          "tool_name",
+          "arguments",
+          "result",
+          "status_code",
+          "started_at",
+          "ended_at"
+        ],
+        "title": "ToolCallResponse",
+        "type": "object"
+      },
+      "TrendEntryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "delta": {
+            "title": "Delta",
+            "type": "number"
+          },
+          "direction": {
+            "enum": [
+              "regression",
+              "improvement"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
+          "older_mean": {
+            "title": "Older Mean",
+            "type": "number"
+          },
+          "recent_mean": {
+            "title": "Recent Mean",
+            "type": "number"
+          },
+          "sample_count": {
+            "title": "Sample Count",
+            "type": "integer"
+          },
+          "scorer": {
+            "title": "Scorer",
+            "type": "string"
+          },
+          "significant": {
+            "title": "Significant",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "scorer",
+          "direction",
+          "older_mean",
+          "recent_mean",
+          "delta",
+          "sample_count",
+          "significant"
+        ],
+        "title": "TrendEntryResponse",
+        "type": "object"
+      },
+      "TurnDetailResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "cache_read_tokens": {
+            "title": "Cache Read Tokens",
+            "type": "integer"
+          },
+          "chat_span_count": {
+            "title": "Chat Span Count",
+            "type": "integer"
+          },
+          "chat_spans": {
+            "items": {
+              "$ref": "#/components/schemas/ChatSpanResponse"
+            },
+            "title": "Chat Spans",
+            "type": "array"
+          },
+          "config_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Version"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "denial_count": {
+            "title": "Denial Count",
+            "type": "integer"
+          },
+          "effort_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effort Level"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "git_branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Git Branch"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "string"
+          },
+          "steering_count": {
+            "title": "Steering Count",
+            "type": "integer"
+          },
+          "subagent_count": {
+            "title": "Subagent Count",
+            "type": "integer"
+          },
+          "subagents": {
+            "items": {
+              "$ref": "#/components/schemas/SubagentResponse"
+            },
+            "title": "Subagents",
+            "type": "array"
+          },
+          "tool_call_count": {
+            "title": "Tool Call Count",
+            "type": "integer"
+          },
+          "tool_calls": {
+            "items": {
+              "$ref": "#/components/schemas/ToolCallResponse"
+            },
+            "title": "Tool Calls",
+            "type": "array"
+          },
+          "tool_error_count": {
+            "title": "Tool Error Count",
+            "type": "integer"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "user_input": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Input"
+          }
+        },
+        "required": [
+          "trace_id",
+          "conversation_id",
+          "started_at",
+          "ended_at",
+          "model",
+          "input_tokens",
+          "output_tokens",
+          "cache_read_tokens",
+          "status_code",
+          "config_version",
+          "git_branch",
+          "effort_level",
+          "session_id",
+          "steering_count",
+          "denial_count",
+          "tool_error_count",
+          "tool_call_count",
+          "chat_span_count",
+          "subagent_count",
+          "user_input",
+          "tool_calls",
+          "chat_spans",
+          "subagents"
+        ],
+        "title": "TurnDetailResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "weave_agent_signals__routes__reviews__SelectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "discard_draft": {
+            "default": false,
+            "title": "Discard Draft",
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "expected_revision"
+        ],
+        "title": "SelectionRequest",
+        "type": "object"
+      },
+      "weave_agent_signals__routes__runs__SelectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "session_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Session Ids",
+            "type": "array"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          }
+        },
+        "required": [
+          "session_ids"
+        ],
+        "title": "SelectionRequest",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "weave-agent-signals",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/analyze": {
+      "get": {
+        "operationId": "get_analysis_api_analyze_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "maximum": 5000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Analysis",
+        "tags": [
+          "inspection"
+        ]
+      }
+    },
+    "/api/models": {
+      "get": {
+        "operationId": "get_models_api_models_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelCatalogResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Models",
+        "tags": [
+          "catalogs"
+        ]
+      }
+    },
+    "/api/rubrics": {
+      "get": {
+        "operationId": "get_rubrics_api_rubrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RubricCatalog"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Rubrics",
+        "tags": [
+          "catalogs"
+        ]
+      }
+    },
+    "/api/runs": {
+      "get": {
+        "operationId": "list_runs_api_runs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Runs",
+        "tags": [
+          "runs"
+        ]
+      },
+      "post": {
+        "operationId": "create_run_api_runs_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Create Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}": {
+      "get": {
+        "operationId": "get_run_api_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/advance": {
+      "post": {
+        "operationId": "advance_run_api_runs__run_id__advance_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Advance Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/auto_run": {
+      "put": {
+        "operationId": "set_auto_run_api_runs__run_id__auto_run_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutoRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Auto Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/cancel": {
+      "post": {
+        "operationId": "cancel_run_api_runs__run_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/config": {
+      "put": {
+        "operationId": "save_config_api_runs__run_id__config_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Config",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/dismiss": {
+      "post": {
+        "operationId": "dismiss_api_runs__run_id__dismiss_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DismissRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dismiss",
+        "tags": [
+          "reviews"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/promote": {
+      "post": {
+        "operationId": "promote_api_runs__run_id__promote_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Promote",
+        "tags": [
+          "reviews"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/reflection_draft": {
+      "delete": {
+        "operationId": "reset_draft_api_runs__run_id__reflection_draft_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Draft",
+        "tags": [
+          "reviews"
+        ]
+      },
+      "put": {
+        "operationId": "save_draft_api_runs__run_id__reflection_draft_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Draft",
+        "tags": [
+          "reviews"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/reflection_selection": {
+      "put": {
+        "operationId": "select_candidate_api_runs__run_id__reflection_selection_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/weave_agent_signals__routes__reviews__SelectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Select Candidate",
+        "tags": [
+          "reviews"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/selection": {
+      "put": {
+        "operationId": "save_selection_api_runs__run_id__selection_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/weave_agent_signals__routes__runs__SelectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Selection",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/sessions": {
+      "get": {
+        "operationId": "get_sessions_api_sessions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Until"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timezone",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Timezone"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Sessions",
+        "tags": [
+          "inspection"
+        ]
+      }
+    },
+    "/api/sessions/{conversation_id}": {
+      "get": {
+        "operationId": "get_session_api_sessions__conversation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Session",
+        "tags": [
+          "inspection"
+        ]
+      }
+    }
+  }
+}

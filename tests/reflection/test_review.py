@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
 
-from weave_agent_signals.runs.bundles import BundleSnapshot
-from weave_agent_signals.runs.promotion import ProjectFileAdapter
+from weave_agent_signals.runs.bundles import BundleSnapshot, TargetSnapshot
+from weave_agent_signals.runs.promotion import TargetPromoter
 from weave_agent_signals.runs.review import (
     ReviewConflictError,
     ReviewRequestError,
@@ -18,6 +19,7 @@ from weave_agent_signals.runs.store import (
     Run,
     RunStatus,
 )
+from weave_agent_signals.runs.targets import load_target_registry
 
 
 class FakeStore:
@@ -70,19 +72,41 @@ def _contents(bundle: BundleSnapshot) -> dict[str, str]:
     }
 
 
+def _candidate(baseline: BundleSnapshot, locator: str, content: str) -> BundleSnapshot:
+    targets = [
+        TargetSnapshot(
+            kind=target.kind,
+            locator=target.locator,
+            exists=True,
+            content=content if target.locator == locator else target.content,
+            display_name=target.display_name,
+            path=target.path,
+        )
+        for target in baseline.targets
+    ]
+    return BundleSnapshot(tuple(targets), baseline.scope)
+
+
 def _context(tmp_path, *, status: RunStatus = RunStatus.COMPLETE):
-    (tmp_path / ".claude" / "skills").mkdir(parents=True)
+    (tmp_path / "skills" / "audit").mkdir(parents=True)
     (tmp_path / "CLAUDE.md").write_text("past\n")
-    (tmp_path / ".claude" / "skills" / "audit.md").write_text("audit past\n")
-    adapter = ProjectFileAdapter(tmp_path, target_id="project-1")
+    (tmp_path / "skills" / "audit" / "SKILL.md").write_text("audit past\n")
+    registry_path = tmp_path / "targets.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "targets": [
+                    {"kind": "file", "id": "claude", "path": "CLAUDE.md"},
+                    {"kind": "skill_collection", "id": "skills", "root": "skills"},
+                ],
+            }
+        )
+    )
+    adapter = TargetPromoter(load_target_registry(registry_path))
     baseline = adapter.capture()
-    base_contents = _contents(baseline)
-    candidate_one = adapter.bundle_from_content_map(
-        {**base_contents, "CLAUDE.md": "candidate one\n"}
-    )
-    candidate_two = adapter.bundle_from_content_map(
-        {**base_contents, "CLAUDE.md": "candidate two\n"}
-    )
+    candidate_one = _candidate(baseline, "file:claude", "candidate one\n")
+    candidate_two = _candidate(baseline, "file:claude", "candidate two\n")
     result = {
         "baseline": baseline.to_dict(),
         "candidates": [
@@ -105,7 +129,7 @@ def _context(tmp_path, *, status: RunStatus = RunStatus.COMPLETE):
     store = FakeStore(run)
     service = ReviewService(
         store=store,
-        adapter_factory=lambda: ProjectFileAdapter(tmp_path, target_id="project-1"),
+        adapter_factory=lambda: TargetPromoter(load_target_registry(registry_path)),
         clock=lambda: datetime(2026, 7, 14, 12, tzinfo=timezone.utc),
     )
     return service, store, adapter, baseline, candidate_one, candidate_two
@@ -117,7 +141,7 @@ def test_selects_c_and_requires_explicit_draft_discard(tmp_path):
         "run-1",
         contents={
             **_contents(candidate),
-            "CLAUDE.md": "edited D\n",
+            "file:claude": "edited D\n",
         },
         expected_revision=1,
         expected_draft_revision=None,
@@ -147,12 +171,12 @@ def test_selects_c_and_requires_explicit_draft_discard(tmp_path):
 
 def test_saves_and_resets_content_only_d_with_two_revisions(tmp_path):
     service, _store, adapter, _baseline, candidate, _other = _context(tmp_path)
-    draft = adapter.bundle_from_content_map({**_contents(candidate), "CLAUDE.md": "edited D\n"})
+    draft = _candidate(candidate, "file:claude", "edited D\n")
     saved = service.save_draft(
         "run-1",
         contents={
             **_contents(candidate),
-            "CLAUDE.md": "edited D\n",
+            "file:claude": "edited D\n",
         },
         expected_revision=1,
         expected_draft_revision=None,
@@ -183,7 +207,7 @@ def test_saves_and_resets_content_only_d_with_two_revisions(tmp_path):
 def test_rejects_d_content_that_changes_target_membership(tmp_path):
     service, _store, _adapter, _baseline, candidate, _other = _context(tmp_path)
     incomplete = _contents(candidate)
-    incomplete.pop(".claude/skills/audit.md")
+    incomplete.pop("skills:skills/audit/SKILL.md")
 
     with pytest.raises(ReviewRequestError) as caught:
         service.save_draft(
@@ -215,24 +239,24 @@ def test_reflection_finalizing_and_store_cas_are_typed_conflicts(tmp_path):
 
 def test_any_managed_baseline_drift_blocks_review_edits(tmp_path):
     service, _store, _adapter, _baseline, _candidate, _other = _context(tmp_path)
-    (tmp_path / ".claude" / "skills" / "audit.md").write_text("changed outside C\n")
+    (tmp_path / "skills" / "audit" / "SKILL.md").write_text("changed outside C\n")
 
     with pytest.raises(ReviewConflictError) as caught:
         service.select_candidate("run-1", candidate_id="candidate-2", expected_revision=1)
     assert caught.value.code == "baseline_stale"
-    assert caught.value.context["changed_targets"] == [".claude/skills/audit.md"]
+    assert caught.value.context["changed_targets"] == ["skills:skills/audit/SKILL.md"]
     assert caught.value.context["current"] is not None
 
 
 def test_read_derives_stale_overlay_without_persisting_it(tmp_path):
     service, store, _adapter, _baseline, _candidate, _other = _context(tmp_path)
     persisted_review = dict(store.run.reflection_review)
-    (tmp_path / ".claude" / "skills" / "audit.md").write_text("live change\n")
+    (tmp_path / "skills" / "audit" / "SKILL.md").write_text("live change\n")
 
     view = service.read("run-1")
 
     assert view.reflection_review["stale"] is True
-    assert view.reflection_review["changed_targets"] == [".claude/skills/audit.md"]
+    assert view.reflection_review["changed_targets"] == ["skills:skills/audit/SKILL.md"]
     assert view.reflection_review["current"] is not None
     assert store.run.reflection_review == persisted_review
     assert store.run.reflection_review_revision == 1
@@ -281,12 +305,12 @@ def test_promotes_evaluated_c_and_persists_exact_receipt(tmp_path):
 
 def test_d_requires_exact_acknowledgement_then_promotes(tmp_path):
     service, _store, adapter, _baseline, candidate, _other = _context(tmp_path)
-    draft = adapter.bundle_from_content_map({**_contents(candidate), "CLAUDE.md": "edited D\n"})
+    draft = _candidate(candidate, "file:claude", "edited D\n")
     service.save_draft(
         "run-1",
         contents={
             **_contents(candidate),
-            "CLAUDE.md": "edited D\n",
+            "file:claude": "edited D\n",
         },
         expected_revision=1,
         expected_draft_revision=None,
@@ -336,6 +360,52 @@ def test_d_requires_exact_acknowledgement_then_promotes(tmp_path):
     )
 
 
+def test_partial_receipt_is_persisted_as_terminal_review(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    service, store, _adapter, baseline, candidate, _other = _context(tmp_path)
+    candidate = _candidate(candidate, "skills:skills/audit/SKILL.md", "audit new\n")
+    result = dict(store.run.reflecting_result)
+    result["candidates"] = [{"candidate_id": "candidate-1", "bundle": candidate.to_dict()}]
+    store.run = replace(store.run, reflecting_result=result)
+    real_publish = TargetPromoter._publish
+
+    def fail_skill(self, item):
+        if item.destination.name == "SKILL.md":
+            raise OSError("disk full")
+        real_publish(self, item)
+
+    monkeypatch.setattr(TargetPromoter, "_publish", fail_skill)
+
+    promoted = service.promote(
+        "run-1",
+        promotion_id="promotion-partial",
+        expected_revision=1,
+        expected_draft_revision=None,
+        acknowledge_unevaluated=False,
+    )
+
+    assert promoted.reflection_review["status"] == "partial"
+    assert promoted.reflection_review["receipt"]["outcomes"] == [
+        {
+            "locator": "file:claude",
+            "action": "update",
+            "status": "applied",
+            "reason": None,
+            "message": None,
+        },
+        {
+            "locator": "skills:skills/audit/SKILL.md",
+            "action": "update",
+            "status": "not_applied",
+            "reason": "write_failed",
+            "message": "disk full",
+        },
+    ]
+    with pytest.raises(ReviewConflictError) as caught:
+        service.dismiss("run-1", expected_revision=2)
+    assert caught.value.code == "reflection_review_resolved"
+    assert baseline.target("file:claude").content == "past\n"
+
+
 def test_dismisses_without_mutating_files(tmp_path):
     service, _store, _adapter, _baseline, _candidate, _other = _context(tmp_path)
     dismissed = service.dismiss("run-1", expected_revision=1)
@@ -345,39 +415,18 @@ def test_dismisses_without_mutating_files(tmp_path):
     assert (tmp_path / "CLAUDE.md").read_text() == "past\n"
 
 
-def test_receipt_persistence_failure_rolls_back_committed_files(tmp_path):
+def test_receipt_persistence_failure_does_not_roll_back_completed_files(tmp_path):
     service, store, _adapter, _baseline, _candidate, _other = _context(tmp_path)
     store.update_error = RuntimeError("database unavailable")
 
     with pytest.raises(Exception, match="receipt could not be persisted") as caught:
         service.promote(
             "run-1",
-            promotion_id="promotion-rollback",
+            promotion_id="promotion-unrecorded",
             expected_revision=1,
             expected_draft_revision=None,
             acknowledge_unevaluated=False,
         )
     assert getattr(caught.value, "code") == "promotion_receipt_persist_failed"
-    assert (tmp_path / "CLAUDE.md").read_text() == "past\n"
-    assert not (tmp_path / ".weave-agent-signals").exists()
-
-
-def test_recovers_committed_journal_into_exact_pending_review(tmp_path):
-    service, store, adapter, baseline, candidate, _other = _context(tmp_path)
-    receipt = adapter.promote(
-        promotion_id="promotion-crash",
-        run_id="run-1",
-        candidate_id="candidate-1",
-        past=baseline,
-        evaluated_candidate=candidate,
-        promoted=candidate,
-        review_revision=1,
-        acknowledge_unevaluated=False,
-    )
-
-    recovered = service.read("run-1")
-
-    assert recovered.reflection_review["status"] == "promoted"
-    assert recovered.reflection_review["receipt"] == receipt.to_dict()
-    assert store.run.reflection_review_revision == 2
+    assert (tmp_path / "CLAUDE.md").read_text() == "candidate one\n"
     assert not (tmp_path / ".weave-agent-signals").exists()

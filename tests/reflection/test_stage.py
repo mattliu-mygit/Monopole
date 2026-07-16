@@ -12,10 +12,6 @@ from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catal
 from weave_agent_signals.patterns import coaching_digest
 from weave_agent_signals.run_config import RunConfig, resolve_run_config
 from weave_agent_signals.runs.bundles import ScopeDescriptor, bundle_from_content_map
-from weave_agent_signals.runs.promotion import (
-    ProjectMarkdownPolicy,
-    target_adapter_contract_manifest,
-)
 from weave_agent_signals.runs.reflection import (
     NO_VALID_PROPOSAL_REASON,
     EvaluatorRecord,
@@ -35,6 +31,14 @@ from weave_agent_signals.runs.stages.reflection import (
 from weave_agent_signals.runs.store import DataSelection, RunStatus, RunStore
 
 SCOPE = ScopeDescriptor("file", "/project", ("CLAUDE.md", ".claude/**/*.md"))
+
+
+def _manifest(digest: str = "sha256:test-registry") -> dict[str, object]:
+    return {
+        "schema_version": "1",
+        "targets": [{"kind": "file", "id": "agents"}],
+        "digest": digest,
+    }
 
 
 @pytest.fixture
@@ -78,9 +82,7 @@ def _reflecting_run(store: RunStore, *, candidate_budget: int = 2):
         model_catalog_version=models.catalog_version,
         rubric_catalog_version=rubrics.catalog_version,
         judge_backend="cli",
-        review_depth="selective",
         judge_models=("claude-sonnet-5", "gpt-5.6-sol"),
-        second_opinion_margin=0.1,
         proposal_model="gpt-5.6-sol",
         proposal_evaluator_model="claude-sonnet-5",
         rubrics=(rubrics.rubrics[0].id,),
@@ -148,10 +150,9 @@ def _session_feedback() -> dict[str, Any]:
             "review_status": "complete",
             "rubric_version": "4",
             "rubric_threshold": 0.5,
-            "review_depth": "selective",
-            "review_policy_version": "2",
-            "second_opinion_margin": 0.1,
+            "panel_contract_version": "1",
             "requested_judge_models": ["judge-a", "judge-b"],
+            "panel_size": 2,
             "turn_started_at": "2026-07-14T00:00:00+00:00",
             "behavioral_feedback": [
                 {
@@ -186,6 +187,10 @@ def _audit_only_judge_feedback(kind: str) -> dict[str, Any]:
         details["evaluation_unit"] = "episode"
     elif kind == "noncomplete":
         details["review_status"] = "degraded"
+    elif kind == "stale_panel":
+        details["panel_contract_version"] = "2"
+    elif kind == "mismatched_panel":
+        details["panel_size"] = 1
     else:
         raise ValueError(f"unknown audit-only feedback kind: {kind}")
     return feedback
@@ -211,21 +216,21 @@ class Adapter:
     def __init__(
         self,
         baseline,
-        policy: ProjectMarkdownPolicy | None = None,
+        manifest: dict[str, object] | None = None,
     ) -> None:
         self.baseline = baseline
-        self.policy = policy or ProjectMarkdownPolicy()
+        self.manifest = manifest or _manifest()
         self.capture_calls = 0
 
     def contract_manifest(self):
-        return target_adapter_contract_manifest(self.policy)
+        return self.manifest
 
     def capture(self):
         self.capture_calls += 1
         return self.baseline
 
-    def bundle_from_content_map(self, contents):
-        return bundle_from_content_map(contents, scope=SCOPE)
+    def resolve_locator(self, locator, **_kwargs):
+        return locator
 
 
 class ModelClient:
@@ -444,7 +449,7 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
     assert "No tests were run after the final change." in calls[0]["coaching_text"]
     assert "Run relevant tests before claiming completion." in calls[0]["coaching_text"]
     assert calls[0]["scope_policy"] == adapter.contract_manifest()
-    assert calls[0]["build_candidate"] == adapter.bundle_from_content_map
+    assert calls[0]["resolve_locator"] == adapter.resolve_locator
     assert writer_client.cancel is not None
     assert evaluator_client.cancel is writer_client.cancel
 
@@ -675,15 +680,11 @@ def test_stage_sanitizes_failures_across_the_full_reflection_boundary(
     assert secret not in str(progress)
 
 
-def test_reflection_input_pins_markdown_policy_manifest(store):
+def test_reflection_input_pins_target_registry_manifest(store):
     run, config = _reflecting_run(store)
     baseline = bundle_from_content_map({"AGENTS.md": "old"}, scope=SCOPE)
-    policy = ProjectMarkdownPolicy(
-        max_files=7,
-        max_file_bytes=1024,
-        max_total_bytes=4096,
-    )
-    adapter = Adapter(baseline, policy)
+    manifest = _manifest("sha256:first")
+    adapter = Adapter(baseline, manifest)
 
     def interrupted(**_kwargs):
         raise RuntimeError("stop after pinning")
@@ -701,26 +702,21 @@ def test_reflection_input_pins_markdown_policy_manifest(store):
         run_reflection_stage(run, config, threading.Event(), dependencies=first)
 
     pinned = store.get(run.run_id).reflection_input
-    assert pinned["schema_version"] == "2"
-    assert pinned["target_adapter_contract"] == target_adapter_contract_manifest(policy)
-    assert pinned["target_adapter_contract"]["markdown_policy"] == policy.to_manifest()
+    assert pinned["schema_version"] == "3"
+    assert pinned["target_registry"] == manifest
 
-    changed_policy = ProjectMarkdownPolicy(
-        max_files=8,
-        max_file_bytes=1024,
-        max_total_bytes=4096,
-    )
+    changed_manifest = _manifest("sha256:changed")
     second = ReflectionDependencies(
         store=store,
         client_factory=lambda: WeaveClient([_feedback()]),
-        adapter_factory=lambda: Adapter(baseline, changed_policy),
+        adapter_factory=lambda: Adapter(baseline, changed_manifest),
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         coaching_digest=lambda _feedback: "digest",
-        reflect=lambda **_kwargs: pytest.fail("mismatched policy must fail closed"),
+        reflect=lambda **_kwargs: pytest.fail("mismatched registry must fail closed"),
     )
 
-    with pytest.raises(ReflectionInputMismatchError, match="adapter contract"):
+    with pytest.raises(ReflectionInputMismatchError, match="target registry"):
         run_reflection_stage(
             store.get(run.run_id),
             config,
@@ -872,7 +868,14 @@ def test_stage_records_no_feedback_without_opening_model_clients(store):
 
 @pytest.mark.parametrize(
     "kind",
-    ["legacy_episode", "missing_context", "conflicting_unit", "noncomplete"],
+    [
+        "legacy_episode",
+        "missing_context",
+        "conflicting_unit",
+        "noncomplete",
+        "stale_panel",
+        "mismatched_panel",
+    ],
 )
 def test_stage_treats_audit_only_judge_feedback_as_no_reflection_evidence(store, kind):
     run, config = _reflecting_run(store)
@@ -1055,7 +1058,7 @@ def test_stage_revalidates_pinned_policy_before_finalizing_persisted_result(stor
         stage=RunStatus.REFLECTING,
         result=evidence.to_dict(),
     )
-    changed_adapter = Adapter(baseline, ProjectMarkdownPolicy(max_files=499))
+    changed_adapter = Adapter(baseline, _manifest("sha256:changed"))
     second = ReflectionDependencies(
         store=store,
         client_factory=lambda: pytest.fail("feedback must not be queried"),
@@ -1066,7 +1069,7 @@ def test_stage_revalidates_pinned_policy_before_finalizing_persisted_result(stor
         reflect=lambda **_kwargs: pytest.fail("reflection must not rerun"),
     )
 
-    with pytest.raises(ReflectionInputMismatchError, match="adapter contract"):
+    with pytest.raises(ReflectionInputMismatchError, match="target registry"):
         run_reflection_stage(
             store.get(run.run_id),
             config,

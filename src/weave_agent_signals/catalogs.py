@@ -27,9 +27,6 @@ from weave_agent_signals.run_config import (
     RubricDescriptor,
 )
 
-REVIEW_DEPTHS = ("primary", "selective", "full_panel")
-DEFAULT_SECOND_OPINION_MARGIN = 0.10
-
 _PROPOSAL_ROLE = "proposal_writer"
 _JUDGE_ROLE = "judge"
 _PROPOSAL_EVALUATOR_ROLE = "proposal_evaluator"
@@ -156,17 +153,6 @@ def _descriptors_by_id() -> dict[str, ModelDescriptor]:
     return descriptors
 
 
-def _supported_review_depths(model_count: int) -> tuple[str, ...]:
-    depths: list[str] = []
-    if model_count >= 1:
-        depths.append("primary")
-    if model_count >= 2:
-        depths.append("selective")
-    if model_count >= 3:
-        depths.append("full_panel")
-    return tuple(depths)
-
-
 def _ordered_descriptors(
     descriptors: Iterable[ModelDescriptor],
     preferred_ids: Sequence[str],
@@ -221,16 +207,6 @@ def _recommended_judges(
         if len(selected) == 3:
             break
     return tuple(selected)
-
-
-def _recommendation_depth(recommended_judges: Sequence[str]) -> str | None:
-    if len(recommended_judges) == 1:
-        return "primary"
-    if len(recommended_judges) in {2, 3}:
-        return "selective"
-    if not recommended_judges:
-        return None
-    raise ValueError("recommended judge lists may contain at most three models")
 
 
 def _validate_model_id_order(
@@ -369,18 +345,10 @@ def build_model_catalog(
                 require_all=True,
             )
 
-        recommended_depth = _recommendation_depth(backend_recommendations)
-        supported_depths = _supported_review_depths(len(judge_ids))
-        if recommended_depth is not None and recommended_depth not in supported_depths:
-            raise ValueError(
-                f"{backend_name} recommendations do not satisfy a supported review depth"
-            )
         backend_catalogs[backend_name] = JudgeBackendCatalog(
             available_models=backend_descriptors,
             recommended_judges=backend_recommendations,
             proposal_evaluator_preferences=backend_evaluator_preferences,
-            recommended_review_depth=recommended_depth,
-            supported_review_depths=supported_depths,
         )
 
     recommended_backend = next(
@@ -389,11 +357,9 @@ def build_model_catalog(
     )
     if recommended_backend is None:
         raise ValueError("model catalog has no judge-capable backend")
-    review_defaults = MappingProxyType({"second_opinion_margin": DEFAULT_SECOND_OPINION_MARGIN})
     version_payload = {
         "schema_version": MODEL_CATALOG_SCHEMA_VERSION,
         "proposal": proposal.model_dump(mode="json"),
-        "review_defaults": dict(review_defaults),
         "recommended_judge_backend": recommended_backend,
         "judge_backends": {
             name: backend.model_dump(mode="json") for name, backend in backend_catalogs.items()
@@ -402,7 +368,6 @@ def build_model_catalog(
     return ModelCatalog(
         catalog_version=_digest(version_payload),
         proposal=proposal,
-        review_defaults=review_defaults,
         recommended_judge_backend=recommended_backend,
         judge_backends=MappingProxyType(backend_catalogs),
     )

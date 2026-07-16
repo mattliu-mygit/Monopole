@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, model_validat
 
 from weave_agent_signals.routes import serialize_run, serialize_run_summary
 from weave_agent_signals.routes._time import DateFilterError, parse_selection_bounds
+from weave_agent_signals.routes.models import RunListResponse, RunResponse
 from weave_agent_signals.routes.reviews import call_review
 from weave_agent_signals.run_config import RunConfig
 from weave_agent_signals.runs.review import ReviewService
@@ -114,47 +115,55 @@ def create_runs_router(
     router = APIRouter(prefix="/api/runs", tags=["runs"])
 
     @router.post("")
-    def create_run() -> dict:
-        return serialize_run(_call(service.create))
+    def create_run() -> RunResponse:
+        return RunResponse.model_validate(serialize_run(_call(service.create)))
 
     @router.get("")
-    def list_runs(limit: int = Query(default=50, ge=1, le=200)) -> dict:
+    def list_runs(limit: int = Query(default=50, ge=1, le=200)) -> RunListResponse:
         summaries = _call(lambda: service.list_summaries(limit))
-        return {"runs": [serialize_run_summary(summary) for summary in summaries]}
+        return RunListResponse.model_validate(
+            {"runs": [serialize_run_summary(summary) for summary in summaries]}
+        )
 
     @router.get("/{run_id}")
-    def get_run(run_id: str) -> dict:
+    def get_run(run_id: str) -> RunResponse:
         run = (
             call_review(lambda: review_service.read(run_id))
             if review_service is not None
             else _call(lambda: service.get(run_id))
         )
-        return serialize_run(run)
+        return RunResponse.model_validate(serialize_run(run))
 
     @router.put("/{run_id}/selection")
-    def save_selection(run_id: str, request: SelectionRequest) -> dict:
+    def save_selection(run_id: str, request: SelectionRequest) -> RunResponse:
         selection = DataSelection(
             since=request.since,
             until=request.until,
             timezone=request.timezone,
             session_ids=request.session_ids,
         )
-        return serialize_run(_call(lambda: service.save_selection(run_id, selection)))
+        return RunResponse.model_validate(
+            serialize_run(_call(lambda: service.save_selection(run_id, selection)))
+        )
 
     @router.put("/{run_id}/config")
-    def save_config(run_id: str, config: RunConfig) -> dict:
-        return serialize_run(_call(lambda: service.save_config(run_id, config)))
+    def save_config(run_id: str, config: RunConfig) -> RunResponse:
+        return RunResponse.model_validate(
+            serialize_run(_call(lambda: service.save_config(run_id, config)))
+        )
 
     @router.put("/{run_id}/auto_run")
-    def set_auto_run(run_id: str, request: AutoRunRequest) -> dict:
-        return serialize_run(_call(lambda: service.set_auto_run(run_id, request.auto_run)))
+    def set_auto_run(run_id: str, request: AutoRunRequest) -> RunResponse:
+        return RunResponse.model_validate(
+            serialize_run(_call(lambda: service.set_auto_run(run_id, request.auto_run)))
+        )
 
     @router.post("/{run_id}/advance")
-    def advance_run(run_id: str) -> dict:
-        return serialize_run(_call(lambda: service.advance(run_id)))
+    def advance_run(run_id: str) -> RunResponse:
+        return RunResponse.model_validate(serialize_run(_call(lambda: service.advance(run_id))))
 
     @router.post("/{run_id}/cancel")
-    def cancel_run(run_id: str) -> dict:
-        return serialize_run(_call(lambda: service.cancel(run_id)))
+    def cancel_run(run_id: str) -> RunResponse:
+        return RunResponse.model_validate(serialize_run(_call(lambda: service.cancel(run_id))))
 
     return router

@@ -18,6 +18,11 @@ from weave_agent_signals.patterns import (
     detect_regressions,
 )
 from weave_agent_signals.routes._time import DateFilterError, parse_selection_bounds
+from weave_agent_signals.routes.models import (
+    AnalysisResponse,
+    SessionDetailResponse,
+    SessionListResponse,
+)
 
 _SYNTHETIC_SESSION_PREFIXES = (
     "## Scoring criteria",
@@ -237,7 +242,7 @@ def create_inspection_router(
         until: str | None = None,
         timezone_name: str | None = Query(default=None, alias="timezone"),
         limit: int = Query(default=20, ge=1, le=100),
-    ) -> dict:
+    ) -> SessionListResponse:
         try:
             since_value, until_value = parse_selection_bounds(
                 since,
@@ -278,15 +283,17 @@ def create_inspection_router(
                     entity=feedback_client.entity,
                     project=feedback_client.project,
                 )
-        return {
-            "sessions": [summary for summary, _turns in visible],
-            "total": len(sessions),
-            "truncated": len(sessions) > limit,
-            "limit": limit,
-        }
+        return SessionListResponse.model_validate(
+            {
+                "sessions": [summary for summary, _turns in visible],
+                "total": len(sessions),
+                "truncated": len(sessions) > limit,
+                "limit": limit,
+            }
+        )
 
     @router.get("/sessions/{conversation_id:path}")
-    def get_session(conversation_id: str) -> dict:
+    def get_session(conversation_id: str) -> SessionDetailResponse:
         try:
             with client_factory() as client:
                 session = client.query_session(conversation_id)
@@ -312,28 +319,32 @@ def create_inspection_router(
                 status_code=404,
                 detail={"code": "session_not_found", "message": str(error)},
             ) from error
-        return {
-            "conversation_id": session.conversation_id,
-            "config_version": session.config_version,
-            "git_branch": session.git_branch,
-            "total_tokens": session.total_tokens,
-            "turn_count": len(session.turns),
-            "turns": [_turn_json(turn, include_children=True) for turn in session.turns],
-            "session_feedback": session_feedback,
-            "turn_feedback": turn_feedback,
-        }
+        return SessionDetailResponse.model_validate(
+            {
+                "conversation_id": session.conversation_id,
+                "config_version": session.config_version,
+                "git_branch": session.git_branch,
+                "total_tokens": session.total_tokens,
+                "turn_count": len(session.turns),
+                "turns": [_turn_json(turn, include_children=True) for turn in session.turns],
+                "session_feedback": session_feedback,
+                "turn_feedback": turn_feedback,
+            }
+        )
 
     @router.get("/analyze")
-    def get_analysis(limit: int = Query(default=1000, ge=1, le=5000)) -> dict:
+    def get_analysis(limit: int = Query(default=1000, ge=1, le=5000)) -> AnalysisResponse:
         with client_factory() as client:
             feedback = client.query_project_feedback(limit=limit)
         if not feedback:
-            return {
-                "summary": [],
-                "ab_leaderboard": [],
-                "trends": [],
-                "coaching_markdown": "",
-            }
+            return AnalysisResponse.model_validate(
+                {
+                    "summary": [],
+                    "ab_leaderboard": [],
+                    "trends": [],
+                    "coaching_markdown": "",
+                }
+            )
 
         summaries = aggregate_scores(feedback)
         summary = [
@@ -369,11 +380,13 @@ def create_inspection_router(
             }
             for item in detect_regressions(feedback)
         ]
-        return {
-            "summary": summary,
-            "ab_leaderboard": leaderboard,
-            "trends": trends,
-            "coaching_markdown": coaching_digest(feedback),
-        }
+        return AnalysisResponse.model_validate(
+            {
+                "summary": summary,
+                "ab_leaderboard": leaderboard,
+                "trends": trends,
+                "coaching_markdown": coaching_digest(feedback),
+            }
+        )
 
     return router

@@ -1,9 +1,8 @@
 {
-  "plan_id": "sha256:c6b778389dc0bb1a7e028ca9a342d4fa5737c9c8edccbb47bc11cbd967626e4c",
+  "plan_id": "sha256:7440679abe1a989b531ad9140afaf60633d0e1f863499e9048cadb93ef39a691",
   "schema_version": "2",
   "cohort_id": "cohort-1",
-  "review_depth": "selective",
-  "second_opinion_margin": 0.1,
+  "panel_size": 2,
   "requested_rubrics": [
     {
       "id": "judge.verification",
@@ -274,7 +273,7 @@
           "version": "v4",
           "content_digest": "sha256:0ab923e793746072a990ded875108dd4cff701ce0bb9e5a4691babc2a8585326",
           "pass_threshold": 0.5,
-          "minimum_reviewer_attempts": 1,
+          "minimum_reviewer_attempts": 2,
           "maximum_reviewer_attempts": 2
         }
       ],
@@ -423,7 +422,7 @@
     "turns_considered": 2,
     "windows_planned": 2,
     "planned_rubrics": 1,
-    "minimum_reviewer_attempts": 1,
+    "minimum_reviewer_attempts": 2,
     "maximum_reviewer_attempts": 2,
     "maximum_digest_calls": 2,
     "maximum_window_calls": 2,

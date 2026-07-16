@@ -14,7 +14,10 @@ const turn = {
   user_input: 'Check the patch',
   tokens: 1200,
   tool_count: 3,
+  tools_used: [],
   errors: 1,
+  steering: 0,
+  denials: 0,
   scores: {
     'outcome.test': 1,
     'process.error_recovery': 0.75,

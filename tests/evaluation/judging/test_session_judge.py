@@ -82,7 +82,19 @@ def _observation(score: float | None, *, failed: bool = False) -> AttemptObserva
     )
 
 
-def _run(monkeypatch, outcomes, *, judges=None, rubrics=None, depth="primary", margin=None):
+def _abstention() -> AttemptObservation:
+    return AttemptObservation(
+        status="abstained",
+        resolved_model="resolved",
+        score=None,
+        rationale="The rubric has no applicable evidence.",
+        usage={},
+        error_type=None,
+        message=None,
+    )
+
+
+def _run(monkeypatch, outcomes, *, judges=None, rubrics=None):
     session = _session()
     judges = judges or (_judge("judge-1", 1),)
     rubrics = rubrics or build_rubric_catalog().rubrics
@@ -90,8 +102,6 @@ def _run(monkeypatch, outcomes, *, judges=None, rubrics=None, depth="primary", m
         [session],
         cohort_id="cohort",
         rubrics=rubrics,
-        review_depth=depth,
-        second_opinion_margin=margin,
         judge_models=judges,
         context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
     )
@@ -111,8 +121,6 @@ def _run(monkeypatch, outcomes, *, judges=None, rubrics=None, depth="primary", m
         object(),
         rubrics=rubrics,
         judges=judges,
-        review_depth=depth,
-        second_opinion_margin=margin,
         judging_plan=plan,
         context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
         artifact_loader=lambda _key: None,
@@ -124,19 +132,21 @@ def _run(monkeypatch, outcomes, *, judges=None, rubrics=None, depth="primary", m
 def test_runner_reuses_one_lazy_reviewer_per_judge_and_preserves_feedback(monkeypatch) -> None:
     judges = (_judge("judge-1", 1), _judge("judge-2", 2))
     rubrics = build_rubric_catalog().rubrics[:2]
-    outcomes = {"judge-1": [_observation(0.75), _observation(0.75)], "judge-2": []}
-    scores, created = _run(
-        monkeypatch, outcomes, judges=judges, rubrics=rubrics, depth="selective", margin=0.1
-    )
-    assert len(created) == 1
+    outcomes = {
+        "judge-1": [_observation(0.75), _observation(0.75)],
+        "judge-2": [_observation(1.0), _observation(1.0)],
+    }
+    scores, created = _run(monkeypatch, outcomes, judges=judges, rubrics=rubrics)
+    assert [item["judge"].id for item in created] == ["judge-1", "judge-2"]
     assert len(scores) == 2
     assert all(score.granularity == "session" for score in scores)
     assert scores[0].metadata["behavioral_feedback"][0]["problem"] == "One check was late."
     assert "Problem: One check was late." in scores[0].reason
-    assert scores[0].metadata["review_policy_version"] == "3"
+    assert scores[0].metadata["panel_contract_version"] == "1"
+    assert scores[0].metadata["attempt_count"] == 2
 
 
-def test_selective_runner_lazily_invokes_second_reviewer(monkeypatch) -> None:
+def test_runner_invokes_every_selected_judge(monkeypatch) -> None:
     judges = (_judge("judge-1", 1), _judge("judge-2", 2))
     rubrics = build_rubric_catalog().rubrics[:1]
     scores, created = _run(
@@ -144,8 +154,6 @@ def test_selective_runner_lazily_invokes_second_reviewer(monkeypatch) -> None:
         {"judge-1": [_observation(0.5)], "judge-2": [_observation(0.75)]},
         judges=judges,
         rubrics=rubrics,
-        depth="selective",
-        margin=0.1,
     )
     assert [item["judge"].id for item in created] == ["judge-1", "judge-2"]
     assert scores[0].value == pytest.approx(0.625)
@@ -163,10 +171,24 @@ def test_zero_success_raises_with_attempt_audit(monkeypatch) -> None:
             },
             judges=judges,
             rubrics=rubrics,
-            depth="selective",
-            margin=0.1,
         )
     assert len(caught.value.failures[0].attempts) == 2
+
+
+def test_unanimous_abstention_is_audited_without_becoming_a_failure(monkeypatch) -> None:
+    judges = (_judge("judge-1", 1), _judge("judge-2", 2))
+    rubrics = build_rubric_catalog().rubrics[:1]
+    with pytest.raises(JudgeExecutionError) as caught:
+        _run(
+            monkeypatch,
+            {"judge-1": [_abstention()], "judge-2": [_abstention()]},
+            judges=judges,
+            rubrics=rubrics,
+        )
+
+    assert caught.value.failures == ()
+    assert caught.value.not_evaluable[0].rubric == rubrics[0].id
+    assert len(caught.value.not_evaluable[0].attempts) == 2
 
 
 def test_runner_rejects_detached_rubric_selection(monkeypatch) -> None:
@@ -177,8 +199,6 @@ def test_runner_rejects_detached_rubric_selection(monkeypatch) -> None:
         [session],
         cohort_id="cohort",
         rubrics=rubrics,
-        review_depth="primary",
-        second_opinion_margin=None,
         judge_models=judges,
         context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
     )
@@ -188,8 +208,6 @@ def test_runner_rejects_detached_rubric_selection(monkeypatch) -> None:
             object(),
             rubrics=rubrics[:1],
             judges=judges,
-            review_depth="primary",
-            second_opinion_margin=None,
             judging_plan=plan,
             context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
             artifact_loader=lambda _: None,
@@ -205,8 +223,6 @@ def test_runner_rejects_alternate_later_judge_before_reviewer_instantiation(monk
         [session],
         cohort_id="cohort",
         rubrics=rubrics,
-        review_depth="selective",
-        second_opinion_margin=0.1,
         judge_models=pinned,
         context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
     )
@@ -219,39 +235,6 @@ def test_runner_rejects_alternate_later_judge_before_reviewer_instantiation(monk
             object(),
             rubrics=rubrics,
             judges=alternate,
-            review_depth="selective",
-            second_opinion_margin=0.1,
-            judging_plan=plan,
-            context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-            artifact_loader=lambda _: None,
-            artifact_recorder=lambda *_: None,
-        )
-    assert created == []
-
-
-def test_runner_rejects_unpinned_second_opinion_margin_before_inference(monkeypatch) -> None:
-    session = _session()
-    judges = (_judge("judge-1", 1), _judge("judge-2", 2))
-    rubrics = build_rubric_catalog().rubrics[:1]
-    plan = build_judging_plan(
-        [session],
-        cohort_id="cohort",
-        rubrics=rubrics,
-        review_depth="selective",
-        second_opinion_margin=0.1,
-        judge_models=judges,
-        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-    )
-    created = []
-    monkeypatch.setattr(runner, "SlidingReviewer", lambda **kwargs: created.append(kwargs))
-    with pytest.raises(ValueError, match="second opinion margin"):
-        judge_session(
-            session,
-            object(),
-            rubrics=rubrics,
-            judges=judges,
-            review_depth="selective",
-            second_opinion_margin=0.2,
             judging_plan=plan,
             context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
             artifact_loader=lambda _: None,

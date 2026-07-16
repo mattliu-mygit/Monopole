@@ -15,6 +15,7 @@ from itertools import islice
 from typing import Any, Mapping
 from urllib.parse import unquote
 
+from weave_agent_signals.judges.review import PANEL_CONTRACT_VERSION
 from weave_agent_signals.models import FEEDBACK_PREFIX
 
 # Below this many samples a scorer's mean/pass-rate is not trustworthy on its own.
@@ -23,10 +24,9 @@ _Z_95 = 1.96  # z for a 95% interval
 _SESSION_EVALUATION_CONTEXT_FIELDS = (
     "rubric_version",
     "rubric_threshold",
-    "review_depth",
-    "review_policy_version",
-    "second_opinion_margin",
+    "panel_contract_version",
     "requested_judge_models",
+    "panel_size",
 )
 _MAX_BEHAVIORAL_EXAMPLES = 3
 _MAX_EVIDENCE_IDS = 5
@@ -116,7 +116,7 @@ def _is_judgment(feedback: dict) -> bool:
 
 def _evaluation_context_value(details: dict, field: str) -> object:
     value = details[field]
-    if field in {"rubric_threshold", "second_opinion_margin"}:
+    if field == "rubric_threshold":
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return float(value)
     return value
@@ -131,10 +131,9 @@ def _has_complete_session_evaluation_context(feedback: dict) -> bool:
 
     rubric_version = details["rubric_version"]
     rubric_threshold = details["rubric_threshold"]
-    review_depth = details["review_depth"]
-    policy_version = details["review_policy_version"]
-    margin = details["second_opinion_margin"]
+    panel_version = details["panel_contract_version"]
     judges = details["requested_judge_models"]
+    panel_size = details["panel_size"]
     markers_match = (
         _payload(feedback).get("granularity") == "session"
         and details.get("evaluation_unit") == "session"
@@ -147,31 +146,19 @@ def _has_complete_session_evaluation_context(feedback: dict) -> bool:
     )
     valid_judges = (
         isinstance(judges, list)
+        and 1 <= len(judges) <= 3
         and all(isinstance(judge, str) and judge.strip() for judge in judges)
         and len(judges) == len(set(judges))
     )
-    valid_policy = False
-    if valid_judges:
-        if review_depth == "primary":
-            valid_policy = len(judges) == 1 and margin is None
-        elif review_depth == "selective":
-            valid_policy = (
-                len(judges) in {2, 3}
-                and isinstance(margin, (int, float))
-                and not isinstance(margin, bool)
-                and math.isfinite(float(margin))
-                and 0.0 <= float(margin) <= 0.5
-            )
-        elif review_depth == "full_panel":
-            valid_policy = len(judges) == 3 and margin is None
     return (
         markers_match
         and isinstance(rubric_version, str)
         and bool(rubric_version.strip())
         and numeric_threshold
-        and isinstance(policy_version, str)
-        and bool(policy_version.strip())
-        and valid_policy
+        and panel_version == PANEL_CONTRACT_VERSION
+        and valid_judges
+        and type(panel_size) is int
+        and panel_size == len(judges)
     )
 
 
@@ -210,9 +197,7 @@ def _evaluation_context_identity(feedback: dict) -> str | None:
     return (
         f"rubric {text(context['rubric_version'])}, "
         f"threshold {text(context['rubric_threshold'])}; "
-        f"{text(context['review_depth'])}, "
-        f"policy {text(context['review_policy_version'])}, "
-        f"margin {text(context['second_opinion_margin'])}; "
+        f"panel {text(context['panel_contract_version'])}; "
         f"judges {judges}"
     )
 

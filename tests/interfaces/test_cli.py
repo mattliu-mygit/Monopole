@@ -12,38 +12,48 @@ from weave_agent_signals.catalogs import build_model_catalog
 from weave_agent_signals.runs.bundles import bundle_from_content_map
 
 
-def test_judge_parser_accepts_ordered_explicit_review_policy():
+def test_judge_parser_accepts_ordered_explicit_panel():
     args = cli.build_parser().parse_args(
         [
             "judge",
             "--judge-backend",
             "cli",
-            "--review-depth",
-            "selective",
             "--judge-model",
             "claude-sonnet-5",
             "--judge-model",
             "gpt-5.6-sol",
-            "--second-opinion-margin",
-            "0.1",
         ]
     )
 
     assert args.judge_models == ["claude-sonnet-5", "gpt-5.6-sol"]
-    assert args.review_depth == "selective"
-    assert args.second_opinion_margin == 0.1
 
 
 def test_reflect_parser_exposes_explicit_evaluator_and_rejects_zero_budget():
-    args = cli.build_parser().parse_args(["reflect", "--proposal-evaluator-model", "gpt-4o"])
+    args = cli.build_parser().parse_args(
+        [
+            "reflect",
+            "--target-registry",
+            "targets.json",
+            "--proposal-evaluator-model",
+            "gpt-4o",
+        ]
+    )
     assert args.proposal_evaluator_model == "gpt-4o"
 
     with pytest.raises(SystemExit, match="2"):
-        cli.build_parser().parse_args(["reflect", "--candidate-budget", "0"])
+        cli.build_parser().parse_args(
+            [
+                "reflect",
+                "--target-registry",
+                "targets.json",
+                "--candidate-budget",
+                "0",
+            ]
+        )
 
 
 def test_serve_defaults_to_the_local_trust_boundary():
-    args = cli.build_parser().parse_args(["serve"])
+    args = cli.build_parser().parse_args(["serve", "--target-registry", "targets.json"])
 
     assert args.host == "127.0.0.1"
 
@@ -83,8 +93,8 @@ def test_standalone_reflect_stops_before_local_or_model_setup_for_audit_only_fee
     monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
     monkeypatch.setattr(
         cli,
-        "ProjectFileAdapter",
-        lambda _root: pytest.fail("audit-only feedback must stop before target setup"),
+        "load_target_registry",
+        lambda _path: pytest.fail("audit-only feedback must stop before target setup"),
     )
     monkeypatch.setattr(
         cli,
@@ -97,7 +107,7 @@ def test_standalone_reflect_stops_before_local_or_model_setup_for_audit_only_fee
             entity="entity",
             project="project",
             limit=10,
-            project_root=str(tmp_path),
+            target_registry=str(tmp_path / "targets.json"),
             model="gpt-5.6-sol",
             judge_backend="cli",
             proposal_evaluator_model="claude-sonnet-5",
@@ -151,7 +161,8 @@ def test_standalone_reflect_always_infers_with_resolved_roles_and_only_prints_di
     reflect = MagicMock(return_value=result)
 
     monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
-    monkeypatch.setattr(cli, "ProjectFileAdapter", lambda _root: adapter)
+    monkeypatch.setattr(cli, "load_target_registry", lambda _path: object())
+    monkeypatch.setattr(cli, "TargetPromoter", lambda _registry: adapter)
     monkeypatch.setattr(cli, "build_model_catalog", lambda: catalog)
     monkeypatch.setattr(cli, "coaching_digest", lambda _feedback: "coaching")
     monkeypatch.setattr(cli, "_make_model_client", lambda _args, _model: nullcontext(object()))
@@ -162,7 +173,7 @@ def test_standalone_reflect_always_infers_with_resolved_roles_and_only_prints_di
             entity="entity",
             project="project",
             limit=10,
-            project_root=str(tmp_path),
+            target_registry=str(tmp_path / "targets.json"),
             model="gpt-5.6-sol",
             judge_backend="cli",
             proposal_evaluator_model="claude-sonnet-5",
@@ -181,7 +192,7 @@ def test_standalone_reflect_always_infers_with_resolved_roles_and_only_prints_di
     assert call["baseline"] is baseline
     assert call["requested_writer"].id == "gpt-5.6-sol"
     assert call["requested_evaluator"].id == "claude-sonnet-5"
-    assert call["build_candidate"] == adapter.bundle_from_content_map
+    assert call["resolve_locator"] == adapter.resolve_locator
     assert call["scope_policy"] == adapter.contract_manifest.return_value
     output = capsys.readouterr().out
     assert "proposal_writer=gpt-5.6-sol" in output

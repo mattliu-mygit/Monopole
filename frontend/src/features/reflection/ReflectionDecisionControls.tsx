@@ -51,6 +51,12 @@ export default function ReflectionDecisionControls({
         </label>
       )}
 
+      {availability.enabled && (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+          Files are applied one at a time. If a later file fails, earlier complete files remain applied and the receipt lists every outcome.
+        </p>
+      )}
+
       <div className="flex flex-wrap gap-2">
         {!editing && availability.enabled && (
           <button type="button" disabled={busy} onClick={onStartEditing} className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">

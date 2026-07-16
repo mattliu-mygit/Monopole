@@ -221,6 +221,7 @@ function statusLabel(run: Run): string {
   const state = reviewState(run)
   if (state === 'review-needed') return 'Review needed'
   if (state === 'promoted') return 'Promoted'
+  if (state === 'partial') return 'Partially applied'
   if (state === 'dismissed') return 'Dismissed'
   if (state === 'stale') return 'Stale'
   if (state === 'no-change') return 'No change recommended'

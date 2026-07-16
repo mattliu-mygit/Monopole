@@ -1,7 +1,6 @@
 import type {
   SessionSummary,
   SessionDetail,
-  AnalysisResponse,
   Run,
   RunSummary,
   ModelCatalog,
@@ -9,6 +8,16 @@ import type {
   DataSelection,
   RunConfig,
 } from './types'
+import type {
+  AnalysisTransport,
+  ModelCatalogTransport,
+  PromoteRequestTransport,
+  RubricCatalogTransport,
+  RunListTransport,
+  RunTransport,
+  SessionDetailTransport,
+  SessionListTransport,
+} from './transport'
 
 const BASE = import.meta.env.VITE_API_URL || ''
 
@@ -61,7 +70,7 @@ export function getSessions(
   truncated?: boolean
   limit?: number
 }> {
-  return apiFetch(
+  return apiFetch<SessionListTransport>(
     `/api/sessions${qs({
       since: params?.since,
       until: params?.until,
@@ -72,33 +81,35 @@ export function getSessions(
 }
 
 export function getSession(conversationId: string): Promise<SessionDetail> {
-  return apiFetch(`/api/sessions/${encodeURIComponent(conversationId)}`)
+  return apiFetch<SessionDetailTransport>(
+    `/api/sessions/${encodeURIComponent(conversationId)}`,
+  )
 }
 
 export function getAnalysis(
   params?: { limit?: number },
-): Promise<AnalysisResponse> {
-  return apiFetch(`/api/analyze${qs({ limit: params?.limit })}`)
+): Promise<AnalysisTransport> {
+  return apiFetch<AnalysisTransport>(`/api/analyze${qs({ limit: params?.limit })}`)
 }
 
 export function getRubrics(): Promise<RubricCatalog> {
-  return apiFetch('/api/rubrics')
+  return apiFetch<RubricCatalogTransport>('/api/rubrics')
 }
 
 export function getModels(): Promise<ModelCatalog> {
-  return apiFetch('/api/models')
+  return apiFetch<ModelCatalogTransport>('/api/models')
 }
 
 export function getRuns(): Promise<{ runs: RunSummary[] }> {
-  return apiFetch('/api/runs')
+  return apiFetch<RunListTransport>('/api/runs')
 }
 
 export function getRun(runId: string): Promise<Run> {
-  return apiFetch(`/api/runs/${encodeURIComponent(runId)}`)
+  return apiFetch<RunTransport>(`/api/runs/${encodeURIComponent(runId)}`)
 }
 
 export function createRun(): Promise<Run> {
-  return apiFetch('/api/runs', {
+  return apiFetch<RunTransport>('/api/runs', {
     method: 'POST',
   })
 }
@@ -107,7 +118,7 @@ export function setRunSelection(
   runId: string,
   selection: DataSelection,
 ): Promise<Run> {
-  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/selection`, {
+  return apiFetch<RunTransport>(`/api/runs/${encodeURIComponent(runId)}/selection`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(selection),
@@ -118,7 +129,7 @@ export function setRunConfig(
   runId: string,
   config: RunConfig,
 ): Promise<Run> {
-  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/config`, {
+  return apiFetch<RunTransport>(`/api/runs/${encodeURIComponent(runId)}/config`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
@@ -126,7 +137,7 @@ export function setRunConfig(
 }
 
 export function setAutoRun(runId: string, autoRun: boolean): Promise<Run> {
-  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/auto_run`, {
+  return apiFetch<RunTransport>(`/api/runs/${encodeURIComponent(runId)}/auto_run`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ auto_run: autoRun }),
@@ -134,13 +145,13 @@ export function setAutoRun(runId: string, autoRun: boolean): Promise<Run> {
 }
 
 export function cancelRun(runId: string): Promise<Run> {
-  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/cancel`, {
+  return apiFetch<RunTransport>(`/api/runs/${encodeURIComponent(runId)}/cancel`, {
     method: 'POST',
   })
 }
 
 export function advanceRun(runId: string): Promise<Run> {
-  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/advance`, {
+  return apiFetch<RunTransport>(`/api/runs/${encodeURIComponent(runId)}/advance`, {
     method: 'POST',
   })
 }
@@ -151,7 +162,7 @@ export function setReflectionSelection(
   expectedRevision = 0,
   discardDraft = false,
 ): Promise<Run> {
-  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/reflection_selection`, {
+  return apiFetch<RunTransport>(`/api/runs/${encodeURIComponent(runId)}/reflection_selection`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -168,7 +179,7 @@ export function saveReflectionDraft(
   expectedRevision: number,
   expectedDraftRevision: string | null,
 ): Promise<Run> {
-  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/reflection_draft`, {
+  return apiFetch<RunTransport>(`/api/runs/${encodeURIComponent(runId)}/reflection_draft`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -184,7 +195,7 @@ export function resetReflectionDraft(
   expectedRevision: number,
   expectedDraftRevision: string | null,
 ): Promise<Run> {
-  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/reflection_draft`, {
+  return apiFetch<RunTransport>(`/api/runs/${encodeURIComponent(runId)}/reflection_draft`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -203,20 +214,21 @@ export function promoteRunReflection(
     acknowledgeUnevaluated: boolean
   },
 ): Promise<Run> {
-  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/promote`, {
+  const body: PromoteRequestTransport = {
+    expected_revision: options.expectedRevision,
+    expected_draft_revision: options.expectedDraftRevision,
+    idempotency_key: options.idempotencyKey,
+    acknowledge_unevaluated: options.acknowledgeUnevaluated,
+  }
+  return apiFetch<RunTransport>(`/api/runs/${encodeURIComponent(runId)}/promote`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      expected_revision: options.expectedRevision,
-      expected_draft_revision: options.expectedDraftRevision,
-      idempotency_key: options.idempotencyKey,
-      acknowledge_unevaluated: options.acknowledgeUnevaluated,
-    }),
+    body: JSON.stringify(body),
   })
 }
 
 export function dismissRunReflection(runId: string, expectedRevision: number): Promise<Run> {
-  return apiFetch(`/api/runs/${encodeURIComponent(runId)}/dismiss`, {
+  return apiFetch<RunTransport>(`/api/runs/${encodeURIComponent(runId)}/dismiss`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ expected_revision: expectedRevision }),

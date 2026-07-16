@@ -84,12 +84,13 @@ contents as unevaluated D, promote, or dismiss. D requires explicit
 acknowledgement but not another inference run. A later evaluation run can assess
 the promoted state.
 
-The correctness mechanisms are deliberately stronger than the local deployment
-model: pinned inputs and judging context policy, exhaustive raw-turn coverage,
-content-authenticated resumable artifacts, reviewer-attempt audit, stage success
-markers, cancellation coordination, compare-and-swap review revisions,
-whole-scope drift detection, journaled multi-file promotion, rollback/recovery,
-and monotonic progress are required.
+Correctness mechanisms are proportionate to the trusted local deployment:
+pinned inputs and judging context policy, exhaustive raw-turn coverage,
+content-authenticated resumable judging artifacts, reviewer-attempt audit,
+stage success markers, cancellation coordination, compare-and-swap review
+revisions, whole-scope drift detection, atomic complete-file writes, per-file
+outcomes, and monotonic progress are required. Multi-file rollback and recovery
+are not.
 
 ## Trust boundaries and limits
 
@@ -106,8 +107,9 @@ and monotonic progress are required.
   digests and merges can still omit, distort, or overweight evidence. There is
   no human-labeled calibration set, held-out validation gate, or claim that the
   context budget or review heuristics are statistically optimal.
-- Reflection evaluates complete Markdown bundle revisions. The project-file
-  adapter is the only promotion adapter today.
+- Reflection evaluates complete Markdown bundle revisions admitted by one
+  explicit registry. Markdown roots update only listed files and may authorize
+  recursive creation that is registered before publication.
 - The frontend polls persisted state; there is no raw-log or streaming endpoint.
 - Standalone `reflect` previews proposals and never mutates managed files.
 

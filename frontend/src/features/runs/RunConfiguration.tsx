@@ -2,7 +2,6 @@ import type {
   JudgeBackendCatalog,
   ModelCatalog,
   ModelDescriptor,
-  ReviewDepth,
   RubricCatalog,
 } from '../../types'
 import {
@@ -52,12 +51,6 @@ function supports(model: ModelDescriptor, role: 'judge' | 'proposal_evaluator'):
 
 function modelLabel(model: ModelDescriptor): string {
   return `${model.label} · ${model.family}`
-}
-
-function depthLabel(depth: ReviewDepth): string {
-  if (depth === 'primary') return 'Primary — one judge'
-  if (depth === 'selective') return 'Selective — second opinion near threshold'
-  return 'Full panel — three judges'
 }
 
 function ChoiceLabel({
@@ -125,7 +118,7 @@ export default function RunConfiguration({
     ...(backend?.recommended_judges ?? []),
     ...judgeChoices.map((model) => model.id),
   ].filter((modelId, index, values) => values.indexOf(modelId) === index)
-  const addThirdJudgeId = orderedJudgeIds.find(
+  const addJudgeId = orderedJudgeIds.find(
     (modelId) => !state.judgeModels.value.includes(modelId),
   )
 
@@ -217,63 +210,6 @@ export default function RunConfiguration({
           </div>
 
           <div>
-            <ChoiceLabel
-              htmlFor="review-depth"
-              source={state.reviewDepth.source}
-            >
-              Review depth
-            </ChoiceLabel>
-            <select
-              id="review-depth"
-              value={state.reviewDepth.value}
-              onChange={(event) =>
-                onAction({
-                  type: 'select-depth',
-                  depth: event.target.value as ReviewDepth,
-                })
-              }
-              className={inputClass}
-            >
-              {!backend?.supported_review_depths.includes(state.reviewDepth.value) && (
-                <option value={state.reviewDepth.value}>
-                  Unavailable · {depthLabel(state.reviewDepth.value)}
-                </option>
-              )}
-              {backend?.supported_review_depths.map((depth) => (
-                <option key={depth} value={depth}>
-                  {depthLabel(depth)}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {state.reviewDepth.value === 'selective' && (
-            <div>
-              <label
-                htmlFor="second-opinion-margin"
-                className="mb-1 block text-sm font-medium text-gray-700"
-              >
-                Second-opinion margin
-              </label>
-              <input
-                id="second-opinion-margin"
-                type="number"
-                min={0}
-                max={0.5}
-                step={0.01}
-                value={state.secondOpinionMargin ?? ''}
-                onChange={(event) =>
-                  onAction({ type: 'set-margin', value: Number(event.target.value) })
-                }
-                className={inputClass}
-              />
-              <p className="mt-1 text-xs text-gray-500">
-                Request another opinion when the first score is this close to the threshold.
-              </p>
-            </div>
-          )}
-
-          <div>
             <label
               htmlFor="candidate-budget"
               className="mb-1 block text-sm font-medium text-gray-700"
@@ -345,36 +281,35 @@ export default function RunConfiguration({
               </div>
             ))}
           </div>
-          {state.reviewDepth.value === 'selective' && (
-            <div className="mt-2">
-              {state.judgeModels.value.length < 3 ? (
+          <div className="mt-2 flex gap-4">
+              {state.judgeModels.value.length < 3 && (
                 <button
                   type="button"
-                  disabled={!addThirdJudgeId}
+                  disabled={!addJudgeId}
                   onClick={() => {
-                    if (addThirdJudgeId) {
+                    if (addJudgeId) {
                       onAction({
                         type: 'select-judge',
-                        position: 3,
-                        modelId: addThirdJudgeId,
+                        position: state.judgeModels.value.length + 1,
+                        modelId: addJudgeId,
                       })
                     }
                   }}
                   className="text-xs font-medium text-blue-700 hover:text-blue-900 disabled:text-gray-400"
                 >
-                  Add third judge
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => onAction({ type: 'remove-third-judge' })}
-                  className="text-xs font-medium text-blue-700 hover:text-blue-900"
-                >
-                  Remove third judge
+                  Add judge
                 </button>
               )}
-            </div>
-          )}
+              {state.judgeModels.value.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => onAction({ type: 'remove-last-judge' })}
+                  className="text-xs font-medium text-blue-700 hover:text-blue-900"
+                >
+                  Remove last judge
+                </button>
+              )}
+          </div>
         </fieldset>
 
         <div className="max-w-xl">

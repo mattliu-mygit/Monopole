@@ -7,6 +7,7 @@ import type {
   EffectiveRunConfig,
   JudgingPlan,
   ModelCatalog,
+  ModelDescriptor,
   RubricCatalog,
   Run,
   RunConfig,
@@ -15,7 +16,6 @@ import type {
 import { ApiError } from '../../src/api'
 import RunDetail from '../../src/pages/RunDetail'
 import persistedPlan from '../fixtures/judging-plan.json'
-import persistedCohort from '../fixtures/turn-cohort.json'
 import { renderWithQueryClient } from '../support/render'
 
 const api = vi.hoisted(() => ({
@@ -54,7 +54,7 @@ vi.mock('../../src/api', () => ({
 
 afterEach(cleanup)
 
-const writer = {
+const writer: ModelDescriptor = {
   id: 'writer-openai',
   label: 'Writer OpenAI',
   family: 'openai',
@@ -62,7 +62,7 @@ const writer = {
   supported_roles: ['proposal_writer'] as const,
   max_input_tokens: 128_000,
 }
-const judgeOne = {
+const judgeOne: ModelDescriptor = {
   id: 'judge-anthropic',
   label: 'Judge Anthropic',
   family: 'anthropic',
@@ -70,7 +70,7 @@ const judgeOne = {
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
 }
-const judgeTwo = {
+const judgeTwo: ModelDescriptor = {
   id: 'judge-openai',
   label: 'Judge OpenAI',
   family: 'openai',
@@ -78,7 +78,7 @@ const judgeTwo = {
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
 }
-const judgeThree = {
+const judgeThree: ModelDescriptor = {
   id: 'judge-meta',
   label: 'Judge Meta',
   family: 'meta',
@@ -90,15 +90,12 @@ const judgeThree = {
 const models: ModelCatalog = {
   catalog_version: 'models-v1',
   proposal: { available_models: [writer], recommended_model: writer.id },
-  review_defaults: { second_opinion_margin: 0.1 },
   recommended_judge_backend: 'cli',
   judge_backends: {
     cli: {
       available_models: [judgeOne, judgeTwo, judgeThree],
       recommended_judges: [judgeOne.id, judgeTwo.id, judgeThree.id],
       proposal_evaluator_preferences: [judgeOne.id, judgeTwo.id],
-      recommended_review_depth: 'selective',
-      supported_review_depths: ['primary', 'selective', 'full_panel'],
     },
   },
 }
@@ -129,9 +126,7 @@ const requestedConfig: RunConfig = {
   model_catalog_version: models.catalog_version,
   rubric_catalog_version: rubrics.catalog_version,
   judge_backend: 'cli',
-  review_depth: 'selective',
   judge_models: [judgeOne.id, judgeTwo.id, judgeThree.id],
-  second_opinion_margin: 0.1,
   proposal_model: writer.id,
   proposal_evaluator_model: judgeOne.id,
   rubrics: rubrics.rubrics.map((rubric) => rubric.id),
@@ -145,8 +140,6 @@ const effectiveConfig: EffectiveRunConfig = {
   model_catalog_version: models.catalog_version,
   rubric_catalog_version: rubrics.catalog_version,
   judge_backend: 'cli',
-  review_depth: 'selective',
-  second_opinion_margin: 0.1,
   models: {
     proposal_writer: writer,
     judges: [judgeOne, judgeTwo, judgeThree].map((judge, index) => ({
@@ -210,7 +203,7 @@ const session: SessionSummary = {
   signal_evidence: [],
 }
 
-const plan = persistedPlan as JudgingPlan
+const plan = persistedPlan as unknown as JudgingPlan
 
 function renderPage() {
   const router = createMemoryRouter([
@@ -244,15 +237,17 @@ function completedReflectionRun(): Run {
       sessions_scored: 1,
       scores_written: 4,
       errors: 0,
+      turn_details: [],
     },
     judging_result: {
       plan_id: plan.plan_id,
       planned_rubrics: 1,
       rubrics_completed: 1,
       rated_rubrics: 1,
-      minimum_reviewer_attempts: 1,
+      not_evaluable_rubrics: 0,
+      minimum_reviewer_attempts: 2,
       maximum_reviewer_attempts: 2,
-      reviewer_attempts_completed: 1,
+      reviewer_attempts_completed: 2,
       digest_steps_completed: 2,
       maximum_digest_steps: 2,
       window_steps_completed: 1,
@@ -265,7 +260,11 @@ function completedReflectionRun(): Run {
       coverage_complete: true,
       status_message: 'Judging complete',
       attempt_summaries: [],
+      attempt_summary_count: 0,
+      attempt_summaries_truncated: false,
       failure_details: [],
+      failure_detail_count: 0,
+      failure_details_truncated: false,
     },
     reflecting_result: {
       baseline: { scope: null, targets: [past], revision: 'bundle:b' },
@@ -391,6 +390,7 @@ describe('RunDetail wiring', () => {
         sessions_scored: 1,
         scores_written: 4,
         errors: 0,
+        turn_details: [],
       },
     })
     api.getRun.mockResolvedValue(scoring)
@@ -413,20 +413,32 @@ describe('RunDetail wiring', () => {
           since: '2026-07-01T07:00:00Z',
           until: '2026-07-15T06:59:59.999999Z',
           timezone: 'America/Los_Angeles',
-          session_ids: ['session-1'],
+          session_ids: [
+            'session-1', 'session-2', 'session-3', 'session-4',
+            'session-5', 'session-6', 'session-7',
+          ],
         },
         run_config: requestedConfig,
         effective_config: effectiveConfig,
-        turn_cohort: persistedCohort,
+        turn_cohort: {
+          schema_version: '2',
+          cohort_id: 'sha256:cohort-123',
+          pinned_at: '2026-07-15T07:30:00Z',
+          turn_count: 12,
+          session_count: 7,
+          turns: [],
+          sessions: [],
+        },
         judging_plan: plan,
         judging_progress: {
           plan_id: plan.plan_id,
           planned_rubrics: 1,
           rubrics_completed: 1,
           rated_rubrics: 1,
-          minimum_reviewer_attempts: 1,
+          not_evaluable_rubrics: 0,
+          minimum_reviewer_attempts: 2,
           maximum_reviewer_attempts: 2,
-          reviewer_attempts_completed: 1,
+          reviewer_attempts_completed: 2,
           digest_steps_completed: 2,
           maximum_digest_steps: 2,
           window_steps_completed: 1,
@@ -439,7 +451,11 @@ describe('RunDetail wiring', () => {
           coverage_complete: false,
           status_message: 'Writing 1 judge score...',
           attempt_summaries: [],
+          attempt_summary_count: 0,
+          attempt_summaries_truncated: false,
           failure_details: [],
+          failure_detail_count: 0,
+          failure_details_truncated: false,
         },
       }),
     )
@@ -453,14 +469,14 @@ describe('RunDetail wiring', () => {
     expect(screen.getByRole('region', { name: 'Pinned selection and cohort' })).not.toBeNull()
     expect(screen.getByText('Jul 1, 2026 – Jul 14, 2026')).not.toBeNull()
     expect(screen.getByText('America/Los_Angeles')).not.toBeNull()
-    expect(screen.getByText('cohort-1')).not.toBeNull()
-    expect(screen.getByText('2 turns across 1 session')).not.toBeNull()
-    expect(screen.getByText('1 selected session ID')).not.toBeNull()
-    expect(screen.getByText('session-1')).not.toBeNull()
+    expect(screen.getByText('sha256:cohort-123')).not.toBeNull()
+    expect(screen.getByText('12 turns across 7 sessions')).not.toBeNull()
+    expect(screen.getByText('7 selected session IDs')).not.toBeNull()
+    expect(screen.getByText('session-7')).not.toBeNull()
     expect(screen.getByRole('region', { name: 'Pinned run configuration' })).not.toBeNull()
     expect(screen.getByRole('region', { name: 'Judging progress' })).not.toBeNull()
     expect(screen.getByText('1 of 1 rubrics reviewed')).not.toBeNull()
-    expect(screen.getByText('1 reviewer attempt so far')).not.toBeNull()
+    expect(screen.getByText('2 reviewer attempts so far')).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Judging' }).getAttribute('aria-expanded')).toBe('true')
   })
 
@@ -599,6 +615,7 @@ describe('RunDetail wiring', () => {
         sessions_scored: 1,
         scores_written: 4,
         errors: 0,
+        turn_details: [],
       },
     })
     api.getRun
