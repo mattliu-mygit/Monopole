@@ -1,5 +1,5 @@
 {
-  "plan_id": "sha256:174a29c638a99a18dace1256c729ebf9cc03bf52f7f005c62df654b17ba68d2f",
+  "plan_id": "sha256:24f900fb5dc8865282cb5e9a5de4c1bdad4170b1952a21cb0de7ec7ee879343b",
   "schema_version": "3",
   "cohort_id": "cohort-1",
   "panel_size": 2,
@@ -14,26 +14,28 @@
     }
   ],
   "input_policy": {
-    "contract_version": "2",
+    "contract_version": "3",
     "large_model_threshold_tokens": 200000,
     "large_model_reserve_tokens": 100000,
     "small_model_reserve_tokens": 50000,
+    "large_model_raw_target_tokens": 128000,
+    "small_model_raw_target_tokens": 50000,
     "prompt_reserve_tokens": 6000,
     "output_reserve_tokens": 4000,
     "safety_reserve_tokens": 8000,
     "digest_max_tokens": 1000,
-    "finding_max_tokens": 750,
+    "finding_max_tokens": 4000,
     "overlap_turns": 1,
     "max_chunks": 40
   },
   "protocol": {
-    "protocol_version": "2",
+    "protocol_version": "3",
     "prompt_templates": {
-      "digest_system": "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. Preserve important actions, results, omissions, corrections, and constraints. Cite only allowed evidence IDs. Return the requested JSON.",
+      "digest_system": "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. Preserve important actions, results, omissions, corrections, and constraints. Cite only allowed evidence IDs; the response schema enforces the exact chunk and evidence scope. Return the requested JSON.",
       "digest_user": "EXPECTED_CHUNK_ID: {chunk_id}\nEXAMPLE_EVIDENCE_ID: {example_evidence_id}\nALLOWED_EVIDENCE_IDS: {allowed_evidence_ids}\nRAW_CHUNK:\n{raw_text}",
-      "window_system": "PHASE: window\n{rubric_system}\nReturn bounded findings, not a score. Cite only evidence IDs visible in the active raw window.",
+      "window_system": "PHASE: window\n{rubric_system}\nReturn bounded findings, not a score. Cite only evidence IDs visible in the active raw window; the response schema enforces that exact scope.",
       "window_user": "EXPECTED_WINDOW_ID: {window_id}\nEXAMPLE_EVIDENCE_ID: {example_evidence_id}\nALLOWED_FINDING_EVIDENCE_IDS: {allowed_evidence_ids}\nRUBRIC_CRITERIA:\n{rubric_criteria}\n{sections}",
-      "merge_system": "PHASE: merge\n{rubric_system}\nReturn one anchored session verdict with evidence-cited behavioral feedback.",
+      "merge_system": "PHASE: merge\n{rubric_system}\nReturn one anchored session verdict with evidence-cited behavioral feedback. Behavioral feedback describes what the agent did or should do; reflection separately decides whether and how to edit managed instructions. The response schema limits citations to this session.",
       "merge_user": "COVERAGE_MANIFEST: {coverage_manifest}\nORDERED_CHUNK_DIGESTS: {digest_context}\nORDERED_DEDUPLICATED_FINDINGS: {finding_context}\nALLOWED_EVIDENCE_IDS: {allowed_evidence_ids}\nRUBRIC_CRITERIA:\n{rubric_criteria}"
     },
     "schemas": {
@@ -52,6 +54,7 @@
               "type": "string"
             },
             "text": {
+              "maxLength": 2400,
               "title": "Text",
               "type": "string"
             },
@@ -93,6 +96,7 @@
                   "type": "string"
                 },
                 "observation": {
+                  "maxLength": 350,
                   "title": "Observation",
                   "type": "string"
                 },
@@ -153,6 +157,7 @@
                 "success": {
                   "anyOf": [
                     {
+                      "maxLength": 10000,
                       "type": "string"
                     },
                     {
@@ -164,6 +169,7 @@
                 "problem": {
                   "anyOf": [
                     {
+                      "maxLength": 10000,
                       "type": "string"
                     },
                     {
@@ -175,6 +181,7 @@
                 "desired_behavior": {
                   "anyOf": [
                     {
+                      "maxLength": 10000,
                       "type": "string"
                     },
                     {
@@ -219,6 +226,14 @@
                 {
                   "type": "null"
                 }
+              ],
+              "enum": [
+                0.0,
+                0.25,
+                0.5,
+                0.75,
+                1.0,
+                null
               ],
               "title": "Score"
             },
@@ -297,16 +312,17 @@
           "status": "planned",
           "skip_reason": null,
           "window_plan": {
-            "plan_id": "sha256:df9516db69e0869783d323b5d988473839df83c20f818c1fb6f3a97836617e12",
-            "contract_version": "2",
+            "plan_id": "sha256:22b810358fca1dd829b4cf68b2b7f7c7383ca9aee067c032591b1466939f077f",
+            "contract_version": "3",
             "conversation_id": "session-1",
             "input_cap_tokens": 128000,
             "raw_budget_tokens": 78000,
+            "target_raw_tokens": 50000,
             "chunk_count": 1,
             "overlap_turns": 1,
             "token_counter": "utf8_bytes_div_3",
             "capacity_reserve_tokens": 50000,
-            "merge_input_tokens": 19750,
+            "merge_input_tokens": 23000,
             "raw_turns": [
               {
                 "trace_id": "trace-1",
@@ -369,16 +385,17 @@
           "status": "planned",
           "skip_reason": null,
           "window_plan": {
-            "plan_id": "sha256:df9516db69e0869783d323b5d988473839df83c20f818c1fb6f3a97836617e12",
-            "contract_version": "2",
+            "plan_id": "sha256:22b810358fca1dd829b4cf68b2b7f7c7383ca9aee067c032591b1466939f077f",
+            "contract_version": "3",
             "conversation_id": "session-1",
             "input_cap_tokens": 128000,
             "raw_budget_tokens": 78000,
+            "target_raw_tokens": 50000,
             "chunk_count": 1,
             "overlap_turns": 1,
             "token_counter": "utf8_bytes_div_3",
             "capacity_reserve_tokens": 50000,
-            "merge_input_tokens": 19750,
+            "merge_input_tokens": 23000,
             "raw_turns": [
               {
                 "trace_id": "trace-1",

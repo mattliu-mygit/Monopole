@@ -7,9 +7,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from weave_agent_signals.judges import windowing
 from weave_agent_signals.judges.tokens import count_tokens
 from weave_agent_signals.judges.windowing import (
     WindowPlanInapplicable,
+    _turn_evidence_ids,
     build_window_plan,
     render_raw_turn,
     render_raw_window,
@@ -148,11 +150,12 @@ def test_window_plan_persists_counter_capacity_and_full_model_cap():
         token_counter="o200k_base",
     )
 
-    assert plan["contract_version"] == "2"
+    assert plan["contract_version"] == "3"
     assert plan["input_cap_tokens"] == 200_000
     assert plan["token_counter"] == "o200k_base"
     assert plan["capacity_reserve_tokens"] == 50_000
     assert plan["raw_budget_tokens"] == 150_000
+    assert plan["target_raw_tokens"] == 50_000
 
 
 def test_window_plan_uses_large_capacity_tier_above_threshold():
@@ -167,6 +170,42 @@ def test_window_plan_uses_large_capacity_tier_above_threshold():
 
     assert plan["capacity_reserve_tokens"] == 100_000
     assert plan["raw_budget_tokens"] == 100_001
+    assert plan["target_raw_tokens"] == 100_001
+
+
+def test_window_plan_rounds_soft_target_to_nearest_whole_turn():
+    session = _session_with_rendered_turn_sizes([75_000, 105_000, 105_000])
+
+    plan = build_window_plan(
+        session,
+        JudgingContextPolicy(),
+        model_limit=200_000,
+        token_counter="utf8_bytes_div_3",
+    )
+
+    assert plan["target_raw_tokens"] == 50_000
+    assert [window["core_trace_ids"] for window in plan["windows"]] == [
+        ["t1", "t2"],
+        ["t3"],
+    ]
+
+
+def test_large_model_uses_128k_soft_target_instead_of_filling_context():
+    session = _session_with_rendered_turn_sizes([180_000, 180_000, 180_000])
+
+    plan = build_window_plan(
+        session,
+        JudgingContextPolicy(),
+        model_limit=400_000,
+        token_counter="utf8_bytes_div_3",
+    )
+
+    assert plan["raw_budget_tokens"] == 300_000
+    assert plan["target_raw_tokens"] == 128_000
+    assert [window["core_trace_ids"] for window in plan["windows"]] == [
+        ["t1", "t2"],
+        ["t3"],
+    ]
 
 
 def test_capacity_failures_use_stable_inapplicable_reason():
@@ -183,7 +222,7 @@ def test_capacity_failures_use_stable_inapplicable_reason():
     assert raised.value.reason == "insufficient_context_capacity"
 
 
-def test_raw_turn_renders_complete_evidence_without_model_identity():
+def test_raw_turn_renders_complete_parent_visible_evidence_without_model_identity():
     turn = _turn("trace-1", position=1, text="complete user request")
     tool = ToolSpan(
         span_id="tool-1",
@@ -208,20 +247,93 @@ def test_raw_turn_renders_complete_evidence_without_model_identity():
     for value in (
         "trace-1",
         "tool-1",
-        "tool-2",
         "chat-1",
         "subagent-1",
         "complete user request",
         "complete assistant response",
         "complete-arguments",
         "complete-tool-result",
-        "subagent-result",
         "user_steering",
         "ERROR",
     ):
         assert value in rendered
+    assert "tool-2" not in rendered
+    assert "subagent-result" not in rendered
+    assert "internal_tool_calls_omitted: 1" in rendered
     assert "secret-generating-model" not in rendered
     assert "secret-chat-model" not in rendered
+
+
+def test_compact_tool_text_preserves_head_diagnostics_tail_and_identity():
+    value = (
+        "result-head\n"
+        + ("ordinary middle output\n" * 700)
+        + "ValueError: important failure detail\n"
+        + ("more ordinary output\n" * 700)
+        + "result-tail"
+    )
+
+    compacted = windowing.compact_tool_text(value)
+
+    assert len(compacted) <= 12_000
+    assert compacted.startswith("result-head")
+    assert compacted.endswith("result-tail")
+    assert "ValueError: important failure detail" in compacted
+    assert f"original_chars={len(value)}" in compacted
+    assert f"sha256={hashlib.sha256(value.encode()).hexdigest()}" in compacted
+    assert windowing.compact_tool_text("short output") == "short output"
+
+
+def test_raw_turn_compacts_tools_and_excludes_subagent_internals_from_parent_view():
+    turn = _turn("trace-1", position=1, text="delegate this task")
+    parent_tool = ToolSpan(
+        span_id="tool-1",
+        tool_name="Task",
+        arguments="input-head\n" + ("x" * 20_000) + "\ninput-tail",
+        result="output-head\n" + ("y" * 20_000) + "\noutput-tail",
+        status_code="OK",
+        started_at=_ts(1),
+        ended_at=_ts(1) + timedelta(seconds=1),
+    )
+    child_tool = replace(
+        parent_tool,
+        span_id="child-tool-1",
+        tool_name="Bash",
+        result="private child trajectory",
+    )
+    turn = replace(
+        turn,
+        tool_calls=[parent_tool],
+        subagents=[SubagentSpan("subagent-1", "reviewer", [child_tool])],
+    )
+
+    rendered = render_raw_turn(turn, 1)
+
+    for visible in ("input-head", "input-tail", "output-head", "output-tail"):
+        assert visible in rendered
+    assert rendered.count("original_chars=") == 2
+    assert "private child trajectory" not in rendered
+    assert "child-tool-1" not in rendered
+    assert "internal_tool_calls_omitted: 1" in rendered
+    assert _turn_evidence_ids(turn) == ("trace-1", "tool-1", "subagent-1")
+
+
+def test_window_plan_uses_compacted_tool_projection_for_capacity():
+    turn = replace(
+        _turn("trace-1", position=1),
+        tool_calls=[replace(_tool("tool-1"), result="x" * 600_000)],
+    )
+    session = SessionView("session-1", [turn], "config-1", "main")
+
+    plan = build_window_plan(
+        session,
+        JudgingContextPolicy(),
+        model_limit=200_000,
+        token_counter="utf8_bytes_div_3",
+    )
+
+    assert plan["chunk_count"] == 1
+    assert plan["windows"][0]["raw_tokens"] < plan["raw_budget_tokens"]
 
 
 def test_window_plan_covers_every_turn_raw_and_overlaps_one_turn():
@@ -232,11 +344,10 @@ def test_window_plan_covers_every_turn_raw_and_overlaps_one_turn():
     cores = [window["core_trace_ids"] for window in plan["windows"]]
     assert [trace for core in cores for trace in core] == ["t1", "t2", "t3", "t4"]
     assert plan["windows"][0]["raw_trace_ids"][-1] == "t3"
-    assert plan["windows"][1]["raw_trace_ids"][0] == "t2"
+    assert plan["windows"][1]["raw_trace_ids"][0] == "t3"
     assert plan["raw_coverage_trace_ids"] == ["t1", "t2", "t3", "t4"]
     assert set(plan["windows"][0]["raw_trace_ids"]) & set(plan["windows"][1]["raw_trace_ids"]) == {
-        "t2",
-        "t3",
+        "t3"
     }
 
 
@@ -322,10 +433,6 @@ def test_window_plan_accepts_exact_raw_budget_equality():
         ),
         replace(_turn("t1", position=1), tool_calls=[_tool(" ")]),
         replace(_turn("t1", position=1), subagents=[SubagentSpan("", "reviewer", [])]),
-        replace(
-            _turn("t1", position=1),
-            subagents=[SubagentSpan("subagent-1", "reviewer", [_tool("")])],
-        ),
     ],
 )
 def test_window_plan_rejects_blank_evidence_ids(turn: TurnSpan):

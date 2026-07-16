@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
@@ -23,6 +24,9 @@ from weave_agent_signals.judges.sliding_contracts import (
     MergedVerdict,
     WindowFinding,
     WindowFindings,
+    bind_chunk_digest_schema,
+    bind_merged_verdict_schema,
+    bind_window_findings_schema,
     parse_chunk_digest,
     parse_merged_verdict,
     parse_window_findings,
@@ -40,6 +44,9 @@ from weave_agent_signals.run_config import JudgingContextPolicy, PositionedJudge
 ArtifactKind = Literal["chunk_digest", "window_findings", "merged_verdict"]
 ArtifactLoader = Callable[[str], Mapping[str, Any] | None]
 ArtifactRecorder = Callable[[str, Mapping[str, Any]], object]
+ActivityRecorder = Callable[[Mapping[str, object]], None]
+
+log = logging.getLogger("weave_agent_signals.judges")
 
 _ARTIFACT_FIELDS = frozenset({"schema_version", "kind", "content_digest", "payload"})
 _ARTIFACT_PAYLOAD_FIELDS = frozenset({"schema_version", "result", "audit"})
@@ -59,12 +66,13 @@ _AUDIT_FIELDS = frozenset(
     }
 )
 _ERROR_TEXT_LIMIT = 500
-SLIDING_PROTOCOL_VERSION = "2"
+SLIDING_PROTOCOL_VERSION = "3"
 
 _DIGEST_SYSTEM_TEMPLATE = (
     "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. "
     "Preserve important actions, results, omissions, corrections, and constraints. Cite only "
-    "allowed evidence IDs. Return the requested JSON."
+    "allowed evidence IDs; the response schema enforces the exact chunk and evidence scope. "
+    "Return the requested JSON."
 )
 _DIGEST_USER_TEMPLATE = (
     "EXPECTED_CHUNK_ID: {chunk_id}\n"
@@ -74,7 +82,7 @@ _DIGEST_USER_TEMPLATE = (
 )
 _WINDOW_SYSTEM_TEMPLATE = (
     "PHASE: window\n{rubric_system}\nReturn bounded findings, not a score. Cite only evidence "
-    "IDs visible in the active raw window."
+    "IDs visible in the active raw window; the response schema enforces that exact scope."
 )
 _WINDOW_USER_TEMPLATE = (
     "EXPECTED_WINDOW_ID: {window_id}\n"
@@ -84,7 +92,9 @@ _WINDOW_USER_TEMPLATE = (
 )
 _MERGE_SYSTEM_TEMPLATE = (
     "PHASE: merge\n{rubric_system}\nReturn one anchored session verdict with evidence-cited "
-    "behavioral feedback."
+    "behavioral feedback. Behavioral feedback describes what the agent did or should do; "
+    "reflection separately decides whether and how to edit managed instructions. The response "
+    "schema limits citations to this session."
 )
 _MERGE_USER_TEMPLATE = (
     "COVERAGE_MANIFEST: {coverage_manifest}\n"
@@ -295,6 +305,7 @@ class SlidingReviewer:
         load_artifact: ArtifactLoader,
         record_artifact: ArtifactRecorder,
         is_cancelled: Callable[[], bool] = lambda: False,
+        activity: ActivityRecorder | None = None,
     ) -> None:
         if not isinstance(session, SessionView):
             raise TypeError("session must be a SessionView")
@@ -360,6 +371,7 @@ class SlidingReviewer:
         self._load_artifact = load_artifact
         self._record_artifact = record_artifact
         self._is_cancelled = is_cancelled
+        self._activity = activity
         self._digest_lock = threading.Lock()
         self._digests: tuple[ChunkDigest, ...] | None = None
         self._digest_steps: tuple[InferenceStepAudit, ...] | None = None
@@ -418,13 +430,38 @@ class SlidingReviewer:
         if _review_callback(self._is_cancelled):
             raise InferenceCancelled("sliding reviewer inference cancelled")
 
-    def _messages_fit(self, messages: list[dict[str, str]], max_tokens: int) -> None:
-        input_tokens = count_tokens(_canonical_json(messages), self.judge.token_counter)
+    def _emit_activity(self, event: Mapping[str, object]) -> None:
+        if self._activity is None:
+            return
+        try:
+            self._activity(dict(event))
+        except Exception as error:
+            log.warning(
+                "Sliding judge activity callback failed: error_type=%s",
+                type(error).__name__,
+            )
+
+    def _messages_fit(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        schema: JsonSchemaSpec,
+    ) -> int:
+        input_tokens = count_tokens(
+            _canonical_json(
+                {
+                    "messages": messages,
+                    "response_schema": schema.schema,
+                }
+            ),
+            self.judge.token_counter,
+        )
         if (
             input_tokens + max_tokens + self.context_policy.safety_reserve_tokens
             > self.judge.max_input_tokens
         ):
             raise ValueError("rendered inference request exceeds the configured context budget")
+        return input_tokens
 
     def _infer(
         self,
@@ -436,9 +473,39 @@ class SlidingReviewer:
         schema: JsonSchemaSpec,
         steps: list[InferenceStepAudit],
         usage: dict[str, int],
+        rubric_id: str | None = None,
+        rubric_label: str | None = None,
+        item_index: int | None = None,
+        item_total: int | None = None,
     ) -> Mapping[str, Any]:
-        self._messages_fit(messages, max_tokens)
+        estimated_input_tokens = self._messages_fit(messages, max_tokens, schema)
         self._check_cancelled()
+        if phase == "digest":
+            message = f"{self.judge.label} is digesting chunk {item_index} of {item_total}"
+        elif phase == "window":
+            message = (
+                f"{self.judge.label} is reviewing window {item_index} of {item_total} for "
+                f"{rubric_label}"
+            )
+        else:
+            message = f"{self.judge.label} is merging {rubric_label}"
+        event: dict[str, object] = {
+            "phase": f"{phase}_started",
+            "message": message,
+            "model": self.judge.id,
+            "conversation_id": self.session.conversation_id,
+            "artifact_id": artifact_id,
+            "estimated_input_tokens": estimated_input_tokens,
+            "max_output_tokens": max_tokens,
+            "model_context_tokens": self.judge.max_input_tokens,
+        }
+        if rubric_id is not None:
+            event["rubric"] = rubric_id
+        if item_index is not None:
+            event["item_index"] = item_index
+        if item_total is not None:
+            event["item_total"] = item_total
+        self._emit_activity(event)
         try:
             parsed, response = self.client.chat_json(
                 model=self.judge.id,
@@ -533,6 +600,7 @@ class SlidingReviewer:
         chunk_id = self._chunk_id(window)
         artifact_id = self._artifact_id("digest", chunk_id)
         raw_text, evidence_ids = self._core_evidence(window)
+        response_schema = bind_chunk_digest_schema(chunk_id, evidence_ids)
         artifact = _review_callback(self._load_artifact, artifact_id)
         if artifact is not None:
             payload, audit = _artifact_payload(
@@ -540,7 +608,7 @@ class SlidingReviewer:
                 artifact_id=artifact_id,
                 expected_kind="chunk_digest",
                 expected_phase="digest",
-                expected_schema=CHUNK_DIGEST_SCHEMA,
+                expected_schema=response_schema,
                 requested_model=self.judge.id,
             )
             steps.append(audit)
@@ -554,9 +622,11 @@ class SlidingReviewer:
                     evidence_ids=evidence_ids,
                 ),
                 max_tokens=self.context_policy.digest_max_tokens,
-                schema=CHUNK_DIGEST_SCHEMA,
+                schema=response_schema,
                 steps=steps,
                 usage=usage,
+                item_index=int(window["index"]),
+                item_total=len(self._windows),
             )
         digest = parse_chunk_digest(
             payload,
@@ -665,6 +735,10 @@ class SlidingReviewer:
             window=window,
             digests=digests,
         )
+        response_schema = bind_window_findings_schema(
+            str(window["window_id"]),
+            allowed_evidence_ids,
+        )
         artifact = _review_callback(self._load_artifact, artifact_id)
         if artifact is not None:
             payload, audit = _artifact_payload(
@@ -672,7 +746,7 @@ class SlidingReviewer:
                 artifact_id=artifact_id,
                 expected_kind="window_findings",
                 expected_phase="window",
-                expected_schema=WINDOW_FINDINGS_SCHEMA,
+                expected_schema=response_schema,
                 requested_model=self.judge.id,
             )
             steps.append(audit)
@@ -682,9 +756,13 @@ class SlidingReviewer:
                 artifact_id=artifact_id,
                 messages=messages,
                 max_tokens=self.context_policy.finding_max_tokens,
-                schema=WINDOW_FINDINGS_SCHEMA,
+                schema=response_schema,
                 steps=steps,
                 usage=usage,
+                rubric_id=descriptor.id,
+                rubric_label=descriptor.label,
+                item_index=window_index + 1,
+                item_total=len(self._windows),
             )
         findings = parse_window_findings(
             payload,
@@ -716,7 +794,7 @@ class SlidingReviewer:
                 semantic = (
                     finding.polarity,
                     finding.observation,
-                    tuple(sorted(finding.evidence_ids)),
+                    tuple(sorted(set(finding.evidence_ids))),
                 )
                 prior = identities.get(finding.finding_id)
                 if prior is not None and prior != semantic:
@@ -773,6 +851,7 @@ class SlidingReviewer:
             "merge",
             f"{descriptor.id}:{descriptor.content_digest}",
         )
+        response_schema = bind_merged_verdict_schema(self._all_evidence_ids)
         artifact = _review_callback(self._load_artifact, artifact_id)
         if artifact is not None:
             payload, audit = _artifact_payload(
@@ -780,7 +859,7 @@ class SlidingReviewer:
                 artifact_id=artifact_id,
                 expected_kind="merged_verdict",
                 expected_phase="merge",
-                expected_schema=MERGED_VERDICT_SCHEMA,
+                expected_schema=response_schema,
                 requested_model=self.judge.id,
             )
             steps.append(audit)
@@ -790,9 +869,11 @@ class SlidingReviewer:
                 artifact_id=artifact_id,
                 messages=self._merge_messages(rubric=rubric, digests=digests, findings=findings),
                 max_tokens=self.context_policy.output_reserve_tokens,
-                schema=MERGED_VERDICT_SCHEMA,
+                schema=response_schema,
                 steps=steps,
                 usage=usage,
+                rubric_id=descriptor.id,
+                rubric_label=descriptor.label,
             )
         verdict = parse_merged_verdict(payload, allowed_evidence_ids=self._all_evidence_ids)
         if artifact is None:
@@ -840,18 +921,41 @@ class SlidingReviewer:
             raise
         except Exception as error:
             last_step = steps[-1] if steps else None
+            error_type = (
+                error.error_type
+                if isinstance(error, (_JudgeInvocationFailure, _ReviewInfrastructureFailure))
+                else type(error).__name__
+            )
+            message = _bounded_error(error)
+            if last_step is not None and not isinstance(
+                error,
+                (_JudgeInvocationFailure, _ReviewInfrastructureFailure),
+            ):
+                self._emit_activity(
+                    {
+                        "phase": "validation_failed",
+                        "message": (
+                            f"{self.judge.label} returned invalid {last_step.phase} output for "
+                            f"{rubric.label}"
+                        ),
+                        "model": self.judge.id,
+                        "conversation_id": self.session.conversation_id,
+                        "rubric": rubric.id,
+                        "artifact_id": last_step.artifact_id,
+                        "error_category": error_type,
+                        "provider_error_message": message,
+                        "output_mode": last_step.output_mode,
+                        "output_sha256": last_step.raw_output_digest,
+                    }
+                )
             return AttemptObservation(
                 status="failed",
                 resolved_model=last_step.resolved_model if last_step is not None else None,
                 score=None,
                 rationale=None,
                 usage=usage,
-                error_type=(
-                    error.error_type
-                    if isinstance(error, (_JudgeInvocationFailure, _ReviewInfrastructureFailure))
-                    else type(error).__name__
-                ),
-                message=_bounded_error(error),
+                error_type=error_type,
+                message=message,
                 output_mode=last_step.output_mode if last_step is not None else None,
                 schema_name=last_step.schema_name if last_step is not None else None,
                 schema_fallback_reason=(

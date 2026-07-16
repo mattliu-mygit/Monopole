@@ -85,11 +85,12 @@ const config: EffectiveRunConfig = {
     },
   ],
   judging_context: {
-    contract_version: '2', large_model_threshold_tokens: 200_000,
+    contract_version: '3', large_model_threshold_tokens: 200_000,
     large_model_reserve_tokens: 100_000, small_model_reserve_tokens: 50_000,
+    large_model_raw_target_tokens: 128_000, small_model_raw_target_tokens: 50_000,
     prompt_reserve_tokens: 6_000,
     output_reserve_tokens: 4_000, safety_reserve_tokens: 8_000, digest_max_tokens: 1_000,
-    finding_max_tokens: 750, overlap_turns: 1, max_chunks: 40,
+    finding_max_tokens: 4_000, overlap_turns: 1, max_chunks: 40,
   },
   candidate_budget: 4,
   force: true,
@@ -114,7 +115,8 @@ describe('RunConfigAudit', () => {
     expect(screen.getByText('models-v4')).not.toBeNull()
     expect(screen.getByText('rubrics-v9')).not.toBeNull()
     expect(screen.getByText('50,000 small-model · 100,000 large-model reserve')).not.toBeNull()
-    expect(screen.getByText('1,000 digest · 750 findings · 1 turn overlap')).not.toBeNull()
+    expect(screen.getByText('50,000 small-model · 128,000 large-model raw target')).not.toBeNull()
+    expect(screen.getByText('1,000 digest · 4,000 findings · 1 turn overlap')).not.toBeNull()
     expect(screen.getAllByText('128,000 max input tokens').length).toBe(4)
     expect(screen.getByText('Proposal attempt limit')).not.toBeNull()
     expect(screen.getByText('4 attempts')).not.toBeNull()

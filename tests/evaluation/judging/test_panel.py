@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -88,11 +89,12 @@ class _ScriptedInvoke:
 
     def __post_init__(self) -> None:
         self.calls: list[PositionedJudge] = []
+        self._lock = threading.Lock()
 
     def __call__(self, judge: PositionedJudge) -> AttemptObservation:
-        observation = self.observations[len(self.calls)]
-        self.calls.append(judge)
-        return observation
+        with self._lock:
+            self.calls.append(judge)
+        return self.observations[judge.position - 1]
 
 
 @pytest.mark.parametrize(
@@ -109,7 +111,7 @@ def test_panel_runs_every_judge_and_reports_disagreement(scores, expected) -> No
     outcome = execute_panel(_judges(len(scores)), invoke, threshold=0.5)
 
     assert isinstance(outcome, PanelOutcome)
-    assert [judge.position for judge in invoke.calls] == list(range(1, len(scores) + 1))
+    assert sorted(judge.position for judge in invoke.calls) == list(range(1, len(scores) + 1))
     assert tuple(attempt.trigger for attempt in outcome.attempts) == ("panel",) * len(scores)
     assert (outcome.rating, outcome.minimum, outcome.maximum, outcome.spread) == expected
     assert outcome.status == "complete"
@@ -117,18 +119,62 @@ def test_panel_runs_every_judge_and_reports_disagreement(scores, expected) -> No
 
 
 def test_failed_member_fails_panel_coverage() -> None:
-    invoke = _ScriptedInvoke((_success(0.25), _failure(), _success(0.75)))
+    scripted = (_success(0.25), _failure(), _success(0.75))
+    started = threading.Barrier(3, timeout=1)
+
+    def invoke(judge: PositionedJudge) -> AttemptObservation:
+        started.wait()
+        return scripted[judge.position - 1]
 
     outcome = execute_panel(_judges(3), invoke, threshold=0.5)
 
-    assert [judge.position for judge in invoke.calls] == [1, 2, 3]
     assert outcome.status == "failed"
     assert outcome.rating is None
     assert outcome.minimum is None
     assert outcome.maximum is None
     assert outcome.spread is None
     assert outcome.successful_count == 2
-    assert len(outcome.attempts) == 3
+    assert [attempt.position for attempt in outcome.attempts] == [1, 2, 3]
+
+
+def test_panel_judges_begin_concurrently() -> None:
+    started = threading.Barrier(3, timeout=1)
+
+    def invoke(judge: PositionedJudge) -> AttemptObservation:
+        started.wait()
+        return _success(judge.position / 4)
+
+    outcome = execute_panel(_judges(3), invoke, threshold=0.5)
+
+    assert outcome.status == "complete"
+    assert [attempt.position for attempt in outcome.attempts] == [1, 2, 3]
+
+
+def test_failed_member_cancels_outstanding_panel_work() -> None:
+    started = threading.Barrier(2, timeout=1)
+    release_sibling = threading.Event()
+    cancellations = []
+
+    def invoke(judge: PositionedJudge) -> AttemptObservation:
+        started.wait()
+        if judge.position == 1:
+            return _failure()
+        assert release_sibling.wait(timeout=1)
+        return _success(0.75)
+
+    def cancel_pending() -> None:
+        cancellations.append(True)
+        release_sibling.set()
+
+    outcome = execute_panel(
+        _judges(2),
+        invoke,
+        threshold=0.5,
+        cancel_pending=cancel_pending,
+    )
+
+    assert cancellations == [True]
+    assert outcome.status == "failed"
 
 
 def test_multiple_scores_with_clean_abstention_are_degraded() -> None:

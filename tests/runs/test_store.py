@@ -187,7 +187,7 @@ def _reflection_evidence() -> dict:
     }
 
 
-def test_schema_v6_resets_disposable_database_on_version_mismatch(tmp_path):
+def test_schema_v8_resets_disposable_database_on_version_mismatch(tmp_path):
     path = tmp_path / "runs.db"
     connection = sqlite3.connect(path)
     connection.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, obsolete TEXT)")
@@ -199,14 +199,14 @@ def test_schema_v6_resets_disposable_database_on_version_mismatch(tmp_path):
     store = RunStore(path)
     columns = {row[1] for row in store._conn.execute("PRAGMA table_info(runs)").fetchall()}
 
-    assert RUN_DB_SCHEMA_VERSION == 6
+    assert RUN_DB_SCHEMA_VERSION == 8
     assert store.get("legacy") is None
     assert {"run_id", "run_config", "effective_config"} <= columns
-    assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 8
     store.close()
 
 
-def test_schema_v6_resets_collided_v5_database_missing_judging_artifacts(tmp_path):
+def test_schema_v8_resets_collided_v5_database_missing_judging_artifacts(tmp_path):
     path = tmp_path / "runs.db"
     connection = sqlite3.connect(path)
     legacy_schema = _SCHEMA.replace("    judging_artifacts TEXT,\n", "")
@@ -222,9 +222,29 @@ def test_schema_v6_resets_collided_v5_database_missing_judging_artifacts(tmp_pat
     store = RunStore(path)
     columns = {row[1] for row in store._conn.execute("PRAGMA table_info(runs)").fetchall()}
 
-    assert RUN_DB_SCHEMA_VERSION == 6
+    assert RUN_DB_SCHEMA_VERSION == 8
     assert "judging_artifacts" in columns
     assert store.list_active() == []
+    store.close()
+
+
+def test_schema_v8_resets_schema_v7_rows_with_stale_effective_config(tmp_path):
+    path = tmp_path / "runs.db"
+    connection = sqlite3.connect(path)
+    connection.execute(_SCHEMA)
+    connection.execute(
+        "INSERT INTO runs (run_id, status, created_at, effective_config) VALUES (?, ?, ?, ?)",
+        ("legacy", "complete", "2026-07-15T00:00:00+00:00", '{"schema_version":"2"}'),
+    )
+    connection.execute("PRAGMA user_version = 7")
+    connection.commit()
+    connection.close()
+
+    store = RunStore(path)
+
+    assert store.get("legacy") is None
+    assert RUN_DB_SCHEMA_VERSION == 8
+    assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 8
     store.close()
 
 

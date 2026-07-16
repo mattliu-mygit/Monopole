@@ -49,7 +49,7 @@ _MODEL_DESCRIPTORS = (
         family="anthropic",
         backend="cli",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
-        max_input_tokens=1_000_000,
+        max_input_tokens=200_000,
     ),
     ModelDescriptor(
         id="gpt-5.6-sol",
@@ -57,7 +57,7 @@ _MODEL_DESCRIPTORS = (
         family="openai",
         backend="cli",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
-        max_input_tokens=1_050_000,
+        max_input_tokens=272_000,
         token_counter="o200k_base",
     ),
     ModelDescriptor(

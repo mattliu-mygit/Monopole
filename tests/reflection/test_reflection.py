@@ -206,6 +206,9 @@ def test_invalid_writer_output_is_rejected_before_evaluator_and_retried():
     assert len(writer_client.calls) == 2
     assert len(evaluator_client.calls) == 2
     assert [attempt.status for attempt in result.generation_attempts] == ["failed", "succeeded"]
+    assert [candidate.bundle.revision for candidate in result.candidates] == [
+        _bundle(**{"CLAUDE.md": "new"}).revision
+    ]
     assert "previous proposal" in str(prompts[1]).lower()
     assert "json" in str(prompts[1]).lower()
 
@@ -268,8 +271,39 @@ def test_real_gepa_continues_after_invalid_first_writer_output():
     assert len(writer_client.calls) == 2
     assert len(evaluator_client.calls) == 2
     assert [attempt.status for attempt in result.generation_attempts] == ["failed", "succeeded"]
+
+
+def test_real_gepa_preserves_valid_proposal_with_markdown_fences():
+    baseline = _bundle(**{"CLAUDE.md": "old"})
+    valid = _proposal(
+        [
+            {
+                "action": "update",
+                "locator": "CLAUDE.md",
+                "content": "Run:\n```bash\npytest -q\n```",
+            }
+        ]
+    )
+    writer_client = _writer_outputs(valid)
+    evaluator_client = _evaluator_client(0.3, 0.8)
+
+    result = run_reflection(
+        baseline=baseline,
+        feedback=_feedback(),
+        coaching_text="Improve.",
+        scope_policy=SCOPE_POLICY,
+        requested_writer=WRITER,
+        requested_evaluator=EVALUATOR,
+        writer_client=writer_client,
+        evaluator_client=evaluator_client,
+        resolve_locator=_resolve_locator,
+        candidate_budget=1,
+    )
+
+    assert len(evaluator_client.calls) == 2
+    assert result.generation_attempts[0].status == "succeeded"
     assert [candidate.bundle.revision for candidate in result.candidates] == [
-        _bundle(**{"CLAUDE.md": "new"}).revision
+        _bundle(**{"CLAUDE.md": "Run:\n```bash\npytest -q\n```"}).revision
     ]
 
 

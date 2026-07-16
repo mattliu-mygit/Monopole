@@ -106,8 +106,8 @@ def test_every_model_declares_exact_input_capacity_and_token_counter():
         model_id: (model.max_input_tokens, model.token_counter)
         for model_id, model in models.items()
     } == {
-        "gpt-5.6-sol": (1_050_000, "o200k_base"),
-        "claude-sonnet-5": (1_000_000, "utf8_bytes_div_3"),
+        "gpt-5.6-sol": (272_000, "o200k_base"),
+        "claude-sonnet-5": (200_000, "utf8_bytes_div_3"),
         "claude-haiku-4-5": (200_000, "utf8_bytes_div_3"),
         "gpt-oss-20b": (131_072, "o200k_harmony"),
         "gpt-oss-120b": (131_072, "o200k_harmony"),

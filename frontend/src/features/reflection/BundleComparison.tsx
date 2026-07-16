@@ -4,7 +4,7 @@ import type {
   ReflectionTargetSnapshot,
 } from '../../types'
 import { bundleActions } from './reflectionState'
-import { lineDiff } from './lineDiff'
+import UnifiedDiff from './UnifiedDiff'
 
 type View = 'past' | 'proposed' | 'diff' | 'edited' | 'edited-diff'
 
@@ -180,25 +180,19 @@ export default function BundleComparison({
               onChange={(event) => updateContent(event.target.value)}
               className="min-h-72 w-full rounded bg-gray-950 p-3 font-mono text-xs text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
+          ) : item.value === 'diff' || item.value === 'edited-diff' ? (
+            <UnifiedDiff
+              locator={action.locator}
+              before={item.value === 'diff' ? action.before : action.after}
+              after={item.value === 'diff' ? action.after : edited}
+              beforeLabel={item.value === 'diff' ? 'Past (B)' : 'Proposed (C)'}
+              afterLabel={item.value === 'diff' ? 'Proposed (C)' : 'Edited (D)'}
+            />
           ) : (
             <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap rounded bg-gray-950 p-3 font-mono text-xs text-gray-100">
               {item.value === 'past' && targetContent(action.before)}
               {item.value === 'proposed' && targetContent(action.after)}
               {item.value === 'edited' && targetContent(edited)}
-              {item.value === 'edited-diff' && lineDiff(
-                action.locator,
-                action.after,
-                edited,
-                'Proposed (C)',
-                'Edited (D)',
-              )}
-              {item.value === 'diff' && lineDiff(
-                action.locator,
-                action.before,
-                action.after,
-                'Past (B)',
-                'Proposed (C)',
-              )}
             </pre>
           )}
         </div>

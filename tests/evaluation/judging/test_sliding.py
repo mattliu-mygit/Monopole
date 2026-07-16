@@ -23,6 +23,7 @@ from weave_agent_signals.judges.sliding import (
     SlidingReviewer,
     sliding_protocol_contract_digest,
 )
+from weave_agent_signals.judges.sliding_contracts import WindowFinding, WindowFindings
 from weave_agent_signals.judges.windowing import build_window_plan, render_raw_turn
 from weave_agent_signals.models import SessionView, TurnSpan
 from weave_agent_signals.run_config import JudgingContextPolicy, PositionedJudge, RubricDescriptor
@@ -145,6 +146,7 @@ class _ScriptedClient:
                     "temperature": temperature,
                     "max_tokens": max_tokens,
                     "schema_name": getattr(response_schema, "name", None),
+                    "schema": getattr(response_schema, "schema", None),
                 }
             )
         if self.invocation_error is not None:
@@ -158,14 +160,14 @@ class _ScriptedClient:
                     else _marker(messages, "EXPECTED_CHUNK_ID")
                 ),
                 "text": (
-                    "x" * 5_900
+                    "x" * 7_000
                     if self.large_digest
                     else "The agent handled the cited turn evidence."
                 ),
                 "evidence_ids": [_marker(messages, "EXAMPLE_EVIDENCE_ID")],
             }
         elif phase == "window":
-            evidence_id = "unknown-evidence" if self.invalid_window_citation else "trace-2"
+            evidence_id = "unknown-evidence" if self.invalid_window_citation else "trace-3"
             payload = {
                 "schema_version": 1,
                 "window_id": (
@@ -221,6 +223,7 @@ def _reviewer(
     policy: JudgingContextPolicy | None = None,
     cancelled=lambda: False,
     judge: PositionedJudge | None = None,
+    activity=None,
 ) -> tuple[SlidingReviewer, _ScriptedClient, dict[str, Mapping[str, Any]], dict[str, object]]:
     session = SessionView(
         "session-1",
@@ -262,6 +265,7 @@ def _reviewer(
             load_artifact=stored.get,
             record_artifact=record,
             is_cancelled=cancelled,
+            activity=activity,
         ),
         scripted,
         stored,
@@ -304,6 +308,99 @@ def test_reviewer_digests_once_then_reads_every_window_and_merges() -> None:
         "window_findings",
         "merged_verdict",
     ]
+
+
+def test_reviewer_binds_each_inference_schema_to_its_exact_evidence_scope() -> None:
+    reviewer, client, _, plan = _reviewer()
+
+    reviewer.review(_rubric("judge.session_outcome"))
+
+    digest_calls = [call for call in client.calls if call["phase"] == "digest"]
+    for call, window in zip(digest_calls, plan["windows"], strict=True):
+        properties = call["schema"]["properties"]
+        assert properties["chunk_id"]["const"] == reviewer._chunk_id(window)
+        expected = reviewer._core_evidence(window)[1]
+        assert properties["evidence_ids"]["items"]["enum"] == list(expected)
+
+    window_calls = [call for call in client.calls if call["phase"] == "window"]
+    for call, window in zip(window_calls, plan["windows"], strict=True):
+        assert call["schema"]["properties"]["window_id"]["const"] == window["window_id"]
+        evidence = call["schema"]["$defs"]["WindowFinding"]["properties"]["evidence_ids"]
+        assert evidence["items"]["enum"] == list(
+            reviewer._window_messages(
+                rubric=SESSION_RUBRICS["judge.session_outcome"],
+                window_index=int(window["index"]) - 1,
+                window=window,
+                digests=reviewer._digests or (),
+            )[1]
+        )
+
+    merge_call = next(call for call in client.calls if call["phase"] == "merge")
+    assert merge_call["schema"]["properties"]["evidence_ids"]["items"]["enum"] == list(
+        reviewer._all_evidence_ids
+    )
+    assert (
+        "Behavioral feedback describes what the agent did or should do; reflection separately "
+        "decides whether and how to edit managed instructions."
+        in merge_call["messages"][0]["content"]
+    )
+
+
+def test_reviewer_narrates_each_live_inference_phase_with_context() -> None:
+    activity = []
+    reviewer, _, _, _ = _reviewer(activity=activity.append)
+
+    reviewer.review(_rubric("judge.session_outcome"))
+
+    assert [event["phase"] for event in activity] == [
+        "digest_started",
+        "digest_started",
+        "window_started",
+        "window_started",
+        "merge_started",
+    ]
+    assert activity[0] == {
+        "phase": "digest_started",
+        "message": "Judge One is digesting chunk 1 of 2",
+        "model": "judge-1",
+        "conversation_id": "session-1",
+        "artifact_id": activity[0]["artifact_id"],
+        "item_index": 1,
+        "item_total": 2,
+        "estimated_input_tokens": activity[0]["estimated_input_tokens"],
+        "max_output_tokens": 2_000,
+        "model_context_tokens": 60_000,
+    }
+    assert activity[0]["estimated_input_tokens"] > 0
+    assert activity[2]["rubric"] == "judge.session_outcome"
+    assert activity[2]["item_index"] == 1
+    assert activity[2]["item_total"] == 2
+    assert activity[-1]["message"] == "Judge One is merging Session Outcome Quality"
+    assert activity[-1]["rubric"] == "judge.session_outcome"
+
+
+def test_cross_window_finding_identity_ignores_duplicate_citation_multiplicity() -> None:
+    reviewer, _, _, _ = _reviewer()
+    first_finding = WindowFinding(
+        finding_id="shared-finding",
+        polarity="positive",
+        observation="The agent used relevant checks.",
+        evidence_ids=("trace-1",),
+    )
+    repeated_citation = first_finding.model_copy(update={"evidence_ids": ("trace-1", "trace-1")})
+
+    findings = reviewer._deduplicated_findings(
+        (
+            WindowFindings(schema_version=1, window_id="window-1", findings=(first_finding,)),
+            WindowFindings(
+                schema_version=1,
+                window_id="window-2",
+                findings=(repeated_citation,),
+            ),
+        )
+    )
+
+    assert findings == (first_finding,)
 
 
 def test_window_replaces_own_digest_and_keeps_surrounding_digests_chronological() -> None:
@@ -511,7 +608,7 @@ def test_protocol_contract_digest_binds_version_prompts_and_schemas(
     original_template = sliding._DIGEST_SYSTEM_TEMPLATE
     monkeypatch.setattr(sliding, "SLIDING_PROTOCOL_VERSION", "test-version")
     assert sliding_protocol_contract_digest() != original
-    monkeypatch.setattr(sliding, "SLIDING_PROTOCOL_VERSION", "2")
+    monkeypatch.setattr(sliding, "SLIDING_PROTOCOL_VERSION", "3")
     monkeypatch.setattr(
         sliding,
         "_DIGEST_SYSTEM_TEMPLATE",
@@ -579,7 +676,11 @@ def test_cancellation_is_checked_between_model_calls() -> None:
 
 
 def test_invalid_window_citation_fails_closed() -> None:
-    reviewer, _, _, _ = _reviewer(client=_ScriptedClient(invalid_window_citation=True))
+    activity = []
+    reviewer, _, _, _ = _reviewer(
+        client=_ScriptedClient(invalid_window_citation=True),
+        activity=activity.append,
+    )
 
     result = reviewer.review(_rubric("judge.session_outcome"))
 
@@ -589,6 +690,18 @@ def test_invalid_window_citation_fails_closed() -> None:
     assert result.error_type == "ValueError"
     assert result.message == "unknown evidence ID"
     assert "unknown-evidence" not in result.message
+    assert activity[-1] == {
+        "phase": "validation_failed",
+        "message": "Judge One returned invalid window output for Session Outcome Quality",
+        "model": "judge-1",
+        "conversation_id": "session-1",
+        "rubric": "judge.session_outcome",
+        "artifact_id": result.steps[-1].artifact_id,
+        "error_category": "ValueError",
+        "provider_error_message": "unknown evidence ID",
+        "output_mode": "json_schema",
+        "output_sha256": result.raw_output_digest,
+    }
 
 
 @pytest.mark.parametrize(

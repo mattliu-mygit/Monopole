@@ -145,6 +145,12 @@ def _explicit_schema_rejection_reason(text: str) -> str | None:
     lowered = reason.lower()
     if any(term in lowered for term in _NON_FALLBACK_FAILURE_TERMS):
         return None
+    if "invalid_json_schema" in lowered and re.search(
+        r"['\"][A-Za-z][A-Za-z0-9_-]*['\"]\s+is not permitted\b",
+        reason,
+        re.IGNORECASE,
+    ):
+        return reason[:500]
     if any(term in lowered for term in _SCHEMA_VALIDATION_FAILURE_TERMS):
         return None
     if not any(pattern.search(text) for pattern in _SCHEMA_REJECTION_PATTERNS):

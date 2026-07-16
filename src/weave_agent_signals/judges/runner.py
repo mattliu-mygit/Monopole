@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 
@@ -18,6 +19,7 @@ from weave_agent_signals.judges.review import (
 )
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.judges.sliding import (
+    ActivityRecorder,
     ArtifactLoader,
     ArtifactRecorder,
     SlidingReviewer,
@@ -32,6 +34,19 @@ from weave_agent_signals.run_config import (
 )
 
 _REASON_LIMIT = 1200
+log = logging.getLogger("weave_agent_signals.judges")
+
+
+def _emit_activity(activity: ActivityRecorder | None, event: Mapping[str, object]) -> None:
+    if activity is None:
+        return
+    try:
+        activity(dict(event))
+    except Exception as error:
+        log.warning(
+            "Judge activity callback failed: error_type=%s",
+            type(error).__name__,
+        )
 
 
 def _plan_digest(value: object) -> str:
@@ -247,6 +262,26 @@ def _reason(attempts: Sequence[ReviewAttempt]) -> str:
     return " | ".join(dict.fromkeys(parts))[:_REASON_LIMIT]
 
 
+def _review_failure_message(
+    rubric_id: str,
+    attempts: Sequence[ReviewAttempt],
+    successful_count: int,
+) -> str:
+    failed = [attempt for attempt in attempts if attempt.observation.status == "failed"]
+    if not failed:
+        return f"No reviewer produced a valid score for {rubric_id}"
+    success_note = ""
+    if successful_count:
+        noun = "reviewer" if successful_count == 1 else "reviewers"
+        success_note = f" after {successful_count} {noun} succeeded"
+    details = "; ".join(
+        f"{attempt.requested_model} ({attempt.observation.error_type}): "
+        f"{attempt.observation.message}"
+        for attempt in failed
+    )
+    return f"Review failed for {rubric_id}{success_note}: {details}"
+
+
 def _resolve(descriptor: RubricDescriptor) -> object:
     if not isinstance(descriptor, RubricDescriptor):
         raise TypeError("rubrics must contain RubricDescriptor values")
@@ -268,6 +303,7 @@ def judge_session(
     artifact_loader: ArtifactLoader,
     artifact_recorder: ArtifactRecorder,
     cancel_requested: Callable[[], bool] = lambda: False,
+    activity: ActivityRecorder | None = None,
 ) -> list[Score]:
     """Return one merged score per requested rubric for one pinned session."""
 
@@ -301,17 +337,28 @@ def judge_session(
                 load_artifact=artifact_loader,
                 record_artifact=artifact_recorder,
                 is_cancelled=cancel_requested,
+                activity=activity,
             )
             reviewer_cache[judge.id] = current
         return current
 
     scores: list[Score] = []
-    failures: list[JudgeFailure] = []
     not_evaluable: list[JudgeNotEvaluable] = []
+    abort = getattr(client, "abort", None)
+    cancel_pending = abort if callable(abort) else lambda: None
     evaluated_models = sorted({turn.model for turn in session.turns if turn.model})
     evaluated_families = sorted({model_family(turn.model or "") for turn in session.turns})
     for descriptor in rubrics:
         rubric = _resolve(descriptor)
+        _emit_activity(
+            activity,
+            {
+                "phase": "rubric_started",
+                "message": f"Reviewing {descriptor.label}",
+                "conversation_id": session.conversation_id,
+                "rubric": descriptor.id,
+            },
+        )
         try:
             outcome = execute_panel(
                 panel,
@@ -330,34 +377,50 @@ def judge_session(
                     else reviewer(judge).review(descriptor)
                 ),
                 threshold=descriptor.pass_threshold,
+                cancel_pending=cancel_pending,
             )
         except InferenceCancelled:
             raise
+        _emit_activity(
+            activity,
+            {
+                "phase": "rubric_completed",
+                "message": f"Completed {descriptor.label}: {outcome.status.replace('_', ' ')}",
+                "conversation_id": session.conversation_id,
+                "rubric": descriptor.id,
+                "status": outcome.status,
+            },
+        )
         attempts = tuple(_attempt_record(value) for value in outcome.attempts)
         if outcome.rating is None:
             if outcome.status == "not_evaluable":
                 not_evaluable.append(JudgeNotEvaluable(descriptor.id, attempts))
                 continue
-            failures.append(
-                JudgeFailure(
-                    descriptor.id,
-                    f"No reviewer produced a valid score for {descriptor.id}",
-                    "ReviewFailed",
-                    attempts,
-                )
+            raise JudgeExecutionError(
+                scores,
+                [
+                    JudgeFailure(
+                        descriptor.id,
+                        _review_failure_message(
+                            descriptor.id,
+                            outcome.attempts,
+                            outcome.successful_count,
+                        ),
+                        "ReviewFailed",
+                        attempts,
+                    )
+                ],
+                not_evaluable,
             )
-            continue
         if outcome.rating < descriptor.pass_threshold:
             tags = list(rubric.tags_on_low)
         else:
             tags = list(rubric.tags_on_high)
-        evidence_ids = list(
-            dict.fromkeys(
-                evidence_id
-                for attempt in outcome.attempts
-                for evidence_id in attempt.observation.evidence_ids
-            )
-        )
+        evidence_ids = [
+            evidence_id
+            for attempt in outcome.attempts
+            for evidence_id in attempt.observation.evidence_ids
+        ]
         feedback = [
             dict(attempt.observation.behavioral_feedback)
             for attempt in outcome.attempts
@@ -402,6 +465,6 @@ def judge_session(
                 },
             )
         )
-    if failures or not_evaluable:
-        raise JudgeExecutionError(scores, failures, not_evaluable)
+    if not_evaluable:
+        raise JudgeExecutionError(scores, (), not_evaluable)
     return scores

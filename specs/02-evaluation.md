@@ -44,16 +44,23 @@ All model rubrics are session-level. Each applicable reviewer gets a window plan
 sized to its pinned context capacity. Models above 200,000 input tokens reserve
 at least 100,000 tokens; models at or below 200,000 reserve at least 50,000.
 Prompt, output, safety, surrounding-digest, and finding overhead may increase
-that reserve. OpenAI catalog entries use their explicitly pinned `tiktoken`
-encoding; other model families use the conservative UTF-8 byte estimator.
+that reserve. Raw windows have separate soft targets of 128,000 tokens above
+the same model threshold and 50,000 tokens at or below it. OpenAI catalog
+entries use their explicitly pinned `tiktoken` encoding; other model families
+use the conservative UTF-8 byte estimator.
 
-The resulting raw budget partitions contiguous core chunks so every session
-turn has exact core coverage. Each raw window includes up to one neighboring
-turn on either side for continuity when that expansion fits; overlap can shrink
-to zero at an oversized boundary without removing core coverage. A captured raw
-turn is indivisible: planning never splits, truncates, deduplicates, or
-summarizes it. When an intact turn, the required chunk count, or the worst-case
-merge cannot fit, that reviewer alone is skipped for the session with
+The hard raw budget remains a capacity ceiling. Contiguous core chunks are
+packed near the soft target, assigning a boundary-crossing turn to the side
+closer to that target, so every session turn has exact core coverage. Each raw
+window includes up to one neighboring turn on either side when it remains
+within the soft target; overlap can shrink to zero without removing core
+coverage. Turn boundaries remain indivisible, and a single oversized turn may
+exceed the soft target only when it still fits the hard budget. Before planning,
+the judge view deterministically compacts only oversized tool arguments and
+results, preserving their head, diagnostic excerpts, tail, original character
+count, and content hash. Captured user and assistant messages are not compacted. When an intact
+projected turn, the required chunk count, or the worst-case merge cannot fit,
+that reviewer alone is skipped for the session with
 `insufficient_context_capacity`.
 
 For each reviewer, the pipeline first creates one rubric-neutral factual digest
@@ -67,8 +74,16 @@ feedback.
 
 Raw rendering includes captured user, assistant, tool, event, status, token, and
 trace-identity evidence while omitting the generating model's identity from the
-judge-facing content. Digests, findings, verdicts, and behavioral feedback are
-bounded and may cite only evidence identities authorized for their phase.
+judge-facing content. Parent-session judging retains each subagent's identity
+and internal tool-call count but omits its internal tool payloads; the parent's
+delegation call still carries the input and returned output that influenced the
+parent. The complete hydrated trace remains available outside this judge view.
+Digests, findings, verdicts, and behavioral feedback are schema-bounded. Each
+inference schema binds the expected chunk or window identity and enumerates the
+exact evidence identities authorized for that phase; the same constraints are
+validated again after inference. Complete
+window-finding artifacts receive a 4,000-token budget, and each final behavioral
+feedback field is limited to 10,000 characters.
 
 The current session rubrics evaluate verification, error recovery, tool choice,
 state consistency, outcome, and autonomy. A rubric may return
@@ -94,8 +109,10 @@ Chunk digests must cite their exact core evidence. Window findings cite only
 evidence visible in that raw window, are capped in count and size, and carry
 stable finding identities. A reused finding identity with conflicting content,
 unknown citation, blank required text, duplicate semantic finding, or oversized
-artifact fails closed. Desired behavior must describe how the agent should act;
-it cannot prescribe edits to managed instruction files.
+artifact fails closed. The merge prompt asks for feedback about what the agent
+did or should do, while reflection separately decides whether and how to edit
+managed instructions. Imperfect semantic wording is not itself a validation
+failure.
 
 Boolean, missing, nonnumeric, non-finite, out-of-range, non-anchor, malformed,
 or improperly cited output is rejected. Scores are never clamped or coerced.
@@ -106,7 +123,11 @@ finite value in `[0, 1]`.
 Structured output is requested when the backend supports it. A recorded JSON
 object fallback is allowed only when the provider explicitly rejects structured
 schema capability. Invalid model content does not trigger a looser parsing
-mode.
+mode. Transient transport failures and provider exhaustion while producing
+schema-valid output may retry the same strict request; retries never remove its
+identity or evidence constraints. Backend-specific schema emission may omit a keyword that the backend
+rejects when the same invariant remains enforced by the canonical runtime
+validator; the canonical schema and artifact contract are not weakened.
 
 ## Judge panel
 
@@ -119,14 +140,22 @@ each selected judge per session, and never silently replaces one.
 
 Only planned reviewers call inference. A capacity skip remains in the judging
 plan and attempt audit, but does not count as a completed reviewer attempt or an
-inference failure. A scored rubric is complete when every selected reviewer
-returns a valid score. It is `degraded` when at least one reviewer scores and
-the rest either validly abstain or were skipped; its rating is the arithmetic
-mean of available scores, with minimum, maximum, spread, abstentions, and skips
-retained for audit. When no reviewer is applicable, or every applicable
-reviewer validly abstains, the rubric is not evaluable and writes no feedback.
+inference failure. The one through three selected panel positions run
+concurrently for each rubric, so concurrency is bounded by the pinned panel
+size; rubrics and sessions remain sequential. A scored rubric is complete when
+every selected reviewer returns a valid score. It is `degraded` when at least
+one reviewer scores and the rest either validly abstain or were skipped; its
+rating is the arithmetic mean of available scores, with minimum, maximum,
+spread, abstentions, and skips retained for audit. When no reviewer is
+applicable, or every applicable reviewer validly abstains, the rubric is not
+evaluable and writes no feedback.
+
 A failed invocation or invalid attempt by an applicable reviewer still fails
-coverage even when another reviewer returned a valid score.
+coverage even when another reviewer returned a valid score. After the bounded
+transport retries for that attempt are exhausted, the runtime cancels
+outstanding panel work when the transport supports active cancellation, waits
+for started work to settle safely, and stops the remaining rubrics and sessions.
+An already-started request may complete before cancellation takes effect.
 
 Every attempt retains its requested and resolved model, outcome, rationale or
 safe error, evidence citations, structured-output mode, usage, bounded
@@ -145,10 +174,13 @@ the wrong envelope, digest, model, phase, schema, or request provenance fails
 closed instead of being treated as compatible work.
 
 Progress counts unique persisted artifacts, so reuse cannot inflate completed
-work. Partial model outputs never become scores. Any planned rubric failure
-prevents all judge feedback writes for that run; successful scores are written
-only after complete coverage is known. Forced replacement creates new feedback
-before deleting prior matches, and write or cleanup failures remain visible.
+work. Concurrent panel activity and artifact completion are serialized before
+persistence. Partial model outputs never become scores, and cancelled or
+unattempted work after a fail-fast stop is not reported as completed. Any
+planned rubric failure prevents all judge feedback writes for that run;
+successful scores are written only after complete coverage is known. Forced
+replacement creates new feedback before deleting prior matches, and write or
+cleanup failures remain visible.
 
 ## Inference trust boundary
 

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   ModelDescriptor,
@@ -206,7 +206,8 @@ describe('ReflectionReview', () => {
     expect(screen.getByRole('button', { name: /CLAUDE\.md.*update/i })).not.toBeNull()
     expect(screen.getByRole('button', { name: /review\.md.*create/i })).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /CLAUDE\.md.*update/i }))
-    expect(screen.getByText(/\+ Verify before claiming success\./)).not.toBeNull()
+    expect(screen.getByText('Verify before claiming success.').closest('tr')?.getAttribute('data-change'))
+      .toBe('addition')
   })
 
   it.each([
@@ -230,9 +231,8 @@ describe('ReflectionReview', () => {
     expect(screen.getByText('0.810')).not.toBeNull()
     expect(screen.getAllByText('Alternative evaluator rationale.').length).toBeGreaterThan(0)
     fireEvent.click(screen.getByRole('button', { name: /CLAUDE\.md.*update/i }))
-    expect(screen.getByText((_, element) =>
-      element?.tagName === 'PRE' && Boolean(element.textContent?.includes('+ Cover recovery paths.')),
-    )).not.toBeNull()
+    expect(screen.getByText('Cover recovery paths.').closest('tr')?.getAttribute('data-change'))
+      .toBe('addition')
   })
 
   it('keeps a pending server selection authoritative until the server returns a new run', async () => {
@@ -288,11 +288,13 @@ describe('ReflectionReview', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Edited (D)' }))
     const editor = screen.getByLabelText('Edit CLAUDE.md')
     fireEvent.change(editor, { target: { value: '# Edited locally' } })
-    fireEvent.click(screen.getByRole('tab', { name: 'Diff C → D' }))
-    expect(screen.getByText((_, element) =>
-      element?.tagName === 'PRE' && Boolean(element.textContent?.includes('- # Proposed')) &&
-      Boolean(element.textContent?.includes('+ # Edited locally')),
-    )).not.toBeNull()
+    const editedDiffTab = screen.getByRole('tab', { name: 'Diff C → D' })
+    fireEvent.click(editedDiffTab)
+    const editedDiffPanel = document.getElementById(editedDiffTab.getAttribute('aria-controls')!)!
+    expect(within(editedDiffPanel).getByText('# Proposed').closest('tr')?.getAttribute('data-change'))
+      .toBe('deletion')
+    expect(within(editedDiffPanel).getByText('# Edited locally').closest('tr')?.getAttribute('data-change'))
+      .toBe('addition')
     expect(screen.getByText(/D is not evaluated/i)).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Save edited D' }))
 

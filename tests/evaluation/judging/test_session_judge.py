@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import threading
 from datetime import datetime, timezone
 
 import pytest
@@ -56,7 +57,12 @@ def _judge(model_id: str, position: int) -> PositionedJudge:
     )
 
 
-def _observation(score: float | None, *, failed: bool = False) -> AttemptObservation:
+def _observation(
+    score: float | None,
+    *,
+    failed: bool = False,
+    evidence_ids: tuple[str, ...] = ("turn-1",),
+) -> AttemptObservation:
     if failed:
         return AttemptObservation(
             status="failed",
@@ -75,7 +81,7 @@ def _observation(score: float | None, *, failed: bool = False) -> AttemptObserva
         usage={},
         error_type=None,
         message=None,
-        evidence_ids=("turn-1",),
+        evidence_ids=evidence_ids,
         behavioral_feedback={
             "success": "Kept state consistent.",
             "problem": "One check was late.",
@@ -96,7 +102,15 @@ def _abstention() -> AttemptObservation:
     )
 
 
-def _run(monkeypatch, outcomes, *, judges=None, rubrics=None):
+def _run(
+    monkeypatch,
+    outcomes,
+    *,
+    judges=None,
+    rubrics=None,
+    client=None,
+    before_review=None,
+):
     session = _session()
     judges = judges or (_judge("judge-1", 1),)
     rubrics = rubrics or build_rubric_catalog().rubrics
@@ -115,12 +129,14 @@ def _run(monkeypatch, outcomes, *, judges=None, rubrics=None):
             self.judge = kwargs["judge"]
 
         def review(self, _rubric):
+            if before_review is not None:
+                before_review()
             return outcomes[self.judge.id].pop(0)
 
     monkeypatch.setattr(runner, "SlidingReviewer", FakeReviewer)
     scores = judge_session(
         session,
-        object(),
+        client or object(),
         rubrics=rubrics,
         judges=judges,
         judging_plan=plan,
@@ -145,7 +161,7 @@ def test_runner_reuses_one_lazy_reviewer_per_judge_and_preserves_feedback(monkey
         "judge-2": [_observation(1.0), _observation(1.0)],
     }
     scores, created = _run(monkeypatch, outcomes, judges=judges, rubrics=rubrics)
-    assert [item["judge"].id for item in created] == ["judge-1", "judge-2"]
+    assert sorted(item["judge"].id for item in created) == ["judge-1", "judge-2"]
     assert len(scores) == 2
     assert all(score.granularity == "session" for score in scores)
     assert scores[0].metadata["behavioral_feedback"][0]["problem"] == "One check was late."
@@ -163,24 +179,100 @@ def test_runner_invokes_every_selected_judge(monkeypatch) -> None:
         judges=judges,
         rubrics=rubrics,
     )
-    assert [item["judge"].id for item in created] == ["judge-1", "judge-2"]
+    assert sorted(item["judge"].id for item in created) == ["judge-1", "judge-2"]
     assert scores[0].value == pytest.approx(0.625)
+
+
+def test_runner_retains_duplicate_evidence_ids(monkeypatch) -> None:
+    scores, _ = _run(
+        monkeypatch,
+        {"judge-1": [_observation(0.75, evidence_ids=("turn-1", "turn-1"))]},
+        rubrics=build_rubric_catalog().rubrics[:1],
+    )
+
+    assert scores[0].metadata["evidence_trace_ids"] == ["turn-1", "turn-1"]
+
+
+def test_runner_wires_transport_abort_to_panel_cancellation(monkeypatch) -> None:
+    callbacks = []
+    original_execute_panel = runner.execute_panel
+
+    class Client:
+        def abort(self):
+            return None
+
+    client = Client()
+
+    def capture(*args, cancel_pending, **kwargs):
+        callbacks.append(cancel_pending)
+        return original_execute_panel(*args, cancel_pending=cancel_pending, **kwargs)
+
+    monkeypatch.setattr(runner, "execute_panel", capture)
+    _run(
+        monkeypatch,
+        {"judge-1": [_observation(0.75)]},
+        rubrics=build_rubric_catalog().rubrics[:1],
+        client=client,
+    )
+
+    assert callbacks == [client.abort]
 
 
 def test_zero_success_raises_with_attempt_audit(monkeypatch) -> None:
     judges = (_judge("judge-1", 1), _judge("judge-2", 2))
     rubrics = build_rubric_catalog().rubrics[:1]
+    started = threading.Barrier(2, timeout=1)
+    outcomes = {
+        "judge-1": [_observation(None, failed=True)],
+        "judge-2": [_observation(None, failed=True)],
+    }
+    with pytest.raises(JudgeExecutionError) as caught:
+        _run(
+            monkeypatch,
+            outcomes,
+            judges=judges,
+            rubrics=rubrics,
+            before_review=started.wait,
+        )
+    assert len(caught.value.failures[0].attempts) == 2
+    assert outcomes["judge-2"] == []
+
+
+def test_failed_panel_reports_actual_reviewer_error_after_another_reviewer_succeeds(
+    monkeypatch,
+) -> None:
+    judges = (_judge("judge-1", 1), _judge("judge-2", 2))
+    rubrics = build_rubric_catalog().rubrics[:1]
+    started = threading.Barrier(2, timeout=1)
+
     with pytest.raises(JudgeExecutionError) as caught:
         _run(
             monkeypatch,
             {
-                "judge-1": [_observation(None, failed=True)],
+                "judge-1": [_observation(0.5)],
                 "judge-2": [_observation(None, failed=True)],
             },
             judges=judges,
             rubrics=rubrics,
+            before_review=started.wait,
         )
-    assert len(caught.value.failures[0].attempts) == 2
+
+    failure = caught.value.failures[0]
+    assert failure.message == (
+        "Review failed for judge.verification after 1 reviewer succeeded: "
+        "judge-2 (RuntimeError): offline"
+    )
+
+
+def test_failed_rubric_stops_remaining_rubrics(monkeypatch) -> None:
+    rubrics = build_rubric_catalog().rubrics[:2]
+    outcomes = {"judge-1": [_observation(None, failed=True), _observation(0.75)]}
+
+    with pytest.raises(JudgeExecutionError) as caught:
+        _run(monkeypatch, outcomes, rubrics=rubrics)
+
+    assert caught.value.failures[0].rubric == rubrics[0].id
+    assert len(outcomes["judge-1"]) == 1
 
 
 def test_unanimous_abstention_is_audited_without_becoming_a_failure(monkeypatch) -> None:
