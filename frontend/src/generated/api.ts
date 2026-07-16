@@ -558,6 +558,65 @@ export interface components {
             /** Recommended Judges */
             recommended_judges: string[];
         };
+        /** JudgingActivityEventResponse */
+        JudgingActivityEventResponse: {
+            /** Artifact Id */
+            artifact_id?: string | null;
+            /** At */
+            at: string;
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /** Elapsed Seconds */
+            elapsed_seconds?: number | null;
+            /** Error Category */
+            error_category?: string | null;
+            /** Estimated Input Tokens */
+            estimated_input_tokens?: number | null;
+            /** Exit Code */
+            exit_code?: number | null;
+            /** Id */
+            id: number;
+            /** Item Index */
+            item_index?: number | null;
+            /** Item Total */
+            item_total?: number | null;
+            /** Max Attempts */
+            max_attempts?: number | null;
+            /** Max Output Tokens */
+            max_output_tokens?: number | null;
+            /** Message */
+            message: string;
+            /** Model */
+            model?: string | null;
+            /** Model Context Tokens */
+            model_context_tokens?: number | null;
+            /** Output Mode */
+            output_mode?: string | null;
+            /** Output Sha256 */
+            output_sha256?: string | null;
+            /** Phase */
+            phase: string;
+            /** Prompt Characters */
+            prompt_characters?: number | null;
+            /** Provider Error Code */
+            provider_error_code?: string | null;
+            /** Provider Error Message */
+            provider_error_message?: string | null;
+            /** Provider Status */
+            provider_status?: number | null;
+            /** Request Attempt */
+            request_attempt?: number | null;
+            /** Retry Reason */
+            retry_reason?: string | null;
+            /** Rubric */
+            rubric?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Stderr Chars */
+            stderr_chars?: number | null;
+            /** Stdout Chars */
+            stdout_chars?: number | null;
+        };
         /** JudgingAttemptSummaryResponse */
         JudgingAttemptSummaryResponse: {
             /** Attempt Count */
@@ -587,10 +646,10 @@ export interface components {
         JudgingContextPolicy: {
             /**
              * Contract Version
-             * @default 2
+             * @default 3
              * @constant
              */
-            contract_version: "2";
+            contract_version: "3";
             /**
              * Digest Max Tokens
              * @default 1000
@@ -598,9 +657,14 @@ export interface components {
             digest_max_tokens: number;
             /**
              * Finding Max Tokens
-             * @default 750
+             * @default 4000
              */
             finding_max_tokens: number;
+            /**
+             * Large Model Raw Target Tokens
+             * @default 128000
+             */
+            large_model_raw_target_tokens: number;
             /**
              * Large Model Reserve Tokens
              * @default 100000
@@ -638,6 +702,11 @@ export interface components {
              * @default 8000
              */
             safety_reserve_tokens: number;
+            /**
+             * Small Model Raw Target Tokens
+             * @default 50000
+             */
+            small_model_raw_target_tokens: number;
             /**
              * Small Model Reserve Tokens
              * @default 50000
@@ -753,6 +822,8 @@ export interface components {
             coverage_complete: boolean;
             /** Digest Steps Completed */
             digest_steps_completed: number;
+            /** Events */
+            events: components["schemas"]["JudgingActivityEventResponse"][];
             /** Failure Count */
             failure_count: number;
             /** Failure Detail Count */
@@ -775,6 +846,8 @@ export interface components {
             minimum_reviewer_attempts: number;
             /** Not Evaluable Rubrics */
             not_evaluable_rubrics: number;
+            /** Phase */
+            phase: string;
             /** Plan Id */
             plan_id: string;
             /** Planned Rubrics */
@@ -787,6 +860,8 @@ export interface components {
             rubrics_completed: number;
             /** Scores Written */
             scores_written: number;
+            /** Started At */
+            started_at: string;
             /** Status Message */
             status_message: string;
             /** Window Steps Completed */
@@ -830,7 +905,7 @@ export interface components {
              * Contract Version
              * @constant
              */
-            contract_version: "2";
+            contract_version: "3";
             /** Conversation Id */
             conversation_id: string;
             /** Input Cap Tokens */
@@ -847,6 +922,8 @@ export interface components {
             raw_coverage_trace_ids: string[];
             /** Raw Turns */
             raw_turns: components["schemas"]["JudgingRawTurnResponse"][];
+            /** Target Raw Tokens */
+            target_raw_tokens: number;
             /**
              * Token Counter
              * @enum {string}
@@ -1022,8 +1099,14 @@ export interface components {
             attempted: number;
             /** Events */
             events: components["schemas"]["ReflectionActivityEventResponse"][];
+            /** No Improvement Patience */
+            no_improvement_patience: number;
             /** Phase */
             phase: string;
+            /** Proposal Evaluator */
+            proposal_evaluator: string;
+            /** Proposal Writer */
+            proposal_writer: string;
             /** Rejected */
             rejected: number;
             /** Scored */

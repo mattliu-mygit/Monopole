@@ -879,6 +879,299 @@
         "title": "JudgeBackendCatalog",
         "type": "object"
       },
+      "JudgingActivityEventResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Id"
+          },
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "elapsed_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elapsed Seconds"
+          },
+          "error_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Category"
+          },
+          "estimated_input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Input Tokens"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "item_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Index"
+          },
+          "item_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Total"
+          },
+          "max_attempts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Attempts"
+          },
+          "max_output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Output Tokens"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "model_context_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Context Tokens"
+          },
+          "output_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Mode"
+          },
+          "output_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Sha256"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "prompt_characters": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Characters"
+          },
+          "provider_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Error Code"
+          },
+          "provider_error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Error Message"
+          },
+          "provider_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Status"
+          },
+          "request_attempt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Attempt"
+          },
+          "retry_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry Reason"
+          },
+          "rubric": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rubric"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "stderr_chars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stderr Chars"
+          },
+          "stdout_chars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stdout Chars"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "phase",
+          "message"
+        ],
+        "title": "JudgingActivityEventResponse",
+        "type": "object"
+      },
       "JudgingAttemptSummaryResponse": {
         "additionalProperties": false,
         "properties": {
@@ -956,8 +1249,8 @@
         "additionalProperties": false,
         "properties": {
           "contract_version": {
-            "const": "2",
-            "default": "2",
+            "const": "3",
+            "default": "3",
             "title": "Contract Version",
             "type": "string"
           },
@@ -968,9 +1261,15 @@
             "type": "integer"
           },
           "finding_max_tokens": {
-            "default": 750,
+            "default": 4000,
             "minimum": 1.0,
             "title": "Finding Max Tokens",
+            "type": "integer"
+          },
+          "large_model_raw_target_tokens": {
+            "default": 128000,
+            "minimum": 1.0,
+            "title": "Large Model Raw Target Tokens",
             "type": "integer"
           },
           "large_model_reserve_tokens": {
@@ -1013,6 +1312,12 @@
             "default": 8000,
             "minimum": 1.0,
             "title": "Safety Reserve Tokens",
+            "type": "integer"
+          },
+          "small_model_raw_target_tokens": {
+            "default": 50000,
+            "minimum": 1.0,
+            "title": "Small Model Raw Target Tokens",
             "type": "integer"
           },
           "small_model_reserve_tokens": {
@@ -1314,6 +1619,13 @@
             "title": "Digest Steps Completed",
             "type": "integer"
           },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/JudgingActivityEventResponse"
+            },
+            "title": "Events",
+            "type": "array"
+          },
           "failure_count": {
             "title": "Failure Count",
             "type": "integer"
@@ -1361,6 +1673,10 @@
             "title": "Not Evaluable Rubrics",
             "type": "integer"
           },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
           "plan_id": {
             "title": "Plan Id",
             "type": "string"
@@ -1384,6 +1700,10 @@
           "scores_written": {
             "title": "Scores Written",
             "type": "integer"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
           },
           "status_message": {
             "title": "Status Message",
@@ -1417,7 +1737,10 @@
           "failure_count",
           "write_failure_count",
           "coverage_complete",
+          "phase",
           "status_message",
+          "started_at",
+          "events",
           "attempt_summary_count",
           "attempt_summaries_truncated",
           "attempt_summaries",
@@ -1524,7 +1847,7 @@
             "type": "integer"
           },
           "contract_version": {
-            "const": "2",
+            "const": "3",
             "title": "Contract Version",
             "type": "string"
           },
@@ -1566,6 +1889,10 @@
             "title": "Raw Turns",
             "type": "array"
           },
+          "target_raw_tokens": {
+            "title": "Target Raw Tokens",
+            "type": "integer"
+          },
           "token_counter": {
             "enum": [
               "utf8_bytes_div_3",
@@ -1589,6 +1916,7 @@
           "conversation_id",
           "input_cap_tokens",
           "raw_budget_tokens",
+          "target_raw_tokens",
           "chunk_count",
           "overlap_turns",
           "token_counter",
@@ -2056,8 +2384,20 @@
             "title": "Events",
             "type": "array"
           },
+          "no_improvement_patience": {
+            "title": "No Improvement Patience",
+            "type": "integer"
+          },
           "phase": {
             "title": "Phase",
+            "type": "string"
+          },
+          "proposal_evaluator": {
+            "title": "Proposal Evaluator",
+            "type": "string"
+          },
+          "proposal_writer": {
+            "title": "Proposal Writer",
             "type": "string"
           },
           "rejected": {
@@ -2089,6 +2429,9 @@
           "phase",
           "status_message",
           "started_at",
+          "proposal_writer",
+          "proposal_evaluator",
+          "no_improvement_patience",
           "attempted",
           "valid",
           "rejected",

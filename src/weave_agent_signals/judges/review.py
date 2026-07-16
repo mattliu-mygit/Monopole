@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
+from concurrent.futures import FIRST_COMPLETED, CancelledError, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from math import isfinite
 from types import MappingProxyType
 from typing import Literal
 
+from weave_agent_signals.judges.inference import InferenceCancelled
 from weave_agent_signals.run_config import PositionedJudge
 
 ObservationStatus = Literal["succeeded", "abstained", "failed", "skipped"]
@@ -15,6 +18,7 @@ ReviewStatus = Literal["complete", "degraded", "not_evaluable", "failed"]
 InferencePhase = Literal["digest", "window", "merge"]
 _SCHEMA_FALLBACK_REASON = "schema_output_unsupported"
 PANEL_CONTRACT_VERSION = "1"
+log = logging.getLogger("weave_agent_signals.judges")
 
 
 def _unit_float(value: object, field_name: str) -> float:
@@ -128,8 +132,6 @@ class AttemptObservation:
             raise ValueError("evidence_ids must be a tuple")
         if any(not isinstance(value, str) or not value.strip() for value in self.evidence_ids):
             raise ValueError("evidence_ids must contain nonblank strings")
-        if len(self.evidence_ids) != len(set(self.evidence_ids)):
-            raise ValueError("evidence_ids must be unique")
 
         if self.output_mode is not None and self.output_mode not in {
             "json_object",
@@ -277,8 +279,9 @@ def execute_panel(
     invoke: Callable[[PositionedJudge], AttemptObservation],
     *,
     threshold: float,
+    cancel_pending: Callable[[], None] = lambda: None,
 ) -> PanelOutcome:
-    """Invoke every selected judge and aggregate valid scores when safe."""
+    """Invoke the selected panel concurrently and aggregate valid observations."""
 
     _unit_float(threshold, "threshold")
     if not isinstance(judges, tuple) or any(
@@ -291,23 +294,92 @@ def execute_panel(
         raise ValueError("judge positions must be contiguous and ordered from 1")
     if len({judge.id for judge in judges}) != len(judges):
         raise ValueError("judge model IDs must be unique")
+    if not callable(cancel_pending):
+        raise TypeError("cancel_pending must be callable")
 
-    attempts: list[ReviewAttempt] = []
-    for judge in judges:
-        observation = invoke(judge)
-        if not isinstance(observation, AttemptObservation):
-            raise TypeError("invoke must return an AttemptObservation")
-        attempts.append(
-            ReviewAttempt(
-                position=judge.position,
-                role=judge.role,
-                trigger="panel",
-                requested_model=judge.id,
-                requested_family=judge.family,
-                requested_backend=judge.backend,
-                observation=observation,
+    observations: dict[int, AttemptObservation] = {}
+    first_error: Exception | None = None
+    failure_seen = False
+    cancellation_requested = False
+    executor = ThreadPoolExecutor(max_workers=len(judges), thread_name_prefix="judge-panel")
+    future_judges = {executor.submit(invoke, judge): judge for judge in judges}
+    pending = set(future_judges)
+
+    def cancel_outstanding() -> None:
+        nonlocal cancellation_requested
+        if cancellation_requested:
+            return
+        cancellation_requested = True
+        for future in pending:
+            future.cancel()
+        try:
+            cancel_pending()
+        except Exception as error:
+            log.warning(
+                "Judge panel cancellation callback failed: error_type=%s",
+                type(error).__name__,
             )
+
+    try:
+        while pending:
+            completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in sorted(completed, key=lambda value: future_judges[value].position):
+                judge = future_judges[future]
+                try:
+                    observation = future.result()
+                except (CancelledError, InferenceCancelled) as error:
+                    if not failure_seen and first_error is None:
+                        first_error = error
+                        cancel_outstanding()
+                    continue
+                except Exception as error:
+                    if first_error is None:
+                        first_error = error
+                        cancel_outstanding()
+                    continue
+                if not isinstance(observation, AttemptObservation):
+                    if first_error is None:
+                        first_error = TypeError("invoke must return an AttemptObservation")
+                        cancel_outstanding()
+                    continue
+                observations[judge.position] = observation
+                if observation.status == "failed" and not failure_seen:
+                    failure_seen = True
+                    cancel_outstanding()
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    if first_error is not None:
+        raise first_error
+
+    attempts = [
+        ReviewAttempt(
+            position=judge.position,
+            role=judge.role,
+            trigger="panel",
+            requested_model=judge.id,
+            requested_family=judge.family,
+            requested_backend=judge.backend,
+            observation=observations[judge.position],
         )
+        for judge in judges
+        if judge.position in observations
+    ]
+    if failure_seen:
+        successful_count = sum(attempt.observation.status == "succeeded" for attempt in attempts)
+        return PanelOutcome(
+            None,
+            "failed",
+            tuple(attempts),
+            successful_count,
+            None,
+            None,
+            None,
+        )
+
+    if len(attempts) != len(judges):
+        raise AssertionError("completed judge panel is missing an observation")
+
     scores = tuple(
         attempt.observation.score
         for attempt in attempts
@@ -316,7 +388,7 @@ def execute_panel(
     eligible = tuple(attempt for attempt in attempts if attempt.observation.status != "skipped")
     if not eligible or all(attempt.observation.status == "abstained" for attempt in eligible):
         return PanelOutcome(None, "not_evaluable", tuple(attempts), 0, None, None, None)
-    if any(attempt.observation.status == "failed" for attempt in eligible) or not scores:
+    if not scores:
         return PanelOutcome(None, "failed", tuple(attempts), len(scores), None, None, None)
     minimum = min(scores)
     maximum = max(scores)

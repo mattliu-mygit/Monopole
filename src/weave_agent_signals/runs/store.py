@@ -18,7 +18,7 @@ from typing import Any
 from weave_agent_signals.run_config import EffectiveRunConfig, RunConfig
 
 _DEFAULT_DB_DIR = Path.home() / ".weave-agent-signals"
-RUN_DB_SCHEMA_VERSION = 7
+RUN_DB_SCHEMA_VERSION = 8
 
 
 def _default_db_path() -> Path:
@@ -420,6 +420,8 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
             "large_model_threshold_tokens",
             "large_model_reserve_tokens",
             "small_model_reserve_tokens",
+            "large_model_raw_target_tokens",
+            "small_model_raw_target_tokens",
             "prompt_reserve_tokens",
             "output_reserve_tokens",
             "safety_reserve_tokens",
@@ -430,12 +432,14 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
         },
         "input policy",
     )
-    if input_policy["contract_version"] != "2" or input_policy["overlap_turns"] != 1:
+    if input_policy["contract_version"] != "3" or input_policy["overlap_turns"] != 1:
         raise ValueError("judging plan input policy contract is invalid")
     for key in (
         "large_model_threshold_tokens",
         "large_model_reserve_tokens",
         "small_model_reserve_tokens",
+        "large_model_raw_target_tokens",
+        "small_model_raw_target_tokens",
         "prompt_reserve_tokens",
         "output_reserve_tokens",
         "safety_reserve_tokens",
@@ -448,12 +452,14 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
         input_policy["large_model_threshold_tokens"] != 200_000
         or input_policy["large_model_reserve_tokens"] < 100_000
         or input_policy["small_model_reserve_tokens"] < 50_000
+        or input_policy["large_model_raw_target_tokens"] != 128_000
+        or input_policy["small_model_raw_target_tokens"] != 50_000
     ):
         raise ValueError("judging plan input policy capacity tiers are invalid")
     protocol = _exact_keys(
         value.get("protocol"), {"protocol_version", "prompt_templates", "schemas"}, "protocol"
     )
-    if protocol["protocol_version"] != "2":
+    if protocol["protocol_version"] != "3":
         raise ValueError("judging plan protocol version is invalid")
     prompts = _exact_keys(
         protocol["prompt_templates"],
@@ -641,6 +647,7 @@ def _validate_window_plan(
         "conversation_id",
         "input_cap_tokens",
         "raw_budget_tokens",
+        "target_raw_tokens",
         "chunk_count",
         "overlap_turns",
         "token_counter",
@@ -652,7 +659,7 @@ def _validate_window_plan(
     }
     row = _exact_keys(value, keys, "window plan")
     if (
-        row["contract_version"] != "2"
+        row["contract_version"] != "3"
         or row["conversation_id"] != conversation_id
         or row["raw_coverage_trace_ids"] != coverage
     ):
@@ -660,6 +667,7 @@ def _validate_window_plan(
     for key in (
         "input_cap_tokens",
         "raw_budget_tokens",
+        "target_raw_tokens",
         "capacity_reserve_tokens",
         "merge_input_tokens",
     ):
@@ -692,6 +700,12 @@ def _validate_window_plan(
         base_reserve + max(0, chunk_count - 1) * input_policy["digest_max_tokens"],
     )
     expected_raw_budget = input_cap - expected_capacity_reserve
+    expected_raw_target = min(
+        input_policy["large_model_raw_target_tokens"]
+        if model_limit > input_policy["large_model_threshold_tokens"]
+        else input_policy["small_model_raw_target_tokens"],
+        expected_raw_budget,
+    )
     expected_merge = base_reserve + chunk_count * (
         input_policy["digest_max_tokens"] + input_policy["finding_max_tokens"]
     )
@@ -699,6 +713,7 @@ def _validate_window_plan(
         row["input_cap_tokens"] != input_cap
         or row["capacity_reserve_tokens"] != expected_capacity_reserve
         or row["raw_budget_tokens"] != expected_raw_budget
+        or row["target_raw_tokens"] != expected_raw_target
         or row["merge_input_tokens"] != expected_merge
     ):
         raise ValueError("judging plan window token bounds are inconsistent")

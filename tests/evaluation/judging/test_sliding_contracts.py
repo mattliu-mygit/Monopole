@@ -15,6 +15,9 @@ from weave_agent_signals.judges.sliding_contracts import (
     MergedVerdict,
     WindowFinding,
     WindowFindings,
+    bind_chunk_digest_schema,
+    bind_merged_verdict_schema,
+    bind_window_findings_schema,
     parse_behavioral_feedback,
     parse_chunk_digest,
     parse_merged_verdict,
@@ -67,6 +70,72 @@ def test_sliding_contract_schemas_are_closed_and_versioned():
     assert MERGED_VERDICT_SCHEMA.schema["properties"]["schema_version"]["const"] == 1
 
 
+def test_structured_schemas_advertise_parser_bounds_to_models():
+    digest = CHUNK_DIGEST_SCHEMA.schema["properties"]
+    finding = WINDOW_FINDING_SCHEMA.schema["properties"]
+    feedback = BEHAVIORAL_FEEDBACK_SCHEMA.schema["properties"]
+    verdict = MERGED_VERDICT_SCHEMA.schema["properties"]
+
+    assert digest["text"]["maxLength"] == 2_400
+    assert "uniqueItems" not in digest["evidence_ids"]
+    assert finding["observation"]["maxLength"] == 350
+    assert "uniqueItems" not in finding["evidence_ids"]
+    assert feedback["success"]["anyOf"][0]["maxLength"] == 10_000
+    assert feedback["problem"]["anyOf"][0]["maxLength"] == 10_000
+    assert feedback["desired_behavior"]["anyOf"][0]["maxLength"] == 10_000
+    assert verdict["score"]["enum"] == [0.0, 0.25, 0.5, 0.75, 1.0, None]
+
+
+def test_digest_schema_binds_exact_chunk_and_evidence_ids():
+    schema = bind_chunk_digest_schema("chunk-7", ("trace-1", "span-2"))
+
+    assert schema.name == "chunk_digest"
+    assert schema.schema["properties"]["chunk_id"]["const"] == "chunk-7"
+    assert schema.schema["properties"]["evidence_ids"]["items"]["enum"] == [
+        "trace-1",
+        "span-2",
+    ]
+    assert "const" not in CHUNK_DIGEST_SCHEMA.schema["properties"]["chunk_id"]
+
+
+def test_window_schema_binds_exact_window_and_evidence_ids():
+    schema = bind_window_findings_schema("window-3", ("trace-2", "tool-4"))
+
+    assert schema.name == "window_findings"
+    assert schema.schema["properties"]["window_id"]["const"] == "window-3"
+    finding = schema.schema["$defs"]["WindowFinding"]["properties"]
+    assert finding["evidence_ids"]["items"]["enum"] == ["trace-2", "tool-4"]
+    assert (
+        "enum"
+        not in WINDOW_FINDINGS_SCHEMA.schema["$defs"]["WindowFinding"]["properties"][
+            "evidence_ids"
+        ]["items"]
+    )
+
+
+def test_merge_schema_binds_exact_session_evidence_ids():
+    schema = bind_merged_verdict_schema(("trace-1", "trace-2"))
+
+    assert schema.name == "merged_verdict"
+    assert schema.schema["properties"]["evidence_ids"]["items"]["enum"] == [
+        "trace-1",
+        "trace-2",
+    ]
+
+
+@pytest.mark.parametrize(
+    "factory,args",
+    [
+        (bind_chunk_digest_schema, ("chunk-1", ())),
+        (bind_window_findings_schema, ("window-1", ("trace-1", "trace-1"))),
+        (bind_merged_verdict_schema, ((" ",),)),
+    ],
+)
+def test_bound_schemas_reject_empty_blank_or_duplicate_evidence(factory, args):
+    with pytest.raises(ValueError):
+        factory(*args)
+
+
 def test_chunk_digest_parses_normalized_bounded_cited_text():
     parsed = parse_chunk_digest(
         {
@@ -87,7 +156,6 @@ def test_chunk_digest_parses_normalized_bounded_cited_text():
     [
         ({"evidence_ids": ["unknown"]}, "unknown evidence ID"),
         ({"evidence_ids": [" "]}, "nonblank"),
-        ({"evidence_ids": ["trace-1", "trace-1"]}, "unique"),
         ({"text": "  \n "}, "nonblank"),
         ({"extra": "forbidden"}, "Extra inputs"),
     ],
@@ -145,7 +213,6 @@ def test_window_finding_rejects_unknown_blank_duplicate_and_over_limit_content()
         (_valid_finding(evidence_ids=["trace-2"]), "unknown evidence ID"),
         (_valid_finding(evidence_ids=[" trace-1 "]), "unknown evidence ID"),
         (_valid_finding(evidence_ids=[" "]), "nonblank"),
-        (_valid_finding(evidence_ids=["trace-1", "trace-1"]), "unique"),
         (_valid_finding(observation=" "), "nonblank"),
         (_valid_finding(observation="x" * 351), "at most 350"),
         (_valid_finding(extra="forbidden"), "Extra inputs"),
@@ -174,6 +241,25 @@ def test_window_findings_rejects_duplicate_or_excess_findings():
             payload,
             allowed_evidence_ids=("trace-1",),
             max_tokens=750,
+        )
+
+
+def test_duplicate_evidence_count_does_not_hide_duplicate_window_findings():
+    first = _valid_finding(finding_id="finding-1", evidence_ids=["trace-1"])
+    second = _valid_finding(
+        finding_id="finding-2",
+        evidence_ids=["trace-1", "trace-1"],
+    )
+
+    with pytest.raises(ValueError, match="duplicate findings"):
+        parse_window_findings(
+            {
+                "schema_version": 1,
+                "window_id": "window-1",
+                "findings": [first, second],
+            },
+            allowed_evidence_ids=("trace-1",),
+            max_tokens=100,
         )
 
 
@@ -287,7 +373,10 @@ def test_behavioral_feedback_requires_bounded_nonblank_content():
     invalid = (
         ({"success": None, "problem": None, "desired_behavior": None}, "at least one"),
         ({"success": " ", "problem": None, "desired_behavior": None}, "nonblank"),
-        ({"success": "x" * 501, "problem": None, "desired_behavior": None}, "at most 500"),
+        (
+            {"success": "x" * 10_001, "problem": None, "desired_behavior": None},
+            "at most 10000",
+        ),
         (
             {"success": "Good.", "problem": None, "desired_behavior": None, "extra": True},
             "Extra inputs",
@@ -319,18 +408,14 @@ def test_merged_verdict_keeps_behavioral_feedback_grounded():
     assert parsed.feedback.desired_behavior == "Rerun relevant checks after the final change."
 
 
-def test_feedback_must_not_prescribe_managed_file_edits():
-    payload = _valid_merged_payload()
-    feedback = payload["feedback"]
-    assert isinstance(feedback, dict)
-    feedback["desired_behavior"] = "Add a rule to AGENTS.md."
-    with pytest.raises(ValueError, match="behavior rather than instruction edits"):
-        parse_merged_verdict(payload, allowed_evidence_ids=("trace-1",))
-
-
 @pytest.mark.parametrize(
     "desired_behavior",
     [
+        (
+            "When an explicit repo-level rule (like AGENTS.md's uv run requirement) "
+            "cannot be honored, explain the blocker."
+        ),
+        "Add a rule to AGENTS.md.",
         "Update CLAUDE.md with the workflow.",
         "Delete the old SKILL.md rule.",
         "Create an instruction file for verification.",
@@ -338,13 +423,17 @@ def test_feedback_must_not_prescribe_managed_file_edits():
         "Add a new policy.py file.",
     ],
 )
-def test_feedback_rejects_managed_or_imperative_file_edit_language(desired_behavior: str):
+def test_feedback_semantic_wording_does_not_invalidate_structured_verdict(
+    desired_behavior: str,
+):
     payload = _valid_merged_payload()
     feedback = payload["feedback"]
     assert isinstance(feedback, dict)
     feedback["desired_behavior"] = desired_behavior
-    with pytest.raises(ValueError, match="behavior rather than instruction edits"):
-        parse_merged_verdict(payload, allowed_evidence_ids=("trace-1",))
+    parsed = parse_merged_verdict(payload, allowed_evidence_ids=("trace-1",))
+
+    assert parsed.feedback is not None
+    assert parsed.feedback.desired_behavior == desired_behavior
 
 
 def test_merged_scored_verdict_requires_anchor_citations_and_feedback():
@@ -361,7 +450,6 @@ def test_merged_scored_verdict_requires_anchor_citations_and_feedback():
         ({"score": None}, "requires a score"),
         ({"evidence_ids": []}, "at least one evidence"),
         ({"evidence_ids": ["trace-2"]}, "unknown evidence ID"),
-        ({"evidence_ids": ["trace-1", "trace-1"]}, "unique"),
         ({"feedback": None}, "requires behavioral feedback"),
         ({"extra": True}, "Extra inputs"),
     )
@@ -371,6 +459,32 @@ def test_merged_scored_verdict_requires_anchor_citations_and_feedback():
                 {**_valid_merged_payload(), **changes},
                 allowed_evidence_ids=("trace-1",),
             )
+
+
+def test_contract_parsers_allow_and_retain_duplicate_evidence_ids():
+    duplicate_ids = ("trace-1", "trace-1")
+    digest = parse_chunk_digest(
+        {
+            "schema_version": 1,
+            "chunk_id": "chunk-1",
+            "text": "Observed behavior.",
+            "evidence_ids": list(duplicate_ids),
+        },
+        allowed_evidence_ids=("trace-1",),
+        max_tokens=50,
+    )
+    finding = parse_window_finding(
+        _valid_finding(evidence_ids=list(duplicate_ids)),
+        allowed_evidence_ids=("trace-1",),
+    )
+    verdict = parse_merged_verdict(
+        {**_valid_merged_payload(), "evidence_ids": list(duplicate_ids)},
+        allowed_evidence_ids=("trace-1",),
+    )
+
+    assert digest.evidence_ids == duplicate_ids
+    assert finding.evidence_ids == duplicate_ids
+    assert verdict.evidence_ids == duplicate_ids
 
 
 def test_merged_insufficient_evidence_combination_is_fail_closed():

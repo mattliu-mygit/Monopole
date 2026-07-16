@@ -36,6 +36,7 @@ NO_IMPROVEMENT_PATIENCE = 2
 NO_VALID_PROPOSAL_REASON = "No valid proposal generated"
 MAX_REJECTED_RESPONSE_EXCERPT = 1_000
 _CORRECTION_CONTEXT_LIMIT = 500
+_GEPA_FENCE = "```"
 
 _PROPOSAL_LAYOUT = """{
   "schema_version": 3,
@@ -110,6 +111,22 @@ class _ProposalRejected(ReflectionEvaluationError):
 
 class _DuplicateRevisionError(ValueError):
     """A writer response materialized to an already-seen immutable revision."""
+
+
+def _gepa_safe_candidate(candidate: str) -> str:
+    """Protect Markdown fences from GEPA's generic instruction extractor."""
+
+    if _GEPA_FENCE not in candidate:
+        return candidate
+    return f"{_GEPA_FENCE}\n{candidate}\n{_GEPA_FENCE}"
+
+
+def _unwrap_gepa_candidate(candidate: str) -> str:
+    prefix = f"{_GEPA_FENCE}\n"
+    suffix = f"\n{_GEPA_FENCE}"
+    if candidate.startswith(prefix) and candidate.endswith(suffix):
+        return candidate[len(prefix) : -len(suffix)]
+    return candidate
 
 
 def _nonblank(value: object, field_name: str) -> str:
@@ -912,6 +929,7 @@ class _AttemptLedger:
         )
 
     def claim(self, candidate: str) -> tuple[BundleSnapshot, _AttemptState | None]:
+        candidate = _unwrap_gepa_candidate(candidate)
         if candidate == serialize_candidate_proposal(CandidateProposal(3, ())):
             return self.baseline, None
         attempt = self.candidates_by_transport.get(candidate)
@@ -983,7 +1001,8 @@ class _WriterLM:
                 getattr(self.client, "backend", self.ledger.writer.backend),
             )
             _check_cancel(self.cancel_requested)
-            return self.ledger.accept_writer_response(attempt, response.content)
+            canonical = self.ledger.accept_writer_response(attempt, response.content)
+            return _gepa_safe_candidate(canonical)
         except _ProposalRejected:
             raise
         except (InferenceCancelled, ReflectionCancelled) as exc:

@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from weave_agent_signals.judges.families import model_family
 from weave_agent_signals.judges.inference import (
@@ -82,31 +82,180 @@ _JUDGE_CODEX_HOME = os.path.join(_HOME, ".codex-judge")
 _JUDGE_CWD = os.path.join(_HOME, ".codex-judge", "sandbox")
 
 _RETRYABLE_PATTERNS = [
+    "error_max_structured_output_retries",
     "at capacity",
     "rate limit",
     "too many requests",
     "overloaded",
+    "timed out",
+    "timeout",
+    "connection error",
+    "connection reset",
+    "network error",
+    "econnreset",
+    "internal server error",
+    " 500",
+    " 502",
     "503",
+    " 504",
     "429",
 ]
 
 MAX_CLI_RETRIES = 2
 RETRY_BASE_DELAY = 5.0
+_PROCESS_DIAGNOSTIC_TAIL_CHARACTERS = 16_000
+_PROVIDER_TEXT_CHARACTERS = 500
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)(\b(?:api[_-]?key|token|secret|password|authorization|credential)\b\s*[:=]\s*)"
+    r"[^\s,;}]+"
+)
+_BEARER_SECRET = re.compile(r"(?i)\bbearer\s+[^\s,;}]+")
+_PROVIDER_CODE = re.compile(r"[A-Za-z0-9_.-]{1,100}\Z")
+
+
+def _process_diagnostic(output: str) -> str:
+    return output[-_PROCESS_DIAGNOSTIC_TAIL_CHARACTERS:]
+
+
+def _failure_diagnostic(stdout: str, stderr: str, prompt: str) -> str:
+    """Remove Codex's exact prompt echo before retaining failure metadata."""
+    combined = (stderr or "") + (stdout or "")
+    return combined.replace(prompt, "") if prompt else combined
+
+
+def _safe_provider_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    text = _SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", text)
+    text = _BEARER_SECRET.sub("Bearer [REDACTED]", text)
+    return text[:_PROVIDER_TEXT_CHARACTERS] or None
+
+
+def _safe_provider_code(value: object) -> str | None:
+    if not isinstance(value, str) or _PROVIDER_CODE.fullmatch(value) is None:
+        return None
+    return value
+
+
+def _canonical_provider_message(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    lower = value.lower()
+    for message, patterns in (
+        ("Provider request timed out.", ("timed out", "timeout")),
+        (
+            "Provider connection failed.",
+            ("connection error", "connection reset", "network error", "econnreset"),
+        ),
+        ("Provider rate limit was reached.", ("rate limit", "too many requests", "429")),
+        (
+            "Provider service was unavailable.",
+            ("at capacity", "overloaded", "internal server error", " 500", " 502", "503", " 504"),
+        ),
+        (
+            "Provider authentication failed.",
+            ("authentication", "unauthorized", "invalid api key"),
+        ),
+    ):
+        if any(pattern in lower for pattern in patterns):
+            return message
+    return None
+
+
+def _provider_issue(output: str) -> dict[str, object]:
+    """Extract only allowlisted fields from a CLI provider error envelope."""
+    decoder = json.JSONDecoder()
+    issue: dict[str, object] = {}
+    index = output.find("{")
+    while index != -1:
+        try:
+            payload, _ = decoder.raw_decode(output[index:])
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, Mapping) and isinstance(payload.get("error"), Mapping):
+            error = payload["error"]
+            candidate: dict[str, object] = {}
+            status = payload.get("status")
+            if type(status) is int and 100 <= status <= 599:
+                candidate["provider_status"] = status
+            code = _safe_provider_text(error.get("code"))
+            if code is not None:
+                candidate["provider_error_code"] = code
+            message = _safe_provider_text(error.get("message"))
+            if message is not None:
+                candidate["provider_error_message"] = message
+            if candidate:
+                issue = candidate
+        elif isinstance(payload, Mapping) and payload.get("is_error") is True:
+            candidate = {}
+            code = _safe_provider_code(payload.get("subtype"))
+            if code is not None:
+                candidate["provider_error_code"] = code
+            message = (
+                "Provider could not produce schema-valid output."
+                if code == "error_max_structured_output_retries"
+                else _canonical_provider_message(payload.get("result"))
+            )
+            if message is not None:
+                candidate["provider_error_message"] = message
+            if candidate:
+                issue = candidate
+        index = output.find("{", index + 1)
+    return issue
+
+
+def _codex_compatible_schema(value: Any) -> Any:
+    """Copy a JSON Schema while dropping keywords Codex rejects."""
+    if isinstance(value, dict):
+        return {
+            key: _codex_compatible_schema(item)
+            for key, item in value.items()
+            if key != "uniqueItems"
+        }
+    if isinstance(value, list):
+        return [_codex_compatible_schema(item) for item in value]
+    return value
 
 
 def _is_retryable(output: str) -> bool:
-    lower = output.lower()
+    lower = _process_diagnostic(output).lower()
     return any(p in lower for p in _RETRYABLE_PATTERNS)
+
+
+def _retry_reason(output: str) -> str | None:
+    lower = _process_diagnostic(output).lower()
+    for reason, patterns in (
+        (
+            "structured_output",
+            ("error_max_structured_output_retries",),
+        ),
+        ("rate_limit", ("rate limit", "too many requests", "429")),
+        ("capacity", ("at capacity",)),
+        ("overloaded", ("overloaded",)),
+        ("timeout", ("timed out", "timeout")),
+        (
+            "connection",
+            ("connection error", "connection reset", "network error", "econnreset"),
+        ),
+        ("server_error", ("internal server error", " 500", " 502", "503", " 504")),
+    ):
+        if any(pattern in lower for pattern in patterns):
+            return reason
+    return None
 
 
 def _process_error_category(
     output: str,
     response_schema: JsonSchemaSpec | None,
 ) -> str:
-    if response_schema is not None and _explicit_schema_rejection_reason(output):
+    diagnostic = _process_diagnostic(output)
+    if "error_max_structured_output_retries" in diagnostic.lower():
+        return "structured_output_retry_exhausted"
+    if response_schema is not None and _explicit_schema_rejection_reason(diagnostic):
         return "schema_output_unsupported"
     if response_schema is not None and any(
-        marker in output.lower()
+        marker in diagnostic.lower()
         for marker in (
             "validation failed",
             "validation error",
@@ -148,14 +297,31 @@ class CliJudgeClient:
     def __init__(self, timeout: float = 360.0, runner: Callable[..., Any] | None = None):
         self._timeout = timeout
         self._runner = runner
+        self._activity: Callable[[dict[str, object]], None] | None = None
         self._procs: set[subprocess.Popen] = set()
         self._procs_lock = threading.Lock()
         self._cancel: threading.Event | None = None
+        self._abort_requested = threading.Event()
 
     def set_cancel(self, cancel: threading.Event) -> None:
         self._cancel = cancel
 
+    def set_activity(self, callback: Callable[[dict[str, object]], None]) -> None:
+        self._activity = callback
+
+    def _emit_activity(self, event: dict[str, object]) -> None:
+        if self._activity is None:
+            return
+        try:
+            self._activity(dict(event))
+        except Exception as error:
+            log.warning(
+                "CLI judge activity callback failed: error_type=%s",
+                type(error).__name__,
+            )
+
     def abort(self) -> None:
+        self._abort_requested.set()
         with self._procs_lock:
             procs = list(self._procs)
         for proc in procs:
@@ -251,7 +417,7 @@ class CliJudgeClient:
         )
         try:
             with schema_file:
-                json.dump(response_schema.schema, schema_file)
+                json.dump(_codex_compatible_schema(response_schema.schema), schema_file)
         except Exception:
             try:
                 os.remove(schema_file.name)
@@ -306,6 +472,7 @@ class CliJudgeClient:
                     stderr=stderr,
                     attempt=1,
                     response_schema=response_schema,
+                    prompt=stdin_text,
                 )
                 self._raise_process_error(
                     argv,
@@ -314,6 +481,7 @@ class CliJudgeClient:
                     stderr,
                     response_schema=response_schema,
                     request_count=1,
+                    prompt=stdin_text,
                 )
             parsed, content = self._decode_output(
                 stdout,
@@ -331,6 +499,7 @@ class CliJudgeClient:
             return parsed, content, stdout, 1
 
         last_err: RuntimeError | None = None
+        invocation_started = time.monotonic()
         for attempt in range(MAX_CLI_RETRIES + 1):
             t0 = time.monotonic()
             stdout, stderr, returncode = self._run_with_cancel(
@@ -356,9 +525,34 @@ class CliJudgeClient:
                     "json_schema" if response_schema is not None else "json_object",
                     attempt + 1,
                 )
+                if attempt > 0:
+                    self._emit_activity(
+                        {
+                            "phase": "transport_recovered",
+                            "message": (
+                                f"{model} recovered on request attempt {attempt + 1} of "
+                                f"{MAX_CLI_RETRIES + 1}"
+                            ),
+                            "model": model,
+                            "request_attempt": attempt + 1,
+                            "max_attempts": MAX_CLI_RETRIES + 1,
+                            "elapsed_seconds": round(
+                                time.monotonic() - invocation_started,
+                                3,
+                            ),
+                            "stdout_chars": len(stdout),
+                            "stderr_chars": len(stderr),
+                            "prompt_characters": len(stdin_text),
+                            "output_mode": (
+                                "json_schema" if response_schema is not None else "json_object"
+                            ),
+                            "output_sha256": _raw_output_digest(stdout),
+                        }
+                    )
                 return parsed, content, stdout, attempt + 1
 
-            combined = (stderr or "") + (stdout or "")
+            diagnostic = _failure_diagnostic(stdout, stderr, stdin_text)
+            provider_issue = _provider_issue(_process_diagnostic(diagnostic))
             self._log_process_failure(
                 model=model,
                 returncode=returncode,
@@ -367,6 +561,7 @@ class CliJudgeClient:
                 stderr=stderr,
                 attempt=attempt + 1,
                 response_schema=response_schema,
+                prompt=stdin_text,
             )
             try:
                 self._raise_process_error(
@@ -376,16 +571,70 @@ class CliJudgeClient:
                     stderr,
                     response_schema=response_schema,
                     request_count=attempt + 1,
+                    prompt=stdin_text,
                 )
             except _SchemaOutputUnsupported:
                 raise
             except RuntimeError as error:
                 last_err = error
-            if attempt < MAX_CLI_RETRIES and _is_retryable(combined):
+            category = _process_error_category(diagnostic, response_schema)
+            output_sha256 = _raw_output_digest(diagnostic)
+            if attempt < MAX_CLI_RETRIES and _is_retryable(diagnostic):
+                self._emit_activity(
+                    {
+                        "phase": "transport_retry",
+                        "message": (
+                            f"{model} request failed after {elapsed:.1f}s; retrying attempt "
+                            f"{attempt + 2} of {MAX_CLI_RETRIES + 1}"
+                        ),
+                        "model": model,
+                        "request_attempt": attempt + 2,
+                        "max_attempts": MAX_CLI_RETRIES + 1,
+                        "elapsed_seconds": round(elapsed, 3),
+                        "error_category": category,
+                        "retry_reason": _retry_reason(diagnostic),
+                        "exit_code": returncode,
+                        "stdout_chars": len(stdout),
+                        "stderr_chars": len(stderr),
+                        "prompt_characters": len(stdin_text),
+                        "output_mode": (
+                            "json_schema" if response_schema is not None else "json_object"
+                        ),
+                        "output_sha256": output_sha256,
+                        **provider_issue,
+                    }
+                )
                 delay = RETRY_BASE_DELAY * (2**attempt)
                 log.info("Retryable error for %s, waiting %.0fs...", model, delay)
                 time.sleep(delay)
                 continue
+            self._emit_activity(
+                {
+                    "phase": "transport_failed",
+                    "message": (
+                        f"{model} failed after {attempt + 1} request attempt"
+                        f"{'s' if attempt else ''}"
+                    ),
+                    "model": model,
+                    "request_attempt": attempt + 1,
+                    "max_attempts": MAX_CLI_RETRIES + 1,
+                    "elapsed_seconds": round(
+                        time.monotonic() - invocation_started,
+                        3,
+                    ),
+                    "error_category": category,
+                    "retry_reason": _retry_reason(diagnostic),
+                    "exit_code": returncode,
+                    "stdout_chars": len(stdout),
+                    "stderr_chars": len(stderr),
+                    "prompt_characters": len(stdin_text),
+                    "output_mode": (
+                        "json_schema" if response_schema is not None else "json_object"
+                    ),
+                    "output_sha256": output_sha256,
+                    **provider_issue,
+                }
+            )
             break
 
         raise last_err  # type: ignore[misc]
@@ -400,23 +649,29 @@ class CliJudgeClient:
         stderr: str,
         attempt: int,
         response_schema: JsonSchemaSpec | None,
+        prompt: str,
     ) -> None:
-        combined = (stderr or "") + (stdout or "")
-        category = _process_error_category(combined, response_schema)
+        diagnostic = _failure_diagnostic(stdout, stderr, prompt)
+        category = _process_error_category(diagnostic, response_schema)
+        provider_issue = _provider_issue(_process_diagnostic(diagnostic))
         elapsed_text = "unknown" if elapsed is None else f"{elapsed:.1f}s"
         log.warning(
             "CLI judge failed: backend=cli model=%s exit=%d elapsed=%s "
             "stdout_len=%d stderr_len=%d output_sha256=%s output_mode=%s "
-            "request_count=%d error_category=%s",
+            "request_count=%d error_category=%s provider_status=%s "
+            "provider_error_code=%s provider_error_message=%s",
             model,
             returncode,
             elapsed_text,
             len(stdout or ""),
             len(stderr or ""),
-            _raw_output_digest(combined),
+            _raw_output_digest(diagnostic),
             "json_schema" if response_schema is not None else "json_object",
             attempt,
             category,
+            provider_issue.get("provider_status"),
+            provider_issue.get("provider_error_code"),
+            provider_issue.get("provider_error_message"),
         )
 
     def _raise_process_error(
@@ -428,10 +683,11 @@ class CliJudgeClient:
         *,
         response_schema: JsonSchemaSpec | None,
         request_count: int,
+        prompt: str,
     ) -> None:
-        combined = (stderr or "") + (stdout or "")
+        diagnostic = _failure_diagnostic(stdout, stderr, prompt)
         if response_schema is not None:
-            reason = _explicit_schema_rejection_reason(combined)
+            reason = _explicit_schema_rejection_reason(_process_diagnostic(diagnostic))
             if reason is not None:
                 raise _SchemaOutputUnsupported(
                     SCHEMA_FALLBACK_UNSUPPORTED,
@@ -439,8 +695,8 @@ class CliJudgeClient:
                 )
         error = RuntimeError(
             f"{argv[0]} judge exited {returncode}: "
-            f"error_category={_process_error_category(combined, response_schema)} "
-            f"process_output_sha256={_raw_output_digest(combined)}"
+            f"error_category={_process_error_category(diagnostic, response_schema)} "
+            f"process_output_sha256={_raw_output_digest(diagnostic)}"
         )
         _add_transport_request_count(error, request_count)
         raise error
@@ -468,6 +724,8 @@ class CliJudgeClient:
     def _run_with_cancel(
         self, argv: list[str], stdin_text: str, env: dict[str, str]
     ) -> tuple[str, str, int]:
+        if self._abort_requested.is_set() or (self._cancel and self._cancel.is_set()):
+            raise InferenceCancelled("cancelled")
         proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -515,8 +773,9 @@ class CliJudgeClient:
             reader_err.start()
 
             deadline = time.monotonic() + self._timeout
+            timed_out = False
             while proc.poll() is None:
-                if self._cancel and self._cancel.is_set():
+                if self._abort_requested.is_set() or (self._cancel and self._cancel.is_set()):
                     proc.terminate()
                     try:
                         proc.wait(timeout=5)
@@ -525,14 +784,22 @@ class CliJudgeClient:
                     raise InferenceCancelled("cancelled")
                 if time.monotonic() > deadline:
                     proc.kill()
-                    raise subprocess.TimeoutExpired(argv, self._timeout)
+                    proc.wait(timeout=5)
+                    timed_out = True
+                    break
                 time.sleep(0.5)
+
+            if self._abort_requested.is_set() or (self._cancel and self._cancel.is_set()):
+                raise InferenceCancelled("cancelled")
 
             writer.join(timeout=5)
             reader_out.join(timeout=5)
             reader_err.join(timeout=5)
             stdout = "".join(stdout_chunks)
             stderr = "".join(stderr_chunks)
+            if timed_out:
+                timeout_message = f"process timed out after {self._timeout:g}s"
+                stderr = f"{stderr}\n{timeout_message}".strip()
             return stdout, stderr, proc.returncode
         except InferenceCancelled:
             raise

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import type {
   JudgingAttemptSummary,
   JudgingPlan,
@@ -19,6 +20,171 @@ function words(value: string): string {
 
 function usageText(usage: Record<string, unknown>): string {
   return Object.entries(usage).map(([key, value]) => `${words(key)} ${String(value)}`).join(' · ') || '—'
+}
+
+function durationLabel(start: string, endMs: number): string | null {
+  const startMs = Date.parse(start)
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null
+  const totalSeconds = Math.max(0, Math.floor((endMs - startMs) / 1_000))
+  const hours = Math.floor(totalSeconds / 3_600)
+  const minutes = Math.floor((totalSeconds % 3_600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours}h ${minutes}m`
+  if (minutes > 0) return `${minutes}m ${seconds}s`
+  return `${seconds}s`
+}
+
+function eventTimeLabel(start: string, at: string): string {
+  const label = durationLabel(start, Date.parse(at))
+  return label ? `+${label}` : ''
+}
+
+function JudgingActivity({
+  state,
+  active,
+  fallback,
+}: {
+  state: JudgingProgressData | JudgingResult | null
+  active: boolean
+  fallback: string
+}) {
+  const [showAll, setShowAll] = useState(false)
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!active) return
+    setNowMs(Date.now())
+    const interval = window.setInterval(() => setNowMs(Date.now()), 1_000)
+    return () => window.clearInterval(interval)
+  }, [active])
+
+  const events = state?.events ?? []
+  const visibleEvents = showAll ? events : events.slice(-5)
+  const lastEvent = events.at(-1)
+  const elapsedEnd = active ? nowMs : Date.parse(lastEvent?.at ?? '')
+  const elapsed = state?.started_at ? durationLabel(state.started_at, elapsedEnd) : null
+
+  return (
+    <div className="space-y-3 rounded-lg border border-purple-100 bg-purple-50/40 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2" aria-live="polite">
+          {active ? (
+            <span
+              className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-purple-200 border-t-purple-600 motion-reduce:animate-none"
+              aria-hidden="true"
+            />
+          ) : (
+            <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-gray-400" aria-hidden="true" />
+          )}
+          <span role="status" className="text-sm font-medium text-gray-900">
+            {state?.status_message ?? fallback}
+          </span>
+        </div>
+        {elapsed && <span className="text-xs tabular-nums text-gray-500">Elapsed {elapsed}</span>}
+      </div>
+
+      {events.length > 0 && (
+        <>
+          <ol id="judging-activity-events" aria-label="Judging activity" className="space-y-2">
+            {visibleEvents.map((event) => {
+              const isCurrent = active && event.id === lastEvent?.id
+              const isFailure = event.phase === 'transport_retry' || event.phase.endsWith('_failed')
+              const isRecovery = event.phase === 'transport_recovered'
+              const metadata = [
+                event.model || null,
+                event.rubric ? words(event.rubric) : null,
+                event.conversation_id ? `session ${event.conversation_id}` : null,
+                event.request_attempt != null
+                  ? `attempt ${event.request_attempt} of ${event.max_attempts ?? '?'}`
+                  : null,
+                event.item_index != null
+                  ? `${event.phase.startsWith('digest') ? 'chunk' : 'window'} ${event.item_index} of ${event.item_total ?? '?'}`
+                  : null,
+                event.elapsed_seconds != null ? `${event.elapsed_seconds.toFixed(1).replace(/\.0$/, '')}s` : null,
+                event.error_category ? words(event.error_category) : null,
+                event.retry_reason ? `reason ${words(event.retry_reason)}` : null,
+                event.provider_status != null ? `provider ${event.provider_status}` : null,
+                event.provider_error_code ? words(event.provider_error_code) : null,
+                event.estimated_input_tokens != null
+                  ? `${event.estimated_input_tokens.toLocaleString()} estimated input tokens`
+                  : null,
+                event.model_context_tokens != null
+                  ? `${event.model_context_tokens.toLocaleString()} token context`
+                  : null,
+                event.status ? words(event.status) : null,
+              ].filter((value): value is string => value != null)
+              return (
+                <li
+                  key={event.id}
+                  className="grid grid-cols-[0.75rem_minmax(0,1fr)_auto] items-start gap-2 text-xs"
+                  aria-current={isCurrent ? 'step' : undefined}
+                >
+                  <span
+                    className={`mt-1 h-2 w-2 rounded-full ${
+                      isCurrent
+                        ? 'bg-purple-500 ring-4 ring-purple-100'
+                        : isFailure
+                          ? 'bg-amber-500'
+                          : isRecovery
+                            ? 'bg-green-500'
+                            : 'bg-gray-300'
+                    }`}
+                    aria-hidden="true"
+                  />
+                  <div className={isCurrent ? 'text-gray-900' : 'text-gray-600'}>
+                    <div>{event.message}</div>
+                    {metadata.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1 text-[0.6875rem] text-gray-500">
+                        {metadata.map((item, index) => (
+                          <span key={`${item}-${index}`} className="rounded bg-white px-1.5 py-0.5 shadow-sm">
+                            {item}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {event.provider_error_message && (
+                      <div className="mt-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[0.6875rem] text-amber-900">
+                        {event.provider_error_message}
+                      </div>
+                    )}
+                    {event.output_sha256 && (
+                      <details className="mt-1 text-[0.6875rem] text-gray-500">
+                        <summary className="cursor-pointer">Diagnostic identity</summary>
+                        <div className="mt-1 space-y-0.5">
+                          <code className="block break-all">output sha256 {event.output_sha256}</code>
+                          {event.exit_code != null && <div>exit code {event.exit_code}</div>}
+                          {event.prompt_characters != null && <div>{event.prompt_characters.toLocaleString()} prompt characters</div>}
+                          {(event.stdout_chars != null || event.stderr_chars != null) && (
+                            <div>{event.stdout_chars ?? 0} stdout characters · {event.stderr_chars ?? 0} stderr characters</div>
+                          )}
+                          {event.output_mode && <div>output mode {words(event.output_mode)}</div>}
+                          {event.max_output_tokens != null && <div>{event.max_output_tokens.toLocaleString()} maximum output tokens</div>}
+                        </div>
+                      </details>
+                    )}
+                  </div>
+                  <time className="font-mono text-gray-400" dateTime={event.at}>
+                    {state?.started_at ? eventTimeLabel(state.started_at, event.at) : ''}
+                  </time>
+                </li>
+              )
+            })}
+          </ol>
+          {events.length > 5 && (
+            <button
+              type="button"
+              className="text-xs font-medium text-purple-700 hover:text-purple-900"
+              onClick={() => setShowAll((value) => !value)}
+              aria-expanded={showAll}
+              aria-controls="judging-activity-events"
+            >
+              {showAll ? 'Show latest 5' : 'Show all activity'}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  )
 }
 
 function Step({ step }: { step: InferenceStepAudit }) {
@@ -155,18 +321,18 @@ export default function JudgingProgress({
 
   return (
     <section aria-label="Judging progress" className="space-y-4">
+      <JudgingActivity
+        state={state}
+        active={Boolean(progress && !result)}
+        fallback={`Planned ${planned} rubric reviews`}
+      />
       <div className="space-y-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p role="status" aria-live="polite" className="text-sm font-medium text-gray-800">
-            {state?.status_message ?? `Planned ${planned} rubric reviews`}
-          </p>
-          {plan && (
-            <span className="text-xs text-gray-500">
-              {plan.totals.sessions_planned} session{plan.totals.sessions_planned === 1 ? '' : 's'} ·{' '}
-              {plan.totals.turns_considered} turns · {plan.totals.windows_planned} raw windows
-            </span>
-          )}
-        </div>
+        {plan && (
+          <div className="text-right text-xs text-gray-500">
+            {plan.totals.sessions_planned} session{plan.totals.sessions_planned === 1 ? '' : 's'} ·{' '}
+            {plan.totals.turns_considered} turns · {plan.totals.windows_planned} raw windows
+          </div>
+        )}
         <div
           role="progressbar"
           aria-label="Rubrics reviewed"

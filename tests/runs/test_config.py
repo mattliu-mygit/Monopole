@@ -19,9 +19,15 @@ from weave_agent_signals.run_config import (
 def test_judging_context_policy_uses_capacity_tiers_at_exact_threshold():
     policy = JudgingContextPolicy()
 
-    assert policy.contract_version == "2"
+    assert policy.contract_version == "3"
     assert policy.capacity_reserve(200_000) == 50_000
     assert policy.capacity_reserve(200_001) == 100_000
+    assert policy.raw_window_target(200_000) == 50_000
+    assert policy.raw_window_target(200_001) == 128_000
+    assert policy.raw_window_target(1_050_000) == 128_000
+    assert policy.small_model_raw_target_tokens == 50_000
+    assert policy.large_model_raw_target_tokens == 128_000
+    assert policy.finding_max_tokens == 4_000
     assert "target_input_tokens" not in policy.model_dump()
     assert "token_estimator" not in policy.model_dump()
 
@@ -30,6 +36,8 @@ def test_judging_context_policy_uses_capacity_tiers_at_exact_threshold():
 def test_judging_context_policy_rejects_invalid_capacity(model_limit):
     with pytest.raises(ValueError, match="model_limit must be a positive integer"):
         JudgingContextPolicy().capacity_reserve(model_limit)
+    with pytest.raises(ValueError, match="model_limit must be a positive integer"):
+        JudgingContextPolicy().raw_window_target(model_limit)
 
 
 def valid_request(**changes):

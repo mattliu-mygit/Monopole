@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
-from weave_agent_signals.routes.models import ReviewAttemptResponse
+from weave_agent_signals.routes.models import ReflectingProgressResponse, ReviewAttemptResponse
 from weave_agent_signals.routes.runs import create_runs_router
 from weave_agent_signals.run_config import RunConfig
 from weave_agent_signals.runs.service import RunService
@@ -62,6 +62,29 @@ def test_route_attempt_model_exposes_skipped_disposition() -> None:
 
     assert attempt.status == "skipped"
     assert attempt.skip_reason == "insufficient_context_capacity"
+
+
+def test_reflecting_progress_exposes_pinned_model_context() -> None:
+    progress = ReflectingProgressResponse.model_validate(
+        {
+            "phase": "candidate_started",
+            "status_message": "Generating candidate 1",
+            "started_at": "2026-07-14T12:00:00+00:00",
+            "attempted": 0,
+            "valid": 0,
+            "rejected": 0,
+            "scored": 0,
+            "total_attempts": 3,
+            "proposal_writer": "gpt-5.6-sol",
+            "proposal_evaluator": "claude-sonnet-5",
+            "no_improvement_patience": 2,
+            "events": [],
+        }
+    )
+
+    assert progress.proposal_writer == "gpt-5.6-sol"
+    assert progress.proposal_evaluator == "claude-sonnet-5"
+    assert progress.no_improvement_patience == 2
 
 
 @pytest.fixture
@@ -123,7 +146,17 @@ def route_context(tmp_path):
                     "failure_count": 0,
                     "write_failure_count": 0,
                     "coverage_complete": True,
+                    "phase": "judging_complete",
                     "status_message": "Judging complete",
+                    "started_at": "2026-07-14T12:00:00+00:00",
+                    "events": [
+                        {
+                            "id": 1,
+                            "at": "2026-07-14T12:00:00+00:00",
+                            "phase": "judging_complete",
+                            "message": "Judging complete",
+                        }
+                    ],
                     "attempt_summary_count": 0,
                     "attempt_summaries_truncated": False,
                     "attempt_summaries": [],

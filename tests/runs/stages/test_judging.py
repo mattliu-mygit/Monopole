@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from unittest.mock import Mock
 
@@ -63,9 +64,19 @@ def _setup(
     *,
     force: bool = False,
     rubric_ids: tuple[str, ...] = ("judge.session_outcome",),
+    extra_session_ids: tuple[str, ...] = (),
 ):
     turn = _turn()
     session = SessionView("session-1", [turn], "cfg", "main")
+    extra_turns = [
+        replace(
+            turn,
+            trace_id=f"turn-{index}",
+            conversation_id=conversation_id,
+            session_id=f"sid-{index}",
+        )
+        for index, conversation_id in enumerate(extra_session_ids, start=2)
+    ]
     models = build_model_catalog(which=lambda name: f"/bin/{name}")
     rubrics = build_rubric_catalog()
     request = RunConfig(
@@ -84,8 +95,8 @@ def _setup(
         "schema_version": 1,
         "pinned_at": now_iso(),
         "cohort_id": "cohort",
-        "turn_count": 1,
-        "session_count": 1,
+        "turn_count": 1 + len(extra_turns),
+        "session_count": 1 + len(extra_turns),
         "turns": [
             {
                 "trace_id": "turn-1",
@@ -94,10 +105,31 @@ def _setup(
                 "started_at": turn.started_at.isoformat(),
                 "model": "agent",
                 "model_family": "unknown",
-            }
+            },
+            *[
+                {
+                    "trace_id": extra.trace_id,
+                    "weave_ref": extra.ref_for(),
+                    "conversation_id": extra.conversation_id,
+                    "started_at": extra.started_at.isoformat(),
+                    "model": "agent",
+                    "model_family": "unknown",
+                }
+                for extra in extra_turns
+            ],
         ],
         "sessions": [
-            {"conversation_id": "session-1", "weave_ref": session.ref_for(), "turn_count": 1}
+            {"conversation_id": "session-1", "weave_ref": session.ref_for(), "turn_count": 1},
+            *[
+                {
+                    "conversation_id": extra.conversation_id,
+                    "weave_ref": SessionView(
+                        extra.conversation_id, [extra], "cfg", "main"
+                    ).ref_for(),
+                    "turn_count": 1,
+                }
+                for extra in extra_turns
+            ],
         ],
     }
     created = store.create()
@@ -152,6 +184,18 @@ class _Weave:
             raise RuntimeError("delete failed")
 
 
+class _ActivityChat:
+    def __init__(self):
+        self.activity = None
+
+    def set_activity(self, callback):
+        self.activity = callback
+
+    def emit(self, event):
+        assert self.activity is not None
+        self.activity(event)
+
+
 def test_stage_persists_artifacts_buffers_scores_and_writes_only_session_refs(store, monkeypatch):
     run, effective, turn, session = _setup(store)
     weave = _Weave()
@@ -200,6 +244,86 @@ def test_stage_persists_artifacts_buffers_scores_and_writes_only_session_refs(st
     assert current.judging_result["coverage_complete"] is True
 
 
+def test_stage_persists_safe_semantic_and_transport_activity(store, monkeypatch):
+    run, effective, turn, session = _setup(store)
+    chat = _ActivityChat()
+    secret = "do-not-persist"
+
+    def fake_judge(_session, client, **kwargs):
+        kwargs["activity"](
+            {
+                "phase": "digest_started",
+                "message": "Claude Sonnet is digesting chunk 1 of 1",
+                "model": "claude-sonnet-5",
+                "conversation_id": "session-1",
+                "artifact_id": "digest/test",
+                "item_index": 1,
+                "item_total": 1,
+            }
+        )
+        client.emit(
+            {
+                "phase": "transport_retry",
+                "message": f"Sonnet failed; token={secret}; retrying attempt 2 of 3",
+                "model": "claude-sonnet-5",
+                "request_attempt": 2,
+                "max_attempts": 3,
+                "elapsed_seconds": 191.8,
+                "error_category": "retryable_process_error",
+                "provider_status": 429,
+                "provider_error_code": "rate_limit_exceeded",
+                "provider_error_message": f"Too many requests; token={secret}",
+                "output_sha256": "a" * 64,
+                "raw_output": secret,
+            }
+        )
+        client.emit(
+            {
+                "phase": "transport_recovered",
+                "message": "Sonnet recovered on request attempt 2 of 3",
+                "model": "claude-sonnet-5",
+                "request_attempt": 2,
+                "max_attempts": 3,
+                "elapsed_seconds": 202.0,
+                "output_sha256": "b" * 64,
+            }
+        )
+        return _scores_for(("judge.session_outcome",))
+
+    monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", fake_judge)
+    deps = JudgingDependencies(
+        store,
+        _Weave,
+        lambda: context(chat),
+        lambda _: ([turn], {"session-1": session}),
+    )
+
+    run_judging_stage(run, effective, threading.Event(), dependencies=deps)
+
+    result = store.get(run.run_id).judging_result
+    assert result["phase"] == "judging_complete"
+    assert result["started_at"]
+    assert [event["phase"] for event in result["events"]] == [
+        "judging_started",
+        "session_started",
+        "digest_started",
+        "transport_retry",
+        "transport_recovered",
+        "rubrics_completed",
+        "score_writes_started",
+        "judging_complete",
+    ]
+    retry = next(event for event in result["events"] if event["phase"] == "transport_retry")
+    assert retry["elapsed_seconds"] == 191.8
+    assert retry["error_category"] == "retryable_process_error"
+    assert retry["provider_status"] == 429
+    assert retry["provider_error_code"] == "rate_limit_exceeded"
+    assert retry["provider_error_message"] == "Too many requests; token=[REDACTED]"
+    assert retry["output_sha256"] == "a" * 64
+    assert "raw_output" not in retry
+    assert secret not in str(result)
+
+
 @contextmanager
 def context(value):
     yield value
@@ -223,6 +347,75 @@ def test_stage_does_not_write_partial_scores_when_any_session_rubric_fails(store
     with pytest.raises(runner.JudgeExecutionError):
         run_judging_stage(run, effective, threading.Event(), dependencies=deps)
     assert weave.writes == []
+
+
+def test_stage_preserves_successful_reviewer_count_for_failed_panel(store, monkeypatch):
+    run, effective, turn, session = _setup(store)
+    attempts = (
+        {"status": "succeeded", "requested_model": "judge-1"},
+        {
+            "status": "failed",
+            "requested_model": "judge-2",
+            "error_type": "ValueError",
+            "message": "unknown evidence ID",
+        },
+    )
+    failure = runner.JudgeFailure(
+        "judge.session_outcome",
+        "judge-2 (ValueError): unknown evidence ID",
+        "ReviewFailed",
+        attempts,
+    )
+
+    def fail(*_args, **_kwargs):
+        raise runner.JudgeExecutionError([], [failure])
+
+    monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", fail)
+    deps = JudgingDependencies(
+        store,
+        _Weave,
+        lambda: context(None),
+        lambda _cohort: ([turn], {"session-1": session}),
+    )
+
+    with pytest.raises(runner.JudgeExecutionError):
+        run_judging_stage(run, effective, threading.Event(), dependencies=deps)
+
+    summary = store.get(run.run_id).judging_result["attempt_summaries"][0]
+    assert summary["successful_reviewer_count"] == 1
+
+
+def test_stage_stops_remaining_sessions_after_first_review_failure(store, monkeypatch):
+    run, effective, turn, session = _setup(store, extra_session_ids=("session-2",))
+    second_turn = replace(
+        turn,
+        trace_id="turn-2",
+        conversation_id="session-2",
+        session_id="sid-2",
+    )
+    second_session = SessionView("session-2", [second_turn], "cfg", "main")
+    calls = []
+    failure = runner.JudgeFailure("judge.session_outcome", "offline", "ReviewFailed", ())
+
+    def fail(current_session, *_args, **_kwargs):
+        calls.append(current_session.conversation_id)
+        raise runner.JudgeExecutionError([], [failure])
+
+    monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", fail)
+    deps = JudgingDependencies(
+        store,
+        _Weave,
+        lambda: context(None),
+        lambda _cohort: (
+            [turn, second_turn],
+            {"session-1": session, "session-2": second_session},
+        ),
+    )
+
+    with pytest.raises(runner.JudgeExecutionError):
+        run_judging_stage(run, effective, threading.Event(), dependencies=deps)
+
+    assert calls == ["session-1"]
 
 
 def test_stage_completes_unanimous_abstention_without_writing_feedback(store, monkeypatch):

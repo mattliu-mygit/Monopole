@@ -226,10 +226,11 @@ class JudgingWindowResponse(ResponseModel):
 
 class JudgingWindowPlanResponse(ResponseModel):
     plan_id: str
-    contract_version: Literal["2"]
+    contract_version: Literal["3"]
     conversation_id: str
     input_cap_tokens: int
     raw_budget_tokens: int
+    target_raw_tokens: int
     chunk_count: int
     overlap_turns: int
     token_counter: TokenCounterName
@@ -343,6 +344,37 @@ class JudgingFailureDetailResponse(ResponseModel):
     conversation_id: str
 
 
+class JudgingActivityEventResponse(ResponseModel):
+    id: int
+    at: str
+    phase: str
+    message: str
+    model: str | None = None
+    conversation_id: str | None = None
+    rubric: str | None = None
+    artifact_id: str | None = None
+    item_index: int | None = None
+    item_total: int | None = None
+    request_attempt: int | None = None
+    max_attempts: int | None = None
+    elapsed_seconds: float | None = None
+    error_category: str | None = None
+    retry_reason: str | None = None
+    provider_status: int | None = None
+    provider_error_code: str | None = None
+    provider_error_message: str | None = None
+    output_sha256: str | None = None
+    exit_code: int | None = None
+    stdout_chars: int | None = None
+    stderr_chars: int | None = None
+    prompt_characters: int | None = None
+    output_mode: str | None = None
+    estimated_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+    model_context_tokens: int | None = None
+    status: str | None = None
+
+
 class JudgingProgressResponse(ResponseModel):
     plan_id: str
     planned_rubrics: int
@@ -362,7 +394,10 @@ class JudgingProgressResponse(ResponseModel):
     failure_count: int
     write_failure_count: int
     coverage_complete: bool
+    phase: str
     status_message: str
+    started_at: str
+    events: list[JudgingActivityEventResponse]
     attempt_summary_count: int
     attempt_summaries_truncated: bool
     attempt_summaries: list[JudgingAttemptSummaryResponse]
@@ -394,6 +429,9 @@ class ReflectingProgressResponse(ResponseModel):
     phase: str
     status_message: str
     started_at: str
+    proposal_writer: str
+    proposal_evaluator: str
+    no_improvement_patience: int
     attempted: int
     valid: int
     rejected: int

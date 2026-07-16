@@ -13,7 +13,15 @@ from weave_agent_signals.judges.tokens import TokenCounterName, count_tokens
 from weave_agent_signals.models import SessionView, ToolSpan, TurnSpan
 from weave_agent_signals.run_config import JudgingContextPolicy
 
-WINDOW_PLAN_CONTRACT_VERSION = "2"
+WINDOW_PLAN_CONTRACT_VERSION = "3"
+TOOL_TEXT_LIMIT = 12_000
+_TOOL_TEXT_HEAD_CHARACTERS = 3_500
+_TOOL_TEXT_TAIL_CHARACTERS = 3_500
+_TOOL_DIAGNOSTIC_CHARACTERS = 3_500
+_DIAGNOSTIC_PATTERN = re.compile(
+    r"traceback|exception|error|failed|failure|warning|assert|exit(?:ed)?\s*(?:code|status)?",
+    re.IGNORECASE,
+)
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _WINDOW_FIELDS = frozenset(
     {
@@ -44,6 +52,55 @@ def _value(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _diagnostic_excerpts(text: str, max_characters: int) -> str:
+    excerpts: list[str] = []
+    seen: set[str] = set()
+    used = 0
+    for match in _DIAGNOSTIC_PATTERN.finditer(text):
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        line_end = text.find("\n", match.end())
+        if line_end < 0:
+            line_end = len(text)
+        line = text[line_start:line_end].strip()
+        if len(line) > 500:
+            relative = match.start() - line_start
+            start = max(0, relative - 200)
+            line = line[start : start + 500]
+        if not line or line in seen:
+            continue
+        addition = len(line) + (1 if excerpts else 0)
+        if used + addition > max_characters:
+            break
+        excerpts.append(line)
+        seen.add(line)
+        used += addition
+    return "\n".join(excerpts)
+
+
+def compact_tool_text(value: str) -> str:
+    """Return a deterministic bounded judge view of one tool input or result."""
+
+    if len(value) <= TOOL_TEXT_LIMIT:
+        return value
+    head = value[:_TOOL_TEXT_HEAD_CHARACTERS]
+    tail = value[-_TOOL_TEXT_TAIL_CHARACTERS:]
+    middle = value[_TOOL_TEXT_HEAD_CHARACTERS:-_TOOL_TEXT_TAIL_CHARACTERS]
+    diagnostics = _diagnostic_excerpts(middle, _TOOL_DIAGNOSTIC_CHARACTERS)
+    marker = (
+        "[... compacted tool text; "
+        f"original_chars={len(value)}; middle_chars={len(middle)}; "
+        f"sha256={hashlib.sha256(value.encode('utf-8')).hexdigest()} ...]"
+    )
+    sections = [head, marker]
+    if diagnostics:
+        sections.extend(("[diagnostic excerpts]", diagnostics, "[/diagnostic excerpts]"))
+    sections.append(tail)
+    compacted = "\n".join(sections)
+    if len(compacted) > TOOL_TEXT_LIMIT:  # Defensive bound for future marker changes.
+        compacted = compacted[: TOOL_TEXT_LIMIT - _TOOL_TEXT_TAIL_CHARACTERS] + tail
+    return compacted
+
+
 def _render_tool(tool: ToolSpan, *, indent: str) -> list[str]:
     return [
         f"{indent}Tool [evidence_id={tool.span_id}]",
@@ -51,8 +108,8 @@ def _render_tool(tool: ToolSpan, *, indent: str) -> list[str]:
         f"{indent}  status: {_value(tool.status_code)}",
         f"{indent}  started_at: {_value(_timestamp(tool.started_at))}",
         f"{indent}  ended_at: {_value(_timestamp(tool.ended_at))}",
-        f"{indent}  arguments: {_value(tool.arguments)}",
-        f"{indent}  result: {_value(tool.result)}",
+        f"{indent}  arguments: {_value(compact_tool_text(tool.arguments))}",
+        f"{indent}  result: {_value(compact_tool_text(tool.result))}",
     ]
 
 
@@ -112,11 +169,9 @@ def render_raw_turn(turn: TurnSpan, position: int) -> str:
             [
                 f"  Subagent [evidence_id={subagent.span_id}]",
                 f"    agent_type: {_value(subagent.agent_type)}",
-                f"    tool_calls ({len(subagent.tool_calls)}):",
+                f"    internal_tool_calls_omitted: {len(subagent.tool_calls)}",
             ]
         )
-        for tool in subagent.tool_calls:
-            lines.extend(_render_tool(tool, indent="      "))
 
     return "\n".join(lines)
 
@@ -127,7 +182,6 @@ def _turn_evidence_ids(turn: TurnSpan) -> tuple[str, ...]:
     ids.extend(tool.span_id for tool in turn.tool_calls)
     for subagent in turn.subagents:
         ids.append(subagent.span_id)
-        ids.extend(tool.span_id for tool in subagent.tool_calls)
     return tuple(ids)
 
 
@@ -158,22 +212,22 @@ def _partition_cores(
     turn_count: int,
     range_tokens: Callable[[int, int], int],
     raw_budget: int,
-    overlap_turns: int,
+    target_raw_tokens: int,
 ) -> list[tuple[int, int]]:
     cores: list[tuple[int, int]] = []
     start = 0
     while start < turn_count:
-        accepted_end: int | None = None
-        for end in range(start, turn_count):
-            preferred_start = max(0, start - overlap_turns)
-            preferred_end = min(turn_count - 1, end + overlap_turns)
-            if range_tokens(preferred_start, preferred_end) > raw_budget:
-                if accepted_end is None and range_tokens(start, end) <= raw_budget:
-                    accepted_end = end
-                break
-            accepted_end = end
-        if accepted_end is None:
+        if range_tokens(start, start) > raw_budget:
             raise ValueError("core turn exceeds the raw window budget")
+        accepted_end = start
+        while accepted_end + 1 < turn_count:
+            current_tokens = range_tokens(start, accepted_end)
+            candidate_tokens = range_tokens(start, accepted_end + 1)
+            if candidate_tokens > raw_budget or current_tokens >= target_raw_tokens:
+                break
+            if abs(target_raw_tokens - candidate_tokens) > abs(target_raw_tokens - current_tokens):
+                break
+            accepted_end += 1
         cores.append((start, accepted_end))
         start = accepted_end + 1
     return cores
@@ -254,6 +308,7 @@ def build_window_plan(
     ]
 
     tier_reserve = policy.capacity_reserve(model_limit)
+    tier_target = policy.raw_window_target(model_limit)
     capacity_reserve = max(tier_reserve, base_reserve)
     if input_cap - capacity_reserve <= 0:
         raise WindowPlanInapplicable()
@@ -264,6 +319,7 @@ def build_window_plan(
             "conversation_id": session.conversation_id,
             "input_cap_tokens": input_cap,
             "raw_budget_tokens": input_cap - capacity_reserve,
+            "target_raw_tokens": min(tier_target, input_cap - capacity_reserve),
             "chunk_count": 0,
             "overlap_turns": policy.overlap_turns,
             "token_counter": token_counter,
@@ -288,12 +344,13 @@ def build_window_plan(
             raise WindowPlanInapplicable()
         if any(tokens > raw_budget for tokens in turn_tokens):
             raise WindowPlanInapplicable()
+        target_raw_tokens = min(tier_target, raw_budget)
 
         cores = _partition_cores(
             len(rendered_turns),
             range_tokens,
             raw_budget,
-            policy.overlap_turns,
+            target_raw_tokens,
         )
         planned_count = len(cores)
         if planned_count > policy.max_chunks:
@@ -311,12 +368,13 @@ def build_window_plan(
     windows: list[dict[str, object]] = []
     covered_trace_ids: list[str] = []
     for index, (core_start, core_end) in enumerate(cores, start=1):
+        core_tokens = range_tokens(core_start, core_end)
         raw_start, raw_end = _expand_raw_bounds(
             len(rendered_turns),
             range_tokens,
             core_start,
             core_end,
-            raw_budget,
+            min(raw_budget, max(target_raw_tokens, core_tokens)),
             policy.overlap_turns,
         )
         raw_tokens = range_tokens(raw_start, raw_end)
@@ -339,6 +397,7 @@ def build_window_plan(
         "conversation_id": session.conversation_id,
         "input_cap_tokens": input_cap,
         "raw_budget_tokens": raw_budget,
+        "target_raw_tokens": target_raw_tokens,
         "chunk_count": chunk_count,
         "overlap_turns": policy.overlap_turns,
         "token_counter": token_counter,

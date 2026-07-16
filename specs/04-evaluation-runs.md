@@ -75,7 +75,7 @@ bounded redacted structural excerpt, never proposal bodies, prompts, reasoning,
 credentials, or arbitrary subprocess output.
 
 Progress is observational. Failure to publish an activity update cannot change
-candidate generation, evaluation, or selection.
+judging, candidate generation, evaluation, or selection.
 
 Judging progress separately reports planned sessions, turns, raw windows,
 applicable reviewer attempts, and unique completed digest, window, and merge
@@ -86,6 +86,19 @@ reviewer for a session is skipped, its rubrics are auditable not-evaluable
 outcomes and the run continues without opening a model client for that work.
 Reused artifacts retain ordered inference provenance without incrementing
 unique completed-work counts.
+
+Judging also persists a bounded chronological activity history and one current
+plain-language status. Semantic events identify session, rubric, reviewer,
+digest, window, merge, and feedback-write work. Local CLI transport events make
+retries, recovery, and terminal request failures visible with safe diagnostic
+metadata: model, request attempt, elapsed time, categorical reason, exit code,
+prompt and output sizes, estimated input and context limits, output mode, and a
+content hash. Exact prompt echoes are removed before failure classification and
+hashing. A recognized provider error envelope may additionally contribute only
+its HTTP status, error code, and a bounded redacted message. Prompts, raw model
+output, credentials, and unstructured provider output are never stored in
+progress. The product emphasizes the current operation and recent events while
+retaining the bounded history for audit and debugging across refreshes.
 
 ## Managed instruction targets
 

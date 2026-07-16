@@ -5,7 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import textwrap
+import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
 
 import pytest
@@ -173,6 +176,46 @@ def test_codex_uses_and_removes_temporary_output_schema(tmp_path, monkeypatch):
     assert not os.path.exists(seen["schema_path"])
 
 
+def test_codex_schema_file_omits_unique_items_without_mutating_source(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "judge-home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(tmp_path / "judge-home" / "sandbox"))
+    schema = inference.JsonSchemaSpec(
+        name="judge_verdict",
+        schema={
+            "type": "object",
+            "properties": {
+                "evidence_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["turn-1", "turn-2"]},
+                    "uniqueItems": True,
+                }
+            },
+            "required": ["evidence_ids"],
+            "additionalProperties": False,
+        },
+    )
+
+    def fake_run(argv, **_kwargs):
+        schema_path = argv[argv.index("--output-schema") + 1]
+        with open(schema_path, encoding="utf-8") as schema_file:
+            emitted = json.load(schema_file)
+        assert "uniqueItems" not in emitted["properties"]["evidence_ids"]
+        assert emitted["properties"]["evidence_ids"]["items"]["enum"] == [
+            "turn-1",
+            "turn-2",
+        ]
+        return _FakeProc(stdout='{"evidence_ids": ["turn-1"]}')
+
+    CliJudgeClient(runner=fake_run).chat_json(
+        model="gpt-5.1",
+        messages=_msgs(),
+        response_schema=schema,
+    )
+
+    assert schema.schema["properties"]["evidence_ids"]["uniqueItems"] is True
+
+
 def test_cli_schema_fallback_keeps_the_same_model(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "judge-home"))
@@ -201,6 +244,38 @@ def test_cli_schema_fallback_keeps_the_same_model(tmp_path, monkeypatch):
     assert response.output_mode == "json_object_fallback"
     assert response.schema_name == "judge_verdict"
     assert response.schema_fallback_reason == "schema_output_unsupported"
+    assert response.transport_request_count == 2
+
+
+def test_cli_unsupported_schema_keyword_falls_back_to_json_object(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "judge-home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(tmp_path / "judge-home" / "sandbox"))
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        if len(calls) == 1:
+            return _FakeProc(
+                stderr=(
+                    "status: 400 invalid_request_error code: invalid_json_schema "
+                    "In context=('properties', 'evidence_ids'), "
+                    "'uniqueItems' is not permitted. param: text.format.schema"
+                ),
+                returncode=1,
+            )
+        return _FakeProc(stdout='{"score": 0.6}')
+
+    parsed, response = CliJudgeClient(runner=fake_run).chat_json(
+        model="gpt-5.1",
+        messages=_msgs(),
+        response_schema=_schema(),
+    )
+
+    assert parsed == {"score": 0.6}
+    assert "--output-schema" in calls[0]
+    assert "--output-schema" not in calls[1]
+    assert response.output_mode == "json_object_fallback"
     assert response.transport_request_count == 2
 
 
@@ -530,6 +605,45 @@ def test_cli_failure_logs_and_exception_exclude_process_output(caplog):
     assert hashlib.sha256(f"stderr {secret}stdout {secret}".encode()).hexdigest() in caplog.text
 
 
+def test_cli_failure_emits_prompt_stripped_structured_provider_issue(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(tmp_path / "sandbox"))
+    prompt_marker = "SENTINEL_PRIVATE_PROMPT"
+    provider_secret = "SENTINEL_PROVIDER_SECRET"
+    client = CliJudgeClient()
+    activity: list[dict[str, object]] = []
+    client.set_activity(activity.append)
+
+    def fail_with_echo(_argv, stdin_text, _env):
+        error = {
+            "error": {
+                "message": f"Requested model is unavailable; token={provider_secret}",
+                "type": "invalid_request_error",
+                "param": "model",
+                "code": "model_unavailable",
+            },
+            "status": 400,
+        }
+        return "", f"user\n{stdin_text}\nERROR: {json.dumps(error)}", 1
+
+    monkeypatch.setattr(client, "_run_with_cancel", fail_with_echo)
+
+    with pytest.raises(RuntimeError):
+        client.chat_json(
+            model="gpt-5.1",
+            messages=_msgs(system=prompt_marker),
+        )
+
+    failure = activity[-1]
+    assert failure["phase"] == "transport_failed"
+    assert failure["provider_status"] == 400
+    assert failure["provider_error_code"] == "model_unavailable"
+    assert failure["provider_error_message"] == ("Requested model is unavailable; token=[REDACTED]")
+    assert prompt_marker not in str(failure)
+    assert provider_secret not in str(failure)
+
+
 def test_retryable_process_failure_retries_once(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "codex-home"))
@@ -550,12 +664,143 @@ def test_retryable_process_failure_retries_once(tmp_path, monkeypatch):
     assert run.call_count == 2
 
 
+def test_claude_timeout_envelope_is_retried_and_safely_described(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(tmp_path / "sandbox"))
+    monkeypatch.setattr(cli_backend.time, "sleep", lambda _delay: None)
+    client = CliJudgeClient()
+    activity = []
+    client.set_activity(activity.append)
+    secret = "SENTINEL_PRIVATE_PROVIDER_DETAIL"
+    failure = json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "result": f"API request timed out after 120 seconds: {secret}",
+        }
+    )
+    success = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": '{"score": 0.6}',
+        }
+    )
+    run = MagicMock(side_effect=[(failure, "", 1), (success, "", 0)])
+    monkeypatch.setattr(client, "_run_with_cancel", run)
+
+    parsed, _ = client.chat_json(model="claude-sonnet-5", messages=_msgs())
+
+    assert parsed == {"score": 0.6}
+    assert run.call_count == 2
+    assert activity[0]["phase"] == "transport_retry"
+    assert activity[0]["retry_reason"] == "timeout"
+    assert activity[0]["provider_error_code"] == "error_during_execution"
+    assert activity[0]["provider_error_message"] == "Provider request timed out."
+    assert secret not in str(activity)
+
+
+def test_claude_structured_output_exhaustion_retries_the_same_schema(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(tmp_path / "sandbox"))
+    monkeypatch.setattr(cli_backend.time, "sleep", lambda _delay: None)
+    client = CliJudgeClient()
+    activity = []
+    client.set_activity(activity.append)
+    failure = json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_max_structured_output_retries",
+            "is_error": True,
+            "result": "",
+        }
+    )
+    success = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "structured_output": {"score": 0.6},
+            "result": "",
+        }
+    )
+    run = MagicMock(side_effect=[(failure, "", 1), (success, "", 0)])
+    monkeypatch.setattr(client, "_run_with_cancel", run)
+    schema = _schema()
+
+    parsed, response = client.chat_json(
+        model="claude-sonnet-5",
+        messages=_msgs(),
+        response_schema=schema,
+    )
+
+    assert parsed == {"score": 0.6}
+    assert response.transport_request_count == 2
+    assert run.call_count == 2
+    assert activity[0]["phase"] == "transport_retry"
+    assert activity[0]["retry_reason"] == "structured_output"
+    assert activity[0]["error_category"] == "structured_output_retry_exhausted"
+    assert activity[0]["provider_error_code"] == "error_max_structured_output_retries"
+    assert activity[0]["provider_error_message"] == (
+        "Provider could not produce schema-valid output."
+    )
+
+
+def test_retryable_process_failure_emits_safe_retry_and_recovery_activity(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(tmp_path / "sandbox"))
+    monkeypatch.setattr(cli_backend.time, "sleep", lambda _delay: None)
+    client = CliJudgeClient()
+    activity = []
+    client.set_activity(activity.append)
+    failed_output = "429 rate limit secret-provider-detail"
+    run = MagicMock(
+        side_effect=[
+            ("", failed_output, 1),
+            ('{"score": 0.6, "rationale": "retried"}', "", 0),
+        ]
+    )
+    monkeypatch.setattr(client, "_run_with_cancel", run)
+
+    client.chat_json(model="gpt-5.1", messages=_msgs())
+
+    assert [event["phase"] for event in activity] == [
+        "transport_retry",
+        "transport_recovered",
+    ]
+    assert activity[0]["message"].startswith("gpt-5.1 request failed after ")
+    assert activity[0]["message"].endswith("; retrying attempt 2 of 3")
+    assert activity[0]["model"] == "gpt-5.1"
+    assert activity[0]["request_attempt"] == 2
+    assert activity[0]["max_attempts"] == 3
+    assert isinstance(activity[0]["elapsed_seconds"], float)
+    assert activity[0]["error_category"] == "retryable_process_error"
+    assert activity[0]["retry_reason"] == "rate_limit"
+    assert activity[0]["exit_code"] == 1
+    assert activity[0]["stdout_chars"] == 0
+    assert activity[0]["stderr_chars"] == len(failed_output)
+    assert activity[0]["prompt_characters"] > 0
+    assert activity[0]["output_mode"] == "json_object"
+    assert activity[0]["output_sha256"] == hashlib.sha256(failed_output.encode()).hexdigest()
+    assert activity[1]["request_attempt"] == 2
+    assert activity[1]["max_attempts"] == 3
+    assert activity[1]["model"] == "gpt-5.1"
+    assert "secret-provider-detail" not in str(activity)
+
+
 def test_exhausted_cli_retries_preserve_all_transport_attempts(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "codex-home"))
     monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(tmp_path / "sandbox"))
     monkeypatch.setattr(cli_backend.time, "sleep", lambda _delay: None)
     client = CliJudgeClient()
+    activity = []
+    client.set_activity(activity.append)
     run = MagicMock(return_value=("", "429 rate limit", 1))
     monkeypatch.setattr(client, "_run_with_cancel", run)
 
@@ -564,6 +809,28 @@ def test_exhausted_cli_retries_preserve_all_transport_attempts(tmp_path, monkeyp
 
     assert run.call_count == cli_backend.MAX_CLI_RETRIES + 1
     assert getattr(captured.value, "_transport_request_count", None) == 3
+    assert [event["phase"] for event in activity] == [
+        "transport_retry",
+        "transport_retry",
+        "transport_failed",
+    ]
+    assert activity[-1]["request_attempt"] == 3
+    assert activity[-1]["max_attempts"] == 3
+
+
+def test_retry_detection_ignores_markers_in_large_echoed_prompt(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(tmp_path / "sandbox"))
+    monkeypatch.setattr(cli_backend.time, "sleep", lambda _delay: None)
+    client = CliJudgeClient()
+    run = MagicMock(return_value=("", "429 rate limit" + ("x" * 20_000) + "invalid input", 1))
+    monkeypatch.setattr(client, "_run_with_cancel", run)
+
+    with pytest.raises(RuntimeError, match="error_category=process_error"):
+        client.chat_json(model="gpt-5.1", messages=_msgs())
+
+    assert run.call_count == 1
 
 
 def test_process_cancellation_is_not_converted_to_a_retry(tmp_path, monkeypatch):
@@ -578,6 +845,73 @@ def test_process_cancellation_is_not_converted_to_a_retry(tmp_path, monkeypatch)
         client.chat_json(model="gpt-5.1", messages=_msgs())
 
     run.assert_called_once()
+
+
+def test_hard_process_timeout_retries_and_preserves_diagnostics(tmp_path, monkeypatch):
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(sandbox))
+    monkeypatch.setattr(cli_backend, "MAX_CLI_RETRIES", 1)
+    monkeypatch.setattr(cli_backend, "RETRY_BASE_DELAY", 0)
+    client = CliJudgeClient(timeout=0.01)
+    activity = []
+    client.set_activity(activity.append)
+
+    def build(_model, _system, _user, **_kwargs):
+        return [sys.executable, "-c", "import time; time.sleep(30)"], "", "plain"
+
+    monkeypatch.setattr(client, "_build", build)
+
+    with pytest.raises(RuntimeError, match="error_category=retryable_process_error") as captured:
+        client.chat_json(model="gpt-5.1", messages=_msgs())
+
+    assert getattr(captured.value, "_transport_request_count", None) == 2
+    assert [event["phase"] for event in activity] == ["transport_retry", "transport_failed"]
+    assert all(event["retry_reason"] == "timeout" for event in activity)
+    assert all(isinstance(event["exit_code"], int) for event in activity)
+    assert client._procs == set()
+
+
+def test_abort_marks_active_process_as_cancelled(tmp_path, monkeypatch):
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(sandbox))
+    client = CliJudgeClient(timeout=5)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            client._run_with_cancel,
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            "",
+            os.environ.copy(),
+        )
+        deadline = time.monotonic() + 2
+        while not client._procs and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert client._procs
+
+        client.abort()
+
+        with pytest.raises(InferenceCancelled, match="cancelled"):
+            future.result(timeout=2)
+
+
+def test_abort_prevents_a_sibling_from_starting_its_next_process(tmp_path, monkeypatch):
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(sandbox))
+    client = CliJudgeClient(timeout=5)
+
+    client.abort()
+
+    with pytest.raises(InferenceCancelled, match="cancelled"):
+        client._run_with_cancel(
+            [sys.executable, "-c", "print('must not run')"],
+            "",
+            os.environ.copy(),
+        )
 
 
 # --- real end-to-end via a fake CLI executable on PATH ---

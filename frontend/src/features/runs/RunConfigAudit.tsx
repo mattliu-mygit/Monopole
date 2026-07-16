@@ -110,6 +110,10 @@ export default function RunConfigAudit({ config }: RunConfigAuditProps) {
             {config.judging_context.small_model_reserve_tokens.toLocaleString()} small-model ·{' '}
             {config.judging_context.large_model_reserve_tokens.toLocaleString()} large-model reserve
           </div>
+          <div className="mt-1 font-medium text-gray-900">
+            {config.judging_context.small_model_raw_target_tokens.toLocaleString()} small-model ·{' '}
+            {config.judging_context.large_model_raw_target_tokens.toLocaleString()} large-model raw target
+          </div>
           <div className="mt-1">
             {config.judging_context.digest_max_tokens.toLocaleString()} digest ·{' '}
             {config.judging_context.finding_max_tokens.toLocaleString()} findings ·{' '}

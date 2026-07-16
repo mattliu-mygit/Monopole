@@ -20,6 +20,7 @@ from weave_agent_signals.judges.runner import (
 )
 from weave_agent_signals.models import Score, SessionView, TurnSpan
 from weave_agent_signals.run_config import EffectiveRunConfig, RubricDescriptor
+from weave_agent_signals.runs.judging_activity import JudgingActivityLog
 from weave_agent_signals.runs.stages import StageCancelled
 from weave_agent_signals.runs.store import (
     Run,
@@ -78,7 +79,7 @@ class _State:
     def payload(
         self,
         plan_id: str,
-        message: str,
+        activity: Mapping[str, Any],
         *,
         coverage_complete: bool,
     ) -> dict[str, Any]:
@@ -101,7 +102,10 @@ class _State:
             "failure_count": len(self.failures),
             "write_failure_count": self.write_failure_count,
             "coverage_complete": coverage_complete,
-            "status_message": message,
+            "phase": activity["phase"],
+            "status_message": activity["status_message"],
+            "started_at": activity["started_at"],
+            "events": activity["events"],
             "attempt_summary_count": self.attempt_summary_count,
             "attempt_summaries_truncated": (
                 self.attempt_summary_count > len(self.attempt_summaries)
@@ -313,6 +317,7 @@ def _record_failure(
     conversation_id: str,
 ) -> None:
     attempts = _attempts(failure.attempts)
+    successful_reviewer_count = sum(attempt.get("status") == "succeeded" for attempt in attempts)
     state.failures.append(failure)
     state.reviewer_attempts_completed += sum(
         attempt.get("status") != "skipped" for attempt in attempts
@@ -327,7 +332,7 @@ def _record_failure(
             "review_status": "failed",
             "rating": None,
             "attempt_count": len(attempts),
-            "successful_reviewer_count": 0,
+            "successful_reviewer_count": successful_reviewer_count,
             "attempts": attempts,
             **context,
         },
@@ -472,15 +477,22 @@ def _run_unit(
 ) -> list[Score]:
     try:
         scores, failures, not_evaluable = invoke(), (), ()
+        completed = expected
     except JudgeExecutionError as error:
         scores, failures, not_evaluable = (
             list(error.scores),
             error.failures,
             error.not_evaluable,
         )
+        completed_ids = {
+            *(score.scorer for score in scores),
+            *(failure.rubric for failure in failures),
+            *(outcome.rubric for outcome in not_evaluable),
+        }
+        completed = [descriptor for descriptor in expected if descriptor.id in completed_ids]
     return _consume(
         state,
-        expected,
+        completed,
         scores,
         failures,
         not_evaluable,
@@ -576,19 +588,55 @@ def run_judging_stage(
         if isinstance(artifact, Mapping):
             _record_phase_artifact(state, artifact_id, artifact_phases.get(artifact.get("kind")))
 
-    def progress(message: str, *, coverage_complete: bool = False) -> None:
-        _persist(
-            dependencies.store,
-            run_id,
-            cancel,
-            state.payload(
-                plan["plan_id"],
-                message,
-                coverage_complete=coverage_complete,
-            ),
-        )
+    activity_log = JudgingActivityLog(initial_snapshot=current.judging_progress)
+    progress_lock = threading.RLock()
 
-    progress(f"Starting {state.planned_rubrics} planned rubric judgment(s)...")
+    def progress(
+        phase: str,
+        message: str,
+        *,
+        coverage_complete: bool = False,
+        **details: object,
+    ) -> None:
+        with progress_lock:
+            activity_log.record({"phase": phase, "message": message, **details})
+            _persist(
+                dependencies.store,
+                run_id,
+                cancel,
+                state.payload(
+                    plan["plan_id"],
+                    activity_log.snapshot(),
+                    coverage_complete=coverage_complete,
+                ),
+            )
+
+    def record_activity(event: Mapping[str, object]) -> None:
+        value = dict(event)
+        phase = value.pop("phase", None)
+        message = value.pop("message", None)
+        progress(str(phase), str(message), **value)
+
+    def fail_if_needed() -> None:
+        if not state.failures:
+            return
+        progress(
+            "judging_failed",
+            f"Judging coverage incomplete with {len(state.failures)} review failure(s)",
+        )
+        failed = state.payload(
+            plan["plan_id"],
+            activity_log.snapshot(),
+            coverage_complete=False,
+        )
+        _persist(dependencies.store, run_id, cancel, failed)
+        _persist(dependencies.store, run_id, cancel, failed, result=True)
+        raise JudgeExecutionError(state.scores, state.failures)
+
+    progress(
+        "judging_started",
+        f"Starting {state.planned_rubrics} planned rubric judgment(s)",
+    )
     has_applicable_reviewers = any(
         reviewer["status"] == "planned"
         for session_plan in plan["sessions"]
@@ -603,6 +651,9 @@ def run_judging_stage(
             set_cancel = getattr(chat_client, "set_cancel", None)
             if callable(set_cancel):
                 set_cancel(cancel)
+            set_activity = getattr(chat_client, "set_activity", None)
+            if callable(set_activity):
+                set_activity(record_activity)
         for session_plan in plan["sessions"]:
             conversation_id = session_plan["conversation_id"]
             session = sessions.get(conversation_id)
@@ -613,6 +664,11 @@ def run_judging_stage(
                 continue
             _active(dependencies.store, run_id, cancel)
             evidence_ids = list(session_plan["raw_coverage_trace_ids"])
+            progress(
+                "session_started",
+                f"Reviewing session {conversation_id} with {len(expected)} rubric(s)",
+                conversation_id=conversation_id,
+            )
 
             def load_artifact(artifact_id: str) -> Mapping[str, Any] | None:
                 active = _active(dependencies.store, run_id, cancel)
@@ -620,14 +676,25 @@ def run_judging_stage(
 
             def record_artifact(artifact_id: str, artifact: Mapping[str, Any]) -> object:
                 result = dependencies.store.record_judging_artifact(run_id, artifact_id, artifact)
-                if _record_phase_artifact(
-                    state, artifact_id, artifact_phases.get(artifact.get("kind"))
-                ):
-                    progress(
-                        f"Processed {state.digest_steps_completed} digest, "
-                        f"{state.window_steps_completed} window, and "
-                        f"{state.merge_steps_completed} merge artifact(s)"
-                    )
+                with progress_lock:
+                    if _record_phase_artifact(
+                        state, artifact_id, artifact_phases.get(artifact.get("kind"))
+                    ):
+                        phase = artifact_phases.get(artifact.get("kind"))
+                        artifact_payload = artifact.get("payload")
+                        audit = (
+                            artifact_payload.get("audit")
+                            if isinstance(artifact_payload, Mapping)
+                            else None
+                        )
+                        model = audit.get("requested_model") if isinstance(audit, Mapping) else None
+                        progress(
+                            f"{phase}_completed",
+                            f"Completed {phase} artifact",
+                            artifact_id=artifact_id,
+                            model=model,
+                            conversation_id=conversation_id,
+                        )
                 return result
 
             accepted = _run_unit(
@@ -643,11 +710,13 @@ def run_judging_stage(
                     artifact_loader=load_artifact,
                     artifact_recorder=record_artifact,
                     cancel_requested=lambda: cancel.is_set(),
+                    activity=record_activity,
                 ),
                 unit="session",
                 trace_id=None,
                 conversation_id=conversation_id,
             )
+            fail_if_needed()
             for score in accepted:
                 _stamp(
                     score,
@@ -656,18 +725,14 @@ def run_judging_stage(
                     evidence_trace_ids=evidence_ids,
                 )
                 state.pending.append((score, session))
-            progress(f"Judged {state.rubrics_completed} of {state.planned_rubrics} planned rubrics")
+            progress(
+                "rubrics_completed",
+                f"Judged {state.rubrics_completed} of {state.planned_rubrics} planned rubrics",
+                conversation_id=conversation_id,
+            )
 
     _active(dependencies.store, run_id, cancel)
-    if state.failures:
-        failed = state.payload(
-            plan["plan_id"],
-            "Judging coverage incomplete",
-            coverage_complete=False,
-        )
-        _persist(dependencies.store, run_id, cancel, failed)
-        _persist(dependencies.store, run_id, cancel, failed, result=True)
-        raise JudgeExecutionError(state.scores, state.failures)
+    fail_if_needed()
 
     if state.pending:
         with dependencies.client_factory() as client:
@@ -682,7 +747,11 @@ def run_judging_stage(
                     continue
                 writes.append((score, ref, prior))
             if writes:
-                progress(f"Writing {len(writes)} judge score(s)...", coverage_complete=True)
+                progress(
+                    "score_writes_started",
+                    f"Writing {len(writes)} judge score(s)",
+                    coverage_complete=True,
+                )
                 _active(dependencies.store, run_id, cancel)
                 try:
                     with dependencies.store.external_write_barrier(run_id, RunStatus.JUDGING):
@@ -712,7 +781,12 @@ def run_judging_stage(
     message = (
         "Judging complete" if not state.write_failure_count else "Judge feedback write incomplete"
     )
-    final = state.payload(plan["plan_id"], message, coverage_complete=True)
+    progress(
+        "judging_complete" if not state.write_failure_count else "score_writes_failed",
+        message,
+        coverage_complete=True,
+    )
+    final = state.payload(plan["plan_id"], activity_log.snapshot(), coverage_complete=True)
     _persist(dependencies.store, run_id, cancel, final)
     _persist(dependencies.store, run_id, cancel, final, result=True)
     if state.write_failure_count:

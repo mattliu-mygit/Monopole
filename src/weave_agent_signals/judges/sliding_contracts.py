@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from collections.abc import Mapping, Sequence
-from typing import Literal
+from copy import deepcopy
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr
 
@@ -15,19 +15,10 @@ from weave_agent_signals.judges.tokens import count_tokens
 
 SLIDING_CONTRACT_SCHEMA_VERSION = 1
 MAX_WINDOW_FINDINGS = 4
+MAX_CHUNK_DIGEST_CHARACTERS = 2_400
 MAX_FINDING_OBSERVATION_CHARACTERS = 350
-MAX_BEHAVIORAL_FEEDBACK_CHARACTERS = 500
+MAX_BEHAVIORAL_FEEDBACK_CHARACTERS = 10_000
 SCORE_ANCHORS = (0.0, 0.25, 0.5, 0.75, 1.0)
-
-_MANAGED_FILE_PATTERN = re.compile(
-    r"\b(?:agents\.md|claude\.md|skill\.md|instruction\s+files?|prompt\s+files?)\b",
-    re.IGNORECASE,
-)
-_IMPERATIVE_FILE_EDIT_PATTERN = re.compile(
-    r"\b(?:add|create|delete|edit|modify|remove|rename|replace|rewrite|update|write)\b"
-    r"[^.!?\n]{0,100}\b(?:files?|[A-Za-z0-9_.-]+\.[A-Za-z0-9]+)\b",
-    re.IGNORECASE,
-)
 
 
 class _ClosedModel(BaseModel):
@@ -61,14 +52,14 @@ def _validate_score_anchor(value: object, *, field: str) -> float:
 class ChunkDigest(_ClosedModel):
     schema_version: Literal[1]
     chunk_id: StrictStr
-    text: StrictStr
+    text: StrictStr = Field(max_length=MAX_CHUNK_DIGEST_CHARACTERS)
     evidence_ids: tuple[StrictStr, ...]
 
 
 class WindowFinding(_ClosedModel):
     finding_id: StrictStr
     polarity: Literal["positive", "negative"]
-    observation: StrictStr
+    observation: StrictStr = Field(max_length=MAX_FINDING_OBSERVATION_CHARACTERS)
     evidence_ids: tuple[StrictStr, ...]
 
 
@@ -79,15 +70,20 @@ class WindowFindings(_ClosedModel):
 
 
 class BehavioralFeedback(_ClosedModel):
-    success: StrictStr | None
-    problem: StrictStr | None
-    desired_behavior: StrictStr | None
+    success: Annotated[StrictStr, Field(max_length=MAX_BEHAVIORAL_FEEDBACK_CHARACTERS)] | None
+    problem: Annotated[StrictStr, Field(max_length=MAX_BEHAVIORAL_FEEDBACK_CHARACTERS)] | None
+    desired_behavior: (
+        Annotated[StrictStr, Field(max_length=MAX_BEHAVIORAL_FEEDBACK_CHARACTERS)] | None
+    )
 
 
 class MergedVerdict(_ClosedModel):
     schema_version: Literal[1]
     status: Literal["scored", "insufficient_evidence"]
-    score: StrictFloat | StrictInt | None
+    score: Annotated[
+        StrictFloat | StrictInt | None,
+        Field(json_schema_extra={"enum": [*SCORE_ANCHORS, None]}),
+    ]
     rationale: StrictStr
     evidence_ids: tuple[StrictStr, ...]
     feedback: BehavioralFeedback | None
@@ -113,6 +109,58 @@ MERGED_VERDICT_SCHEMA = JsonSchemaSpec(
     name="merged_verdict",
     schema=MergedVerdict.model_json_schema(),
 )
+
+
+def _bound_evidence_ids(allowed_evidence_ids: Sequence[str]) -> list[str]:
+    values = list(allowed_evidence_ids)
+    _allowed_id_set(values)
+    if not values:
+        raise ValueError("allowed evidence IDs must not be empty")
+    return values
+
+
+def bind_chunk_digest_schema(
+    expected_chunk_id: str,
+    allowed_evidence_ids: Sequence[str],
+) -> JsonSchemaSpec:
+    """Bind one digest response to its exact chunk and source evidence."""
+
+    schema = deepcopy(dict(CHUNK_DIGEST_SCHEMA.schema))
+    properties = schema["properties"]
+    properties["chunk_id"]["const"] = _nonblank_id(
+        expected_chunk_id,
+        field="expected chunk ID",
+    )
+    properties["evidence_ids"]["items"]["enum"] = _bound_evidence_ids(allowed_evidence_ids)
+    return JsonSchemaSpec(name=CHUNK_DIGEST_SCHEMA.name, schema=schema)
+
+
+def bind_window_findings_schema(
+    expected_window_id: str,
+    allowed_evidence_ids: Sequence[str],
+) -> JsonSchemaSpec:
+    """Bind one window response to its exact raw window evidence."""
+
+    schema = deepcopy(dict(WINDOW_FINDINGS_SCHEMA.schema))
+    schema["properties"]["window_id"]["const"] = _nonblank_id(
+        expected_window_id,
+        field="expected window ID",
+    )
+    finding = schema["$defs"]["WindowFinding"]["properties"]
+    finding["evidence_ids"]["items"]["enum"] = _bound_evidence_ids(allowed_evidence_ids)
+    return JsonSchemaSpec(name=WINDOW_FINDINGS_SCHEMA.name, schema=schema)
+
+
+def bind_merged_verdict_schema(
+    allowed_evidence_ids: Sequence[str],
+) -> JsonSchemaSpec:
+    """Bind one merged verdict to evidence from the authenticated session."""
+
+    schema = deepcopy(dict(MERGED_VERDICT_SCHEMA.schema))
+    schema["properties"]["evidence_ids"]["items"]["enum"] = _bound_evidence_ids(
+        allowed_evidence_ids
+    )
+    return JsonSchemaSpec(name=MERGED_VERDICT_SCHEMA.name, schema=schema)
 
 
 def render_window_findings(value: WindowFindings) -> str:
@@ -166,8 +214,6 @@ def _validated_evidence_ids(
     )
     if required and not normalized:
         raise ValueError("at least one evidence citation is required")
-    if len(normalized) != len(set(normalized)):
-        raise ValueError("evidence IDs must be unique")
     for evidence_id in normalized:
         if evidence_id not in allowed_ids:
             raise ValueError("unknown evidence ID")
@@ -254,7 +300,7 @@ def parse_window_findings(
     if len(finding_ids) != len(set(finding_ids)):
         raise ValueError("finding IDs must be unique within a window")
     finding_keys = [
-        (finding.polarity, finding.observation, tuple(sorted(finding.evidence_ids)))
+        (finding.polarity, finding.observation, tuple(sorted(set(finding.evidence_ids))))
         for finding in findings
     ]
     if len(finding_keys) != len(set(finding_keys)):
@@ -268,7 +314,7 @@ def parse_window_findings(
 def parse_behavioral_feedback(
     value: Mapping[str, object] | BehavioralFeedback,
 ) -> BehavioralFeedback:
-    """Validate bounded feedback that describes agent behavior, not file edits."""
+    """Validate bounded behavioral feedback without interpreting its wording."""
 
     feedback = BehavioralFeedback.model_validate(_validation_data(value))
     normalized: dict[str, str | None] = {}
@@ -285,15 +331,6 @@ def parse_behavioral_feedback(
         )
     if not any(text is not None for text in normalized.values()):
         raise ValueError("behavioral feedback requires at least one non-null field")
-
-    desired_behavior = normalized["desired_behavior"]
-    if desired_behavior is not None and (
-        _MANAGED_FILE_PATTERN.search(desired_behavior)
-        or _IMPERATIVE_FILE_EDIT_PATTERN.search(desired_behavior)
-    ):
-        raise ValueError(
-            "desired behavior must describe agent behavior rather than instruction edits"
-        )
     return feedback.model_copy(update=normalized)
 
 
