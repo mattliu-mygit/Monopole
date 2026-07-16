@@ -24,6 +24,7 @@ const writer: ModelDescriptor = {
   backend: 'cli',
   supported_roles: ['proposal_writer'],
   max_input_tokens: 128_000,
+  token_counter: 'utf8_bytes_div_3',
 }
 
 function bundle(revision: string, contents: Record<string, string | null>): ReflectionBundleSnapshot {

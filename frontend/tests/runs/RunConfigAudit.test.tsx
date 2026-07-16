@@ -8,7 +8,7 @@ import RunConfigAudit from '../../src/features/runs/RunConfigAudit'
 afterEach(cleanup)
 
 const config: EffectiveRunConfig = {
-  schema_version: '2',
+  schema_version: '3',
   pipeline_version: 'pipeline-v7',
   model_catalog_version: 'models-v4',
   rubric_catalog_version: 'rubrics-v9',
@@ -21,6 +21,7 @@ const config: EffectiveRunConfig = {
       backend: 'cli',
       supported_roles: ['proposal_writer'],
       max_input_tokens: 128_000,
+      token_counter: 'utf8_bytes_div_3',
     },
     judges: [
       {
@@ -30,6 +31,7 @@ const config: EffectiveRunConfig = {
         backend: 'cli',
         supported_roles: ['judge'],
         max_input_tokens: 128_000,
+        token_counter: 'utf8_bytes_div_3',
         role: 'judge',
         position: 1,
       },
@@ -40,6 +42,7 @@ const config: EffectiveRunConfig = {
         backend: 'cli',
         supported_roles: ['judge', 'proposal_evaluator'],
         max_input_tokens: 128_000,
+        token_counter: 'utf8_bytes_div_3',
         role: 'judge',
         position: 2,
       },
@@ -51,6 +54,7 @@ const config: EffectiveRunConfig = {
       backend: 'cli',
       supported_roles: ['judge', 'proposal_evaluator'],
       max_input_tokens: 128_000,
+      token_counter: 'utf8_bytes_div_3',
     },
   },
   rubrics: [
@@ -81,9 +85,11 @@ const config: EffectiveRunConfig = {
     },
   ],
   judging_context: {
-    contract_version: '1', target_input_tokens: 100_000, prompt_reserve_tokens: 6_000,
+    contract_version: '2', large_model_threshold_tokens: 200_000,
+    large_model_reserve_tokens: 100_000, small_model_reserve_tokens: 50_000,
+    prompt_reserve_tokens: 6_000,
     output_reserve_tokens: 4_000, safety_reserve_tokens: 8_000, digest_max_tokens: 1_000,
-    finding_max_tokens: 750, overlap_turns: 1, max_chunks: 40, token_estimator: 'utf8_bytes_div_3',
+    finding_max_tokens: 750, overlap_turns: 1, max_chunks: 40,
   },
   candidate_budget: 4,
   force: true,
@@ -107,7 +113,7 @@ describe('RunConfigAudit', () => {
     expect(screen.getByText('pipeline-v7')).not.toBeNull()
     expect(screen.getByText('models-v4')).not.toBeNull()
     expect(screen.getByText('rubrics-v9')).not.toBeNull()
-    expect(screen.getByText('100,000 target input tokens')).not.toBeNull()
+    expect(screen.getByText('50,000 small-model · 100,000 large-model reserve')).not.toBeNull()
     expect(screen.getByText('1,000 digest · 750 findings · 1 turn overlap')).not.toBeNull()
     expect(screen.getAllByText('128,000 max input tokens').length).toBe(4)
     expect(screen.getByText('Proposal attempt limit')).not.toBeNull()

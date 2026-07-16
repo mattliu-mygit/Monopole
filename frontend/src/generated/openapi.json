@@ -407,8 +407,8 @@
             "type": "array"
           },
           "schema_version": {
-            "const": "2",
-            "default": "2",
+            "const": "3",
+            "default": "3",
             "title": "Schema Version",
             "type": "string"
           },
@@ -956,8 +956,8 @@
         "additionalProperties": false,
         "properties": {
           "contract_version": {
-            "const": "1",
-            "default": "1",
+            "const": "2",
+            "default": "2",
             "title": "Contract Version",
             "type": "string"
           },
@@ -971,6 +971,18 @@
             "default": 750,
             "minimum": 1.0,
             "title": "Finding Max Tokens",
+            "type": "integer"
+          },
+          "large_model_reserve_tokens": {
+            "default": 100000,
+            "minimum": 100000.0,
+            "title": "Large Model Reserve Tokens",
+            "type": "integer"
+          },
+          "large_model_threshold_tokens": {
+            "const": 200000,
+            "default": 200000,
+            "title": "Large Model Threshold Tokens",
             "type": "integer"
           },
           "max_chunks": {
@@ -1003,17 +1015,11 @@
             "title": "Safety Reserve Tokens",
             "type": "integer"
           },
-          "target_input_tokens": {
-            "default": 100000,
-            "minimum": 1.0,
-            "title": "Target Input Tokens",
+          "small_model_reserve_tokens": {
+            "default": 50000,
+            "minimum": 50000.0,
+            "title": "Small Model Reserve Tokens",
             "type": "integer"
-          },
-          "token_estimator": {
-            "const": "utf8_bytes_div_3",
-            "default": "utf8_bytes_div_3",
-            "title": "Token Estimator",
-            "type": "string"
           }
         },
         "title": "JudgingContextPolicy",
@@ -1480,6 +1486,10 @@
       "JudgingWindowPlanResponse": {
         "additionalProperties": false,
         "properties": {
+          "capacity_reserve_tokens": {
+            "title": "Capacity Reserve Tokens",
+            "type": "integer"
+          },
           "chunk_count": {
             "title": "Chunk Count",
             "type": "integer"
@@ -1526,8 +1536,8 @@
             "title": "Raw Turns",
             "type": "array"
           },
-          "token_estimator": {
-            "title": "Token Estimator",
+          "token_counter": {
+            "title": "Token Counter",
             "type": "string"
           },
           "windows": {
@@ -1546,7 +1556,8 @@
           "raw_budget_tokens",
           "chunk_count",
           "overlap_turns",
-          "token_estimator",
+          "token_counter",
+          "capacity_reserve_tokens",
           "merge_input_tokens",
           "raw_turns",
           "raw_coverage_trace_ids",
@@ -1713,6 +1724,16 @@
             },
             "title": "Supported Roles",
             "type": "array"
+          },
+          "token_counter": {
+            "default": "utf8_bytes_div_3",
+            "enum": [
+              "utf8_bytes_div_3",
+              "o200k_base",
+              "o200k_harmony"
+            ],
+            "title": "Token Counter",
+            "type": "string"
           }
         },
         "required": [
@@ -1772,6 +1793,16 @@
             },
             "title": "Supported Roles",
             "type": "array"
+          },
+          "token_counter": {
+            "default": "utf8_bytes_div_3",
+            "enum": [
+              "utf8_bytes_div_3",
+              "o200k_base",
+              "o200k_harmony"
+            ],
+            "title": "Token Counter",
+            "type": "string"
           }
         },
         "required": [

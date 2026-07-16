@@ -9,10 +9,27 @@ from weave_agent_signals.run_config import (
     RUBRIC_CATALOG_SCHEMA_VERSION,
     EffectiveRunConfig,
     EvaluatedModelIdentity,
+    JudgingContextPolicy,
     ModelDescriptor,
     RunConfig,
     resolve_run_config,
 )
+
+
+def test_judging_context_policy_uses_capacity_tiers_at_exact_threshold():
+    policy = JudgingContextPolicy()
+
+    assert policy.contract_version == "2"
+    assert policy.capacity_reserve(200_000) == 50_000
+    assert policy.capacity_reserve(200_001) == 100_000
+    assert "target_input_tokens" not in policy.model_dump()
+    assert "token_estimator" not in policy.model_dump()
+
+
+@pytest.mark.parametrize("model_limit", [True, 0, -1, 1.5])
+def test_judging_context_policy_rejects_invalid_capacity(model_limit):
+    with pytest.raises(ValueError, match="model_limit must be a positive integer"):
+        JudgingContextPolicy().capacity_reserve(model_limit)
 
 
 def valid_request(**changes):

@@ -89,7 +89,12 @@ def build_judging_plan(
         turns_considered += len(session.turns)
         reviewers = []
         for judge in judges:
-            window_plan = build_window_plan(session, context_policy, judge.max_input_tokens)
+            window_plan = build_window_plan(
+                session,
+                context_policy,
+                judge.max_input_tokens,
+                judge.token_counter,
+            )
             count = int(window_plan["chunk_count"])
             reviewers.append(
                 {

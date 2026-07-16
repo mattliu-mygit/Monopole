@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, RootModel
 
+from weave_agent_signals.judges.tokens import TokenCounterName
 from weave_agent_signals.run_config import (
     EffectiveRunConfig,
     JudgeBackendCatalog,
@@ -225,13 +226,14 @@ class JudgingWindowResponse(ResponseModel):
 
 class JudgingWindowPlanResponse(ResponseModel):
     plan_id: str
-    contract_version: str
+    contract_version: Literal["2"]
     conversation_id: str
     input_cap_tokens: int
     raw_budget_tokens: int
     chunk_count: int
     overlap_turns: int
-    token_estimator: str
+    token_counter: TokenCounterName
+    capacity_reserve_tokens: int
     merge_input_tokens: int
     raw_turns: list[JudgingRawTurnResponse]
     raw_coverage_trace_ids: list[str]

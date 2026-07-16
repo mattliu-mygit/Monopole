@@ -10,18 +10,22 @@ import {
 const writer: ModelDescriptor = {
   id: 'writer', label: 'Writer', family: 'openai', backend: 'cli',
   supported_roles: ['proposal_writer'], max_input_tokens: 128_000,
+  token_counter: 'utf8_bytes_div_3',
 }
 const anthropic: ModelDescriptor = {
   id: 'anthropic', label: 'Anthropic', family: 'anthropic', backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'], max_input_tokens: 128_000,
+  token_counter: 'utf8_bytes_div_3',
 }
 const openai: ModelDescriptor = {
   id: 'openai', label: 'OpenAI', family: 'openai', backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'], max_input_tokens: 128_000,
+  token_counter: 'utf8_bytes_div_3',
 }
 const meta: ModelDescriptor = {
   id: 'meta', label: 'Meta', family: 'meta', backend: 'cli',
   supported_roles: ['judge', 'proposal_evaluator'], max_input_tokens: 128_000,
+  token_counter: 'utf8_bytes_div_3',
 }
 const metaAlt = { ...meta, id: 'meta-alt', label: 'Meta alternate' }
 
