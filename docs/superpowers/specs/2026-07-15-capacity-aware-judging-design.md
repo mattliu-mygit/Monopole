@@ -1,4 +1,4 @@
-# Capacity-Aware Judging and Lossless Evidence Deduplication
+# Capacity-Aware Judging
 
 ## Goal
 
@@ -16,14 +16,9 @@ also contains individual rendered turns as large as 2.45 MB because root turns
 include nested subagent tool results.
 
 The current UTF-8-bytes-divided-by-three estimator is conservative but not a
-model token count. Tokenization differs by family and model version; Claude
-Sonnet 5, for example, uses a new tokenizer that produces approximately 30%
-more tokens than its predecessor for the same input.
-
-Exact duplicate tool results account for about 18% of tool-result bytes in the
-observed failed cohort. Deduplication helps several large turns substantially,
-but saves only about 14 KB from the single largest turn, so correct capacity
-routing remains necessary.
+model token count. Tokenization differs by family and model version. Correct
+capacity routing is therefore the primary fix; evidence compression and
+deduplication are explicitly deferred.
 
 ## Context policy
 
@@ -51,10 +46,9 @@ published limits for the remaining models.
 
 ## Reviewer applicability
 
-Window planning remains reviewer-specific. After lossless deduplication, a
-reviewer is applicable to a session only when every indivisible turn fits its
-raw budget and the complete sliding-window and merge plans fit its context
-capacity.
+Window planning remains reviewer-specific. A reviewer is applicable to a
+session only when every indivisible turn fits its raw budget and the complete
+sliding-window and merge plans fit its context capacity.
 
 An inapplicable reviewer is recorded as skipped with a stable reason such as
 `insufficient_context_capacity`; it is not a failed inference attempt. Other
@@ -63,86 +57,39 @@ session is recorded as unevaluable and the run continues. Progress, artifacts,
 results, analysis, and reflection distinguish skipped coverage from failed or
 missing work.
 
-Judges never receive incomplete unique evidence while claiming a whole-session
-verdict.
-
-## Lossless duplicate-result representation
-
-Deduplication is scoped to one session and applies only to nonempty tool result
-payloads with identical UTF-8 bytes. Semantic similarity is not sufficient.
-
-The first occurrence in session order remains the canonical full result. A
-later duplicate keeps its tool identity, name, arguments, status, timestamps,
-and position, but replaces only the repeated result bytes with a deterministic
-marker containing:
-
-- the canonical evidence ID;
-- the exact content SHA-256 digest;
-- the original byte length.
-
-This preserves the fact, location, outcome, and context of every repeated tool
-call while presenting the identical result content raw once. Every canonical
-result still receives raw coverage in one core window, and surrounding digests
-plus final finding merge carry its relevance across the session.
-
-No truncation, semantic deduplication, token pruning, or generated summary of
-unique tool evidence is introduced in this version.
+Judges never receive incomplete evidence while claiming a whole-session
+verdict. This version does not truncate, deduplicate, split, or otherwise
+compress an indivisible turn.
 
 ## Token counting strategy
 
-Token counting is an explicit model-catalog capability, not inferred from
-family names at runtime. The effective configuration and judging plan pin the
-counter identity and version used for every reviewer.
+Token counting is an explicit model-catalog capability. The effective
+configuration pins the counter used for every reviewer.
 
 The first implementation adds OpenAI's `tiktoken` dependency:
 
 - GPT-5 and GPT-4o-family models use the explicitly pinned `o200k_base`
   encoding.
 - GPT-OSS models use the explicitly pinned `o200k_harmony` encoding.
-- Unknown OpenAI model IDs fail closed unless their catalog descriptor names an
-  encoding; automatic fallback to a different encoding is not allowed.
+- Other models use the existing conservative UTF-8 byte estimator.
 
-Claude has no authoritative local tokenizer package. Its official token-count
-endpoint is accurate for a selected model, but the local CLI backend does not
-share API credentials and planning must remain deterministic and offline.
-Claude therefore keeps the conservative UTF-8 byte estimator initially, with
-its estimator identity pinned and the 100K/50K capacity buffer protecting
-request-format overhead and estimation error.
+Claude, Llama, and Granite keep the conservative estimator because adding API
+calls, model downloads, or a broad tokenizer abstraction would add operational
+complexity without solving the immediate capacity-routing problem. The
+100K/50K buffers protect against request-format overhead and estimation error.
 
-Open-weight Llama and Granite tokenizers are available through Hugging Face,
-but `transformers` plus runtime model downloads would add a large dependency
-and nondeterministic network/cache behavior. They retain the conservative
-fallback initially. A later change may pin tokenizer JSON assets and use the
-smaller `tokenizers` runtime after measured benefit.
-
-LiteLLM is not adopted. It provides broad tokenizer helpers, but unsupported
-models can silently fall back to an OpenAI tokenizer and its model metadata is
-community-maintained. That behavior is too permissive for a reproducible
-evaluation plan.
-
-Provider count-token endpoints remain useful for offline calibration tests.
-Calibration compares representative rendered evidence against the pinned local
-counter or byte estimator and verifies that the configured buffer covers the
-observed error. It does not become an unpinned runtime planning dependency.
-
-W&B provides two useful actual-usage signals, neither of which replaces
-preflight counting. Hydrated Weave chat spans contain provider-reported token
-usage for the original agent calls, and W&B Inference chat completions return
-usage for a judge call after it finishes. The former describes a different
-payload from the rendered judge window; the latter arrives too late to decide
-whether that request fits. Post-call judge usage is therefore retained for
-estimator calibration and monitoring, while the pinned local counter remains
-authoritative for window planning. W&B Inference currently documents chat
-completions and model listing, but no preflight token-count endpoint.
+Existing provider-reported token usage from original Weave traces and completed
+judge calls remains ordinary accounting data. It is not used for planning
+because it either describes a different payload or arrives after the request.
+No calibration subsystem is added.
 
 ## Persistence and observability
 
 The judging plan and retained artifacts expose:
 
 - model context capacity and buffer tier;
-- token counter identity and version;
+- token counter identity;
 - estimated raw and overhead tokens;
-- duplicate-result canonical references and saved bytes;
 - per-reviewer applicability or skip reason;
 - per-session reviewer coverage used by analysis and reflection.
 
@@ -151,10 +98,8 @@ identities.
 
 ## Verification
 
-Tests cover capacity-tier boundaries, corrected catalog limits, exact duplicate
-matching, non-deduplication of near matches, canonical session ordering,
-tamper-resistant duplicate markers, model-specific token counters, unknown
-model failure, reviewer skipping, zero-applicable-reviewer sessions, progress
+Tests cover capacity-tier boundaries, corrected catalog limits, the two token
+counting paths, reviewer skipping, zero-applicable-reviewer sessions, progress
 totals, and reflection exclusion of unevaluated evidence.
 
 A fixture based on the observed oversized shape must show that GPT-5.6 Sol and
@@ -173,15 +118,7 @@ buffers, while 128K-200K reviewers are skipped without failing the run.
   heuristics when available.
 - [`tiktoken`](https://github.com/openai/tiktoken) maps GPT-5 to `o200k_base`
   and GPT-OSS to `o200k_harmony`.
-- [LiteLLM token usage documentation](https://docs.litellm.ai/docs/completion/token_usage)
-  documents both its broad tokenizer support and unsupported-model fallback.
-- [W&B Serverless Inference API](https://docs.wandb.ai/inference/api-reference)
-  documents chat completions and model listing, with no preflight token-count
-  method; judge response usage remains a post-call calibration signal.
 - [RULER](https://arxiv.org/abs/2404.06654) and
   [Lost in the Middle](https://aclanthology.org/anthology-files/pdf/tacl/2024.tacl-1.9.pdf)
   support retaining substantial headroom instead of treating advertised
   context size as uniformly effective capacity.
-- [Fundamental Limits of Prompt Compression](https://proceedings.neurips.cc/paper_files/paper/2024/hash/ac8fbba029dadca99d6b8c3f913d3ed6-Abstract-Conference.html)
-  supports deferring rubric-agnostic lossy compression because useful
-  information depends on the downstream query.
