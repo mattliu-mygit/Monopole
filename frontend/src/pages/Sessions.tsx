@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
+import SignalCallout from '../components/SignalCallout'
 import { getSessions } from '../api'
 import type { SessionSummary } from '../types'
 
@@ -103,6 +104,7 @@ export default function Sessions() {
                     )}
                     {session.git_branch && <span>{session.git_branch}</span>}
                   </div>
+                  <SignalCallout evidence={session.signal_evidence} />
                 </div>
                 <span className="font-mono text-xs text-gray-400 shrink-0">
                   {session.conversation_id.slice(0, 8)}

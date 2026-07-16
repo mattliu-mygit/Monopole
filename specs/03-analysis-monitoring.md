@@ -70,6 +70,12 @@ observed recovery removes its active key so a later recurrence can alert again.
 A failed delivery is not marked active and remains retryable. Monitoring state
 is optional and separate from evaluation-run state.
 
+Low W&B Agent Signals are high-recall recommendations for human review, not
+Monopole quality judgments. The Sessions page and evaluation-run session
+selector call out affected conversations with the lowest observed rating and
+signal names. The callout does not reorder, select, or exclude a session and
+does not assert that the conversation failed an evaluation.
+
 ## Limits
 
 - Intervals summarize observed samples; they do not correct trace-selection,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -61,6 +62,7 @@ class FakeClient:
         self.query_calls = []
         self.hydrated = []
         self.feedback_batches = []
+        self.feedback_by_ref = {}
 
     def __enter__(self):
         return self
@@ -86,7 +88,13 @@ class FakeClient:
 
     def query_all_feedback_batch(self, refs: list[str]):
         self.feedback_batches.append(refs)
-        return {ref: [{"id": "feedback-1", "weave_ref": ref}] for ref in refs}
+        return {
+            ref: self.feedback_by_ref.get(
+                ref,
+                [{"id": "feedback-1", "weave_ref": ref}],
+            )
+            for ref in refs
+        }
 
     def query_project_feedback(self, *, limit: int):
         assert limit == 1000
@@ -124,6 +132,194 @@ def test_session_listing_filters_synthetic_sessions_and_reports_truncation():
             "include_details": True,
         }
     ]
+    assert response.json()["sessions"][0]["signal_evidence"] == []
+    assert backend.feedback_batches == [[backend.turns[0].ref_for(backend.entity, backend.project)]]
+
+
+def test_session_listing_hydrates_low_signal_feedback_from_exact_turn_refs():
+    client, backend = _client()
+    turn = backend.turns[0]
+    turn_ref = turn.ref_for(backend.entity, backend.project)
+    backend.feedback_by_ref[turn_ref] = [
+        {
+            "id": "feedback-low",
+            "weave_ref": turn_ref,
+            "feedback_type": "wandb.agent_monitor",
+            "runnable_ref": (
+                "weave:///weave-team/agent-sessions/object/"
+                "agent-signal-user-frustration-v1-scorer:digest"
+            ),
+            "created_at": "2026-07-14T12:02:00Z",
+            "scorer_ratings": {"_rating_": 0.25},
+            "payload": {
+                "output": {
+                    "value": 0.25,
+                    "reason": "The user explicitly says they are frustrated.",
+                }
+            },
+        }
+    ]
+
+    response = client.get(
+        "/api/sessions",
+        params={
+            "since": "2026-07-14T12:00:00Z",
+            "until": "2026-07-14T13:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["sessions"][0]["signal_evidence"] == [
+        {
+            "signal": "user-frustration",
+            "version": "v1",
+            "rating": 0.25,
+            "reason": "The user explicitly says they are frustrated.",
+            "turn_id": "trace-a",
+            "turn_started_at": "2026-07-14T12:00:00+00:00",
+        }
+    ]
+
+
+def test_session_listing_uses_newest_low_signal_and_ignores_healthy_or_unrelated_rows():
+    client, backend = _client()
+    turn = backend.turns[0]
+    turn_ref = turn.ref_for(backend.entity, backend.project)
+    scorer_ref = (
+        "weave:///weave-team/agent-sessions/object/agent-signal-user-frustration-v1-scorer:digest"
+    )
+    backend.feedback_by_ref[turn_ref] = [
+        {
+            "id": "feedback-old",
+            "feedback_type": "wandb.agent_monitor",
+            "runnable_ref": scorer_ref,
+            "created_at": "2026-07-14T12:01:00Z",
+            "scorer_ratings": {"_rating_": 0.5},
+            "payload": {"output": {"value": 0.5, "reason": "Old reason"}},
+        },
+        {
+            "id": "feedback-new",
+            "feedback_type": "wandb.agent_monitor",
+            "runnable_ref": scorer_ref,
+            "created_at": "2026-07-14T12:02:00Z",
+            "scorer_ratings": {"_rating_": 0.25},
+            "payload": {"output": {"rating": 0.25, "reason": "New reason"}},
+        },
+        {
+            "id": "feedback-healthy",
+            "feedback_type": "wandb.agent_monitor",
+            "runnable_ref": (
+                "weave:///weave-team/agent-sessions/object/"
+                "agent-signal-low-quality-response-v1-scorer:digest"
+            ),
+            "created_at": "2026-07-14T12:03:00Z",
+            "scorer_ratings": {"_rating_": 0.75},
+            "payload": {"output": {"value": 0.75, "reason": "No material issue"}},
+        },
+        {
+            "id": "feedback-unrelated",
+            "feedback_type": "wandb.agent_monitor",
+            "runnable_ref": "weave:///weave-team/agent-sessions/object/other-scorer:digest",
+        },
+    ]
+
+    response = client.get(
+        "/api/sessions",
+        params={"since": "2026-07-14T12:00:00Z", "until": "2026-07-14T13:00:00Z"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["sessions"][0]["signal_evidence"] == [
+        {
+            "signal": "user-frustration",
+            "version": "v1",
+            "rating": 0.25,
+            "reason": "New reason",
+            "turn_id": "trace-a",
+            "turn_started_at": "2026-07-14T12:00:00+00:00",
+        }
+    ]
+
+
+def test_session_listing_newer_healthy_signal_supersedes_older_low_signal():
+    client, backend = _client()
+    turn = backend.turns[0]
+    turn_ref = turn.ref_for(backend.entity, backend.project)
+    scorer_ref = (
+        "weave:///weave-team/agent-sessions/object/agent-signal-user-frustration-v1-scorer:digest"
+    )
+    backend.feedback_by_ref[turn_ref] = [
+        {
+            "id": "feedback-low",
+            "feedback_type": "wandb.agent_monitor",
+            "runnable_ref": scorer_ref,
+            "created_at": "2026-07-14T12:01:00Z",
+            "scorer_ratings": {"_rating_": 0.25},
+            "payload": {"output": {"value": 0.25, "reason": "Old low result"}},
+        },
+        {
+            "id": "feedback-healthy",
+            "feedback_type": "wandb.agent_monitor",
+            "runnable_ref": scorer_ref,
+            "created_at": "2026-07-14T12:02:00Z",
+            "scorer_ratings": {"_rating_": 0.75},
+            "payload": {"output": {"value": 0.75, "reason": "New healthy result"}},
+        },
+    ]
+
+    response = client.get(
+        "/api/sessions",
+        params={"since": "2026-07-14T12:00:00Z", "until": "2026-07-14T13:00:00Z"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["sessions"][0]["signal_evidence"] == []
+
+
+@pytest.mark.parametrize(
+    ("output", "created_at", "scorer_rating"),
+    [
+        ({"value": True, "reason": "Invalid"}, "2026-07-14T12:02:00Z", True),
+        ({"value": 0.3, "reason": "Invalid"}, "2026-07-14T12:02:00Z", 0.3),
+        (
+            {"rating": 0.25, "value": 0.5, "reason": "Invalid"},
+            "2026-07-14T12:02:00Z",
+            0.25,
+        ),
+        ({"value": 0.25, "reason": "  "}, "2026-07-14T12:02:00Z", 0.25),
+        ({"value": 0.25, "reason": "Invalid"}, "2026-07-14T12:02:00", 0.25),
+        ({"value": 0.25, "reason": "Invalid"}, "2026-07-14T12:02:00Z", 0.5),
+    ],
+)
+def test_session_listing_rejects_malformed_eligible_signal_feedback(
+    output,
+    created_at,
+    scorer_rating,
+):
+    client, backend = _client()
+    turn_ref = backend.turns[0].ref_for(backend.entity, backend.project)
+    backend.feedback_by_ref[turn_ref] = [
+        {
+            "id": "feedback-malformed",
+            "feedback_type": "wandb.agent_monitor",
+            "runnable_ref": (
+                "weave:///weave-team/agent-sessions/object/"
+                "agent-signal-user-frustration-v1-scorer:digest"
+            ),
+            "created_at": created_at,
+            "scorer_ratings": {"_rating_": scorer_rating},
+            "payload": {"output": output},
+        }
+    ]
+
+    with pytest.raises(ValueError, match="eligible Signal feedback"):
+        client.get(
+            "/api/sessions",
+            params={
+                "since": "2026-07-14T12:00:00Z",
+                "until": "2026-07-14T13:00:00Z",
+            },
+        )
 
 
 def test_session_detail_hydrates_children_and_returns_feedback():
