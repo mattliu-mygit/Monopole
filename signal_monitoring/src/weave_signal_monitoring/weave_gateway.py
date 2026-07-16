@@ -3,7 +3,7 @@ import json
 import re
 from collections import defaultdict
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Protocol
 from urllib.parse import unquote, urlparse
 
@@ -13,6 +13,7 @@ from weave import Monitor
 from weave.flow.scorer import Scorer
 from weave.trace.objectify import register_object
 from weave.trace.op import op
+from weave.trace_server.agents.types import AgentSpansQueryReq
 from weave.trace_server.interface.builtin_object_classes.llm_structured_model import (
     LLMStructuredCompletionModel,
 )
@@ -59,7 +60,9 @@ class MonitorStore(Protocol):
 
 
 @register_object
-class SignalJudgeScorer(Scorer):
+class LLMAsAJudgeScorer(Scorer):
+    """Wire-compatible agent scorer without importing the full scorer extra."""
+
     model: LLMStructuredCompletionModel
     scoring_prompt: str
 
@@ -74,6 +77,7 @@ def definition_fingerprint(definition: SignalDefinition) -> str:
         **asdict(definition),
         "monitor_name": definition.monitor_name,
         "scorer_name": definition.scorer_name,
+        "model_name": definition.model_name,
         "scoring_prompt": definition.scoring_prompt,
         "model": DEFAULT_MODEL,
         "op_name": TURN_OP_NAME,
@@ -86,11 +90,11 @@ def definition_fingerprint(definition: SignalDefinition) -> str:
 
 def build_monitor(definition: SignalDefinition, fingerprint: str) -> Monitor:
     model = LLMStructuredCompletionModel(
-        name=f"{definition.scorer_name}-model",
+        name=definition.model_name,
         llm_model_id=DEFAULT_MODEL,
         default_params={"temperature": 0, "response_format": "json_object"},
     )
-    scorer = SignalJudgeScorer(
+    scorer = LLMAsAJudgeScorer(
         name=definition.scorer_name,
         model=model,
         scoring_prompt=definition.scoring_prompt,
@@ -284,24 +288,26 @@ class WeaveGateway:
                 if runnable_ref not in known_refs:
                     continue
                 feedback_type = raw.get("feedback_type")
-                if not isinstance(feedback_type, str) or not feedback_type.startswith(
-                    "wandb.runnable"
-                ):
+                if feedback_type != "wandb.agent_monitor":
                     continue
                 payload = raw.get("payload")
                 if not isinstance(payload, dict) or "output" not in payload:
                     continue
                 try:
+                    output = ScoreOutput.model_validate(payload["output"])
+                    ratings = raw.get("scorer_ratings")
+                    if not isinstance(ratings, dict) or ratings.get("_rating_") != output.rating:
+                        raise ValueError("typed rating does not match scorer output")
                     records.append(
                         FeedbackRecord(
                             id=feedback_id,
                             weave_ref=raw["weave_ref"],
                             runnable_ref=runnable_ref,
                             created_at=raw["created_at"],
-                            output=ScoreOutput.model_validate(payload["output"]),
+                            output=output,
                         )
                     )
-                except (KeyError, TypeError, ValidationError) as error:
+                except (KeyError, TypeError, ValueError, ValidationError) as error:
                     raise WeaveReadError(f"malformed eligible feedback: {feedback_id}") from error
             if len(rows) < page_size:
                 break
@@ -341,7 +347,16 @@ class WeaveGateway:
             return None
         content = message.get("content")
         if isinstance(content, str):
-            return content.strip() or None
+            stripped = content.strip()
+            if not stripped:
+                return None
+            try:
+                decoded = json.loads(stripped)
+            except json.JSONDecodeError:
+                return stripped
+            if isinstance(decoded, list):
+                return WeaveGateway._message_text({"content": decoded})
+            return stripped
         if not isinstance(content, list):
             return None
         parts: list[str] = []
@@ -374,6 +389,42 @@ class WeaveGateway:
         return None
 
     @classmethod
+    def _agent_span_record(cls, span: Any, *, turn_id: str | None = None) -> TurnRecord:
+        conversation_id = getattr(span, "conversation_id", None)
+        if not isinstance(conversation_id, str) or not conversation_id:
+            raise WeaveReadError(
+                f"turn {getattr(span, 'trace_id', '')!r} has no conversation identity"
+            )
+        messages = getattr(span, "input_messages", None)
+        user_request = None
+        if isinstance(messages, list):
+            for message in reversed(messages):
+                if isinstance(message, dict) and message.get("role") == "user":
+                    user_request = cls._message_text(message)
+                    if user_request:
+                        break
+        display_name = getattr(span, "conversation_name", None)
+        started_at = span.started_at
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        else:
+            started_at = started_at.astimezone(timezone.utc)
+        ended_at = getattr(span, "ended_at", None)
+        if ended_at is not None:
+            if ended_at.tzinfo is None:
+                ended_at = ended_at.replace(tzinfo=timezone.utc)
+            else:
+                ended_at = ended_at.astimezone(timezone.utc)
+        return TurnRecord(
+            turn_id=turn_id or span.trace_id,
+            conversation_id=conversation_id,
+            started_at=started_at,
+            ended_at=ended_at,
+            display_name=display_name or None,
+            user_request=user_request,
+        )
+
+    @classmethod
     def _turn_record(cls, call: Any, *, turn_id: str | None = None) -> TurnRecord:
         conversation_id = cls._conversation_id(call)
         if conversation_id is None:
@@ -393,6 +444,22 @@ class WeaveGateway:
         except Exception as error:
             raise WeaveReadError("turn query failed") from error
 
+    def _get_agent_spans(self, query: dict[str, Any]) -> list[Any]:
+        try:
+            response = self.client.server.agent_spans_query(
+                AgentSpansQueryReq(
+                    project_id=self.project_id,
+                    query=query,
+                    include_details=True,
+                    limit=10_000,
+                )
+            )
+        except Exception as error:
+            raise WeaveReadError("agent span query failed") from error
+        if len(response.spans) == 10_000:
+            raise WeaveReadError("agent span query reached its completeness limit")
+        return response.spans
+
     def read_turns(self, refs: tuple[str, ...]) -> tuple[TurnRecord, ...]:
         requested = list(dict.fromkeys(self._turn_ref(ref) for ref in refs))
         call_ids = [value for kind, value in requested if kind == "call"]
@@ -403,9 +470,27 @@ class WeaveGateway:
                 if self._is_turn(call) and call.id in call_ids:
                     by_request[("call", call.id)].append(call)
         if trace_ids:
-            for call in self._get_calls(filter={"trace_ids": trace_ids}):
-                if self._is_turn(call) and call.trace_id in trace_ids:
-                    by_request[("agent_turn", call.trace_id)].append(call)
+            query = {
+                "$expr": {
+                    "$and": [
+                        {
+                            "$in": [
+                                {"$getField": "trace_id"},
+                                [{"$literal": value} for value in trace_ids],
+                            ]
+                        },
+                        {
+                            "$eq": [
+                                {"$getField": "parent_span_id"},
+                                {"$literal": ""},
+                            ]
+                        },
+                    ]
+                }
+            }
+            for span in self._get_agent_spans(query):
+                if span.parent_span_id == "" and span.trace_id in trace_ids:
+                    by_request[("agent_turn", span.trace_id)].append(span)
 
         result: list[TurnRecord] = []
         for request in requested:
@@ -414,8 +499,10 @@ class WeaveGateway:
                 raise WeaveReadError(f"missing requested turn: {request[1]}")
             if len(matches) != 1:
                 raise WeaveReadError(f"ambiguous requested turn: {request[1]}")
-            forced_id = request[1] if request[0] == "agent_turn" else None
-            result.append(self._turn_record(matches[0], turn_id=forced_id))
+            if request[0] == "agent_turn":
+                result.append(self._agent_span_record(matches[0], turn_id=request[1]))
+            else:
+                result.append(self._turn_record(matches[0]))
         return tuple(result)
 
     def read_conversation_turns(
@@ -438,6 +525,25 @@ class WeaveGateway:
                 }
             )
         )
+        agent_query = {
+            "$expr": {
+                "$and": [
+                    {
+                        "$in": [
+                            {"$getField": "conversation_id"},
+                            [{"$literal": value} for value in requested],
+                        ]
+                    },
+                    {
+                        "$eq": [
+                            {"$getField": "parent_span_id"},
+                            {"$literal": ""},
+                        ]
+                    },
+                ]
+            }
+        }
+        agent_spans = self._get_agent_spans(agent_query)
         turns_by_id: dict[str, TurnRecord] = {}
         found_conversations: set[str] = set()
         for call in calls:
@@ -453,6 +559,15 @@ class WeaveGateway:
                 raise WeaveReadError(f"inconsistent duplicate turn: {record.turn_id}")
             turns_by_id[record.turn_id] = record
             found_conversations.add(conversation_id)
+        for span in agent_spans:
+            if span.parent_span_id != "" or span.conversation_id not in requested:
+                continue
+            record = self._agent_span_record(span)
+            existing = turns_by_id.get(record.turn_id)
+            if existing is not None and existing != record:
+                raise WeaveReadError(f"inconsistent duplicate turn: {record.turn_id}")
+            turns_by_id[record.turn_id] = record
+            found_conversations.add(record.conversation_id)
         missing = [value for value in requested if value not in found_conversations]
         if missing:
             raise WeaveReadError(f"missing conversation hydration: {', '.join(missing)}")

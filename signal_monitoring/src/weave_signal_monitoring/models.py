@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 Rating = Literal[0.0, 0.25, 0.5, 0.75, 1.0]
 
@@ -11,7 +11,8 @@ class StrictModel(BaseModel):
 
 
 class ScoreOutput(StrictModel):
-    rating: Rating
+    rating: Rating = Field(validation_alias=AliasChoices("rating", "value"))
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     reason: str = Field(min_length=1, max_length=240)
 
     @field_validator("reason")

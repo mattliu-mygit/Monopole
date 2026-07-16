@@ -46,8 +46,9 @@ different definition, installation fails instead of overwriting it or creating a
 duplicate. A partial external failure is resumable: monitors created before the
 failure remain installed and are reused on the next invocation.
 
-The implementation uses Weave's generic `Monitor` with a small local LLM judge
-scorer. The local scorer avoids the unrelated model and NLP packages in the full
+The implementation uses Weave's `Monitor` with the Agent Signals-compatible LLM
+judge shape and W&B Inference model `coreweave/openai/gpt-oss-20b`. The local
+wire definition avoids pulling unrelated model and NLP packages from the full
 `weave[scorers]` extra.
 
 ## Hydrate conversations
@@ -99,7 +100,7 @@ Each conversation contains:
 - the lowest observed rating;
 - ordered signal evidence with version, rating, reason, and turn identity;
 - ordered triggering turn IDs; and
-- a W&B link to the first triggering turn.
+- a W&B Agents link to the conversation.
 
 Conversations sort by lowest rating first, then most recent activity. Repeated
 feedback for one signal and turn resolves to the newest completed score.
@@ -149,7 +150,7 @@ Before relying on a new Weave project or SDK version:
 2. Generate or select one agent turn with an explicit low-signal cue.
 3. Wait for every monitor attempt to finish.
 4. Hydrate a narrow UTC window containing the turn with `--json`.
-5. Confirm every monitor attached readable runnable feedback to the same turn,
+5. Confirm every monitor attached readable numeric Agent Signal feedback to the same turn,
    each output has an exact numeric anchor and reason, at least one rating is
    `<= 0.5`, and the expected conversation and W&B link are present.
 6. Re-run hydration and confirm evidence selection and ordering are stable.

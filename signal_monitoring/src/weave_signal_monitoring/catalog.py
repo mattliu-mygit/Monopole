@@ -4,20 +4,46 @@ CATALOG_VERSION = "v1"
 ANCHORS = (0.0, 0.25, 0.5, 0.75, 1.0)
 RECOMMENDATION_THRESHOLD = 0.5
 SAMPLING_RATE = 1.0
-DEFAULT_MODEL = "openai/gpt-4.1-mini"
+DEFAULT_MODEL = "coreweave/openai/gpt-oss-20b"
 TURN_OP_NAME = "weave.genai.turn_ended"
 
-_BASE_PROMPT = """You are a high recall production monitor. Judge only the visible current agent turn.
-Return one JSON object with keys rating and reason. rating must be exactly one of 0.0, 0.25, 0.5, 0.75, or 1.0, where 1.0 means no evidence of the problem, 0.75 means weak or ambiguous indication, 0.5 means plausible indication, 0.25 means strong indication, and 0.0 means explicit or severe evidence. reason must be at most 240 characters and cite visible turn evidence without quoting secrets. Do not infer unseen conversation history.
+_BASE_PROMPT = """You are a high recall evaluation rater for an AI agent. Judge only the visible current agent turn.
 
-User messages:
-{input_messages}
-
-Agent messages:
-{output_messages}
-
-Rubric:
+Rating criterion:
 {rubric}
+
+Trace:
+<agent>
+  <name>{agent_name}</name>
+  <version>{agent_version}</version>
+  <description>{agent_description}</description>
+</agent>
+<conversation_name>{conversation_name}</conversation_name>
+<system_instructions>
+{system_instructions}
+</system_instructions>
+<input_messages>
+{input_messages}
+</input_messages>
+<output_messages>
+{output_messages}
+</output_messages>
+<status>
+  <code>{status_code}</code>
+  <message>{status_message}</message>
+</status>
+
+Respond with a JSON object of the form:
+
+{"value": <float between 0.0 and 1.0>, "confidence": 0.0-1.0, "reason": "one short sentence citing the evidence"}
+
+Rules:
+- "value" MUST be a JSON number and exactly one of 0.0, 0.25, 0.5, 0.75, or 1.0.
+- 1.0 means no evidence of the problem; 0.75 weak or ambiguous indication; 0.5 plausible indication; 0.25 strong indication; and 0.0 explicit or severe evidence.
+- "confidence" is your certainty in the rating from 0.0 to 1.0.
+- "reason" must be at most 240 characters and cite specific visible turn evidence without quoting secrets.
+- Do not infer unseen conversation history.
+- Do NOT emit markdown fences or commentary, only the JSON object.
 """
 
 
@@ -34,15 +60,15 @@ class SignalDefinition:
 
     @property
     def scorer_name(self) -> str:
-        return f"agent-signal-{self.slug}-{self.version}-judge"
+        return f"{self.monitor_name}-scorer"
+
+    @property
+    def model_name(self) -> str:
+        return f"{self.monitor_name}-model"
 
     @property
     def scoring_prompt(self) -> str:
-        return _BASE_PROMPT.format(
-            input_messages="{input_messages}",
-            output_messages="{output_messages}",
-            rubric=self.rubric,
-        )
+        return _BASE_PROMPT.replace("{rubric}", self.rubric)
 
 
 CATALOG = (
@@ -62,7 +88,7 @@ CATALOG = (
         "explicit-repeat-or-rephrase-cue",
         CATALOG_VERSION,
         "User explicitly indicates that an unresolved request is being repeated or restated.",
-        "Rate explicit language showing the user is repeating, restating, or asking again for an unresolved request. Do not infer semantic repetition when the current turn has no repeat cue.",
+        "Evaluate only the user messages. Rate explicit language showing the user is repeating, restating, or asking again for an unresolved request. Phrases such as 'I already asked', 'again', or 'as I said' are direct repeat cues. Do not infer semantic repetition when the user messages contain no repeat cue.",
     ),
     SignalDefinition(
         "stalled-or-deferred-response",

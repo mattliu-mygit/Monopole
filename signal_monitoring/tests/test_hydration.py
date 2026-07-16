@@ -13,7 +13,7 @@ IDENTITY = SignalIdentity(
     version="v1",
     monitor_name="agent-signal-user-frustration-v1",
     scorer_ref=(
-        "weave:///weave-team/agent-sessions/object/agent-signal-user-frustration-v1-judge:digest"
+        "weave:///weave-team/agent-sessions/object/agent-signal-user-frustration-v1-scorer:digest"
     ),
 )
 QUALITY_IDENTITY = SignalIdentity(
@@ -22,7 +22,7 @@ QUALITY_IDENTITY = SignalIdentity(
     monitor_name="agent-signal-low-quality-response-v1",
     scorer_ref=(
         "weave:///weave-team/agent-sessions/object/"
-        "agent-signal-low-quality-response-v1-judge:digest"
+        "agent-signal-low-quality-response-v1-scorer:digest"
     ),
 )
 
@@ -127,6 +127,21 @@ def test_display_fallback_normalizes_and_bounds_first_request():
     assert result[0].display_name.endswith("...")
 
 
+def test_conversation_link_targets_encoded_wandb_agents_session():
+    only_turn = turn("turn-1", "session/with spaces", 0)
+
+    result = hydrate(
+        [feedback("one", "turn-1", 0.5, 1)],
+        [only_turn],
+        [only_turn],
+    )
+
+    assert result[0].wandb_url == (
+        "https://wandb.ai/weave-team/agent-sessions/weave/agents/conversations/"
+        "session%2Fwith%20spaces"
+    )
+
+
 def test_latest_recorded_display_name_wins():
     turns = [
         turn("a1", "a", 0, name="Old name"),
@@ -183,9 +198,11 @@ def raw_feedback(index, *, runnable_ref=IDENTITY.scorer_ref, output=None):
         "id": f"feedback-{index}",
         "weave_ref": f"weave:///weave-team/agent-sessions/call/turn-{index}",
         "runnable_ref": runnable_ref,
-        "feedback_type": "wandb.runnable.agent-signal",
+        "feedback_type": "wandb.agent_monitor",
         "created_at": NOW + timedelta(seconds=index),
-        "payload": {"output": output or {"rating": 0.5, "reason": "visible"}},
+        "payload": {"output": output or {"value": 0.5, "reason": "visible"}},
+        "scorer_ratings": {"_rating_": (output or {}).get("value", 0.5)},
+        "scorer_rating_reasons": {"_rating_": (output or {}).get("reason", "visible")},
     }
 
 
@@ -199,6 +216,9 @@ class FeedbackServer:
         start = request.offset or 0
         end = start + (request.limit or len(self.rows))
         return SimpleNamespace(result=self.rows[start:end])
+
+    def agent_spans_query(self, request):
+        return SimpleNamespace(spans=[])
 
 
 def test_gateway_reads_complete_feedback_pages_for_exact_identities():
@@ -235,6 +255,19 @@ def test_gateway_fails_on_malformed_eligible_feedback():
         "weave-team",
         "agent-sessions",
         client=SimpleNamespace(server=FeedbackServer([raw_feedback(1, output={"rating": 0.5})])),
+    )
+
+    with pytest.raises(WeaveReadError, match="malformed eligible feedback"):
+        gateway.read_feedback((IDENTITY,), NOW, NOW + timedelta(hours=1))
+
+
+def test_gateway_fails_when_typed_rating_disagrees_with_output():
+    row = raw_feedback(1, output={"value": 0.25, "reason": "visible"})
+    row["scorer_ratings"] = {"_rating_": 0.5}
+    gateway = WeaveGateway(
+        "weave-team",
+        "agent-sessions",
+        client=SimpleNamespace(server=FeedbackServer([row])),
     )
 
     with pytest.raises(WeaveReadError, match="malformed eligible feedback"):
@@ -308,18 +341,97 @@ class CallsClient:
         return []
 
 
+def raw_agent_span(
+    trace_id,
+    *,
+    conversation_id,
+    minute=0,
+    parent_span_id="",
+    conversation_name="",
+    user_request="Please investigate",
+):
+    return SimpleNamespace(
+        trace_id=trace_id,
+        span_id=f"span-{trace_id}",
+        parent_span_id=parent_span_id,
+        conversation_id=conversation_id,
+        conversation_name=conversation_name,
+        started_at=NOW + timedelta(minutes=minute),
+        ended_at=NOW + timedelta(minutes=minute, seconds=30),
+        input_messages=[{"role": "user", "content": user_request}],
+    )
+
+
+class AgentSpanServer(FeedbackServer):
+    def __init__(self, spans):
+        super().__init__([])
+        self.spans = spans
+        self.agent_requests = []
+
+    def agent_spans_query(self, request):
+        self.agent_requests.append(request)
+        return SimpleNamespace(spans=self.spans)
+
+
+class AgentSpanClient(CallsClient):
+    def __init__(self, calls, spans):
+        super().__init__(calls)
+        self.server = AgentSpanServer(spans)
+
+
+def test_gateway_reads_agent_turn_from_agent_spans_endpoint():
+    span = raw_agent_span(
+        "otel-trace",
+        conversation_id="otel-conversation",
+        conversation_name="OTel chat",
+    )
+    client = AgentSpanClient([], [span])
+    gateway = WeaveGateway("weave-team", "agent-sessions", client=client)
+
+    result = gateway.read_turns(("weave:///weave-team/agent-sessions/agent_turn/otel-trace",))
+
+    assert result == (
+        TurnRecord(
+            turn_id="otel-trace",
+            conversation_id="otel-conversation",
+            started_at=NOW,
+            ended_at=NOW + timedelta(seconds=30),
+            display_name="OTel chat",
+            user_request="Please investigate",
+        ),
+    )
+    assert len(client.server.agent_requests) == 1
+    assert "otel-trace" in str(client.server.agent_requests[0].query)
+
+
+def test_gateway_interprets_naive_agent_span_timestamps_as_utc():
+    span = raw_agent_span("otel-trace", conversation_id="otel-conversation")
+    span.started_at = span.started_at.replace(tzinfo=None)
+    span.ended_at = span.ended_at.replace(tzinfo=None)
+    gateway = WeaveGateway(
+        "weave-team",
+        "agent-sessions",
+        client=AgentSpanClient([], [span]),
+    )
+
+    result = gateway.read_turns(("weave:///weave-team/agent-sessions/agent_turn/otel-trace",))
+
+    assert result[0].started_at.tzinfo == timezone.utc
+    assert result[0].ended_at is not None
+    assert result[0].ended_at.tzinfo == timezone.utc
+
+
 def test_gateway_reads_native_and_adapter_triggering_turn_refs():
     native = raw_call(
         "native-call", thread_id="native-conversation", turn_id="native-call", minute=1
     )
-    adapter = raw_call(
-        "adapter-call",
-        trace_id="adapter-trace",
+    adapter = raw_agent_span(
+        "adapter-trace",
         conversation_id="adapter-conversation",
         minute=2,
-        display_name="Adapter chat",
+        conversation_name="Adapter chat",
     )
-    client = CallsClient([native, adapter])
+    client = AgentSpanClient([native], [adapter])
     gateway = WeaveGateway("weave-team", "agent-sessions", client=client)
 
     result = gateway.read_turns(
@@ -344,10 +456,10 @@ def test_gateway_fails_when_triggering_turn_is_missing_or_ambiguous():
         gateway.read_turns(("weave:///e/p/call/missing",))
 
     duplicate_roots = [
-        raw_call("one", trace_id="same", conversation_id="a"),
-        raw_call("two", trace_id="same", conversation_id="a"),
+        raw_agent_span("same", conversation_id="a"),
+        raw_agent_span("same", conversation_id="a"),
     ]
-    gateway = WeaveGateway("e", "p", client=CallsClient(duplicate_roots))
+    gateway = WeaveGateway("e", "p", client=AgentSpanClient([], duplicate_roots))
     with pytest.raises(WeaveReadError, match="ambiguous requested turn"):
         gateway.read_turns(("weave:///e/p/agent_turn/same",))
 
@@ -364,6 +476,22 @@ def test_gateway_reads_complete_native_and_adapter_conversations():
     result = gateway.read_conversation_turns(("native", "adapter"))
 
     assert [item.turn_id for item in result] == ["n1", "n2", "a1"]
+
+
+def test_gateway_reads_agent_conversation_from_agent_spans_endpoint():
+    spans = [
+        raw_agent_span("turn-1", conversation_id="otel", minute=0),
+        raw_agent_span("turn-2", conversation_id="otel", minute=1),
+    ]
+    client = AgentSpanClient([], spans)
+    gateway = WeaveGateway("weave-team", "agent-sessions", client=client)
+
+    result = gateway.read_conversation_turns(("otel",))
+
+    assert [item.turn_id for item in result] == ["turn-1", "turn-2"]
+    assert all(item.conversation_id == "otel" for item in result)
+    assert len(client.server.agent_requests) == 1
+    assert "otel" in str(client.server.agent_requests[0].query)
 
 
 def test_gateway_fails_when_conversation_cannot_be_hydrated():

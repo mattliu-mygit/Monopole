@@ -118,7 +118,6 @@ def hydrate_conversations(
             raise HydrationError(f"conversation {conversation_id!r} has no hydrated turns")
         evidence.sort(key=lambda item: (item.turn_started_at, item.signal, item.turn_id))
         triggering_ids = list(dict.fromkeys(item.turn_id for item in evidence))
-        first_trigger = triggering_ids[0]
         conversations.append(
             FlaggedConversation(
                 conversation_id=conversation_id,
@@ -130,7 +129,7 @@ def hydrate_conversations(
                 triggering_turn_ids=triggering_ids,
                 wandb_url=(
                     f"https://wandb.ai/{quote(entity, safe='')}/{quote(project, safe='')}"
-                    f"/r/call/{quote(first_trigger, safe='')}"
+                    f"/weave/agents/conversations/{quote(conversation_id, safe='')}"
                 ),
             )
         )

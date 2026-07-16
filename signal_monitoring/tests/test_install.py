@@ -5,7 +5,7 @@ import pytest
 from weave_signal_monitoring.catalog import CATALOG
 from weave_signal_monitoring.weave_gateway import (
     DefinitionConflict,
-    SignalJudgeScorer,
+    LLMAsAJudgeScorer,
     WeaveGateway,
     build_monitor,
     definition_fingerprint,
@@ -86,7 +86,7 @@ def test_definition_fingerprint_changes_with_monitor_behavior():
     assert definition_fingerprint(changed) != baseline
 
 
-def test_build_monitor_uses_one_local_llm_judge_without_scorer_extras():
+def test_build_monitor_uses_supported_agent_llm_judge():
     definition = CATALOG[0]
     fingerprint = definition_fingerprint(definition)
 
@@ -99,9 +99,11 @@ def test_build_monitor_uses_one_local_llm_judge_without_scorer_extras():
     assert monitor.description.endswith(f"catalog_sha256={fingerprint}")
     assert len(monitor.scorers) == 1
     scorer = monitor.scorers[0]
-    assert isinstance(scorer, SignalJudgeScorer)
+    assert isinstance(scorer, LLMAsAJudgeScorer)
     assert scorer.name == definition.scorer_name
-    assert scorer.model.llm_model_id == "openai/gpt-4.1-mini"
+    assert scorer.name.endswith("-scorer")
+    assert scorer.model.name == definition.model_name
+    assert scorer.model.llm_model_id == "coreweave/openai/gpt-oss-20b"
     assert scorer.model.default_params.response_format == "json_object"
 
 
