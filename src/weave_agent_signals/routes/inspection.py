@@ -90,6 +90,9 @@ def _signal_evidence(
             identity = _signal_identity(row.get("runnable_ref"))
             if identity is None:
                 continue
+            typed_ratings = row.get("scorer_ratings")
+            if not isinstance(typed_ratings, dict) or "_rating_" not in typed_ratings:
+                continue
             rating, reason, created_at = _signal_rating(row)
             feedback_id = row.get("id")
             if not isinstance(feedback_id, str) or not feedback_id:

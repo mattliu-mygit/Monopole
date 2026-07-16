@@ -276,6 +276,37 @@ def test_session_listing_newer_healthy_signal_supersedes_older_low_signal():
     assert response.json()["sessions"][0]["signal_evidence"] == []
 
 
+def test_session_listing_ignores_legacy_signal_feedback_without_typed_rating():
+    client, backend = _client()
+    turn_ref = backend.turns[0].ref_for(backend.entity, backend.project)
+    backend.feedback_by_ref[turn_ref] = [
+        {
+            "id": "feedback-legacy",
+            "feedback_type": "wandb.agent_monitor",
+            "runnable_ref": (
+                "weave:///weave-team/agent-sessions/object/"
+                "agent-signal-user-frustration-v1-scorer:legacy"
+            ),
+            "created_at": "2026-07-14T12:02:00Z",
+            "scorer_ratings": {},
+            "payload": {
+                "output": {
+                    "value": "0.25",
+                    "reason": "Legacy monitor emitted a numeric string.",
+                }
+            },
+        }
+    ]
+
+    response = client.get(
+        "/api/sessions",
+        params={"since": "2026-07-14T12:00:00Z", "until": "2026-07-14T13:00:00Z"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["sessions"][0]["signal_evidence"] == []
+
+
 @pytest.mark.parametrize(
     ("output", "created_at", "scorer_rating"),
     [

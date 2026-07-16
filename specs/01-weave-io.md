@@ -38,7 +38,8 @@ returned page. Completed W&B Agent Signal feedback whose typed rating matches
 its output is recognized by its monitor scorer identity. Low evidence is
 attached to the owning session in turn-time order; newer feedback supersedes an
 older row for the same signal version and turn. Feedback for omitted sessions
-is not read.
+is not read. Legacy or incomplete monitor rows without a typed rating are not
+Signal evidence and are ignored.
 
 Hydration is fail closed:
 
@@ -49,8 +50,8 @@ Hydration is fail closed:
 - no part of a batch is evaluated until the complete batch passes validation.
 
 These rules keep missing detail from becoming neutral or fabricated evidence.
-Malformed feedback that otherwise identifies as an Agent Signal fails session
-discovery rather than silently hiding a review recommendation.
+Malformed Agent Signal feedback that contains a typed rating fails session
+discovery rather than silently hiding a completed review recommendation.
 
 ## Feedback
 
