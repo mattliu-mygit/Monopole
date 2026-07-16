@@ -40,10 +40,11 @@ All model rubrics are session-level. Each reviewer gets a window plan sized to
 the smaller of the configured target and that model's context limit. Reserved
 space for prompts, outputs, safety, surrounding digests, and findings leaves a
 bounded raw budget. Contiguous core chunks partition every session turn exactly
-once; each raw window also includes one available neighboring turn on either
-side for continuity. A single turn that cannot fit, too many required chunks,
-or a worst-case merge that exceeds the input cap fails planning before model
-work begins.
+once. Each raw window includes up to one neighboring turn on either side for
+continuity when that expansion fits its raw budget; overlap can shrink to zero
+at an oversized boundary without removing any turn's core raw coverage. A
+single turn that cannot fit, too many required chunks, or a worst-case merge
+that exceeds the input cap fails planning before model work begins.
 
 For each reviewer, the pipeline first creates one rubric-neutral factual digest
 per core chunk. A rubric evaluation then slides across every window: the active

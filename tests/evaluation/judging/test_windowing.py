@@ -237,12 +237,15 @@ def test_window_plan_rejects_a_turn_that_cannot_fit_with_reserves():
         build_window_plan(session, _small_policy(), model_limit=60_000)
 
 
-def test_window_plan_budgets_the_final_raw_window_separators():
+def test_window_plan_drops_overlap_when_neighbors_exceed_the_raw_budget():
     session = _session_with_rendered_turn_sizes([18_000, 18_000])
     policy = _small_policy(target_input_tokens=23_000)
 
-    with pytest.raises(ValueError, match="required one-turn overlap"):
-        build_window_plan(session, policy, model_limit=60_000)
+    plan = build_window_plan(session, policy, model_limit=60_000)
+
+    assert plan["raw_budget_tokens"] == 10_000
+    assert [window["core_trace_ids"] for window in plan["windows"]] == [["t1"], ["t2"]]
+    assert [window["raw_trace_ids"] for window in plan["windows"]] == [["t1"], ["t2"]]
 
 
 def test_window_plan_accepts_exact_raw_budget_equality():
@@ -432,8 +435,8 @@ def test_render_raw_window_rejects_self_consistent_invalid_core_geometry(
         (["t2", "t1", "t3"], "window raw_trace_ids must follow session order"),
         (["t1", "t3"], "window raw_trace_ids must form a contiguous session range"),
         (
-            ["t2"],
-            "window raw_trace_ids must equal the core range plus one available neighboring turn",
+            ["t2", "t3", "t4"],
+            "window raw_trace_ids must equal the core range plus at most one neighboring turn",
         ),
     ],
 )

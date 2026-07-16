@@ -717,11 +717,20 @@ def _validate_window_plan(
             range(core_positions[0], core_positions[-1] + 1)
         ):
             raise ValueError("judging plan core window geometry is invalid")
-        expected_raw_ids = coverage[
-            max(0, core_positions[0] - 1) : min(len(coverage), core_positions[-1] + 2)
-        ]
-        if item["raw_trace_ids"] != expected_raw_ids or item["raw_turn_digests"] != [
-            raw_digests[trace_id] for trace_id in expected_raw_ids
+        raw_positions = [coverage.index(trace_id) for trace_id in item["raw_trace_ids"]]
+        allowed_raw_starts = {core_positions[0], max(0, core_positions[0] - 1)}
+        allowed_raw_ends = {
+            core_positions[-1],
+            min(len(coverage) - 1, core_positions[-1] + 1),
+        }
+        raw_geometry_valid = (
+            raw_positions
+            and raw_positions == list(range(raw_positions[0], raw_positions[-1] + 1))
+            and raw_positions[0] in allowed_raw_starts
+            and raw_positions[-1] in allowed_raw_ends
+        )
+        if not raw_geometry_valid or item["raw_turn_digests"] != [
+            raw_digests[trace_id] for trace_id in item["raw_trace_ids"]
         ]:
             raise ValueError("judging plan raw window geometry is invalid")
         window_body = {key: part for key, part in item.items() if key != "window_id"}

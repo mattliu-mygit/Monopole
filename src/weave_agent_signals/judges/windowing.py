@@ -157,25 +157,50 @@ def _range_tokens(byte_prefix: list[int], start: int, end: int) -> int:
     return (byte_count + 2) // 3
 
 
-def _partition_cores(byte_prefix: list[int], raw_budget: int) -> list[tuple[int, int]]:
+def _partition_cores(
+    byte_prefix: list[int], raw_budget: int, overlap_turns: int
+) -> list[tuple[int, int]]:
     cores: list[tuple[int, int]] = []
     turn_count = len(byte_prefix) - 1
     start = 0
     while start < turn_count:
         accepted_end: int | None = None
         for end in range(start, turn_count):
-            raw_start = max(0, start - 1)
-            raw_end = min(turn_count - 1, end + 1)
-            if _range_tokens(byte_prefix, raw_start, raw_end) > raw_budget:
+            preferred_start = max(0, start - overlap_turns)
+            preferred_end = min(turn_count - 1, end + overlap_turns)
+            if _range_tokens(byte_prefix, preferred_start, preferred_end) > raw_budget:
+                if accepted_end is None and _range_tokens(byte_prefix, start, end) <= raw_budget:
+                    accepted_end = end
                 break
             accepted_end = end
         if accepted_end is None:
-            raise ValueError(
-                "raw window with required one-turn overlap exceeds the raw window budget"
-            )
+            raise ValueError("core turn exceeds the raw window budget")
         cores.append((start, accepted_end))
         start = accepted_end + 1
     return cores
+
+
+def _expand_raw_bounds(
+    byte_prefix: list[int],
+    core_start: int,
+    core_end: int,
+    raw_budget: int,
+    overlap_turns: int,
+) -> tuple[int, int]:
+    """Add neighboring turns when each expanded raw range remains within budget."""
+
+    raw_start = core_start
+    raw_end = core_end
+    turn_count = len(byte_prefix) - 1
+    for _ in range(overlap_turns):
+        if raw_start > 0 and _range_tokens(byte_prefix, raw_start - 1, raw_end) <= raw_budget:
+            raw_start -= 1
+        if (
+            raw_end < turn_count - 1
+            and _range_tokens(byte_prefix, raw_start, raw_end + 1) <= raw_budget
+        ):
+            raw_end += 1
+    return raw_start, raw_end
 
 
 def _canonical_digest(value: object) -> str:
@@ -257,7 +282,7 @@ def build_window_plan(
         if any(tokens > raw_budget for tokens in turn_tokens):
             raise ValueError("single turn exceeds the raw window budget")
 
-        cores = _partition_cores(byte_prefix, raw_budget)
+        cores = _partition_cores(byte_prefix, raw_budget, policy.overlap_turns)
         planned_count = len(cores)
         if planned_count > policy.max_chunks:
             raise ValueError("window plan exceeds the maximum chunk count")
@@ -274,13 +299,14 @@ def build_window_plan(
     windows: list[dict[str, object]] = []
     covered_trace_ids: list[str] = []
     for index, (core_start, core_end) in enumerate(cores, start=1):
-        raw_start = max(0, core_start - policy.overlap_turns)
-        raw_end = min(len(session.turns) - 1, core_end + policy.overlap_turns)
+        raw_start, raw_end = _expand_raw_bounds(
+            byte_prefix,
+            core_start,
+            core_end,
+            raw_budget,
+            policy.overlap_turns,
+        )
         raw_tokens = _range_tokens(byte_prefix, raw_start, raw_end)
-        if raw_tokens > raw_budget:
-            raise ValueError(
-                "raw window with required one-turn overlap exceeds the raw window budget"
-            )
         core_trace_ids = trace_ids[core_start : core_end + 1]
         raw_trace_ids = trace_ids[raw_start : raw_end + 1]
         covered_trace_ids.extend(core_trace_ids)
@@ -383,15 +409,11 @@ def render_raw_window(
     if any(current != previous + 1 for previous, current in zip(raw_positions, raw_positions[1:])):
         raise ValueError("window raw_trace_ids must form a contiguous session range")
 
-    expected_raw_start = max(1, core_positions[0] - 1)
-    expected_raw_end = min(len(session.turns), core_positions[-1] + 1)
-    expected_raw_trace_ids = [
-        session.turns[position - 1].trace_id
-        for position in range(expected_raw_start, expected_raw_end + 1)
-    ]
-    if raw_trace_ids != expected_raw_trace_ids:
+    allowed_raw_starts = {core_positions[0], max(1, core_positions[0] - 1)}
+    allowed_raw_ends = {core_positions[-1], min(len(session.turns), core_positions[-1] + 1)}
+    if raw_positions[0] not in allowed_raw_starts or raw_positions[-1] not in allowed_raw_ends:
         raise ValueError(
-            "window raw_trace_ids must equal the core range plus one available neighboring turn "
+            "window raw_trace_ids must equal the core range plus at most one neighboring turn "
             "on each side"
         )
 
