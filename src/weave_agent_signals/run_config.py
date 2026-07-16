@@ -17,10 +17,12 @@ from pydantic import (
     model_validator,
 )
 
-PIPELINE_VERSION = "4"
-MODEL_CATALOG_SCHEMA_VERSION = "2"
+from weave_agent_signals.judges.tokens import TokenCounterName
+
+PIPELINE_VERSION = "5"
+MODEL_CATALOG_SCHEMA_VERSION = "3"
 RUBRIC_CATALOG_SCHEMA_VERSION = "1"
-EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION = "2"
+EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION = "3"
 MAX_CANDIDATE_BUDGET = 10
 
 ModelRole = Literal["proposal_writer", "judge", "proposal_evaluator"]
@@ -80,6 +82,7 @@ class ModelDescriptor(StrictFrozenModel):
     backend: StrictStr
     supported_roles: tuple[ModelRole, ...]
     max_input_tokens: Annotated[int, Field(strict=True, ge=1)] = 128_000
+    token_counter: TokenCounterName = "utf8_bytes_div_3"
 
     @model_validator(mode="after")
     def validate_descriptor(self) -> ModelDescriptor:
@@ -307,7 +310,7 @@ class EffectiveModelSelection(StrictFrozenModel):
 
 
 class EffectiveRunConfig(StrictFrozenModel):
-    schema_version: Literal["2"] = "2"
+    schema_version: Literal["3"] = "3"
     pipeline_version: StrictStr
     model_catalog_version: StrictStr
     rubric_catalog_version: StrictStr

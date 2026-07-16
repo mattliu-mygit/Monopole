@@ -115,7 +115,7 @@ def test_resolve_run_config_pins_exact_order_descriptors_and_pipeline_version():
         rubric_catalog=rubrics,
     )
 
-    assert effective.pipeline_version == PIPELINE_VERSION == "4"
+    assert effective.pipeline_version == PIPELINE_VERSION == "5"
     assert [judge.id for judge in effective.models.judges] == [
         "gpt-5.6-sol",
         "claude-sonnet-5",
@@ -129,11 +129,11 @@ def test_resolve_run_config_pins_exact_order_descriptors_and_pipeline_version():
     assert restored == effective
 
 
-def test_panel_shape_bumps_model_and_effective_config_schema_versions():
-    assert MODEL_CATALOG_SCHEMA_VERSION == "2"
+def test_capacity_metadata_bumps_model_and_effective_config_schema_versions():
+    assert MODEL_CATALOG_SCHEMA_VERSION == "3"
     assert RUBRIC_CATALOG_SCHEMA_VERSION == "1"
-    assert EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION == "2"
-    assert EffectiveRunConfig.model_fields["schema_version"].default == "2"
+    assert EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION == "3"
+    assert EffectiveRunConfig.model_fields["schema_version"].default == "3"
 
 
 def test_resolve_run_config_defaults_empty_rubrics_to_exact_catalog_snapshot():

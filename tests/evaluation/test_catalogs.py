@@ -55,6 +55,7 @@ def test_model_catalog_is_stable_role_oriented_and_immutable():
             "backend",
             "supported_roles",
             "max_input_tokens",
+            "token_counter",
         }
         assert "proposal_writer" in model["supported_roles"]
 
@@ -87,18 +88,34 @@ def test_model_catalog_version_tracks_local_availability():
     )
 
 
-def test_every_model_declares_enough_input_context():
+def test_every_model_declares_exact_input_capacity_and_token_counter():
     catalog = build_model_catalog(which=lambda _name: "/usr/bin/model")
-    models = [
-        *catalog.proposal.available_models,
-        *(
-            model
-            for backend in catalog.judge_backends.values()
-            for model in backend.available_models
-        ),
-    ]
-    assert models
-    assert all(model.max_input_tokens >= 128_000 for model in models)
+    models = {
+        model.id: model
+        for model in (
+            *catalog.proposal.available_models,
+            *(
+                model
+                for backend in catalog.judge_backends.values()
+                for model in backend.available_models
+            ),
+        )
+    }
+
+    assert {
+        model_id: (model.max_input_tokens, model.token_counter)
+        for model_id, model in models.items()
+    } == {
+        "gpt-5.6-sol": (1_050_000, "o200k_base"),
+        "claude-sonnet-5": (1_000_000, "utf8_bytes_div_3"),
+        "claude-haiku-4-5": (200_000, "utf8_bytes_div_3"),
+        "gpt-oss-20b": (131_072, "o200k_harmony"),
+        "gpt-oss-120b": (131_072, "o200k_harmony"),
+        "Llama-3.1-8B": (131_072, "utf8_bytes_div_3"),
+        "granite-4.1-8b": (131_072, "utf8_bytes_div_3"),
+        "gpt-4o": (128_000, "o200k_base"),
+        "gpt-4o-mini": (128_000, "o200k_base"),
+    }
 
 
 def test_model_catalog_version_tracks_recommendations_and_evaluator_order():
@@ -204,6 +221,7 @@ def test_model_descriptor_serializes_only_its_public_fields():
         "backend": "example-backend",
         "supported_roles": ["judge"],
         "max_input_tokens": 128_000,
+        "token_counter": "utf8_bytes_div_3",
     }
 
 
@@ -217,4 +235,16 @@ def test_model_descriptor_rejects_invalid_input_token_limits(value):
             backend="example-backend",
             supported_roles=("judge",),
             max_input_tokens=value,
+        )
+
+
+def test_model_descriptor_rejects_unknown_token_counter():
+    with pytest.raises(ValidationError):
+        ModelDescriptor(
+            id="example",
+            label="Example",
+            family="example-family",
+            backend="example-backend",
+            supported_roles=("judge",),
+            token_counter="family-inferred",
         )
