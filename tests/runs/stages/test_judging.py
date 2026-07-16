@@ -254,10 +254,11 @@ def test_stage_with_no_applicable_reviewers_avoids_chat_and_judge_feedback(store
     run, effective, turn, session = _setup(store)
     from weave_agent_signals.judges.windowing import WindowPlanInapplicable
 
-    monkeypatch.setattr(
-        "weave_agent_signals.judges.plan.build_window_plan",
-        lambda *_args: (_ for _ in ()).throw(WindowPlanInapplicable()),
-    )
+    def inapplicable(*_args):
+        raise WindowPlanInapplicable()
+
+    monkeypatch.setattr("weave_agent_signals.judges.plan.build_window_plan", inapplicable)
+    monkeypatch.setattr("weave_agent_signals.judges.runner.build_window_plan", inapplicable)
     chat_factory = Mock(side_effect=AssertionError("chat backend must not be created"))
     weave = _Weave()
     deps = JudgingDependencies(

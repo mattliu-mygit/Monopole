@@ -18,6 +18,7 @@ from weave_agent_signals.judges.review import (
 )
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.judges.sliding import ArtifactLoader, ArtifactRecorder, SlidingReviewer
+from weave_agent_signals.judges.windowing import WindowPlanInapplicable, build_window_plan
 from weave_agent_signals.models import Score, SessionView
 from weave_agent_signals.run_config import (
     JudgingContextPolicy,
@@ -64,20 +65,48 @@ def _authenticate_plan_policy(
         value.get("judge") if isinstance(value, Mapping) else None for value in reviewers
     ] != [judge.model_dump(mode="json") for judge in judges]:
         raise ValueError("ordered judges do not match the pinned judging plan")
-    for reviewer in reviewers:
+    for reviewer, judge in zip(reviewers, judges, strict=True):
         if not isinstance(reviewer, Mapping):  # pragma: no cover - guarded above
             raise ValueError("reviewer dispositions are invalid")
         status = reviewer.get("status")
         skip_reason = reviewer.get("skip_reason")
         window_plan = reviewer.get("window_plan")
-        if status == "planned":
-            valid = skip_reason is None and isinstance(window_plan, Mapping)
-        elif status == "skipped":
-            valid = skip_reason == "insufficient_context_capacity" and window_plan is None
-        else:
-            valid = False
-        if not valid:
-            raise ValueError("reviewer dispositions are invalid")
+        work_bounds = reviewer.get("work_bounds")
+        try:
+            expected_window_plan = build_window_plan(
+                session,
+                context_policy,
+                judge.max_input_tokens,
+                judge.token_counter,
+            )
+        except WindowPlanInapplicable as error:
+            if (
+                status != "skipped"
+                or skip_reason != error.reason
+                or str(error) != error.reason
+                or window_plan is not None
+                or work_bounds
+                != {
+                    "digest_calls": 0,
+                    "window_calls_per_rubric": 0,
+                    "merge_calls_per_rubric": 0,
+                }
+            ):
+                raise ValueError("reviewer disposition does not match context capacity") from error
+            continue
+        chunk_count = expected_window_plan["chunk_count"]
+        if (
+            status != "planned"
+            or skip_reason is not None
+            or window_plan != expected_window_plan
+            or work_bounds
+            != {
+                "digest_calls": chunk_count,
+                "window_calls_per_rubric": chunk_count,
+                "merge_calls_per_rubric": 1,
+            }
+        ):
+            raise ValueError("reviewer disposition does not match context capacity")
     applicable_count = sum(
         isinstance(value, Mapping) and value.get("status") == "planned" for value in reviewers
     )
