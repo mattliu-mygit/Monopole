@@ -33,6 +33,13 @@ when an inclusive timestamp cursor cannot advance, rather than returning an
 apparently complete partial result. Evaluation-run rehydration preserves the
 run's pinned order.
 
+Session discovery also batch-reads feedback for the exact turn refs in the
+returned page. Completed W&B Agent Signal feedback whose typed rating matches
+its output is recognized by its monitor scorer identity. Low evidence is
+attached to the owning session in turn-time order; newer feedback supersedes an
+older row for the same signal version and turn. Feedback for omitted sessions
+is not read.
+
 Hydration is fail closed:
 
 - every requested trace must contain its detailed `invoke_agent` root;
@@ -42,6 +49,8 @@ Hydration is fail closed:
 - no part of a batch is evaluated until the complete batch passes validation.
 
 These rules keep missing detail from becoming neutral or fabricated evidence.
+Malformed feedback that otherwise identifies as an Agent Signal fails session
+discovery rather than silently hiding a review recommendation.
 
 ## Feedback
 

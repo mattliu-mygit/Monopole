@@ -64,6 +64,15 @@ export interface TurnDetail extends TurnSummary {
   subagents: Subagent[]
 }
 
+export interface SignalEvidence {
+  signal: string
+  version: string
+  rating: number
+  reason: string
+  turn_id: string
+  turn_started_at: string
+}
+
 export interface SessionSummary {
   conversation_id: string
   session_id: string | null
@@ -78,6 +87,7 @@ export interface SessionSummary {
   total_tokens: number
   total_tool_calls: number
   input_preview: string | null
+  signal_evidence: SignalEvidence[]
 }
 
 export interface SessionDetail {

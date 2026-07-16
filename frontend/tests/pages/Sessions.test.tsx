@@ -27,6 +27,7 @@ function session(conversationId: string, preview: string): SessionSummary {
     total_tokens: 100,
     total_tool_calls: 1,
     input_preview: preview,
+    signal_evidence: [],
   }
 }
 
@@ -74,5 +75,28 @@ describe('Sessions', () => {
 
     expect(await screen.findByText(/showing the newest 2 of 5 sessions/i)).not.toBeNull()
     expect(screen.getByText(/3 older sessions are omitted/i)).not.toBeNull()
+  })
+
+  it('calls out sessions with low hydrated signal evidence', async () => {
+    const flagged = session('flagged-session', 'Needs attention')
+    flagged.signal_evidence = [{
+      signal: 'repeated-or-rephrased-request',
+      version: 'v1',
+      rating: 0.25,
+      reason: 'The user repeated the request.',
+      turn_id: 'turn-1',
+      turn_started_at: '2026-07-14T18:00:00Z',
+    }]
+    api.getSessions.mockResolvedValue({
+      sessions: [flagged],
+      total: 1,
+      truncated: false,
+    })
+
+    renderPage()
+
+    expect(await screen.findByText(/Needs review/)).not.toBeNull()
+    expect(screen.getByText(/0\.25/)).not.toBeNull()
+    expect(screen.getByText(/repeated or rephrased request/)).not.toBeNull()
   })
 })

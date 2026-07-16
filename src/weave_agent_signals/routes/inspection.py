@@ -91,8 +91,6 @@ def _signal_evidence(
             if identity is None:
                 continue
             rating, reason, created_at = _signal_rating(row)
-            if rating > _SIGNAL_THRESHOLD:
-                continue
             feedback_id = row.get("id")
             if not isinstance(feedback_id, str) or not feedback_id:
                 raise ValueError("eligible Signal feedback has no id")
@@ -110,7 +108,7 @@ def _signal_evidence(
             if existing is None or (created_at, feedback_id) > existing[:2]:
                 selected[key] = (created_at, feedback_id, evidence)
     return sorted(
-        (item[2] for item in selected.values()),
+        (item[2] for item in selected.values() if item[2]["rating"] <= _SIGNAL_THRESHOLD),
         key=lambda item: (
             item["turn_started_at"],
             item["signal"],

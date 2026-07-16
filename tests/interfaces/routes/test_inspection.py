@@ -241,6 +241,41 @@ def test_session_listing_uses_newest_low_signal_and_ignores_healthy_or_unrelated
     ]
 
 
+def test_session_listing_newer_healthy_signal_supersedes_older_low_signal():
+    client, backend = _client()
+    turn = backend.turns[0]
+    turn_ref = turn.ref_for(backend.entity, backend.project)
+    scorer_ref = (
+        "weave:///weave-team/agent-sessions/object/agent-signal-user-frustration-v1-scorer:digest"
+    )
+    backend.feedback_by_ref[turn_ref] = [
+        {
+            "id": "feedback-low",
+            "feedback_type": "wandb.agent_monitor",
+            "runnable_ref": scorer_ref,
+            "created_at": "2026-07-14T12:01:00Z",
+            "scorer_ratings": {"_rating_": 0.25},
+            "payload": {"output": {"value": 0.25, "reason": "Old low result"}},
+        },
+        {
+            "id": "feedback-healthy",
+            "feedback_type": "wandb.agent_monitor",
+            "runnable_ref": scorer_ref,
+            "created_at": "2026-07-14T12:02:00Z",
+            "scorer_ratings": {"_rating_": 0.75},
+            "payload": {"output": {"value": 0.75, "reason": "New healthy result"}},
+        },
+    ]
+
+    response = client.get(
+        "/api/sessions",
+        params={"since": "2026-07-14T12:00:00Z", "until": "2026-07-14T13:00:00Z"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["sessions"][0]["signal_evidence"] == []
+
+
 @pytest.mark.parametrize(
     ("output", "created_at", "scorer_rating"),
     [

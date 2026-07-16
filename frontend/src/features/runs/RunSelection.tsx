@@ -1,4 +1,5 @@
 import type { SessionSummary } from '../../types'
+import SignalCallout from '../../components/SignalCallout'
 
 export interface RunSelectionProps {
   since: string
@@ -141,6 +142,7 @@ export default function RunSelection({
                       {session.input_preview}
                     </span>
                   )}
+                  <SignalCallout evidence={session.signal_evidence} />
                 </span>
               </label>
             ))}

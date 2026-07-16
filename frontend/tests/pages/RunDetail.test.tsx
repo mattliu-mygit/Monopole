@@ -196,6 +196,7 @@ const session: SessionSummary = {
   total_tokens: 100,
   total_tool_calls: 2,
   input_preview: 'Evaluate this session',
+  signal_evidence: [],
 }
 
 const plan: JudgingPlan = {

@@ -22,6 +22,7 @@ const sessions: SessionSummary[] = [
     total_tokens: 1200,
     total_tool_calls: 4,
     input_preview: 'Review the implementation',
+    signal_evidence: [],
   },
   {
     conversation_id: 'session-two',
@@ -37,10 +38,40 @@ const sessions: SessionSummary[] = [
     total_tokens: 400,
     total_tool_calls: 0,
     input_preview: null,
+    signal_evidence: [],
   },
 ]
 
 describe('RunSelection', () => {
+  it('calls out sessions with low hydrated signal evidence', () => {
+    const flaggedSessions = structuredClone(sessions)
+    flaggedSessions[0].signal_evidence = [{
+      signal: 'user-frustration',
+      version: 'v1',
+      rating: 0.5,
+      reason: 'The user expressed frustration.',
+      turn_id: 'turn-1',
+      turn_started_at: '2026-07-12T12:00:00Z',
+    }]
+
+    render(
+      <RunSelection
+        since="2026-07-07"
+        until="2026-07-14"
+        sessions={flaggedSessions}
+        selectedSessionIds={[]}
+        totalSessions={2}
+        onSinceChange={vi.fn()}
+        onUntilChange={vi.fn()}
+        onSessionIdsChange={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/Needs review/)).not.toBeNull()
+    expect(screen.getByText(/0\.50/)).not.toBeNull()
+    expect(screen.getByText(/user frustration/)).not.toBeNull()
+  })
+
   it('reports controlled date and session changes without owning run configuration', () => {
     const onSinceChange = vi.fn()
     const onUntilChange = vi.fn()
