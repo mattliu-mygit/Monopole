@@ -1,6 +1,6 @@
 {
-  "plan_id": "sha256:2a633ece3a35c2352a9920ea0499d0e4f583218a89acd0d9dac06d31afdcde75",
-  "schema_version": "2",
+  "plan_id": "sha256:174a29c638a99a18dace1256c729ebf9cc03bf52f7f005c62df654b17ba68d2f",
+  "schema_version": "3",
   "cohort_id": "cohort-1",
   "panel_size": 2,
   "requested_rubrics": [
@@ -294,6 +294,8 @@
             "role": "judge",
             "position": 1
           },
+          "status": "planned",
+          "skip_reason": null,
           "window_plan": {
             "plan_id": "sha256:df9516db69e0869783d323b5d988473839df83c20f818c1fb6f3a97836617e12",
             "contract_version": "2",
@@ -364,6 +366,8 @@
             "role": "judge",
             "position": 2
           },
+          "status": "planned",
+          "skip_reason": null,
           "window_plan": {
             "plan_id": "sha256:df9516db69e0869783d323b5d988473839df83c20f818c1fb6f3a97836617e12",
             "contract_version": "2",

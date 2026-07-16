@@ -249,7 +249,9 @@ class JudgingWorkBoundsResponse(ResponseModel):
 class JudgingReviewerPlanResponse(ResponseModel):
     ordinal: int
     judge: PositionedJudge
-    window_plan: JudgingWindowPlanResponse
+    status: Literal["planned", "skipped"]
+    skip_reason: Literal["insufficient_context_capacity"] | None
+    window_plan: JudgingWindowPlanResponse | None
     work_bounds: JudgingWorkBoundsResponse
 
 
@@ -300,7 +302,8 @@ class ReviewAttemptResponse(ResponseModel):
     requested_model: str
     requested_family: str
     requested_backend: str
-    status: Literal["succeeded", "abstained", "failed"]
+    status: Literal["succeeded", "abstained", "failed", "skipped"]
+    skip_reason: Literal["insufficient_context_capacity"] | None = None
     resolved_model: str | None
     resolved_family: str | None
     score: float | None

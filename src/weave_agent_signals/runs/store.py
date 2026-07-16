@@ -331,9 +331,9 @@ def _encode_judging_plan(judging_plan: Mapping[str, Any]) -> str:
         "totals",
     }
     if set(value) != required:
-        raise ValueError("judging plan fields do not match schema version 2")
-    if value["schema_version"] != "2":
-        raise ValueError("judging plan schema_version must be '2'")
+        raise ValueError("judging plan fields do not match schema version 3")
+    if value["schema_version"] != "3":
+        raise ValueError("judging plan schema_version must be '3'")
     if not isinstance(value["plan_id"], str) or not value["plan_id"]:
         raise ValueError("judging plan must have a plan_id")
     if not isinstance(value["cohort_id"], str) or not value["cohort_id"]:
@@ -520,23 +520,28 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
         reviewers = row["reviewers"]
         if not isinstance(reviewers, list) or len(reviewers) != panel_size:
             raise ValueError("judging plan reviewers must match panel_size")
-        judge_count = len(reviewers)
+        applicable_count = sum(
+            isinstance(reviewer, dict) and reviewer.get("status") == "planned"
+            for reviewer in reviewers
+        )
         expected_rubrics = [
             {
                 **rubric,
-                "minimum_reviewer_attempts": judge_count,
-                "maximum_reviewer_attempts": judge_count,
+                "minimum_reviewer_attempts": applicable_count,
+                "maximum_reviewer_attempts": applicable_count,
             }
             for rubric in requested
         ]
         if row["rubrics"] != expected_rubrics:
             raise ValueError("judging plan session rubrics or attempt bounds are invalid")
         totals_expected["turns_considered"] += turn_count
-        totals_expected["minimum_reviewer_attempts"] += len(requested) * judge_count
-        totals_expected["maximum_reviewer_attempts"] += len(requested) * judge_count
+        totals_expected["minimum_reviewer_attempts"] += len(requested) * applicable_count
+        totals_expected["maximum_reviewer_attempts"] += len(requested) * applicable_count
         for ordinal, reviewer in enumerate(reviewers, start=1):
             reviewer_row = _exact_keys(
-                reviewer, {"ordinal", "judge", "window_plan", "work_bounds"}, "reviewer"
+                reviewer,
+                {"ordinal", "judge", "status", "skip_reason", "window_plan", "work_bounds"},
+                "reviewer",
             )
             judge = _exact_keys(
                 reviewer_row["judge"],
@@ -580,6 +585,23 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
                 "o200k_harmony",
             }:
                 raise ValueError("judging plan reviewer token counter is invalid")
+            bounds = _exact_keys(
+                reviewer_row["work_bounds"],
+                {"digest_calls", "window_calls_per_rubric", "merge_calls_per_rubric"},
+                "reviewer work bounds",
+            )
+            for key in bounds:
+                _nonnegative_int(bounds[key], f"reviewer work bound {key}")
+            if reviewer_row["status"] == "skipped":
+                if (
+                    reviewer_row["skip_reason"] != "insufficient_context_capacity"
+                    or reviewer_row["window_plan"] is not None
+                    or any(bounds.values())
+                ):
+                    raise ValueError("judging plan skipped reviewer disposition is invalid")
+                continue
+            if reviewer_row["status"] != "planned" or reviewer_row["skip_reason"] is not None:
+                raise ValueError("judging plan reviewer disposition is invalid")
             window_plan = _validate_window_plan(
                 reviewer_row["window_plan"],
                 conversation_id,
@@ -589,13 +611,6 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
                 judge["token_counter"],
             )
             chunk_count = window_plan["chunk_count"]
-            bounds = _exact_keys(
-                reviewer_row["work_bounds"],
-                {"digest_calls", "window_calls_per_rubric", "merge_calls_per_rubric"},
-                "reviewer work bounds",
-            )
-            for key in bounds:
-                _nonnegative_int(bounds[key], f"reviewer work bound {key}")
             if bounds != {
                 "digest_calls": chunk_count,
                 "window_calls_per_rubric": chunk_count,
@@ -936,19 +951,21 @@ def _judging_plan_matches_cohort(
                 return False
             ordinal = reviewer.get("ordinal")
             judge = reviewer.get("judge")
+            status = reviewer.get("status")
             window_plan = reviewer.get("window_plan")
-            if (
-                type(ordinal) is not int
-                or not isinstance(judge, dict)
-                or not isinstance(window_plan, dict)
-            ):
+            if type(ordinal) is not int or not isinstance(judge, dict):
                 return False
-            if (
-                judge.get("position") != ordinal
-                or window_plan.get("conversation_id") != conversation_id
-            ):
+            if judge.get("position") != ordinal:
                 return False
-            if window_plan.get("raw_coverage_trace_ids") != coverage:
+            if status == "skipped":
+                if window_plan is not None:
+                    return False
+            elif status != "planned" or not isinstance(window_plan, dict):
+                return False
+            elif (
+                window_plan.get("conversation_id") != conversation_id
+                or window_plan.get("raw_coverage_trace_ids") != coverage
+            ):
                 return False
             ordinals.append(ordinal)
         if ordinals != list(range(1, len(reviewers) + 1)):

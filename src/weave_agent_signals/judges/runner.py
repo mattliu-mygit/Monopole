@@ -12,6 +12,7 @@ from weave_agent_signals.judges.families import model_family
 from weave_agent_signals.judges.inference import ChatClient, InferenceCancelled
 from weave_agent_signals.judges.review import (
     PANEL_CONTRACT_VERSION,
+    AttemptObservation,
     ReviewAttempt,
     execute_panel,
 )
@@ -43,7 +44,7 @@ def _authenticate_plan_policy(
     context_policy: JudgingContextPolicy,
 ) -> Mapping[str, object]:
     body = {key: value for key, value in plan.items() if key != "plan_id"}
-    if plan.get("schema_version") != "2" or plan.get("plan_id") != _plan_digest(body):
+    if plan.get("schema_version") != "3" or plan.get("plan_id") != _plan_digest(body):
         raise ValueError("judging plan schema or content digest is invalid")
     if plan.get("input_policy") != context_policy.model_dump(mode="json"):
         raise ValueError("context policy does not match the pinned judging plan")
@@ -63,11 +64,28 @@ def _authenticate_plan_policy(
         value.get("judge") if isinstance(value, Mapping) else None for value in reviewers
     ] != [judge.model_dump(mode="json") for judge in judges]:
         raise ValueError("ordered judges do not match the pinned judging plan")
+    for reviewer in reviewers:
+        if not isinstance(reviewer, Mapping):  # pragma: no cover - guarded above
+            raise ValueError("reviewer dispositions are invalid")
+        status = reviewer.get("status")
+        skip_reason = reviewer.get("skip_reason")
+        window_plan = reviewer.get("window_plan")
+        if status == "planned":
+            valid = skip_reason is None and isinstance(window_plan, Mapping)
+        elif status == "skipped":
+            valid = skip_reason == "insufficient_context_capacity" and window_plan is None
+        else:
+            valid = False
+        if not valid:
+            raise ValueError("reviewer dispositions are invalid")
+    applicable_count = sum(
+        isinstance(value, Mapping) and value.get("status") == "planned" for value in reviewers
+    )
     expected_rows = [
         {
             **descriptor.model_dump(mode="json"),
-            "minimum_reviewer_attempts": len(judges),
-            "maximum_reviewer_attempts": len(judges),
+            "minimum_reviewer_attempts": applicable_count,
+            "maximum_reviewer_attempts": applicable_count,
         }
         for descriptor in rubrics
     ]
@@ -146,6 +164,7 @@ def _attempt_record(attempt: ReviewAttempt) -> dict[str, object]:
         "requested_family": attempt.requested_family,
         "requested_backend": attempt.requested_backend,
         "status": observation.status,
+        "skip_reason": observation.skip_reason,
         "resolved_model": observation.resolved_model,
         "resolved_family": (
             model_family(observation.resolved_model) if observation.resolved_model else None
@@ -224,6 +243,11 @@ def judge_session(
     )
 
     reviewer_cache: dict[str, SlidingReviewer] = {}
+    reviewer_rows = session_row["reviewers"]
+    dispositions = {
+        row["judge"]["id"]: (row["status"], row["skip_reason"])
+        for row in reviewer_rows  # type: ignore[union-attr]
+    }
 
     def reviewer(judge: PositionedJudge) -> SlidingReviewer:
         current = reviewer_cache.get(judge.id)
@@ -251,7 +275,20 @@ def judge_session(
         try:
             outcome = execute_panel(
                 panel,
-                invoke=lambda judge: reviewer(judge).review(descriptor),
+                invoke=lambda judge: (
+                    AttemptObservation(
+                        status="skipped",
+                        skip_reason="insufficient_context_capacity",
+                        resolved_model=None,
+                        score=None,
+                        rationale=None,
+                        usage={},
+                        error_type=None,
+                        message=None,
+                    )
+                    if dispositions[judge.id][0] == "skipped"
+                    else reviewer(judge).review(descriptor)
+                ),
                 threshold=descriptor.pass_threshold,
             )
         except InferenceCancelled:

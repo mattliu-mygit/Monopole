@@ -69,6 +69,19 @@ def _abstention() -> AttemptObservation:
     )
 
 
+def _skipped() -> AttemptObservation:
+    return AttemptObservation(
+        status="skipped",
+        skip_reason="insufficient_context_capacity",
+        resolved_model=None,
+        score=None,
+        rationale=None,
+        usage={},
+        error_type=None,
+        message=None,
+    )
+
+
 @dataclass
 class _ScriptedInvoke:
     observations: Sequence[AttemptObservation]
@@ -153,6 +166,48 @@ def test_unanimous_abstention_is_not_evaluable_instead_of_failed() -> None:
     assert outcome.rating is None
     assert outcome.successful_count == 0
     assert len(outcome.attempts) == 3
+
+
+def test_success_plus_skip_is_degraded_without_invoking_failure_semantics() -> None:
+    outcome = execute_panel(
+        _judges(2), _ScriptedInvoke((_skipped(), _success(0.75))), threshold=0.5
+    )
+
+    assert outcome.status == "degraded"
+    assert outcome.rating == 0.75
+    assert [attempt.observation.status for attempt in outcome.attempts] == [
+        "skipped",
+        "succeeded",
+    ]
+
+
+def test_panel_with_no_eligible_reviewers_is_not_evaluable() -> None:
+    outcome = execute_panel(_judges(2), _ScriptedInvoke((_skipped(), _skipped())), threshold=0.5)
+
+    assert outcome.status == "not_evaluable"
+    assert outcome.rating is None
+    assert outcome.successful_count == 0
+
+
+def test_eligible_failure_still_fails_when_another_reviewer_is_skipped() -> None:
+    outcome = execute_panel(_judges(2), _ScriptedInvoke((_skipped(), _failure())), threshold=0.5)
+
+    assert outcome.status == "failed"
+    assert outcome.rating is None
+
+
+def test_skipped_observation_rejects_inference_fields() -> None:
+    with pytest.raises(ValueError, match="skipped observations"):
+        AttemptObservation(
+            status="skipped",
+            skip_reason="insufficient_context_capacity",
+            resolved_model="must-not-exist",
+            score=None,
+            rationale=None,
+            usage={},
+            error_type=None,
+            message=None,
+        )
 
 
 def test_execute_panel_does_not_convert_invoke_exceptions() -> None:

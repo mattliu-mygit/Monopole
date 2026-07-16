@@ -10,7 +10,7 @@ from typing import Literal
 
 from weave_agent_signals.run_config import PositionedJudge
 
-ObservationStatus = Literal["succeeded", "abstained", "failed"]
+ObservationStatus = Literal["succeeded", "abstained", "failed", "skipped"]
 ReviewStatus = Literal["complete", "degraded", "not_evaluable", "failed"]
 InferencePhase = Literal["digest", "window", "merge"]
 _SCHEMA_FALLBACK_REASON = "schema_output_unsupported"
@@ -98,6 +98,7 @@ class AttemptObservation:
     usage: Mapping[str, int]
     error_type: str | None
     message: str | None
+    skip_reason: Literal["insufficient_context_capacity"] | None = None
     evidence_ids: tuple[str, ...] = ()
     output_mode: str | None = None
     schema_name: str | None = None
@@ -109,8 +110,8 @@ class AttemptObservation:
     steps: tuple[InferenceStepAudit, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.status not in {"succeeded", "abstained", "failed"}:
-            raise ValueError("status must be succeeded, abstained, or failed")
+        if self.status not in {"succeeded", "abstained", "failed", "skipped"}:
+            raise ValueError("status must be succeeded, abstained, failed, or skipped")
         if not isinstance(self.usage, Mapping):
             raise ValueError("usage must be a mapping")
         usage = dict(self.usage)
@@ -192,6 +193,8 @@ class AttemptObservation:
             )
 
         if self.status == "succeeded":
+            if self.skip_reason is not None:
+                raise ValueError("non-skipped observations cannot contain a skip reason")
             _nonblank(self.resolved_model, "resolved_model")
             object.__setattr__(self, "score", _unit_float(self.score, "score"))
             if self.error_type is not None or self.message is not None:
@@ -201,6 +204,8 @@ class AttemptObservation:
             return
 
         if self.status == "abstained":
+            if self.skip_reason is not None:
+                raise ValueError("non-skipped observations cannot contain a skip reason")
             _nonblank(self.resolved_model, "resolved_model")
             if self.score is not None:
                 raise ValueError("abstained observations cannot contain a score")
@@ -211,6 +216,31 @@ class AttemptObservation:
                 raise ValueError("abstained observations cannot contain behavioral feedback")
             return
 
+        if self.status == "skipped":
+            if self.skip_reason != "insufficient_context_capacity":
+                raise ValueError("skipped observations require a valid skip reason")
+            if (
+                self.resolved_model is not None
+                or self.score is not None
+                or self.rationale is not None
+                or self.evidence_ids
+                or self.usage
+                or self.error_type is not None
+                or self.message is not None
+                or self.output_mode is not None
+                or self.schema_name is not None
+                or self.schema_fallback_reason is not None
+                or self.transport_request_count != 0
+                or self.verdict_schema_version is not None
+                or self.raw_output_digest is not None
+                or self.behavioral_feedback is not None
+                or self.steps
+            ):
+                raise ValueError("skipped observations cannot contain inference fields")
+            return
+
+        if self.skip_reason is not None:
+            raise ValueError("non-skipped observations cannot contain a skip reason")
         if self.score is not None or self.rationale is not None or self.evidence_ids:
             raise ValueError("failed observations cannot contain a score, rationale, or evidence")
         if self.behavioral_feedback is not None:
@@ -283,15 +313,16 @@ def execute_panel(
         for attempt in attempts
         if attempt.observation.status == "succeeded" and attempt.observation.score is not None
     )
-    if attempts and all(attempt.observation.status == "abstained" for attempt in attempts):
+    eligible = tuple(attempt for attempt in attempts if attempt.observation.status != "skipped")
+    if not eligible or all(attempt.observation.status == "abstained" for attempt in eligible):
         return PanelOutcome(None, "not_evaluable", tuple(attempts), 0, None, None, None)
-    if any(attempt.observation.status == "failed" for attempt in attempts) or not scores:
+    if any(attempt.observation.status == "failed" for attempt in eligible) or not scores:
         return PanelOutcome(None, "failed", tuple(attempts), len(scores), None, None, None)
     minimum = min(scores)
     maximum = max(scores)
     return PanelOutcome(
         rating=sum(scores) / len(scores),
-        status="complete" if len(scores) == len(judges) else "degraded",
+        status="complete" if len(scores) == len(attempts) else "degraded",
         attempts=tuple(attempts),
         successful_count=len(scores),
         minimum=minimum,

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from weave_agent_signals.catalogs import build_rubric_catalog
+from weave_agent_signals.judges import plan as plan_module
 from weave_agent_signals.judges import runner
 from weave_agent_signals.judges.plan import build_judging_plan
 from weave_agent_signals.judges.review import AttemptObservation
@@ -241,3 +242,55 @@ def test_runner_rejects_alternate_later_judge_before_reviewer_instantiation(monk
             artifact_recorder=lambda *_: None,
         )
     assert created == []
+
+
+def test_runner_synthesizes_authenticated_skip_without_creating_reviewer(monkeypatch) -> None:
+    session = _session()
+    judges = (_judge("small", 1), _judge("large", 2))
+    judges = (judges[0].model_copy(update={"max_input_tokens": 64_000}), judges[1])
+    rubrics = build_rubric_catalog().rubrics[:1]
+    original = plan_module.build_window_plan
+
+    def build(value, policy, limit, counter):
+        if limit == 64_000:
+            from weave_agent_signals.judges.windowing import WindowPlanInapplicable
+
+            raise WindowPlanInapplicable()
+        return original(value, policy, limit, counter)
+
+    monkeypatch.setattr(plan_module, "build_window_plan", build)
+    plan = build_judging_plan(
+        [session],
+        cohort_id="cohort",
+        rubrics=rubrics,
+        judge_models=judges,
+        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
+    )
+    created = []
+
+    class FakeReviewer:
+        def __init__(self, **kwargs):
+            created.append(kwargs["judge"].id)
+
+        def review(self, _rubric):
+            return _observation(0.75)
+
+    monkeypatch.setattr(runner, "SlidingReviewer", FakeReviewer)
+    scores = judge_session(
+        session,
+        object(),
+        rubrics=rubrics,
+        judges=judges,
+        judging_plan=plan,
+        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
+        artifact_loader=lambda _: None,
+        artifact_recorder=lambda *_: None,
+    )
+
+    assert created == ["large"]
+    assert scores[0].metadata["review_status"] == "degraded"
+    assert [attempt["status"] for attempt in scores[0].metadata["attempts"]] == [
+        "skipped",
+        "succeeded",
+    ]
+    assert scores[0].metadata["attempts"][0]["skip_reason"] == ("insufficient_context_capacity")

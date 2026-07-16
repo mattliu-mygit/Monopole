@@ -538,7 +538,6 @@ def test_judging_plan_and_reflection_input_are_validated_and_write_once(store):
     changed_plan = {**plan, "schema_version": "changed"}
     with pytest.raises(ValueError, match="schema_version"):
         store.pin_judging_plan(started.run_id, changed_plan)
-
     store.record_stage_result(
         started.run_id,
         stage=RunStatus.JUDGING,
@@ -563,6 +562,57 @@ def test_judging_plan_and_reflection_input_are_validated_and_write_once(store):
             started.run_id,
             {"feedback": [], "feedback_count": 0},
         )
+
+
+def test_store_accepts_strict_skipped_reviewer_disposition(store, monkeypatch):
+    started, _, effective = _start(store)
+    store.record_stage_result(started.run_id, stage=RunStatus.SCORING, result={"written": 1})
+    store.finalize_stage_success(started.run_id, stage=RunStatus.SCORING, advance=True)
+    from weave_agent_signals.judges import plan as plan_module
+    from weave_agent_signals.judges.windowing import WindowPlanInapplicable
+
+    monkeypatch.setattr(
+        plan_module,
+        "build_window_plan",
+        lambda *_args: (_ for _ in ()).throw(WindowPlanInapplicable()),
+    )
+    now = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    turn = TurnSpan(
+        "turn-1",
+        "conv-1",
+        now,
+        now,
+        "agent",
+        1,
+        1,
+        0,
+        "OK",
+        "cfg",
+        "main",
+        None,
+        "sid",
+        0,
+        0,
+        0,
+        [],
+        [],
+        [],
+        [],
+        "request",
+        "response",
+    )
+    plan = build_judging_plan(
+        [SessionView("conv-1", [turn], "cfg", "main")],
+        cohort_id="cohort-test",
+        rubrics=effective.rubrics[:1],
+        judge_models=effective.models.judges,
+        context_policy=effective.judging_context,
+    )
+
+    pinned = store.pin_judging_plan(started.run_id, plan)
+
+    assert pinned.judging_plan["sessions"][0]["reviewers"][0]["status"] == "skipped"
+    assert pinned.judging_plan["totals"]["maximum_reviewer_attempts"] == 0
 
 
 def test_review_revision_cas_round_trips_promotion_receipt(store):

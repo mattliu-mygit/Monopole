@@ -109,6 +109,31 @@ describe('JudgingProgress', () => {
     expect(screen.queryByText(/episode/i)).toBeNull()
   })
 
+  it('shows capacity-skipped reviewers without trying to render windows', () => {
+    const skippedPlan: JudgingPlan = {
+      ...plan,
+      sessions: [{
+        ...plan.sessions[0],
+        reviewers: [{
+          ...plan.sessions[0].reviewers[0],
+          status: 'skipped',
+          skip_reason: 'insufficient_context_capacity',
+          window_plan: null,
+          work_bounds: {
+            digest_calls: 0,
+            window_calls_per_rubric: 0,
+            merge_calls_per_rubric: 0,
+          },
+        }],
+      }],
+    }
+
+    render(<JudgingProgress plan={skippedPlan} progress={null} result={null} />)
+
+    expect(screen.getByText('Skipped · insufficient context capacity')).not.toBeNull()
+    expect(screen.queryByText(/Window 1/)).toBeNull()
+  })
+
   it('shows final behavioral feedback and the ordered inference audit', () => {
     render(<JudgingProgress plan={plan} progress={progress} result={null} />)
 

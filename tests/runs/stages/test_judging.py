@@ -250,6 +250,32 @@ def test_stage_completes_unanimous_abstention_without_writing_feedback(store, mo
     assert weave.writes == []
 
 
+def test_stage_with_no_applicable_reviewers_avoids_chat_and_judge_feedback(store, monkeypatch):
+    run, effective, turn, session = _setup(store)
+    from weave_agent_signals.judges.windowing import WindowPlanInapplicable
+
+    monkeypatch.setattr(
+        "weave_agent_signals.judges.plan.build_window_plan",
+        lambda *_args: (_ for _ in ()).throw(WindowPlanInapplicable()),
+    )
+    chat_factory = Mock(side_effect=AssertionError("chat backend must not be created"))
+    weave = _Weave()
+    deps = JudgingDependencies(
+        store,
+        lambda: weave,
+        chat_factory,
+        lambda _cohort: ([turn], {"session-1": session}),
+    )
+
+    run_judging_stage(run, effective, threading.Event(), dependencies=deps)
+
+    result = store.get(run.run_id).judging_result
+    assert result["not_evaluable_rubrics"] == 1
+    assert result["reviewer_attempts_completed"] == 0
+    assert result["attempt_summaries"][0]["attempts"][0]["status"] == "skipped"
+    assert weave.writes == []
+
+
 def test_stage_passes_exact_pinned_plan_and_context_to_runner(store, monkeypatch):
     run, effective, turn, session = _setup(store)
     captured = Mock(
@@ -261,7 +287,7 @@ def test_stage_passes_exact_pinned_plan_and_context_to_runner(store, monkeypatch
     )
     run_judging_stage(run, effective, threading.Event(), dependencies=deps)
     kwargs = captured.call_args.kwargs
-    assert kwargs["judging_plan"]["schema_version"] == "2"
+    assert kwargs["judging_plan"]["schema_version"] == "3"
     assert kwargs["context_policy"] == effective.judging_context
     assert kwargs["rubrics"] == list(effective.rubrics)
 

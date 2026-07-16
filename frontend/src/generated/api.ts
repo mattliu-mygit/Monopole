@@ -810,7 +810,14 @@ export interface components {
             judge: components["schemas"]["PositionedJudge"];
             /** Ordinal */
             ordinal: number;
-            window_plan: components["schemas"]["JudgingWindowPlanResponse"];
+            /** Skip Reason */
+            skip_reason: "insufficient_context_capacity" | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "planned" | "skipped";
+            window_plan: components["schemas"]["JudgingWindowPlanResponse"] | null;
             work_bounds: components["schemas"]["JudgingWorkBoundsResponse"];
         };
         /** JudgingWindowPlanResponse */
@@ -819,8 +826,11 @@ export interface components {
             capacity_reserve_tokens: number;
             /** Chunk Count */
             chunk_count: number;
-            /** Contract Version */
-            contract_version: string;
+            /**
+             * Contract Version
+             * @constant
+             */
+            contract_version: "2";
             /** Conversation Id */
             conversation_id: string;
             /** Input Cap Tokens */
@@ -837,8 +847,11 @@ export interface components {
             raw_coverage_trace_ids: string[];
             /** Raw Turns */
             raw_turns: components["schemas"]["JudgingRawTurnResponse"][];
-            /** Token Counter */
-            token_counter: string;
+            /**
+             * Token Counter
+             * @enum {string}
+             */
+            token_counter: "utf8_bytes_div_3" | "o200k_base" | "o200k_harmony";
             /** Windows */
             windows: components["schemas"]["JudgingWindowResponse"][];
         };
@@ -1147,11 +1160,13 @@ export interface components {
             schema_name: string | null;
             /** Score */
             score: number | null;
+            /** Skip Reason */
+            skip_reason?: "insufficient_context_capacity" | null;
             /**
              * Status
              * @enum {string}
              */
-            status: "succeeded" | "abstained" | "failed";
+            status: "succeeded" | "abstained" | "failed" | "skipped";
             /** Steps */
             steps: components["schemas"]["InferenceStepAuditResponse"][];
             /** Transport Request Count */

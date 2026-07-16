@@ -307,7 +307,7 @@ class SlidingReviewer:
         body = {key: value for key, value in plan.items() if key != "plan_id"}
         if plan_id != _sha256(body):
             raise ValueError("pinned judging plan ID does not match its full content")
-        if plan.get("schema_version") != "2":
+        if plan.get("schema_version") != "3":
             raise ValueError("pinned judging plan schema is unsupported")
         if plan.get("input_policy") != context_policy.model_dump(mode="json"):
             raise ValueError("pinned judging context policy does not match")
@@ -336,6 +336,8 @@ class SlidingReviewer:
         reviewer_row = reviewer_rows[judge.position - 1]
         if reviewer_row.get("judge") != judge.model_dump(mode="json"):
             raise ValueError("reviewer is not the exact pinned plan member at this ordinal")
+        if reviewer_row.get("status") != "planned" or reviewer_row.get("skip_reason") is not None:
+            raise ValueError("reviewer is not planned for this session")
         window_plan = reviewer_row.get("window_plan")
         if not isinstance(window_plan, Mapping):
             raise ValueError("pinned reviewer window plan is invalid")

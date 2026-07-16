@@ -1467,8 +1467,35 @@
             "title": "Ordinal",
             "type": "integer"
           },
+          "skip_reason": {
+            "anyOf": [
+              {
+                "const": "insufficient_context_capacity",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skip Reason"
+          },
+          "status": {
+            "enum": [
+              "planned",
+              "skipped"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
           "window_plan": {
-            "$ref": "#/components/schemas/JudgingWindowPlanResponse"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JudgingWindowPlanResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "work_bounds": {
             "$ref": "#/components/schemas/JudgingWorkBoundsResponse"
@@ -1477,6 +1504,8 @@
         "required": [
           "ordinal",
           "judge",
+          "status",
+          "skip_reason",
           "window_plan",
           "work_bounds"
         ],
@@ -1495,6 +1524,7 @@
             "type": "integer"
           },
           "contract_version": {
+            "const": "2",
             "title": "Contract Version",
             "type": "string"
           },
@@ -1537,6 +1567,11 @@
             "type": "array"
           },
           "token_counter": {
+            "enum": [
+              "utf8_bytes_div_3",
+              "o200k_base",
+              "o200k_harmony"
+            ],
             "title": "Token Counter",
             "type": "string"
           },
@@ -2576,11 +2611,24 @@
             ],
             "title": "Score"
           },
+          "skip_reason": {
+            "anyOf": [
+              {
+                "const": "insufficient_context_capacity",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skip Reason"
+          },
           "status": {
             "enum": [
               "succeeded",
               "abstained",
-              "failed"
+              "failed",
+              "skipped"
             ],
             "title": "Status",
             "type": "string"

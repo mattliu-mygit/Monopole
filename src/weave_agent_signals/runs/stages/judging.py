@@ -196,6 +196,7 @@ def _attempts(values: object) -> list[dict[str, Any]]:
                 "requested_family",
                 "requested_backend",
                 "status",
+                "skip_reason",
                 "resolved_model",
                 "resolved_family",
                 "score",
@@ -285,7 +286,8 @@ def _record_score_summary(
     conversation_id: str,
 ) -> None:
     state.scores.append(score)
-    state.reviewer_attempts_completed += len(attempts)
+    completed_attempts = sum(attempt.get("status") != "skipped" for attempt in attempts)
+    state.reviewer_attempts_completed += completed_attempts
     state.attempt_summary_count += 1
     _append_bounded(
         state.attempt_summaries,
@@ -312,7 +314,9 @@ def _record_failure(
 ) -> None:
     attempts = _attempts(failure.attempts)
     state.failures.append(failure)
-    state.reviewer_attempts_completed += len(attempts)
+    state.reviewer_attempts_completed += sum(
+        attempt.get("status") != "skipped" for attempt in attempts
+    )
     state.attempt_summary_count += 1
     context = _scope(trace_id, conversation_id)
     _append_bounded(
@@ -353,7 +357,9 @@ def _record_not_evaluable(
 ) -> None:
     attempts = _attempts(outcome.attempts)
     state.not_evaluable_rubrics += 1
-    state.reviewer_attempts_completed += len(attempts)
+    state.reviewer_attempts_completed += sum(
+        attempt.get("status") != "skipped" for attempt in attempts
+    )
     state.attempt_summary_count += 1
     _append_bounded(
         state.attempt_summaries,
@@ -583,8 +589,13 @@ def run_judging_stage(
         )
 
     progress(f"Starting {state.planned_rubrics} planned rubric judgment(s)...")
+    has_applicable_reviewers = any(
+        reviewer["status"] == "planned"
+        for session_plan in plan["sessions"]
+        for reviewer in session_plan["reviewers"]
+    )
     chat_context: AbstractContextManager[ChatClient | None] = (
-        dependencies.chat_client_factory() if state.planned_rubrics else nullcontext(None)
+        dependencies.chat_client_factory() if has_applicable_reviewers else nullcontext(None)
     )
     _active(dependencies.store, run_id, cancel)
     with chat_context as chat_client:

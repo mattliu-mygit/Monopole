@@ -10,7 +10,7 @@ from typing import Any
 from weave_agent_signals.catalogs import build_rubric_catalog
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.judges.sliding import sliding_protocol_contract_manifest
-from weave_agent_signals.judges.windowing import build_window_plan
+from weave_agent_signals.judges.windowing import WindowPlanInapplicable, build_window_plan
 from weave_agent_signals.models import SessionView
 from weave_agent_signals.run_config import (
     JudgingContextPolicy,
@@ -18,7 +18,7 @@ from weave_agent_signals.run_config import (
     RubricDescriptor,
 )
 
-PLAN_SCHEMA_VERSION = "2"
+PLAN_SCHEMA_VERSION = "3"
 
 
 def _digest(value: object) -> str:
@@ -76,7 +76,6 @@ def build_judging_plan(
         if descriptor != current.rubric(descriptor.id):
             raise ValueError(f"Pinned rubric {descriptor.id} does not match current content")
 
-    reviewer_attempts = len(judges)
     session_plans: list[dict[str, Any]] = []
     turns_considered = 0
     windows_planned = 0
@@ -89,17 +88,36 @@ def build_judging_plan(
         turns_considered += len(session.turns)
         reviewers = []
         for judge in judges:
-            window_plan = build_window_plan(
-                session,
-                context_policy,
-                judge.max_input_tokens,
-                judge.token_counter,
-            )
+            try:
+                window_plan = build_window_plan(
+                    session,
+                    context_policy,
+                    judge.max_input_tokens,
+                    judge.token_counter,
+                )
+            except WindowPlanInapplicable:
+                reviewers.append(
+                    {
+                        "ordinal": judge.position,
+                        "judge": judge.model_dump(mode="json"),
+                        "status": "skipped",
+                        "skip_reason": "insufficient_context_capacity",
+                        "window_plan": None,
+                        "work_bounds": {
+                            "digest_calls": 0,
+                            "window_calls_per_rubric": 0,
+                            "merge_calls_per_rubric": 0,
+                        },
+                    }
+                )
+                continue
             count = int(window_plan["chunk_count"])
             reviewers.append(
                 {
                     "ordinal": judge.position,
                     "judge": judge.model_dump(mode="json"),
+                    "status": "planned",
+                    "skip_reason": None,
                     "window_plan": window_plan,
                     "work_bounds": {
                         "digest_calls": count,
@@ -112,6 +130,7 @@ def build_judging_plan(
             digest_calls_planned += count
             maximum_window_calls += count * len(requested)
             maximum_merge_calls += len(requested)
+        reviewer_attempts = sum(reviewer["status"] == "planned" for reviewer in reviewers)
         coverage = [turn.trace_id for turn in session.turns]
         session_plans.append(
             {
@@ -144,8 +163,16 @@ def build_judging_plan(
             "turns_considered": turns_considered,
             "windows_planned": windows_planned,
             "planned_rubrics": planned_rubrics,
-            "minimum_reviewer_attempts": planned_rubrics * reviewer_attempts,
-            "maximum_reviewer_attempts": planned_rubrics * reviewer_attempts,
+            "minimum_reviewer_attempts": sum(
+                rubric["minimum_reviewer_attempts"]
+                for session in session_plans
+                for rubric in session["rubrics"]
+            ),
+            "maximum_reviewer_attempts": sum(
+                rubric["maximum_reviewer_attempts"]
+                for session in session_plans
+                for rubric in session["rubrics"]
+            ),
             "maximum_digest_calls": digest_calls_planned,
             "maximum_window_calls": maximum_window_calls,
             "maximum_merge_calls": maximum_merge_calls,
