@@ -10,7 +10,7 @@ from urllib.parse import unquote, urlparse
 from fastapi import APIRouter, HTTPException, Query
 
 from weave_agent_signals.client import WeaveClient
-from weave_agent_signals.models import TurnSpan
+from weave_agent_signals.models import FEEDBACK_PREFIX, TurnSpan, session_is_evaluable
 from weave_agent_signals.patterns import (
     ab_leaderboard,
     aggregate_scores,
@@ -24,10 +24,6 @@ from weave_agent_signals.routes.models import (
     SessionListResponse,
 )
 
-_SYNTHETIC_SESSION_PREFIXES = (
-    "## Scoring criteria",
-    "You are an expert optimization assistant.",
-)
 _SIGNAL_SCORER_RE = re.compile(
     r"^agent-signal-(?P<signal>.+)-(?P<version>v[1-9][0-9]*)-scorer(?::.+)?$"
 )
@@ -126,6 +122,15 @@ def _signal_evidence(
     )
 
 
+def _score_feedback(rows: list[dict]) -> list[dict]:
+    return [
+        row
+        for row in rows
+        if isinstance(row.get("feedback_type"), str)
+        and row["feedback_type"].startswith(FEEDBACK_PREFIX)
+    ]
+
+
 def _turn_json(turn: TurnSpan, *, include_children: bool = False) -> dict:
     value = {
         "trace_id": turn.trace_id,
@@ -215,11 +220,7 @@ def _group_sessions(turns: list[TurnSpan]) -> dict[str, list[TurnSpan]]:
         grouped.setdefault(turn.conversation_id, []).append(turn)
     sessions: dict[str, list[TurnSpan]] = {}
     for conversation_id, session_turns in grouped.items():
-        first = min(session_turns, key=lambda turn: turn.started_at)
-        synthetic = isinstance(first.user_input, str) and first.user_input.startswith(
-            _SYNTHETIC_SESSION_PREFIXES
-        )
-        if not synthetic:
+        if session_is_evaluable(session_turns):
             sessions[conversation_id] = session_turns
     return sessions
 
@@ -297,8 +298,8 @@ def create_inspection_router(
         try:
             with client_factory() as client:
                 session = client.query_session(conversation_id)
-                if not session.turns:
-                    raise ValueError("session has no turns")
+                if not session_is_evaluable(session.turns):
+                    raise ValueError("session is not an evaluable agent session")
                 client.hydrate_turns_batch(session.turns)
                 session_ref = session.ref_for(client.entity, client.project)
                 turn_refs = {
@@ -308,11 +309,13 @@ def create_inspection_router(
                 feedback_by_ref = client.query_all_feedback_batch(
                     [session_ref, *turn_refs.values()]
                 )
-                session_feedback = feedback_by_ref[session_ref]
+                entity = client.entity
+                project = client.project
+                session_feedback = _score_feedback(feedback_by_ref[session_ref])
                 turn_feedback = {
-                    trace_id: feedback_by_ref[ref]
+                    trace_id: scores
                     for trace_id, ref in turn_refs.items()
-                    if feedback_by_ref[ref]
+                    if (scores := _score_feedback(feedback_by_ref[ref]))
                 }
         except ValueError as error:
             raise HTTPException(
@@ -329,6 +332,12 @@ def create_inspection_router(
                 "turns": [_turn_json(turn, include_children=True) for turn in session.turns],
                 "session_feedback": session_feedback,
                 "turn_feedback": turn_feedback,
+                "signal_evidence": _signal_evidence(
+                    session.turns,
+                    feedback_by_ref,
+                    entity=entity,
+                    project=project,
+                ),
             }
         )
 

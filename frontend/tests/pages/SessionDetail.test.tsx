@@ -58,6 +58,14 @@ beforeEach(() => {
       chat_spans: [],
       subagents: [],
     }],
+    signal_evidence: [{
+      signal: 'user-frustration',
+      version: 'v1',
+      rating: 0.25,
+      reason: 'The user explicitly says they are frustrated.',
+      turn_id: 'trace-1234567890',
+      turn_started_at: '2026-07-14T18:00:00Z',
+    }],
     session_feedback: [{
       id: 'feedback-1',
       feedback_type: 'weave_agent_signals.judge.verification',
@@ -121,6 +129,15 @@ beforeEach(() => {
 })
 
 describe('SessionDetail disclosures', () => {
+  it('renders Agent Signals separately from score feedback', async () => {
+    renderPage()
+
+    expect(
+      await screen.findByLabelText('Signal review recommendation: 0.25; user frustration'),
+    ).not.toBeNull()
+    expect(await screen.findByText('Session Scores')).not.toBeNull()
+  })
+
   it('renders current review attempts including failures', async () => {
     renderPage()
 

@@ -3844,6 +3844,13 @@
             "title": "Session Feedback",
             "type": "array"
           },
+          "signal_evidence": {
+            "items": {
+              "$ref": "#/components/schemas/SignalEvidenceResponse"
+            },
+            "title": "Signal Evidence",
+            "type": "array"
+          },
           "total_tokens": {
             "title": "Total Tokens",
             "type": "integer"
@@ -3878,7 +3885,8 @@
           "turn_count",
           "turns",
           "session_feedback",
-          "turn_feedback"
+          "turn_feedback",
+          "signal_evidence"
         ],
         "title": "SessionDetailResponse",
         "type": "object"

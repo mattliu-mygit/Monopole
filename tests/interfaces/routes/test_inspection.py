@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from weave_agent_signals.models import SessionView, TurnSpan
+from weave_agent_signals.models import SessionView, TraceRole, TurnSpan
 from weave_agent_signals.routes.inspection import create_inspection_router
 
 
@@ -16,6 +16,7 @@ def _turn(
     *,
     hour: int,
     user_input: str,
+    trace_role: TraceRole = TraceRole.AGENT_SESSION,
 ) -> TurnSpan:
     started = datetime(2026, 7, 14, hour, tzinfo=timezone.utc)
     return TurnSpan(
@@ -41,6 +42,7 @@ def _turn(
         subagents=[],
         user_input=user_input,
         assistant_output="done",
+        trace_role=trace_role,
     )
 
 
@@ -57,6 +59,7 @@ class FakeClient:
                 "synthetic",
                 hour=10,
                 user_input="## Scoring criteria\nJudge this",
+                trace_role=TraceRole.JUDGE_EVALUATION,
             ),
         ]
         self.query_calls = []
@@ -142,6 +145,70 @@ def test_session_listing_filters_synthetic_sessions_and_reports_truncation():
     ]
     assert response.json()["sessions"][0]["signal_evidence"] == []
     assert backend.feedback_batches == [[backend.turns[0].ref_for(backend.entity, backend.project)]]
+
+
+def test_session_listing_excludes_explicit_non_agent_and_mixed_sessions():
+    client, backend = _client()
+    backend.turns.extend(
+        [
+            _turn(
+                "trace-signal",
+                "signal-session",
+                hour=9,
+                user_input="Ordinary-looking evaluator prompt",
+                trace_role=TraceRole.SIGNAL_EVALUATION,
+            ),
+            _turn("trace-mixed-agent", "mixed-session", hour=8, user_input="User work"),
+            _turn(
+                "trace-mixed-judge",
+                "mixed-session",
+                hour=7,
+                user_input="Continuation",
+                trace_role=TraceRole.JUDGE_EVALUATION,
+            ),
+        ]
+    )
+
+    response = client.get(
+        "/api/sessions",
+        params={"since": "2026-07-14T07:00:00Z", "until": "2026-07-14T13:00:00Z"},
+    )
+
+    assert response.status_code == 200
+    assert [item["conversation_id"] for item in response.json()["sessions"]] == [
+        "session/one",
+        "session-two",
+    ]
+
+
+@pytest.mark.parametrize("conversation_id", ["signal-session", "mixed-session"])
+def test_session_detail_rejects_non_agent_and_mixed_sessions(conversation_id):
+    client, backend = _client()
+    backend.turns.extend(
+        [
+            _turn(
+                "trace-signal",
+                "signal-session",
+                hour=9,
+                user_input="Evaluator",
+                trace_role=TraceRole.SIGNAL_EVALUATION,
+            ),
+            _turn("trace-mixed-agent", "mixed-session", hour=8, user_input="User work"),
+            _turn(
+                "trace-mixed-system",
+                "mixed-session",
+                hour=7,
+                user_input="System work",
+                trace_role=TraceRole.OTHER_SYSTEM,
+            ),
+        ]
+    )
+
+    response = client.get(f"/api/sessions/{conversation_id}")
+
+    assert response.status_code == 404
+    assert backend.hydrated == []
+    assert backend.feedback_batches == []
 
 
 def test_session_listing_hydrates_low_signal_feedback_from_exact_turn_refs():
@@ -375,6 +442,120 @@ def test_session_detail_hydrates_children_and_returns_feedback():
     assert backend.hydrated == [["trace-a"]]
     assert len(backend.feedback_batches) == 1
     assert len(backend.feedback_batches[0]) == 2
+
+
+def test_session_detail_segments_scores_signals_and_unknown_feedback():
+    client, backend = _client()
+    turn = backend.turns[0]
+    turn_ref = turn.ref_for(backend.entity, backend.project)
+    session_ref = SessionView(
+        conversation_id=turn.conversation_id,
+        turns=[turn],
+        config_version=turn.config_version,
+        git_branch=turn.git_branch,
+    ).ref_for(backend.entity, backend.project)
+    score = {
+        "id": "score-1",
+        "feedback_type": "weave_agent_signals.outcome.test",
+        "created_at": "2026-07-14T12:01:00Z",
+        "payload": {"rating": 1.0, "tags": [], "details": {}},
+    }
+    signal = {
+        "id": "signal-1",
+        "feedback_type": "wandb.agent_monitor",
+        "runnable_ref": (
+            "weave:///weave-team/agent-sessions/object/"
+            "agent-signal-user-frustration-v1-scorer:digest"
+        ),
+        "created_at": "2026-07-14T12:02:00Z",
+        "scorer_ratings": {"_rating_": 0.25},
+        "payload": {
+            "output": {
+                "rating": 0.25,
+                "reason": "The user explicitly says they are frustrated.",
+            }
+        },
+    }
+    unknown = {
+        "id": "unknown-1",
+        "feedback_type": "another.product.feedback",
+        "created_at": "2026-07-14T12:03:00Z",
+        "payload": {"shape": "not-a-score"},
+    }
+    backend.feedback_by_ref[session_ref] = [score, unknown]
+    backend.feedback_by_ref[turn_ref] = [score, signal, unknown]
+
+    response = client.get("/api/sessions/session%2Fone")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["id"] for item in body["session_feedback"]] == ["score-1"]
+    assert [item["id"] for item in body["turn_feedback"]["trace-a"]] == ["score-1"]
+    assert body["signal_evidence"] == [
+        {
+            "signal": "user-frustration",
+            "version": "v1",
+            "rating": 0.25,
+            "reason": "The user explicitly says they are frustrated.",
+            "turn_id": "trace-a",
+            "turn_started_at": "2026-07-14T12:00:00+00:00",
+        }
+    ]
+
+
+def test_session_detail_partitions_scores_from_agent_signal_evidence():
+    client, backend = _client()
+    turn = backend.turns[0]
+    turn_ref = turn.ref_for(backend.entity, backend.project)
+    backend.feedback_by_ref[turn_ref] = [
+        {
+            "id": "score-feedback",
+            "weave_ref": turn_ref,
+            "feedback_type": "weave_agent_signals.efficiency",
+            "payload": {"rating": 1.0},
+            "created_at": "2026-07-14T12:01:00Z",
+        },
+        {
+            "id": "signal-feedback",
+            "weave_ref": turn_ref,
+            "feedback_type": "wandb.agent_monitor",
+            "runnable_ref": (
+                "weave:///weave-team/agent-sessions/object/"
+                "agent-signal-user-frustration-v1-scorer:digest"
+            ),
+            "created_at": "2026-07-14T12:02:00Z",
+            "scorer_ratings": {"_rating_": 0.25},
+            "payload": {
+                "output": {
+                    "value": 0.25,
+                    "reason": "The user explicitly says they are frustrated.",
+                }
+            },
+        },
+        {
+            "id": "unknown-feedback",
+            "weave_ref": turn_ref,
+            "feedback_type": "other.product.score",
+            "payload": {"value": 0.9},
+            "created_at": "2026-07-14T12:03:00Z",
+        },
+    ]
+
+    response = client.get("/api/sessions/session%2Fone")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["id"] for item in body["turn_feedback"]["trace-a"]] == ["score-feedback"]
+    assert body["signal_evidence"] == [
+        {
+            "signal": "user-frustration",
+            "version": "v1",
+            "rating": 0.25,
+            "reason": "The user explicitly says they are frustrated.",
+            "turn_id": "trace-a",
+            "turn_started_at": "2026-07-14T12:00:00+00:00",
+        }
+    ]
 
 
 def test_inspection_errors_are_http_specific_and_empty_analysis_is_stable():

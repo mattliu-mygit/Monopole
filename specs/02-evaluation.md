@@ -5,6 +5,13 @@ scorers cover evidence that can be interpreted with high precision. Model
 judges cover process and session qualities that require contextual assessment.
 Both write ratings on the same higher-is-better `[0, 1]` scale.
 
+Ordinary evaluation applies only to complete `agent_session` conversations.
+Signal scorer, judge, reflection, other-system, and mixed-role traces are
+operational evidence, not members of the agent-quality population. Discovery
+enforces that boundary before child hydration, inference, cohort pinning, or
+feedback writes. Rehydrating a pinned run also rejects role drift before
+external work.
+
 ## Deterministic evaluation
 
 Outcome evaluation recognizes observed test, build, lint, installation,

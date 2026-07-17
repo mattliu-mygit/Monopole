@@ -8,7 +8,7 @@ import pytest
 import respx
 
 from weave_agent_signals.client import TRACE_BASE, WeaveClient
-from weave_agent_signals.models import Score
+from weave_agent_signals.models import Score, TraceRole
 
 
 @pytest.fixture
@@ -134,6 +134,58 @@ def test_hydrate_turn_missing_attrs(client):
     turn = client._hydrate_turn(raw)
     assert turn.config_version is None
     assert turn.steering_count == 0
+
+
+@pytest.mark.parametrize(
+    ("raw_role", "expected"),
+    [
+        ("agent_session", TraceRole.AGENT_SESSION),
+        ("signal_evaluation", TraceRole.SIGNAL_EVALUATION),
+        ("judge_evaluation", TraceRole.JUDGE_EVALUATION),
+        ("reflection_evaluation", TraceRole.REFLECTION_EVALUATION),
+        ("other_system", TraceRole.OTHER_SYSTEM),
+        ("future_evaluator", TraceRole.OTHER_SYSTEM),
+    ],
+)
+def test_hydrate_turn_resolves_explicit_trace_role(client, raw_role, expected):
+    attrs = dict(_fake_span()["custom_attrs_string"])
+    attrs["weave_agent_signals.trace_role"] = raw_role
+
+    turn = client._hydrate_turn(_fake_span(custom_attrs_string=attrs))
+
+    assert turn.trace_role is expected
+
+
+@pytest.mark.parametrize(
+    ("user_input", "expected"),
+    [
+        ("## Scoring criteria\nJudge this trace", TraceRole.JUDGE_EVALUATION),
+        (
+            "You are an expert optimization assistant. Improve the instructions.",
+            TraceRole.REFLECTION_EVALUATION,
+        ),
+        (
+            "You are a high recall evaluation rater for an AI agent. Judge only visible work.",
+            TraceRole.SIGNAL_EVALUATION,
+        ),
+        ("Build the requested feature", TraceRole.AGENT_SESSION),
+        (None, TraceRole.AGENT_SESSION),
+    ],
+)
+def test_hydrate_turn_classifies_legacy_untagged_roots(client, user_input, expected):
+    input_messages = [{"role": "user", "content": user_input}] if user_input is not None else None
+    turn = client._hydrate_turn(_fake_span(custom_attrs_string={}, input_messages=input_messages))
+
+    assert turn.trace_role is expected
+
+
+def test_turn_queries_request_trace_role_attribute(client):
+    body = client._build_turn_query(limit=10)
+
+    assert {
+        "source": "custom_attrs_string",
+        "key": "weave_agent_signals.trace_role",
+    } in body["custom_attr_columns"]
 
 
 @pytest.mark.parametrize(

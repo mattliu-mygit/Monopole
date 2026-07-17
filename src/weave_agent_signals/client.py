@@ -12,6 +12,7 @@ import httpx
 
 from weave_agent_signals.models import (
     FEEDBACK_PREFIX,
+    TRACE_ROLE_ATTRIBUTE,
     ChatSpan,
     Score,
     SessionView,
@@ -19,6 +20,7 @@ from weave_agent_signals.models import (
     SubagentSpan,
     ToolSpan,
     TurnSpan,
+    resolve_trace_role,
 )
 
 TRACE_BASE = "https://trace.wandb.ai"
@@ -26,6 +28,7 @@ _DETAIL_BATCH_LIMIT = 10_000
 _FEEDBACK_BATCH_LIMIT = 10_000
 
 _CUSTOM_ATTR_COLUMNS = [
+    {"source": "custom_attrs_string", "key": TRACE_ROLE_ATTRIBUTE},
     {"source": "custom_attrs_string", "key": "weave_agent_adapter.config_version"},
     {"source": "custom_attrs_string", "key": "weave_agent_adapter.git_branch"},
     {"source": "custom_attrs_string", "key": "weave_agent_adapter.effort_level"},
@@ -185,6 +188,7 @@ class WeaveClient:
 
     def _hydrate_turn(self, raw: dict[str, Any]) -> TurnSpan:
         attrs = _custom_attrs(raw)
+        user_input = self._extract_user_input(raw)
         events = []
         events_dump = raw.get("events_dump", "")
         if events_dump:
@@ -218,8 +222,9 @@ class WeaveClient:
             steering_count=attrs.get("weave_agent_adapter.steering_count", 0) or 0,
             denial_count=attrs.get("weave_agent_adapter.denial_count", 0) or 0,
             tool_error_count=attrs.get("weave_agent_adapter.tool_error_count", 0) or 0,
-            user_input=self._extract_user_input(raw),
+            user_input=user_input,
             assistant_output=self._extract_assistant_output(raw),
+            trace_role=resolve_trace_role(attrs.get(TRACE_ROLE_ATTRIBUTE), user_input),
             events=events,
             tool_calls=[],
             chat_spans=[],

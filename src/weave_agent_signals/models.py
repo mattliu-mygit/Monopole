@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import StrEnum
 from typing import Any, Union
 from urllib.parse import quote
 
@@ -10,6 +11,36 @@ PROJECT = "agent-sessions"
 
 # Prefix for every feedback type this system writes: weave_agent_signals.<scorer>
 FEEDBACK_PREFIX = "weave_agent_signals."
+TRACE_ROLE_ATTRIBUTE = "weave_agent_signals.trace_role"
+
+
+class TraceRole(StrEnum):
+    AGENT_SESSION = "agent_session"
+    SIGNAL_EVALUATION = "signal_evaluation"
+    JUDGE_EVALUATION = "judge_evaluation"
+    REFLECTION_EVALUATION = "reflection_evaluation"
+    OTHER_SYSTEM = "other_system"
+
+
+_LEGACY_TRACE_ROLE_PREFIXES = (
+    ("## Scoring criteria", TraceRole.JUDGE_EVALUATION),
+    ("You are an expert optimization assistant.", TraceRole.REFLECTION_EVALUATION),
+    ("You are a high recall evaluation rater for an AI agent.", TraceRole.SIGNAL_EVALUATION),
+)
+
+
+def resolve_trace_role(explicit_role: object, user_input: str | None) -> TraceRole:
+    """Resolve an immutable root role, failing safe for unknown explicit values."""
+    if explicit_role is not None:
+        try:
+            return TraceRole(explicit_role)
+        except (TypeError, ValueError):
+            return TraceRole.OTHER_SYSTEM
+    if user_input is not None:
+        for prefix, role in _LEGACY_TRACE_ROLE_PREFIXES:
+            if user_input.startswith(prefix):
+                return role
+    return TraceRole.AGENT_SESSION
 
 
 @dataclass
@@ -74,9 +105,27 @@ class TurnSpan:
 
     user_input: str | None = None
     assistant_output: str | None = None
+    trace_role: TraceRole = TraceRole.AGENT_SESSION
 
     def ref_for(self, entity: str = ENTITY, project: str = PROJECT) -> str:
         return f"weave:///{entity}/{project}/agent_turn/{self.trace_id}"
+
+
+def session_is_evaluable(turns: list[TurnSpan]) -> bool:
+    return bool(turns) and all(turn.trace_role is TraceRole.AGENT_SESSION for turn in turns)
+
+
+def filter_evaluable_turns(turns: list[TurnSpan]) -> list[TurnSpan]:
+    """Keep complete agent-session groups while preserving input turn order."""
+    grouped: dict[str, list[TurnSpan]] = {}
+    for turn in turns:
+        grouped.setdefault(turn.conversation_id, []).append(turn)
+    eligible = {
+        conversation_id
+        for conversation_id, session_turns in grouped.items()
+        if session_is_evaluable(session_turns)
+    }
+    return [turn for turn in turns if turn.conversation_id in eligible]
 
 
 @dataclass

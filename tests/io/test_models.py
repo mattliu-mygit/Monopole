@@ -6,7 +6,9 @@ from weave_agent_signals.models import (
     Score,
     SessionView,
     ToolSpan,
+    TraceRole,
     TurnSpan,
+    session_is_evaluable,
 )
 
 
@@ -75,6 +77,17 @@ def test_session_total_tokens():
     t2 = _turn(input_tokens=200, output_tokens=80)
     s = SessionView(conversation_id="c1", turns=[t1, t2], config_version=None, git_branch=None)
     assert s.total_tokens == 430
+
+
+def test_session_is_evaluable_requires_every_turn_to_be_an_agent_session():
+    assert session_is_evaluable([_turn(), _turn(trace_id="t2")]) is True
+    assert (
+        session_is_evaluable(
+            [_turn(), _turn(trace_id="t2", trace_role=TraceRole.SIGNAL_EVALUATION)]
+        )
+        is False
+    )
+    assert session_is_evaluable([]) is False
 
 
 def test_score_to_feedback_payload():

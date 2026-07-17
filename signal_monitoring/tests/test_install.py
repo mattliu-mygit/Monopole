@@ -4,6 +4,8 @@ import pytest
 
 from weave_signal_monitoring.catalog import CATALOG
 from weave_signal_monitoring.weave_gateway import (
+    SIGNAL_TRACE_ROLE,
+    TRACE_ROLE_ATTRIBUTE,
     DefinitionConflict,
     LLMAsAJudgeScorer,
     WeaveGateway,
@@ -105,6 +107,18 @@ def test_build_monitor_uses_supported_agent_llm_judge():
     assert scorer.model.name == definition.model_name
     assert scorer.model.llm_model_id == "coreweave/openai/gpt-oss-20b"
     assert scorer.model.default_params.response_format == "json_object"
+    assert scorer.score.attributes == {TRACE_ROLE_ATTRIBUTE: SIGNAL_TRACE_ROLE}
+
+
+def test_definition_fingerprint_authenticates_signal_trace_role(monkeypatch):
+    baseline = definition_fingerprint(CATALOG[0])
+
+    monkeypatch.setattr(
+        "weave_signal_monitoring.weave_gateway.SIGNAL_TRACE_ROLE",
+        "other_system",
+    )
+
+    assert definition_fingerprint(CATALOG[0]) != baseline
 
 
 class FakeServer:
