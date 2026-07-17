@@ -77,9 +77,12 @@ def test_structured_schemas_advertise_parser_bounds_to_models():
     verdict = MERGED_VERDICT_SCHEMA.schema["properties"]
 
     assert digest["text"]["maxLength"] == 2_400
+    assert digest["evidence_ids"]["minItems"] == 1
     assert "uniqueItems" not in digest["evidence_ids"]
     assert finding["observation"]["maxLength"] == 350
+    assert finding["evidence_ids"]["minItems"] == 1
     assert "uniqueItems" not in finding["evidence_ids"]
+    assert "minItems" not in WINDOW_FINDINGS_SCHEMA.schema["properties"]["findings"]
     assert feedback["success"]["anyOf"][0]["maxLength"] == 10_000
     assert feedback["problem"]["anyOf"][0]["maxLength"] == 10_000
     assert feedback["desired_behavior"]["anyOf"][0]["maxLength"] == 10_000

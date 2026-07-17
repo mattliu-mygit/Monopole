@@ -626,6 +626,7 @@ class SessionDetailResponse(ResponseModel):
     turns: list[TurnDetailResponse]
     session_feedback: list[FeedbackItemResponse]
     turn_feedback: dict[str, list[FeedbackItemResponse]]
+    signal_evidence: list[SignalEvidenceResponse]
 
 
 class ScoreSummaryResponse(ResponseModel):

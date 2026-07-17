@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from weave_agent_signals.client import WeaveClient
 from weave_agent_signals.judges.families import model_family
-from weave_agent_signals.models import SessionView, TurnSpan
+from weave_agent_signals.models import SessionView, TurnSpan, session_is_evaluable
 from weave_agent_signals.runs.store import DataSelection
 
 _COHORT_SCHEMA_VERSION = 1
@@ -184,6 +184,15 @@ def discover_turn_cohort(
         missing_sessions = sorted(selected_sessions - discovered_sessions)
         if missing_sessions:
             raise ValueError("missing selected sessions: " + ", ".join(missing_sessions))
+        ineligible = sorted(
+            conversation_id
+            for conversation_id in selected_sessions
+            if not session_is_evaluable(
+                [turn for turn in filtered if turn.conversation_id == conversation_id]
+            )
+        )
+        if ineligible:
+            raise ValueError("selected sessions are not evaluable: " + ", ".join(ineligible))
         client.hydrate_turns_batch(filtered)
 
     return _build_cohort(filtered, entity=entity, project=project)
@@ -323,6 +332,16 @@ def hydrate_turn_cohort(
                 "Pinned turn cohort is incomplete; missing trace IDs: " + ", ".join(missing)
             )
         ordered = [by_trace_id[trace_id] for trace_id in trace_ids]
+        ineligible = sorted(
+            conversation_id
+            for conversation_id, session in _session_views(ordered).items()
+            if not session_is_evaluable(session.turns)
+        )
+        if ineligible:
+            raise RuntimeError(
+                "Pinned turn cohort contains sessions that are not evaluable: "
+                + ", ".join(ineligible)
+            )
         client.hydrate_turns_batch(ordered)
 
         entity = getattr(client, "entity", None)

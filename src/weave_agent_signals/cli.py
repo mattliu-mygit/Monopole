@@ -22,7 +22,12 @@ from weave_agent_signals.judges.cli_backend import CliJudgeClient
 from weave_agent_signals.judges.inference import InferenceClient
 from weave_agent_signals.judges.plan import build_judging_plan
 from weave_agent_signals.judges.runner import JudgeExecutionError, judge_session
-from weave_agent_signals.models import Score, SessionView
+from weave_agent_signals.models import (
+    Score,
+    SessionView,
+    filter_evaluable_turns,
+    session_is_evaluable,
+)
 from weave_agent_signals.patterns import (
     ab_leaderboard,
     coaching_digest,
@@ -226,6 +231,7 @@ def cmd_score(args: argparse.Namespace) -> int:
 
     with WeaveClient(entity=args.entity, project=args.project) as client:
         turns = client.query_turns(limit=args.limit, since=since)
+        turns = filter_evaluable_turns(turns)
 
         if not turns:
             print("No turns found.")
@@ -271,6 +277,7 @@ def cmd_score(args: argparse.Namespace) -> int:
 def cmd_backfill(args: argparse.Namespace) -> int:
     with WeaveClient(entity=args.entity, project=args.project) as client:
         turns = client.query_turns_paginated(page_size=args.page_size, since=args.start)
+        turns = filter_evaluable_turns(turns)
 
         if args.end:
             turns = [t for t in turns if t.started_at <= args.end]
@@ -364,6 +371,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             for turn in turns:
                 print(f"\n{'=' * 60}")
                 print(f"Turn {turn.trace_id[:12]}  [{turn.started_at}]")
+                print(f"  role={turn.trace_role.value}")
                 print(
                     f"  config={turn.config_version}  steering={turn.steering_count}  "
                     f"denials={turn.denial_count}  errors={turn.tool_error_count}"
@@ -399,7 +407,8 @@ def cmd_inspect(args: argparse.Namespace) -> int:
                 print(
                     f"  [{i}] {t.trace_id[:12]}  steer={t.steering_count} "
                     f"deny={t.denial_count} err={t.tool_error_count} "
-                    f"tools={len(t.tool_calls)} subagents={len(t.subagents)}"
+                    f"tools={len(t.tool_calls)} subagents={len(t.subagents)} "
+                    f"role={t.trace_role.value}"
                 )
                 if args.feedback:
                     _print_feedback(feedback_by_ref[turn_refs[t.trace_id]])
@@ -428,6 +437,7 @@ def cmd_judge(args: argparse.Namespace) -> int:
 
     with WeaveClient(entity=args.entity, project=args.project) as client:
         discovery_turns = client.query_turns(limit=args.limit, since=since)
+        discovery_turns = filter_evaluable_turns(discovery_turns)
 
         if not discovery_turns:
             print("No turns found.")
@@ -461,6 +471,10 @@ def cmd_judge(args: argparse.Namespace) -> int:
             for turn in session.turns
         ):
             raise RuntimeError("Complete session query returned a mismatched conversation")
+        sessions = [session for session in sessions if session_is_evaluable(session.turns)]
+        if not sessions:
+            print("No eligible agent sessions found.")
+            return 0
         turns = [turn for session in sessions for turn in session.turns]
         trace_ids = [turn.trace_id for turn in turns]
         if len(trace_ids) != len(set(trace_ids)):

@@ -346,6 +346,33 @@ def test_reviewer_binds_each_inference_schema_to_its_exact_evidence_scope() -> N
     )
 
 
+def test_reviewer_prompts_distinguish_cited_findings_from_no_findings() -> None:
+    reviewer, client, _, _ = _reviewer()
+
+    reviewer.review(_rubric("judge.session_outcome"))
+
+    digest_call = next(call for call in client.calls if call["phase"] == "digest")
+    window_call = next(call for call in client.calls if call["phase"] == "window")
+    merge_call = next(call for call in client.calls if call["phase"] == "merge")
+
+    assert (
+        "Every digest must cite at least one ID from ALLOWED_EVIDENCE_IDS."
+        in digest_call["messages"][0]["content"]
+    )
+    assert (
+        "Every finding must cite at least one ID from ALLOWED_FINDING_EVIDENCE_IDS."
+        in window_call["messages"][0]["content"]
+    )
+    assert (
+        'If no supported finding exists, return "findings": [] instead of an uncited finding.'
+        in window_call["messages"][0]["content"]
+    )
+    assert (
+        "A scored verdict must cite at least one ID from ALLOWED_EVIDENCE_IDS; an "
+        "insufficient_evidence verdict must cite none." in merge_call["messages"][0]["content"]
+    )
+
+
 def test_reviewer_narrates_each_live_inference_phase_with_context() -> None:
     activity = []
     reviewer, _, _, _ = _reviewer(activity=activity.append)

@@ -37,6 +37,8 @@ from weave_signal_monitoring.models import (
 )
 
 _FINGERPRINT_RE = re.compile(r"^catalog_sha256=([0-9a-f]{64})$")
+TRACE_ROLE_ATTRIBUTE = "weave_agent_signals.trace_role"
+SIGNAL_TRACE_ROLE = "signal_evaluation"
 
 
 class DefinitionConflict(RuntimeError):
@@ -66,7 +68,7 @@ class LLMAsAJudgeScorer(Scorer):
     model: LLMStructuredCompletionModel
     scoring_prompt: str
 
-    @op
+    @op(attributes={TRACE_ROLE_ATTRIBUTE: SIGNAL_TRACE_ROLE})
     def score(self, *, output: Any, **kwargs: Any) -> Any:
         prompt = self.scoring_prompt.format(output=output, **kwargs)
         return self.model.predict([{"role": "user", "content": prompt}])
@@ -83,6 +85,8 @@ def definition_fingerprint(definition: SignalDefinition) -> str:
         "op_name": TURN_OP_NAME,
         "sampling_rate": SAMPLING_RATE,
         "active": True,
+        "trace_role_attribute": TRACE_ROLE_ATTRIBUTE,
+        "trace_role": SIGNAL_TRACE_ROLE,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()

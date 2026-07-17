@@ -10,6 +10,20 @@ A turn is rooted at an `invoke_agent` span whose parent ID is the empty string.
 A session groups turn roots by `conversation_id`; there is no independent
 session-root span in this product.
 
+Every root resolves to exactly one trace role: `agent_session`,
+`signal_evaluation`, `judge_evaluation`, `reflection_evaluation`, or
+`other_system`. The authoritative source is the immutable
+`weave_agent_signals.trace_role` attribute. Recognized legacy evaluator prompt
+signatures classify older untagged traces; other untagged roots remain
+`agent_session` for compatibility, while an unknown explicit value fails safe
+to `other_system`. Trace and conversation IDs are never rewritten for
+classification.
+
+Only a session whose every turn is `agent_session` enters ordinary product
+listing, detail, scoring, judging, or evaluation-run selection. Mixed-role and
+non-agent sessions are excluded as whole units rather than partially evaluated.
+Read-only diagnostic inspection may still show every role.
+
 Turn scores attach to the exact trace ref. Session scores attach to the encoded
 conversation ref. Evaluation runs additionally pin ordered trace identities and
 their conversation and start-time metadata, so later stages cannot absorb new
@@ -22,11 +36,19 @@ hydration then fetches each requested trace's full root and children. Hydration
 is trace-scoped, never conversation-scoped, because several turns in one
 conversation must not contaminate one another.
 
-Adapter metadata is requested explicitly and flattened from the trace server's
-typed custom-attribute maps. Root spans often omit token totals or effective
-model identity, so those values are recovered from child chat spans. User and
-assistant messages are similarly backfilled only from detailed evidence for the
-same trace.
+Adapter metadata and trace role are requested explicitly and flattened from the
+trace server's typed custom-attribute maps. Root spans often omit token totals
+or effective model identity, so those values are recovered from child chat
+spans. User and assistant messages are similarly backfilled only from detailed
+evidence for the same trace.
+
+Adapter hook launches default to `agent_session` and may supply a validated
+evaluator role; unknown or conflicting launch values become `other_system`.
+Agent Signal scorer definitions tag their outer scorer operation as
+`signal_evaluation`, and the role participates in the monitor definition
+fingerprint. Existing installed monitor references remain immutable and require
+a deliberate versioned rollout before they acquire new metadata. Current local
+judge and reflection subprocesses keep adapter and W&B tracing disabled.
 
 Pagination preserves chronological order and deduplicates trace IDs. It fails
 when an inclusive timestamp cursor cannot advance, rather than returning an
@@ -52,6 +74,13 @@ Hydration is fail closed:
 These rules keep missing detail from becoming neutral or fabricated evidence.
 Malformed Agent Signal feedback that contains a typed rating fails session
 discovery rather than silently hiding a completed review recommendation.
+
+Session detail keeps feedback classes explicit instead of coercing heterogeneous
+payloads into one schema. `weave_agent_signals.*` rows remain typed score
+feedback. Recognized `wandb.agent_monitor` rows are normalized into separate
+Agent Signal evidence using the same identity, rating, reason, and recency rules
+as session discovery. Unknown or incomplete external feedback remains stored in
+Weave but is omitted from the product response.
 
 ## Feedback
 

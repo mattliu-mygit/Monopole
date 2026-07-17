@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from weave_agent_signals.judges.families import model_family
-from weave_agent_signals.models import SessionView, TurnSpan
+from weave_agent_signals.models import SessionView, TraceRole, TurnSpan
 from weave_agent_signals.runs.cohort import discover_turn_cohort, hydrate_turn_cohort
 from weave_agent_signals.runs.store import DataSelection
 
@@ -18,6 +18,7 @@ def _turn(
     started_at: datetime,
     *,
     model: str | None = "gpt-5.6-sol",
+    trace_role: TraceRole = TraceRole.AGENT_SESSION,
 ) -> TurnSpan:
     return TurnSpan(
         trace_id=trace_id,
@@ -40,6 +41,7 @@ def _turn(
         tool_calls=[],
         chat_spans=[],
         subagents=[],
+        trace_role=trace_role,
     )
 
 
@@ -198,6 +200,42 @@ def test_discover_turn_cohort_requires_every_selected_session():
     assert client.hydration_calls == []
 
 
+@pytest.mark.parametrize(
+    "turns",
+    [
+        [
+            _turn(
+                "signal",
+                "selected",
+                datetime(2026, 7, 13, 12, tzinfo=timezone.utc),
+                trace_role=TraceRole.SIGNAL_EVALUATION,
+            )
+        ],
+        [
+            _turn("agent", "selected", datetime(2026, 7, 13, 12, tzinfo=timezone.utc)),
+            _turn(
+                "judge",
+                "selected",
+                datetime(2026, 7, 13, 13, tzinfo=timezone.utc),
+                trace_role=TraceRole.JUDGE_EVALUATION,
+            ),
+        ],
+    ],
+)
+def test_discover_turn_cohort_rejects_non_agent_or_mixed_sessions_before_hydration(turns):
+    client = FakeClient(discovered=turns)
+
+    with pytest.raises(ValueError, match="not evaluable"):
+        discover_turn_cohort(
+            _selection("selected"),
+            client_factory=lambda: client,
+            entity="weave-team",
+            project="agent-sessions",
+        )
+
+    assert client.hydration_calls == []
+
+
 def test_discover_turn_cohort_uses_unbounded_paginated_query():
     started = datetime(2026, 7, 1, tzinfo=timezone.utc)
     turns = [
@@ -264,6 +302,29 @@ def test_hydrate_turn_cohort_fails_closed_for_missing_or_duplicate_trace():
     duplicate = FakeClient(hydrated=[pinned, replace(pinned)])
     with pytest.raises(RuntimeError, match="duplicate trace IDs: turn-1"):
         hydrate_turn_cohort(cohort, client_factory=lambda: duplicate)
+
+
+def test_hydrate_turn_cohort_rejects_role_drift_before_child_hydration():
+    started = datetime(2026, 7, 13, 12, tzinfo=timezone.utc)
+    original = _turn("turn-1", "session-1", started)
+    cohort = discover_turn_cohort(
+        _selection("session-1"),
+        client_factory=lambda: FakeClient(discovered=[original]),
+        entity="weave-team",
+        project="agent-sessions",
+    )
+    changed = _turn(
+        "turn-1",
+        "session-1",
+        started,
+        trace_role=TraceRole.REFLECTION_EVALUATION,
+    )
+    client = FakeClient(hydrated=[changed])
+
+    with pytest.raises(RuntimeError, match="not evaluable"):
+        hydrate_turn_cohort(cohort, client_factory=lambda: client)
+
+    assert client.hydration_calls == []
 
 
 @pytest.mark.parametrize("changed_field", ["conversation", "started_at", "model"])

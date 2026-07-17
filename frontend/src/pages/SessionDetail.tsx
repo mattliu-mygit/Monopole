@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import PageHeader from '../components/PageHeader'
 import ScoreBadge from '../components/ScoreBadge'
+import SignalCallout from '../components/SignalCallout'
 import { getSession, getRubrics } from '../api'
 import type { TurnDetail, FeedbackItem, ReviewAttempt, RubricDescriptor } from '../types'
 
@@ -414,6 +415,12 @@ export default function SessionDetail() {
           </div>
         )}
       </div>
+
+      {session.signal_evidence.length > 0 && (
+        <div className="mb-6">
+          <SignalCallout evidence={session.signal_evidence} />
+        </div>
+      )}
 
       {session.session_feedback.length > 0 && (
         <div className="mb-6">

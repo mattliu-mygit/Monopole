@@ -1497,6 +1497,8 @@ export interface components {
             git_branch: string | null;
             /** Session Feedback */
             session_feedback: components["schemas"]["FeedbackItemResponse"][];
+            /** Signal Evidence */
+            signal_evidence: components["schemas"]["SignalEvidenceResponse"][];
             /** Total Tokens */
             total_tokens: number;
             /** Turn Count */

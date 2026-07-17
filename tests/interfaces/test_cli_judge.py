@@ -8,7 +8,7 @@ import pytest
 
 from weave_agent_signals import cli
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
-from weave_agent_signals.models import Score, SessionView
+from weave_agent_signals.models import Score, SessionView, TraceRole
 
 
 def _catalog():
@@ -37,6 +37,7 @@ def _turn():
     turn.started_at = datetime(2026, 7, 15, tzinfo=timezone.utc)
     turn.config_version = "cfg"
     turn.git_branch = "main"
+    turn.trace_role = TraceRole.AGENT_SESSION
     return turn
 
 
@@ -203,6 +204,32 @@ def test_direct_cli_fails_when_complete_session_omits_a_discovery_root(monkeypat
     weave.hydrate_turns_batch.assert_not_called()
     build_plan.assert_not_called()
     make_client.assert_not_called()
+    weave.write_score.assert_not_called()
+
+
+def test_direct_cli_rejects_non_agent_complete_session_before_hydration(monkeypatch):
+    discovered = _turn()
+    evaluator = _turn()
+    evaluator.trace_role = TraceRole.JUDGE_EVALUATION
+    session = SessionView(
+        conversation_id="session-1",
+        turns=[evaluator],
+        config_version="cfg",
+        git_branch="main",
+    )
+    weave = MagicMock()
+    weave.query_turns.return_value = [discovered]
+    weave.query_session.return_value = session
+    weave.__enter__.return_value = weave
+    build_plan = MagicMock()
+    monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
+    monkeypatch.setattr(cli, "build_model_catalog", _catalog)
+    monkeypatch.setattr(cli, "build_judging_plan", build_plan)
+
+    assert cli.cmd_judge(_args(rubric="judge.session_outcome")) == 0
+
+    weave.hydrate_turns_batch.assert_not_called()
+    build_plan.assert_not_called()
     weave.write_score.assert_not_called()
 
 
