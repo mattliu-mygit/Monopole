@@ -25,6 +25,7 @@ function session(conversationId: string, preview: string): SessionSummary {
     config_version: null,
     git_branch: null,
     total_tokens: 100,
+    largest_turn_tokens: 60,
     total_tool_calls: 1,
     input_preview: preview,
     signal_evidence: [],

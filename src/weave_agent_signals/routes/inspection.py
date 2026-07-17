@@ -209,6 +209,7 @@ def _session_summary(conversation_id: str, turns: list[TurnSpan]) -> dict:
         "config_version": first.config_version,
         "git_branch": first.git_branch,
         "total_tokens": sum(turn.input_tokens + turn.output_tokens for turn in ordered),
+        "largest_turn_tokens": max(turn.input_tokens + turn.output_tokens for turn in ordered),
         "total_tool_calls": sum(len(turn.tool_calls) for turn in ordered),
         "input_preview": first.user_input,
     }

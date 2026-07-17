@@ -33,6 +33,7 @@ def test_model_catalog_is_stable_role_oriented_and_immutable():
     assert set(data) == {
         "catalog_version",
         "available_models",
+        "judging_context",
         "recommended_proposal_model",
         "recommended_judges",
         "recommended_challenge_judges",
@@ -41,6 +42,8 @@ def test_model_catalog_is_stable_role_oriented_and_immutable():
     by_id = {model["id"]: model for model in data["available_models"]}
     assert all(model["id"].startswith(f"{model['provider']}:") for model in by_id.values())
     assert len(data["recommended_judges"]) == 3
+    assert data["judging_context"]["small_model_raw_target_tokens"] == 50_000
+    assert data["judging_context"]["large_model_raw_target_tokens"] == 128_000
     assert all(model_id in by_id for model_id in data["recommended_judges"])
     assert data["recommended_challenge_judges"] == [data["recommended_judges"][0]]
     assert set(data["proposal_evaluator_preferences"]) == {
@@ -71,6 +74,7 @@ def test_model_catalog_is_one_provider_qualified_source_for_every_role():
     assert set(data) == {
         "catalog_version",
         "available_models",
+        "judging_context",
         "recommended_proposal_model",
         "recommended_judges",
         "recommended_challenge_judges",
@@ -90,6 +94,51 @@ def test_model_catalog_is_one_provider_qualified_source_for_every_role():
         *data["proposal_evaluator_preferences"],
     ):
         assert recommendation in by_id
+
+
+def test_wandb_models_use_live_fully_qualified_provider_ids():
+    catalog = build_model_catalog(which=lambda _name: "/usr/bin/model")
+    models = {model.id: model.provider_model for model in catalog.available_models}
+
+    assert {
+        model_id: models[model_id]
+        for model_id in (
+            "wandb:gpt-oss-20b",
+            "wandb:gpt-oss-120b",
+            "wandb:Llama-3.1-8B",
+            "wandb:granite-4.1-8b",
+        )
+    } == {
+        "wandb:gpt-oss-20b": "openai/gpt-oss-20b",
+        "wandb:gpt-oss-120b": "openai/gpt-oss-120b",
+        "wandb:Llama-3.1-8B": "meta-llama/Llama-3.1-8B-Instruct",
+        "wandb:granite-4.1-8b": "ibm-granite/granite-4.1-8b",
+    }
+
+
+def test_wandb_inference_is_preferred_and_supports_every_run_role():
+    catalog = build_model_catalog(which=lambda _name: "/usr/bin/model")
+    by_id = {model.id: model for model in catalog.available_models}
+
+    assert catalog.recommended_proposal_model == "wandb:gpt-oss-120b"
+    assert catalog.recommended_judges == (
+        "wandb:gpt-oss-120b",
+        "wandb:Llama-3.1-8B",
+        "wandb:granite-4.1-8b",
+    )
+    assert catalog.recommended_challenge_judges == ("wandb:gpt-oss-120b",)
+    assert catalog.proposal_evaluator_preferences[:4] == (
+        "wandb:gpt-oss-120b",
+        "wandb:Llama-3.1-8B",
+        "wandb:granite-4.1-8b",
+        "wandb:gpt-oss-20b",
+    )
+    for model_id in catalog.proposal_evaluator_preferences[:4]:
+        assert set(by_id[model_id].supported_roles) == {
+            "proposal_writer",
+            "judge",
+            "proposal_evaluator",
+        }
 
 
 def test_model_catalog_version_tracks_local_availability():
@@ -116,7 +165,7 @@ def test_model_catalog_version_tracks_local_availability():
         "codex:gpt-5.4",
         "codex:gpt-5.4-mini",
     ]
-    assert none_available.recommended_proposal_model is None
+    assert none_available.recommended_proposal_model == "wandb:gpt-oss-120b"
     assert {model.provider for model in none_available.available_models} == {"wandb", "openai"}
 
 

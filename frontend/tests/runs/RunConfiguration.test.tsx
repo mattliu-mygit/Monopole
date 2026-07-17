@@ -71,6 +71,14 @@ const cliMetaAlt: ModelDescriptor = {
 
 const models: ModelCatalog = {
   catalog_version: 'models-v1',
+  judging_context: {
+    contract_version: '3', large_model_threshold_tokens: 200_000,
+    large_model_reserve_tokens: 100_000, small_model_reserve_tokens: 50_000,
+    large_model_raw_target_tokens: 128_000, small_model_raw_target_tokens: 50_000,
+    prompt_reserve_tokens: 6_000, output_reserve_tokens: 4_000,
+    safety_reserve_tokens: 8_000, digest_max_tokens: 1_000,
+    finding_max_tokens: 4_000, overlap_turns: 1, max_chunks: 40,
+  },
   available_models: [
     writerOpenAI, writerAnthropic, cliAnthropic, cliOpenAI, cliMeta, cliMetaAlt,
   ],
@@ -286,5 +294,29 @@ describe('RunConfiguration', () => {
 
     expect(screen.getByRole('spinbutton', { name: 'Proposal attempt limit' })).not.toBeNull()
     expect(screen.queryByText('Candidate budget')).toBeNull()
+  })
+
+  it('shows context capacity and disables models that do not fit selected sessions', () => {
+    const tightWriter = { ...writerAnthropic, max_input_tokens: 99_000 }
+    const capacityModels: ModelCatalog = {
+      ...models,
+      available_models: [writerOpenAI, tightWriter, cliAnthropic, cliOpenAI, cliMeta],
+    }
+    render(
+      <RunConfiguration
+        state={state}
+        models={capacityModels}
+        rubrics={rubrics}
+        sessions={[{ total_tokens: 100_000, largest_turn_tokens: 60_000 }]}
+        onAction={() => undefined}
+      />,
+    )
+
+    const fitOption = screen.getByRole('option', { name: /Writer OpenAI.*128k context.*fits/i })
+    const blockedOption = screen.getByRole('option', {
+      name: /Writer Anthropic.*99k context.*does not fit/i,
+    })
+    expect(fitOption).toHaveProperty('disabled', false)
+    expect(blockedOption).toHaveProperty('disabled', true)
   })
 })

@@ -444,6 +444,7 @@ class ReflectingProgressResponse(ResponseModel):
 class ModelCatalogResponse(ResponseModel):
     catalog_version: str
     available_models: list[ModelDescriptor]
+    judging_context: JudgingContextPolicy
     recommended_proposal_model: str | None
     recommended_judges: list[str]
     recommended_challenge_judges: list[str]
@@ -539,6 +540,7 @@ class SessionSummaryResponse(ResponseModel):
     config_version: str | None
     git_branch: str | None
     total_tokens: int
+    largest_turn_tokens: int
     total_tool_calls: int
     input_preview: str | None
     signal_evidence: list[SignalEvidenceResponse]

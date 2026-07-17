@@ -66,6 +66,14 @@ const rubric = {
 
 const modelCatalog: ModelCatalog = {
   catalog_version: 'sha256:models',
+  judging_context: {
+    contract_version: '3', large_model_threshold_tokens: 200_000,
+    large_model_reserve_tokens: 100_000, small_model_reserve_tokens: 50_000,
+    large_model_raw_target_tokens: 128_000, small_model_raw_target_tokens: 50_000,
+    prompt_reserve_tokens: 6_000, output_reserve_tokens: 4_000,
+    safety_reserve_tokens: 8_000, digest_max_tokens: 1_000,
+    finding_max_tokens: 4_000, overlap_turns: 1, max_chunks: 40,
+  },
   available_models: [writer, judge],
   recommended_proposal_model: writer.id,
   recommended_judges: [judge.id],

@@ -9,12 +9,15 @@ import sys
 import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from functools import partial
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from weave_agent_signals.judges import cli_backend, inference
+from weave_agent_signals.judges.agy_transport import AgyInvocation
 from weave_agent_signals.judges.cli_backend import CliJudgeClient as _CliJudgeClient
 from weave_agent_signals.judges.cli_backend import _extract_json
 from weave_agent_signals.judges.inference import (
@@ -113,8 +116,23 @@ def test_unknown_local_cli_provider_is_rejected():
         _CliJudgeClient(provider="unknown")
 
 
-def test_antigravity_provider_routes_google_and_open_source_models_through_agy():
+def test_antigravity_provider_routes_models_through_private_prompt_files(monkeypatch):
     seen = []
+    prompts = []
+
+    @contextmanager
+    def fake_invocation(*, prompt, model, home):
+        prompts.append((prompt, model, home))
+        yield AgyInvocation(
+            argv=["sandbox-exec", "agy", "--print", "bootstrap", "--model", model],
+            cwd=f"/isolated/{len(prompts)}",
+            home=f"/isolated/{len(prompts)}/home",
+            prompt_path=f"/isolated/{len(prompts)}/prompt.txt",
+            profile_path=f"/isolated/{len(prompts)}/agy.sb",
+            bootstrap="bootstrap",
+        )
+
+    monkeypatch.setattr(cli_backend, "agy_prompt_invocation", fake_invocation)
 
     def fake_run(argv, **kwargs):
         seen.append((argv, kwargs))
@@ -123,23 +141,113 @@ def test_antigravity_provider_routes_google_and_open_source_models_through_agy()
     client = CliJudgeClient(provider="agy", runner=fake_run)
 
     for model in ("Gemini 3.1 Pro (High)", "GPT-OSS 120B (Medium)"):
-        parsed, response = client.chat_json(model=model, messages=_msgs())
+        parsed, response = client.chat_json(
+            model=model,
+            messages=_msgs(),
+            response_schema=_schema(),
+        )
         assert parsed["score"] == 0.75
         assert response.model == model
 
-    for (argv, kwargs), model in zip(seen, ("Gemini 3.1 Pro (High)", "GPT-OSS 120B (Medium)")):
-        assert argv == [
-            "agy",
-            "--print",
-            "--model",
-            model,
-            "--mode",
-            "plan",
-            "--sandbox",
+    for index, ((argv, kwargs), model) in enumerate(
+        zip(seen, ("Gemini 3.1 Pro (High)", "GPT-OSS 120B (Medium)")),
+        start=1,
+    ):
+        prompt, prompt_model, home = prompts[index - 1]
+        assert argv == ["sandbox-exec", "agy", "--print", "bootstrap", "--model", model]
+        assert "sys prompt" in prompt
+        assert "judge this turn" in prompt
+        assert '"required":["score"]' in prompt
+        assert prompt.index("Return exactly one JSON object") < prompt.index("judge this turn")
+        assert prompt not in argv
+        assert prompt_model == model
+        assert home == cli_backend._HOME
+        assert kwargs["cwd"] == f"/isolated/{index}"
+        assert kwargs["env"]["HOME"] == f"/isolated/{index}/home"
+        assert kwargs["input"] == ""
+
+
+def test_antigravity_retry_uses_a_fresh_prompt_workspace(monkeypatch):
+    workspaces = []
+
+    @contextmanager
+    def fake_invocation(*, prompt, model, home):
+        del prompt, home
+        workspace = f"/isolated/{len(workspaces) + 1}"
+        workspaces.append(workspace)
+        yield AgyInvocation(
+            argv=["sandbox-exec", "agy", "--model", model],
+            cwd=workspace,
+            home=f"{workspace}/home",
+            prompt_path=f"{workspace}/prompt.txt",
+            profile_path=f"{workspace}/agy.sb",
+            bootstrap="bootstrap",
+        )
+
+    attempts = iter(
+        [
+            ("", "rate limit", 1),
+            ('{"score":0.75}', "", 0),
         ]
-        assert kwargs["cwd"] == cli_backend._JUDGE_CWD
-        assert "sys prompt" in kwargs["input"]
-        assert "judge this turn" in kwargs["input"]
+    )
+    monkeypatch.setattr(cli_backend, "agy_prompt_invocation", fake_invocation)
+    monkeypatch.setattr(cli_backend.time, "sleep", lambda _seconds: None)
+    client = CliJudgeClient(provider="agy")
+    monkeypatch.setattr(client, "_run_with_cancel", lambda *_args, **_kwargs: next(attempts))
+
+    parsed, response = client.chat_json(
+        model="Gemini 3.5 Flash (High)",
+        messages=_msgs(),
+        response_schema=_schema(),
+    )
+
+    assert parsed == {"score": 0.75}
+    assert response.transport_request_count == 2
+    assert workspaces == ["/isolated/1", "/isolated/2"]
+
+
+def test_antigravity_retries_successful_process_with_missing_schema_fields(monkeypatch):
+    workspaces = []
+    activity = []
+
+    @contextmanager
+    def fake_invocation(*, prompt, model, home):
+        del prompt, home
+        workspace = f"/isolated/{len(workspaces) + 1}"
+        workspaces.append(workspace)
+        yield AgyInvocation(
+            argv=["sandbox-exec", "agy", "--model", model],
+            cwd=workspace,
+            home=f"{workspace}/home",
+            prompt_path=f"{workspace}/prompt.txt",
+            profile_path=f"{workspace}/agy.sb",
+            bootstrap="bootstrap",
+        )
+
+    attempts = iter(
+        [
+            ("", "", 0),
+            ('{"score":0.75}', "", 0),
+        ]
+    )
+    monkeypatch.setattr(cli_backend, "agy_prompt_invocation", fake_invocation)
+    monkeypatch.setattr(cli_backend.time, "sleep", lambda _seconds: None)
+    client = CliJudgeClient(provider="agy")
+    client.set_activity(activity.append)
+    monkeypatch.setattr(client, "_run_with_cancel", lambda *_args, **_kwargs: next(attempts))
+
+    parsed, response = client.chat_json(
+        model="Gemini 3.5 Flash (High)",
+        messages=_msgs(),
+        response_schema=_schema(),
+    )
+
+    assert parsed == {"score": 0.75}
+    assert response.transport_request_count == 2
+    assert workspaces == ["/isolated/1", "/isolated/2"]
+    assert activity[0]["phase"] == "transport_retry"
+    assert activity[0]["retry_reason"] == "schema_output"
+    assert activity[0]["error_category"] == "schema_validation_error"
 
 
 def test_system_and_user_prompts_reach_the_cli():
@@ -447,6 +555,35 @@ def test_strict_schema_path_rejects_fenced_or_embedded_json(output, tmp_path, mo
     assert response.transport_request_count == 1
 
 
+def test_antigravity_normalizes_one_whole_response_json_fence(monkeypatch):
+    @contextmanager
+    def fake_invocation(*, prompt, model, home):
+        del prompt, home
+        yield AgyInvocation(
+            argv=["sandbox-exec", "agy", "--model", model],
+            cwd="/isolated/1",
+            home="/isolated/1/home",
+            prompt_path="/isolated/1/prompt.txt",
+            profile_path="/isolated/1/agy.sb",
+            bootstrap="bootstrap",
+        )
+
+    monkeypatch.setattr(cli_backend, "agy_prompt_invocation", fake_invocation)
+    client = CliJudgeClient(
+        provider="agy",
+        runner=lambda *_args, **_kwargs: _FakeProc(stdout='```json\n{"score": 0.75}\n```\n'),
+    )
+
+    parsed, response = client.chat_json(
+        model="GPT-OSS 120B (Medium)",
+        messages=_msgs(),
+        response_schema=_schema(),
+    )
+
+    assert parsed == {"score": 0.75}
+    assert response.content == '{"score": 0.75}'
+
+
 @pytest.mark.parametrize(
     ("provider", "model", "expected_auth_path", "other_auth_path"),
     [
@@ -488,8 +625,17 @@ def test_cli_judge_subprocess_environment_is_allowlisted(
     CliJudgeClient(provider=provider, runner=fake_run).chat_json(model=model, messages=_msgs())
 
     env = seen["env"]
-    assert seen["cwd"] == str(sandbox)
-    expected_home = sandbox / "home" if model == "gpt-5.1" else home
+    if provider == "agy":
+        attempt_root = Path(seen["cwd"]).parent
+        assert Path(seen["cwd"]).name == "workspace"
+        assert attempt_root.name.startswith("weave-agent-signals-agy-")
+        assert not attempt_root.exists()
+    else:
+        assert seen["cwd"] == str(sandbox)
+    if provider == "agy":
+        expected_home = attempt_root / "home"
+    else:
+        expected_home = sandbox / "home" if model == "gpt-5.1" else home
     assert env["HOME"] == str(expected_home)
     assert env["PATH"] == "/safe/bin"
     assert env["LANG"] == "en_US.UTF-8"

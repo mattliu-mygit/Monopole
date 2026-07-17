@@ -2547,6 +2547,9 @@
             "title": "Catalog Version",
             "type": "string"
           },
+          "judging_context": {
+            "$ref": "#/components/schemas/JudgingContextPolicy"
+          },
           "proposal_evaluator_preferences": {
             "items": {
               "type": "string"
@@ -2583,6 +2586,7 @@
         "required": [
           "catalog_version",
           "available_models",
+          "judging_context",
           "recommended_proposal_model",
           "recommended_judges",
           "recommended_challenge_judges",
@@ -4584,6 +4588,10 @@
             ],
             "title": "Input Preview"
           },
+          "largest_turn_tokens": {
+            "title": "Largest Turn Tokens",
+            "type": "integer"
+          },
           "last_activity": {
             "anyOf": [
               {
@@ -4660,6 +4668,7 @@
           "config_version",
           "git_branch",
           "total_tokens",
+          "largest_turn_tokens",
           "total_tool_calls",
           "input_preview",
           "signal_evidence"

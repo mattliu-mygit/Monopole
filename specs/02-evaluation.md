@@ -136,6 +136,13 @@ schema-valid output may retry the same strict request; retries never remove its
 identity or evidence constraints. Backend-specific schema emission may omit a keyword that the backend
 rejects when the same invariant remains enforced by the canonical runtime
 validator; the canonical schema and artifact contract are not weakened.
+Antigravity's prompt-only CLI has no protocol-level schema channel, so its
+prompt places the schema before the potentially large user payload. A single
+Markdown JSON fence around the whole response is treated as an Antigravity
+transport envelope and removed before exact-object parsing; prose, multiple
+objects, and invalid content remain rejected. A successful Antigravity process
+that omits top-level required fields retries the same strict request in a fresh
+workspace and fails closed after the bounded transport attempts.
 
 ## Judge panel
 
@@ -152,6 +159,24 @@ provider-qualified, while its descriptor separately pins the provider's exact
 model name. Role capability is part of the descriptor. A panel may therefore
 mix providers without a separate backend selection, and execution dispatches
 each selected model through its pinned provider.
+
+Model selection keeps separate provider-qualified entries when multiple
+inference harnesses expose the same underlying model. W&B Inference entries are
+ordered and recommended ahead of local CLI variants; fitting local and direct
+API variants remain explicit alternatives. Every option shows its pinned input
+context capacity and, once sessions are selected, whether the model can support
+the estimated judging requests. A non-fitting option is disabled and a selected
+configuration that becomes non-fitting cannot start.
+
+Selection-time capacity estimation uses existing per-turn token usage. For each
+selected session and model, the largest turn estimates the minimum indivisible
+raw chunk, while total session tokens estimate only the number of chunks and
+therefore the digest and merge buffers. The estimator uses the pinned context
+policy's raw-window target, prompt/output/safety reserve, digest limit, finding
+limit, and maximum chunk count. Its estimated largest request is the greater of
+the largest raw-window request and the final merge request; that value must not
+exceed the descriptor's input context capacity. The runtime still derives and
+authenticates the exact rendered-turn plan before inference.
 
 Only planned reviewers call inference. A capacity skip remains in the judging
 plan and attempt audit, but does not count as a completed reviewer attempt or an
@@ -202,11 +227,39 @@ cleanup failures remain visible.
 Catalog-backed HTTP evaluation supports direct OpenAI and W&B Inference. Local
 evaluation supports Claude, Codex, and Antigravity (`agy`) from the same
 provider-qualified catalog. Every local provider receives a minimal child
-environment and an empty working directory. Claude is tool-disabled. Codex
+environment and an isolated working directory. Claude is tool-disabled. Codex
 uses isolated state and a deny-by-default filesystem profile; its
-repository-check override only removes a CLI precondition. Antigravity runs in
-non-mutating plan mode with its sandbox enabled and uses the existing user home
-only for Antigravity/Gemini authentication and state. These controls do not
+repository-check override only removes a CLI precondition.
+
+Antigravity receives each request through a unique, mode-`0600` temporary
+prompt file rather than a process argument, so the host argument limit no
+longer bounds request size. Because Antigravity's
+headless file reader requires accept-edits mode with permission auto-approval,
+the process also runs inside a deny-by-default host filesystem sandbox. That
+sandbox permits the ephemeral prompt workspace, the minimal runtime and
+read-only access to the user's macOS Keychains directory for its system keyring
+helper, the helper's `/dev/null` output, and provider network access. Each
+attempt receives an isolated temporary home outside the model workspace. The
+Antigravity OAuth token is streamed once through a mode-`0600` FIFO and the
+path is unlinked as soon as the CLI opens it, leaving no credential file for
+model-generated tools; symlinked or non-regular token sources fail closed.
+Persistent histories, knowledge, and other `~/.gemini` state are not exposed.
+The sandbox denies arbitrary repository file-content reads and writes and other
+user-library data. Antigravity startup does require path-metadata access, so
+filenames and existence are not hidden. Keychain item access remains subject to
+macOS Keychain controls; the filesystem sandbox does not make the keyring a
+general evaluation input. Permission auto-approval explicitly trusts
+Antigravity with these authentication paths but not repository checkouts.
+The temporary workspace contains no repository checkout, is removed after
+every attempt, and is not reused across retries or concurrent reviewers. If the
+host confinement mechanism is unavailable or the prompt cannot be read, the
+request fails closed before inference.
+
+The short bootstrap instruction authorizes only reading the named prompt and
+returning its requested response. The prompt file contains the complete system
+instruction, response-schema instruction, and user request in that order so
+the schema is present in the first bounded file-reader page. Trace text remains
+untrusted and cannot expand the host sandbox authority. These controls do not
 weaken evidence pinning or permit arbitrary parent secrets and proxy variables
 to enter the child environment.
 

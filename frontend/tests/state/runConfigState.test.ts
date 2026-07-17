@@ -31,6 +31,14 @@ const metaAlt = { ...meta, id: 'meta-alt', label: 'Meta alternate' }
 
 const models: ModelCatalog = {
   catalog_version: 'sha256:models',
+  judging_context: {
+    contract_version: '3', large_model_threshold_tokens: 200_000,
+    large_model_reserve_tokens: 100_000, small_model_reserve_tokens: 50_000,
+    large_model_raw_target_tokens: 128_000, small_model_raw_target_tokens: 50_000,
+    prompt_reserve_tokens: 6_000, output_reserve_tokens: 4_000,
+    safety_reserve_tokens: 8_000, digest_max_tokens: 1_000,
+    finding_max_tokens: 4_000, overlap_turns: 1, max_chunks: 40,
+  },
   available_models: [writer, anthropic, openai, meta, metaAlt],
   recommended_proposal_model: writer.id,
   recommended_judges: [anthropic.id, openai.id, meta.id],
@@ -144,5 +152,47 @@ describe('judge panel configuration state', () => {
 
     expect(toRunConfig(initializeRunConfigState(models, rubrics, saved), models, rubrics))
       .toEqual(saved)
+  })
+
+  it('blocks selected models that cannot fit the largest planned request', () => {
+    const state = initializeRunConfigState(models, rubrics)
+    const sessions = [{ total_tokens: 100_000, largest_turn_tokens: 90_000 }]
+
+    expect(assessRunConfig(state, models, rubrics, sessions).errors).toEqual([
+      'Select models that fit the selected sessions.',
+    ])
+    expect(() => toRunConfig(state, models, rubrics, sessions)).toThrow(
+      'Select models that fit the selected sessions.',
+    )
+  })
+
+  it('uses fitting alternatives when recommendations exceed selected-session capacity', () => {
+    const roomyWriter = { ...writer, id: 'agy:roomy-writer', max_input_tokens: 1_048_576 }
+    const roomyJudge: ModelDescriptor = {
+      ...anthropic,
+      id: 'agy:roomy-judge',
+      max_input_tokens: 1_048_576,
+      supported_roles: ['judge', 'proposal_evaluator'],
+    }
+    const capacityModels: ModelCatalog = {
+      ...models,
+      available_models: [writer, roomyWriter, anthropic, roomyJudge],
+      recommended_judges: [anthropic.id],
+      recommended_challenge_judges: [anthropic.id],
+      proposal_evaluator_preferences: [anthropic.id, roomyJudge.id],
+    }
+    const sessions = [{ total_tokens: 100_000, largest_turn_tokens: 90_000 }]
+    const initial = initializeRunConfigState(capacityModels, rubrics)
+    const next = transitionRunConfig(
+      initial,
+      { type: 'use-recommended' },
+      capacityModels,
+      sessions,
+    )
+
+    expect(next.proposalModel.value).toBe(roomyWriter.id)
+    expect(next.judgeModels.value).toEqual([roomyJudge.id])
+    expect(next.challengeJudgeModels.value).toEqual([roomyJudge.id])
+    expect(next.proposalEvaluatorModel.value).toBe(roomyJudge.id)
   })
 })

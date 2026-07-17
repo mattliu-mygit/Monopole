@@ -97,6 +97,14 @@ const judgeThree: ModelDescriptor = {
 
 const models: ModelCatalog = {
   catalog_version: 'models-v1',
+  judging_context: {
+    contract_version: '3', large_model_threshold_tokens: 200_000,
+    large_model_reserve_tokens: 100_000, small_model_reserve_tokens: 50_000,
+    large_model_raw_target_tokens: 128_000, small_model_raw_target_tokens: 50_000,
+    prompt_reserve_tokens: 6_000, output_reserve_tokens: 4_000,
+    safety_reserve_tokens: 8_000, digest_max_tokens: 1_000,
+    finding_max_tokens: 4_000, overlap_turns: 1, max_chunks: 40,
+  },
   available_models: [writer, judgeOne, judgeTwo, judgeThree],
   recommended_proposal_model: writer.id,
   recommended_judges: [judgeOne.id, judgeTwo.id, judgeThree.id],
@@ -205,6 +213,7 @@ const session: SessionSummary = {
   config_version: null,
   git_branch: null,
   total_tokens: 100,
+  largest_turn_tokens: 60,
   total_tool_calls: 2,
   input_preview: 'Evaluate this session',
   signal_evidence: [],
@@ -360,7 +369,7 @@ describe('RunDetail wiring', () => {
     const start = await screen.findByRole('button', { name: 'Start Scoring' })
     expect(sessionCheckbox).toHaveProperty('checked', false)
     expect(start).toHaveProperty('disabled', true)
-    expect(screen.getByRole('alert')).toHaveProperty(
+    expect(await screen.findByRole('alert')).toHaveProperty(
       'textContent',
       expect.stringContaining('Select at least one session.'),
     )
@@ -437,6 +446,27 @@ describe('RunDetail wiring', () => {
     })).toHaveProperty('disabled', false))
   })
 
+  it('blocks a saved selection whose session summary is not currently loaded', async () => {
+    api.getRun.mockResolvedValue(baseRun({
+      data_selection: {
+        since: '2026-07-10T07:00:00Z',
+        until: null,
+        timezone: 'America/Los_Angeles',
+        session_ids: ['session-outside-page'],
+      },
+    }))
+    api.getSessions.mockResolvedValue({ sessions: [session], total: 10, truncated: true })
+    renderPage()
+
+    expect(await screen.findByRole('button', {
+      name: 'Start Scoring',
+    })).toHaveProperty('disabled', true)
+    expect(await screen.findByRole('alert')).toHaveProperty(
+      'textContent',
+      expect.stringContaining('Load every selected session before starting.'),
+    )
+  })
+
   it('allows an explicit visible selection when session discovery is truncated', async () => {
     api.getSessions.mockResolvedValue({ sessions: [session], total: 10, truncated: true })
     renderPage()
@@ -450,6 +480,28 @@ describe('RunDetail wiring', () => {
     })).toHaveProperty('disabled', false))
     expect(screen.queryByText(/Narrow the date range before starting/)).toBeNull()
     expect(screen.getByText(/Only displayed sessions are available to select/)).not.toBeNull()
+  })
+
+  it('keeps start disabled when the selected session exceeds configured model capacity', async () => {
+    api.getSessions.mockResolvedValue({
+      sessions: [{ ...session, total_tokens: 100_000, largest_turn_tokens: 90_000 }],
+      total: 1,
+      truncated: false,
+    })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('checkbox', {
+      name: 'Select session session-1',
+    }))
+
+    expect(screen.getByRole('button', { name: 'Start Scoring' })).toHaveProperty(
+      'disabled',
+      true,
+    )
+    expect(screen.getByRole('alert')).toHaveProperty(
+      'textContent',
+      expect.stringContaining('Select models that fit the selected sessions.'),
+    )
   })
 
   it('retries session discovery and model catalogs in place', async () => {

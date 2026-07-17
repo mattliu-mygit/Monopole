@@ -166,7 +166,7 @@ def test_resolve_run_config_pins_exact_order_descriptors_and_pipeline_version():
 
 
 def test_capacity_metadata_bumps_model_and_effective_config_schema_versions():
-    assert MODEL_CATALOG_SCHEMA_VERSION == "5"
+    assert MODEL_CATALOG_SCHEMA_VERSION == "6"
     assert RUBRIC_CATALOG_SCHEMA_VERSION == "1"
     assert EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION == "5"
     assert EffectiveRunConfig.model_fields["schema_version"].default == "5"
@@ -208,7 +208,7 @@ def test_resolve_run_config_rejects_stale_catalog_versions(version_field, messag
             "challenge judge model missing is unknown or unavailable",
         ),
         (
-            {"proposal_model": "wandb:gpt-oss-20b"},
+            {"proposal_model": "openai:gpt-4o"},
             "unknown or unavailable proposal model",
         ),
         ({"proposal_model": "missing"}, "unknown or unavailable proposal model"),

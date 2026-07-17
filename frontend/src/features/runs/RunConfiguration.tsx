@@ -2,7 +2,12 @@ import type {
   ModelCatalog,
   ModelDescriptor,
   RubricCatalog,
+  SessionSummary,
 } from '../../types'
+import {
+  estimateModelCapacity,
+  type ModelCapacityEstimate,
+} from './modelCapacity'
 import {
   assessRunConfig,
   type ChoiceSource,
@@ -14,6 +19,7 @@ export interface RunConfigurationProps {
   state: RunConfigState
   models: ModelCatalog
   rubrics: RubricCatalog
+  sessions?: readonly Pick<SessionSummary, 'total_tokens' | 'largest_turn_tokens'>[]
   disabled?: boolean
   onAction: (action: RunConfigAction) => void
 }
@@ -48,8 +54,39 @@ function supports(model: ModelDescriptor, role: 'judge' | 'proposal_evaluator'):
   return model.supported_roles.includes(role)
 }
 
-function modelLabel(model: ModelDescriptor): string {
-  return `${model.label} · ${model.provider} · ${model.family}`
+function formatTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${Number((tokens / 1_000_000).toFixed(2))}m`
+  return `${Math.round(tokens / 1_000)}k`
+}
+
+function modelLabel(
+  model: ModelDescriptor,
+  estimate: ModelCapacityEstimate,
+): string {
+  const capacity = `${formatTokens(model.max_input_tokens)} context`
+  const fit = estimate.fits === null
+    ? ''
+    : estimate.fits
+      ? ` · fits (~${formatTokens(estimate.estimatedRequestTokens ?? 0)} max)`
+      : ` · does not fit (~${formatTokens(estimate.estimatedRequestTokens ?? 0)} needed)`
+  return `${model.label} · ${model.provider} · ${model.family} · ${capacity}${fit}`
+}
+
+function ModelOptions({
+  choices,
+  capacities,
+}: {
+  choices: readonly ModelDescriptor[]
+  capacities: ReadonlyMap<string, ModelCapacityEstimate>
+}) {
+  return choices.map((model) => {
+    const estimate = capacities.get(model.id)!
+    return (
+      <option key={model.id} value={model.id} disabled={estimate.fits === false}>
+        {modelLabel(model, estimate)}
+      </option>
+    )
+  })
 }
 
 function ChoiceLabel({
@@ -99,13 +136,19 @@ export default function RunConfiguration({
   state,
   models,
   rubrics,
+  sessions = [],
   disabled = false,
   onAction,
 }: RunConfigurationProps) {
-  const assessment = assessRunConfig(state, models, rubrics)
+  const assessment = assessRunConfig(state, models, rubrics, sessions)
   const proposalModels = writerChoices(models)
   const judgeChoices = uniqueJudgeChoices(models)
   const evaluatorModels = evaluatorChoices(models)
+  const capacities = new Map(models.available_models.map((model) => [
+    model.id,
+    estimateModelCapacity(model, sessions, models.judging_context),
+  ]))
+  const fits = (modelId: string) => capacities.get(modelId)?.fits !== false
   const catalogRubricIds = rubrics.rubrics.map((rubric) => rubric.id)
   const selectedRubrics = new Set(state.rubricIds)
   const allRubrics =
@@ -116,7 +159,7 @@ export default function RunConfiguration({
     ...judgeChoices.map((model) => model.id),
   ].filter((modelId, index, values) => values.indexOf(modelId) === index)
   const addJudgeId = orderedJudgeIds.find(
-    (modelId) => !state.judgeModels.value.includes(modelId),
+    (modelId) => !state.judgeModels.value.includes(modelId) && fits(modelId),
   )
   const orderedChallengeJudgeIds = [
     ...models.recommended_challenge_judges,
@@ -124,7 +167,7 @@ export default function RunConfiguration({
     ...judgeChoices.map((model) => model.id),
   ].filter((modelId, index, values) => values.indexOf(modelId) === index)
   const addChallengeJudgeId = orderedChallengeJudgeIds.find(
-    (modelId) => !state.challengeJudgeModels.value.includes(modelId),
+    (modelId) => !state.challengeJudgeModels.value.includes(modelId) && fits(modelId),
   )
 
   function toggleRubric(rubricId: string) {
@@ -178,11 +221,7 @@ export default function RunConfiguration({
                 value={state.proposalModel.value}
                 choices={proposalModels}
               />
-              {proposalModels.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {modelLabel(model)}
-                </option>
-              ))}
+              <ModelOptions choices={proposalModels} capacities={capacities} />
             </select>
           </div>
 
@@ -249,11 +288,7 @@ export default function RunConfiguration({
                   className={inputClass}
                 >
                   <UnavailableOption value={modelId} choices={judgeChoices} />
-                  {judgeChoices.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {modelLabel(model)}
-                    </option>
-                  ))}
+                  <ModelOptions choices={judgeChoices} capacities={capacities} />
                 </select>
               </div>
             ))}
@@ -322,11 +357,7 @@ export default function RunConfiguration({
                   className={inputClass}
                 >
                   <UnavailableOption value={modelId} choices={judgeChoices} />
-                  {judgeChoices.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {modelLabel(model)}
-                    </option>
-                  ))}
+                  <ModelOptions choices={judgeChoices} capacities={capacities} />
                 </select>
               </div>
             ))}
@@ -381,11 +412,7 @@ export default function RunConfiguration({
               value={state.proposalEvaluatorModel.value}
               choices={evaluatorModels}
             />
-            {evaluatorModels.map((model) => (
-              <option key={model.id} value={model.id}>
-                {modelLabel(model)}
-              </option>
-            ))}
+            <ModelOptions choices={evaluatorModels} capacities={capacities} />
           </select>
         </div>
 

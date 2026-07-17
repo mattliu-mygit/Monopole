@@ -211,11 +211,15 @@ function CreatedRunSetup({
   })
   const sessions = sessionsQuery.data?.sessions ?? []
   const selectedSessionIds = selectedIds
+  const selectedSessions = sessions.filter((session) =>
+    selectedSessionIds.includes(session.conversation_id))
   const truncated = Boolean(sessionsQuery.data?.truncated)
-  const assessment = assessRunConfig(config, models, rubrics)
+  const assessment = assessRunConfig(config, models, rubrics, selectedSessions)
   const selectionError =
     selectedSessionIds.length === 0
       ? 'Select at least one session.'
+      : selectedSessions.length !== selectedSessionIds.length
+        ? 'Load every selected session before starting.'
       : null
   const cannotStart =
     pending || sessionsQuery.isLoading || Boolean(sessionsQuery.error) ||
@@ -227,7 +231,12 @@ function CreatedRunSetup({
   }
 
   function dispatch(action: RunConfigAction) {
-    setConfig((current) => transitionRunConfig(current, action, models))
+    setConfig((current) => transitionRunConfig(
+      current,
+      action,
+      models,
+      selectedSessions,
+    ))
   }
 
   function start() {
@@ -239,7 +248,7 @@ function CreatedRunSetup({
         timezone,
         session_ids: selectedSessionIds,
       },
-      toRunConfig(config, models, rubrics),
+      toRunConfig(config, models, rubrics, selectedSessions),
       autoRun,
     )
   }
@@ -265,6 +274,7 @@ function CreatedRunSetup({
         state={config}
         models={models}
         rubrics={rubrics}
+        sessions={selectedSessions}
         disabled={pending}
         onAction={dispatch}
       />

@@ -17,6 +17,8 @@ def _turn(
     hour: int,
     user_input: str,
     trace_role: TraceRole = TraceRole.AGENT_SESSION,
+    input_tokens: int = 10,
+    output_tokens: int = 5,
 ) -> TurnSpan:
     started = datetime(2026, 7, 14, hour, tzinfo=timezone.utc)
     return TurnSpan(
@@ -25,8 +27,8 @@ def _turn(
         started_at=started,
         ended_at=started + timedelta(minutes=1),
         model="gpt-5.6-sol",
-        input_tokens=10,
-        output_tokens=5,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
         cache_read_tokens=0,
         status_code="SUCCESS",
         config_version="config-v1",
@@ -136,6 +138,7 @@ def test_session_listing_filters_synthetic_sessions_and_reports_truncation():
     assert response.json()["total"] == 1
     assert response.json()["truncated"] is False
     assert response.json()["sessions"][0]["conversation_id"] == "session/one"
+    assert response.json()["sessions"][0]["largest_turn_tokens"] == 15
     assert backend.query_calls == [
         {
             "page_size": 500,
@@ -145,6 +148,29 @@ def test_session_listing_filters_synthetic_sessions_and_reports_truncation():
     ]
     assert response.json()["sessions"][0]["signal_evidence"] == []
     assert backend.feedback_batches == [[backend.turns[0].ref_for(backend.entity, backend.project)]]
+
+
+def test_session_listing_reports_total_and_largest_turn_tokens():
+    client, backend = _client()
+    backend.turns.append(
+        _turn(
+            "trace-a2",
+            "session/one",
+            hour=13,
+            user_input="Continue",
+            input_tokens=80,
+            output_tokens=20,
+        )
+    )
+
+    response = client.get(
+        "/api/sessions",
+        params={"since": "2026-07-14T12:00:00Z", "until": "2026-07-14T14:00:00Z"},
+    )
+
+    summary = response.json()["sessions"][0]
+    assert summary["total_tokens"] == 115
+    assert summary["largest_turn_tokens"] == 100
 
 
 def test_session_listing_excludes_explicit_non_agent_and_mixed_sessions():

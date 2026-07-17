@@ -1175,6 +1175,7 @@ export interface components {
             available_models: components["schemas"]["ModelDescriptor"][];
             /** Catalog Version */
             catalog_version: string;
+            judging_context: components["schemas"]["JudgingContextPolicy"];
             /** Proposal Evaluator Preferences */
             proposal_evaluator_preferences: string[];
             /** Recommended Challenge Judges */
@@ -1766,6 +1767,8 @@ export interface components {
             git_branch: string | null;
             /** Input Preview */
             input_preview: string | null;
+            /** Largest Turn Tokens */
+            largest_turn_tokens: number;
             /** Last Activity */
             last_activity: string | null;
             /** Model */

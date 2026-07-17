@@ -1,4 +1,7 @@
 import type { ModelCatalog, ModelDescriptor, RubricCatalog, RunConfig } from '../../types'
+import { estimateModelCapacity } from './modelCapacity'
+
+type SessionTokens = { total_tokens: number; largest_turn_tokens: number }
 
 export type ChoiceSource = 'recommended' | 'automatic' | 'overridden'
 export interface Choice<T> { value: T; source: ChoiceSource }
@@ -33,12 +36,26 @@ function model(models: ModelCatalog, id: string) {
   return models.available_models.find((candidate) => candidate.id === id)
 }
 
-function evaluator(models: ModelCatalog, writerId: string): string {
+function fits(
+  candidate: ModelDescriptor,
+  models: ModelCatalog,
+  sessions: readonly SessionTokens[],
+): boolean {
+  return estimateModelCapacity(candidate, sessions, models.judging_context).fits !== false
+}
+
+function evaluator(
+  models: ModelCatalog,
+  writerId: string,
+  sessions: readonly SessionTokens[] = [],
+): string {
   const writerFamily = model(models, writerId)?.family
   const candidates = models.proposal_evaluator_preferences
     .map((id) => model(models, id))
     .filter((candidate): candidate is ModelDescriptor =>
-      candidate !== undefined && supports(candidate, 'proposal_evaluator'))
+      candidate !== undefined
+      && supports(candidate, 'proposal_evaluator')
+      && fits(candidate, models, sessions))
   return (candidates.find((candidate) => candidate.family !== writerFamily) ?? candidates[0])?.id ?? ''
 }
 
@@ -47,16 +64,57 @@ function same(values: readonly string[], recommended: readonly string[]): boolea
     values.every((value, index) => value === recommended[index])
 }
 
-function recommendedState(models: ModelCatalog, rubricIds: readonly string[]): RunConfigState {
-  const writerId = models.recommended_proposal_model ?? ''
+function fittingIds(
+  models: ModelCatalog,
+  role: ModelDescriptor['supported_roles'][number],
+  preferred: readonly string[],
+  sessions: readonly SessionTokens[],
+): string[] {
+  return [...preferred, ...models.available_models.map((candidate) => candidate.id)]
+    .filter((id, index, values) => values.indexOf(id) === index)
+    .filter((id) => {
+      const candidate = model(models, id)
+      return candidate !== undefined
+        && supports(candidate, role)
+        && fits(candidate, models, sessions)
+    })
+}
+
+function recommendedState(
+  models: ModelCatalog,
+  rubricIds: readonly string[],
+  sessions: readonly SessionTokens[] = [],
+): RunConfigState {
+  const writerId = fittingIds(
+    models,
+    'proposal_writer',
+    models.recommended_proposal_model ? [models.recommended_proposal_model] : [],
+    sessions,
+  )[0] ?? ''
+  const judgeIds = fittingIds(models, 'judge', models.recommended_judges, sessions)
+  const challengeJudgeIds = fittingIds(
+    models,
+    'judge',
+    models.recommended_challenge_judges,
+    sessions,
+  )
   return {
     proposalModel: { value: writerId, source: 'recommended' },
-    judgeModels: { value: [...models.recommended_judges.slice(0, 3)], source: 'recommended' },
-    challengeJudgeModels: {
-      value: [...models.recommended_challenge_judges.slice(0, 3)],
+    judgeModels: {
+      value: judgeIds.slice(0, Math.max(1, models.recommended_judges.length)),
       source: 'recommended',
     },
-    proposalEvaluatorModel: { value: evaluator(models, writerId), source: 'automatic' },
+    challengeJudgeModels: {
+      value: challengeJudgeIds.slice(
+        0,
+        Math.max(1, models.recommended_challenge_judges.length),
+      ),
+      source: 'recommended',
+    },
+    proposalEvaluatorModel: {
+      value: evaluator(models, writerId, sessions),
+      source: 'automatic',
+    },
     rubricIds: [...rubricIds],
     candidateBudget: 3,
     force: false,
@@ -98,10 +156,11 @@ export function transitionRunConfig(
   state: RunConfigState,
   action: RunConfigAction,
   models: ModelCatalog,
+  sessions: readonly SessionTokens[] = [],
 ): RunConfigState {
   switch (action.type) {
     case 'use-recommended': {
-      const next = recommendedState(models, state.rubricIds)
+      const next = recommendedState(models, state.rubricIds, sessions)
       return { ...next, candidateBudget: state.candidateBudget, force: state.force }
     }
     case 'select-writer':
@@ -110,7 +169,7 @@ export function transitionRunConfig(
         proposalModel: { value: action.modelId, source: 'overridden' },
         proposalEvaluatorModel: state.proposalEvaluatorModel.source === 'overridden'
           ? state.proposalEvaluatorModel
-          : { value: evaluator(models, action.modelId), source: 'automatic' },
+          : { value: evaluator(models, action.modelId, sessions), source: 'automatic' },
       }
     case 'select-judge': {
       if (action.position < 1 || action.position > 3) return state
@@ -151,6 +210,7 @@ export function assessRunConfig(
   state: RunConfigState,
   models: ModelCatalog,
   rubrics: RubricCatalog,
+  sessions: readonly SessionTokens[] = [],
 ): { errors: string[]; warnings: string[] } {
   const errors: string[] = []
   const warnings: string[] = []
@@ -182,6 +242,11 @@ export function assessRunConfig(
   if (!selectedEvaluator || !supports(selectedEvaluator, 'proposal_evaluator')) {
     errors.push('Select an available proposal evaluator.')
   }
+  const selectedModels = [selectedWriter, ...judges, ...challengeJudges, selectedEvaluator]
+    .filter((candidate): candidate is ModelDescriptor => candidate !== undefined)
+  if (selectedModels.some((candidate) => !fits(candidate, models, sessions))) {
+    errors.push('Select models that fit the selected sessions.')
+  }
   const rubricIds = new Set(rubrics.rubrics.map((rubric) => rubric.id))
   if (!state.rubricIds.length) errors.push('Select at least one rubric.')
   else if (state.rubricIds.some((id) => !rubricIds.has(id)) ||
@@ -210,8 +275,9 @@ export function toRunConfig(
   state: RunConfigState,
   models: ModelCatalog,
   rubrics: RubricCatalog,
+  sessions: readonly SessionTokens[] = [],
 ): RunConfig {
-  const assessment = assessRunConfig(state, models, rubrics)
+  const assessment = assessRunConfig(state, models, rubrics, sessions)
   if (assessment.errors.length) throw new Error(assessment.errors[0])
   return {
     model_catalog_version: models.catalog_version,

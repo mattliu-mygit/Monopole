@@ -18,7 +18,7 @@ from pydantic import (
 from weave_agent_signals.judges.tokens import TokenCounterName
 
 PIPELINE_VERSION = "8"
-MODEL_CATALOG_SCHEMA_VERSION = "5"
+MODEL_CATALOG_SCHEMA_VERSION = "6"
 RUBRIC_CATALOG_SCHEMA_VERSION = "1"
 EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION = "5"
 MAX_CANDIDATE_BUDGET = 10
@@ -145,6 +145,7 @@ class SelectionWarning(StrictFrozenModel):
 class ModelCatalog(StrictFrozenModel):
     catalog_version: StrictStr
     available_models: tuple[ModelDescriptor, ...]
+    judging_context: JudgingContextPolicy
     recommended_proposal_model: StrictStr | None
     recommended_judges: tuple[StrictStr, ...]
     recommended_challenge_judges: tuple[StrictStr, ...]
