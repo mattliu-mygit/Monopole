@@ -1,0 +1,12 @@
+{
+  "schema_version": "1",
+  "targets": [
+    {
+      "kind": "markdown_root",
+      "id": "this-repo",
+      "root": ".",
+      "files": ["AGENTS.md", "CLAUDE.md"],
+      "allow_create": false
+    }
+  ]
+}

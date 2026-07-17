@@ -8,6 +8,7 @@ build/
 .venv/
 venv/
 .env
+targets.local.json
 .DS_Store
 .worktrees/
 .superpowers/
