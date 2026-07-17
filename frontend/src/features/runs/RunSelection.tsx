@@ -93,8 +93,8 @@ export default function RunSelection({
 
         {truncated && (
           <p className="mb-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
-            Showing {sessions.length} of {totalSessions} sessions. Narrow the date range so the
-            evaluation set is explicit.
+            Showing {sessions.length} of {totalSessions} sessions. Only displayed sessions are
+            available to select.
           </p>
         )}
         {loading && (

@@ -349,10 +349,21 @@ beforeEach(() => {
 })
 
 describe('RunDetail wiring', () => {
-  it('saves explicit selection and guided configuration before starting', async () => {
+  it('starts with discovered sessions unchecked and saves explicit selection before starting', async () => {
     renderPage()
 
+    const sessionCheckbox = await screen.findByRole('checkbox', {
+      name: 'Select session session-1',
+    })
     const start = await screen.findByRole('button', { name: 'Start Scoring' })
+    expect(sessionCheckbox).toHaveProperty('checked', false)
+    expect(start).toHaveProperty('disabled', true)
+    expect(screen.getByRole('alert')).toHaveProperty(
+      'textContent',
+      expect.stringContaining('Select at least one session.'),
+    )
+
+    fireEvent.click(sessionCheckbox)
     await waitFor(() => expect(start).toHaveProperty('disabled', false))
     fireEvent.click(screen.getByRole('checkbox', { name: 'Continue automatically' }))
     fireEvent.click(start)
@@ -371,6 +382,72 @@ describe('RunDetail wiring', () => {
       api.advanceRun.mock.invocationCallOrder[0],
     )
     expect(screen.queryByRole('textbox', { name: /model/i })).toBeNull()
+  })
+
+  it('clears the unsaved session selection when the date range changes', async () => {
+    renderPage()
+
+    let sessionCheckbox = await screen.findByRole('checkbox', {
+      name: 'Select session session-1',
+    })
+    fireEvent.click(sessionCheckbox)
+    expect(screen.getByText('1 selected')).not.toBeNull()
+
+    const sinceInput = screen.getByLabelText('Since') as HTMLInputElement
+    fireEvent.change(sinceInput, {
+      target: { value: sinceInput.value === '2026-07-10' ? '2026-07-11' : '2026-07-10' },
+    })
+
+    sessionCheckbox = await screen.findByRole('checkbox', {
+      name: 'Select session session-1',
+    })
+    expect(sessionCheckbox).toHaveProperty('checked', false)
+    expect(screen.getByText('0 selected')).not.toBeNull()
+
+    fireEvent.click(sessionCheckbox)
+    const untilInput = screen.getByLabelText('Until') as HTMLInputElement
+    fireEvent.change(untilInput, {
+      target: { value: untilInput.value === '2026-07-15' ? '2026-07-16' : '2026-07-15' },
+    })
+
+    expect(await screen.findByRole('checkbox', {
+      name: 'Select session session-1',
+    })).toHaveProperty('checked', false)
+    expect(screen.getByText('0 selected')).not.toBeNull()
+  })
+
+  it('restores an explicit saved selection on a created run', async () => {
+    api.getRun.mockResolvedValue(baseRun({
+      data_selection: {
+        since: '2026-07-10T07:00:00Z',
+        until: null,
+        timezone: 'America/Los_Angeles',
+        session_ids: ['session-1'],
+      },
+    }))
+    renderPage()
+
+    expect(await screen.findByRole('checkbox', {
+      name: 'Select session session-1',
+    })).toHaveProperty('checked', true)
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: 'Start Scoring',
+    })).toHaveProperty('disabled', false))
+  })
+
+  it('allows an explicit visible selection when session discovery is truncated', async () => {
+    api.getSessions.mockResolvedValue({ sessions: [session], total: 10, truncated: true })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('checkbox', {
+      name: 'Select session session-1',
+    }))
+
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: 'Start Scoring',
+    })).toHaveProperty('disabled', false))
+    expect(screen.queryByText(/Narrow the date range before starting/)).toBeNull()
+    expect(screen.getByText(/Only displayed sessions are available to select/)).not.toBeNull()
   })
 
   it('retries session discovery and model catalogs in place', async () => {

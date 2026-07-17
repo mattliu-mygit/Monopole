@@ -195,8 +195,8 @@ function CreatedRunSetup({
     () => dateInputValue(run.data_selection?.since, timezone) || defaultSince(),
   )
   const [until, setUntil] = useState(() => dateInputValue(run.data_selection?.until, timezone))
-  const [selectedIds, setSelectedIds] = useState<string[] | null>(
-    () => run.data_selection?.session_ids ?? null,
+  const [selectedIds, setSelectedIds] = useState<string[]>(
+    () => run.data_selection?.session_ids ?? [],
   )
   const [autoRun, setAutoRunChoice] = useState(run.auto_run)
   const [config, setConfig] = useState(() =>
@@ -210,22 +210,20 @@ function CreatedRunSetup({
       getSessions({ since: sinceInstant, until: untilInstant, timezone }),
   })
   const sessions = sessionsQuery.data?.sessions ?? []
-  const selectedSessionIds = selectedIds ?? sessions.map((session) => session.conversation_id)
+  const selectedSessionIds = selectedIds
   const truncated = Boolean(sessionsQuery.data?.truncated)
   const assessment = assessRunConfig(config, models, rubrics)
   const selectionError =
     selectedSessionIds.length === 0
       ? 'Select at least one session.'
-      : truncated
-        ? 'Narrow the date range before starting so the session cohort is explicit.'
-        : null
+      : null
   const cannotStart =
     pending || sessionsQuery.isLoading || Boolean(sessionsQuery.error) ||
     Boolean(selectionError) || assessment.errors.length > 0
 
   function changeDate(setter: (value: string) => void, value: string) {
     setter(value)
-    setSelectedIds(null)
+    setSelectedIds([])
   }
 
   function dispatch(action: RunConfigAction) {

@@ -131,6 +131,7 @@ describe('RunSelection', () => {
     )
     expect(screen.getByRole('alert').textContent).toContain('Session lookup failed')
     expect(screen.getByText(/Showing 2 of 7 sessions/)).not.toBeNull()
+    expect(screen.getByText(/Only displayed sessions are available to select/)).not.toBeNull()
 
     rerender(<RunSelection {...baseProps} sessions={[]} totalSessions={0} />)
     expect(screen.getByText('No sessions found in this range.')).not.toBeNull()
