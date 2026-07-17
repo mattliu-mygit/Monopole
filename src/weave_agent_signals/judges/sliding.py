@@ -70,9 +70,9 @@ SLIDING_PROTOCOL_VERSION = "3"
 
 _DIGEST_SYSTEM_TEMPLATE = (
     "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. "
-    "Preserve important actions, results, omissions, corrections, and constraints. Cite only "
-    "allowed evidence IDs; the response schema enforces the exact chunk and evidence scope. "
-    "Return the requested JSON."
+    "Preserve important actions, results, omissions, corrections, and constraints. Every digest "
+    "must cite at least one ID from ALLOWED_EVIDENCE_IDS. Do not cite any other ID; the response "
+    "schema enforces the exact chunk and evidence scope. Return the requested JSON."
 )
 _DIGEST_USER_TEMPLATE = (
     "EXPECTED_CHUNK_ID: {chunk_id}\n"
@@ -81,8 +81,10 @@ _DIGEST_USER_TEMPLATE = (
     "RAW_CHUNK:\n{raw_text}"
 )
 _WINDOW_SYSTEM_TEMPLATE = (
-    "PHASE: window\n{rubric_system}\nReturn bounded findings, not a score. Cite only evidence "
-    "IDs visible in the active raw window; the response schema enforces that exact scope."
+    "PHASE: window\n{rubric_system}\nReturn bounded findings, not a score. Every finding must "
+    "cite at least one ID from ALLOWED_FINDING_EVIDENCE_IDS. If no supported finding exists, "
+    'return "findings": [] instead of an uncited finding. Do not cite any other ID; the response '
+    "schema enforces the active raw window's exact evidence scope."
 )
 _WINDOW_USER_TEMPLATE = (
     "EXPECTED_WINDOW_ID: {window_id}\n"
@@ -94,7 +96,8 @@ _MERGE_SYSTEM_TEMPLATE = (
     "PHASE: merge\n{rubric_system}\nReturn one anchored session verdict with evidence-cited "
     "behavioral feedback. Behavioral feedback describes what the agent did or should do; "
     "reflection separately decides whether and how to edit managed instructions. The response "
-    "schema limits citations to this session."
+    "schema limits citations to this session. A scored verdict must cite at least one ID from "
+    "ALLOWED_EVIDENCE_IDS; an insufficient_evidence verdict must cite none."
 )
 _MERGE_USER_TEMPLATE = (
     "COVERAGE_MANIFEST: {coverage_manifest}\n"

@@ -53,14 +53,14 @@ class ChunkDigest(_ClosedModel):
     schema_version: Literal[1]
     chunk_id: StrictStr
     text: StrictStr = Field(max_length=MAX_CHUNK_DIGEST_CHARACTERS)
-    evidence_ids: tuple[StrictStr, ...]
+    evidence_ids: tuple[StrictStr, ...] = Field(min_length=1)
 
 
 class WindowFinding(_ClosedModel):
     finding_id: StrictStr
     polarity: Literal["positive", "negative"]
     observation: StrictStr = Field(max_length=MAX_FINDING_OBSERVATION_CHARACTERS)
-    evidence_ids: tuple[StrictStr, ...]
+    evidence_ids: tuple[StrictStr, ...] = Field(min_length=1)
 
 
 class WindowFindings(_ClosedModel):

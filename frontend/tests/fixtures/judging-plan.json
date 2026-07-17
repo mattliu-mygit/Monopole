@@ -1,5 +1,5 @@
 {
-  "plan_id": "sha256:24f900fb5dc8865282cb5e9a5de4c1bdad4170b1952a21cb0de7ec7ee879343b",
+  "plan_id": "sha256:291d8d326ffd4368ede5ef7e48e70b2439569efa65f3f421ea6b536c0da6fa1f",
   "schema_version": "3",
   "cohort_id": "cohort-1",
   "panel_size": 2,
@@ -31,11 +31,11 @@
   "protocol": {
     "protocol_version": "3",
     "prompt_templates": {
-      "digest_system": "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. Preserve important actions, results, omissions, corrections, and constraints. Cite only allowed evidence IDs; the response schema enforces the exact chunk and evidence scope. Return the requested JSON.",
+      "digest_system": "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. Preserve important actions, results, omissions, corrections, and constraints. Every digest must cite at least one ID from ALLOWED_EVIDENCE_IDS. Do not cite any other ID; the response schema enforces the exact chunk and evidence scope. Return the requested JSON.",
       "digest_user": "EXPECTED_CHUNK_ID: {chunk_id}\nEXAMPLE_EVIDENCE_ID: {example_evidence_id}\nALLOWED_EVIDENCE_IDS: {allowed_evidence_ids}\nRAW_CHUNK:\n{raw_text}",
-      "window_system": "PHASE: window\n{rubric_system}\nReturn bounded findings, not a score. Cite only evidence IDs visible in the active raw window; the response schema enforces that exact scope.",
+      "window_system": "PHASE: window\n{rubric_system}\nReturn bounded findings, not a score. Every finding must cite at least one ID from ALLOWED_FINDING_EVIDENCE_IDS. If no supported finding exists, return \"findings\": [] instead of an uncited finding. Do not cite any other ID; the response schema enforces the active raw window's exact evidence scope.",
       "window_user": "EXPECTED_WINDOW_ID: {window_id}\nEXAMPLE_EVIDENCE_ID: {example_evidence_id}\nALLOWED_FINDING_EVIDENCE_IDS: {allowed_evidence_ids}\nRUBRIC_CRITERIA:\n{rubric_criteria}\n{sections}",
-      "merge_system": "PHASE: merge\n{rubric_system}\nReturn one anchored session verdict with evidence-cited behavioral feedback. Behavioral feedback describes what the agent did or should do; reflection separately decides whether and how to edit managed instructions. The response schema limits citations to this session.",
+      "merge_system": "PHASE: merge\n{rubric_system}\nReturn one anchored session verdict with evidence-cited behavioral feedback. Behavioral feedback describes what the agent did or should do; reflection separately decides whether and how to edit managed instructions. The response schema limits citations to this session. A scored verdict must cite at least one ID from ALLOWED_EVIDENCE_IDS; an insufficient_evidence verdict must cite none.",
       "merge_user": "COVERAGE_MANIFEST: {coverage_manifest}\nORDERED_CHUNK_DIGESTS: {digest_context}\nORDERED_DEDUPLICATED_FINDINGS: {finding_context}\nALLOWED_EVIDENCE_IDS: {allowed_evidence_ids}\nRUBRIC_CRITERIA:\n{rubric_criteria}"
     },
     "schemas": {
@@ -62,6 +62,7 @@
               "items": {
                 "type": "string"
               },
+              "minItems": 1,
               "title": "Evidence Ids",
               "type": "array"
             }
@@ -104,6 +105,7 @@
                   "items": {
                     "type": "string"
                   },
+                  "minItems": 1,
                   "title": "Evidence Ids",
                   "type": "array"
                 }
