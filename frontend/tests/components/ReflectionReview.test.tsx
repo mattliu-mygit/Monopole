@@ -18,7 +18,8 @@ const writer: ModelDescriptor = {
   id: 'writer-model',
   label: 'Writer',
   family: 'writer-family',
-  backend: 'cli',
+  provider: 'codex',
+  provider_model: 'writer-model',
   supported_roles: ['proposal_writer'],
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
@@ -88,9 +89,11 @@ const result: SuccessfulReflectionResult = {
   }],
   generation_attempts: [],
   recommended_candidate_id: 'candidate-one',
+  provisional_candidate_id: 'candidate-one',
   baseline_won: false,
   reason: null,
   score_basis: 'predicted_evaluator',
+  challenge: null,
 }
 
 function multiCandidateResult(): SuccessfulReflectionResult {
@@ -742,6 +745,90 @@ describe('ReflectionReview', () => {
     const excerpt = screen.getByLabelText('Attempt 1 response excerpt')
     expect(excerpt.textContent?.length).toBeLessThan(longExcerpt.length)
     expect(excerpt.textContent).not.toContain('TAIL-MUST-NOT-RENDER')
+  })
+
+  it('shows the paired sandbox task, execution identity, and blinded verdict', () => {
+    render(<ReflectionReview run={run({
+      reflecting_result: {
+        ...result,
+        recommended_candidate_id: null,
+        baseline_won: true,
+        challenge: {
+          schema_version: '1',
+          challenge_id: 'sha256:challenge',
+          candidate_id: 'candidate-one',
+          status: 'complete',
+          winner: 'baseline',
+          reason: null,
+          task: {
+            schema_version: '2', task_id: 'sha256:task', prompt: 'Repair the parser.',
+            goal: 'The parser tests pass.', setup_mode: 'prepared_workspace', materials: [{
+              kind: 'git_repository', url: 'https://github.com/example/parser.git',
+              revision: 'a'.repeat(40), destination: 'task',
+            }],
+            judging_criteria: ['The parser tests pass.', 'The regression is covered.'],
+            start_checks: ['task/ contains the pinned repository.'], workspace_digest: 'sha256:workspace',
+            author_model: 'author-model', author_backend: 'cli',
+          },
+          execution: {
+            schema_version: '1', execution_id: 'sha256:execution', model: 'gpt-5.6-sol',
+            model_family: 'openai', harness: 'codex', harness_version: 'codex 1.2.3',
+            effort: 'high', image: 'runtime@sha256:image', image_digest: 'sha256:image',
+            command: ['codex', 'exec', '{task}'],
+            timeout_seconds: 900, network_enabled: true, environment: [],
+            runtime_files: [], workspace_digest: 'sha256:workspace',
+          },
+          baseline: {
+            arm: 'baseline', status: 'exited', exit_code: 0, duration_seconds: 12.5,
+            initial_workspace_digest: 'sha256:b-initial', final_workspace_digest: 'sha256:b-final',
+            transcript: 'B ran the full test suite.', transcript_digest: 'sha256:b-transcript',
+            artifact_digests: { 'src/parser.py': 'sha256:b-parser' },
+            artifact_changes: [{
+              path: 'src/parser.py', action: 'modified', before_digest: 'sha256:before',
+              after_digest: 'sha256:b-parser', diff: '-old\n+baseline fix',
+            }],
+            infrastructure_error: null,
+          },
+          candidate: {
+            arm: 'candidate', status: 'exited', exit_code: 0, duration_seconds: 10,
+            initial_workspace_digest: 'sha256:c-initial', final_workspace_digest: 'sha256:c-final',
+            transcript: 'C ran a focused test.', transcript_digest: 'sha256:c-transcript',
+            artifact_digests: { 'src/parser.py': 'sha256:c-parser' },
+            artifact_changes: [{
+              path: 'src/parser.py', action: 'modified', before_digest: 'sha256:before',
+              after_digest: 'sha256:c-parser', diff: '-old\n+candidate fix',
+            }],
+            infrastructure_error: null,
+          },
+          judges: [{
+            position: 1, requested_model: 'judge-model', resolved_model: 'judge-model',
+            family: 'openai', backend: 'cli', baseline_label: 'arm-1',
+            candidate_label: 'arm-2', task_valid: true, task_invalid_reason: null,
+            winner: 'baseline', rationale: 'B completed the goal.',
+            rubrics: [{
+              rubric_id: 'judge.session_outcome', baseline_score: 1, candidate_score: 0.5,
+              delta: -0.5, winner: 'baseline', rationale: 'B passed all tests.',
+            }],
+            usage: {},
+          }],
+        },
+      },
+      reflection_review: null,
+    })} />)
+
+    expect(screen.getByRole('region', { name: 'Paired sandbox verification' })).not.toBeNull()
+    expect(screen.getByText('B won paired sandbox verification')).not.toBeNull()
+    expect(screen.getByText('Repair the parser.')).not.toBeNull()
+    expect(screen.getByText('prepared_workspace')).not.toBeNull()
+    expect(screen.getByText('https://github.com/example/parser.git')).not.toBeNull()
+    expect(screen.getByText('The regression is covered.')).not.toBeNull()
+    expect(screen.getByText('task/ contains the pinned repository.')).not.toBeNull()
+    expect(screen.getByText(/gpt-5.6-sol via codex 1.2.3/i)).not.toBeNull()
+    expect(screen.getByText(/judge.session_outcome/)).not.toBeNull()
+    expect(screen.getByText(/Δ -0.50/)).not.toBeNull()
+    fireEvent.click(screen.getByText(/B arm: exited/))
+    expect(screen.getByText('B ran the full test suite.')).not.toBeNull()
+    expect(screen.getAllByText(/modified src\/parser.py/)).toHaveLength(2)
   })
 
   it('loads large baseline snapshots in bounded pages and mounts content only when opened', () => {

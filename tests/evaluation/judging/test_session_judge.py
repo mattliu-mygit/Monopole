@@ -49,8 +49,9 @@ def _judge(model_id: str, position: int) -> PositionedJudge:
     return PositionedJudge(
         id=model_id,
         label=model_id,
+        provider="openai",
+        provider_model=model_id,
         family=f"family-{position}",
-        backend="openai",
         supported_roles=("judge",),
         max_input_tokens=128_000,
         position=position,
@@ -136,7 +137,7 @@ def _run(
     monkeypatch.setattr(runner, "SlidingReviewer", FakeReviewer)
     scores = judge_session(
         session,
-        client or object(),
+        {judge.id: client or object() for judge in judges},
         rubrics=rubrics,
         judges=judges,
         judging_plan=plan,
@@ -198,8 +199,10 @@ def test_runner_wires_transport_abort_to_panel_cancellation(monkeypatch) -> None
     original_execute_panel = runner.execute_panel
 
     class Client:
+        aborted = 0
+
         def abort(self):
-            return None
+            self.aborted += 1
 
     client = Client()
 
@@ -215,7 +218,9 @@ def test_runner_wires_transport_abort_to_panel_cancellation(monkeypatch) -> None
         client=client,
     )
 
-    assert callbacks == [client.abort]
+    assert len(callbacks) == 1
+    callbacks[0]()
+    assert client.aborted == 1
 
 
 def test_zero_success_raises_with_attempt_audit(monkeypatch) -> None:
@@ -305,7 +310,7 @@ def test_runner_rejects_detached_rubric_selection(monkeypatch) -> None:
     with pytest.raises(ValueError, match="rubrics or attempt bounds"):
         judge_session(
             session,
-            object(),
+            {judge.id: object() for judge in judges},
             rubrics=rubrics[:1],
             judges=judges,
             judging_plan=plan,
@@ -332,7 +337,7 @@ def test_runner_rejects_alternate_later_judge_before_reviewer_instantiation(monk
     with pytest.raises(ValueError, match="ordered judges"):
         judge_session(
             session,
-            object(),
+            {judge.id: object() for judge in alternate},
             rubrics=rubrics,
             judges=alternate,
             judging_plan=plan,
@@ -367,7 +372,7 @@ def test_runner_synthesizes_authenticated_skip_without_creating_reviewer(monkeyp
     monkeypatch.setattr(runner, "SlidingReviewer", FakeReviewer)
     scores = judge_session(
         session,
-        object(),
+        {judge.id: object() for judge in judges},
         rubrics=rubrics,
         judges=judges,
         judging_plan=plan,
@@ -432,7 +437,7 @@ def test_runner_rejects_rehashed_all_skipped_session_tampering_before_outcomes(
     with pytest.raises(ValueError, match=message):
         judge_session(
             session,
-            object(),
+            {judge.id: object() for judge in judges},
             rubrics=rubrics,
             judges=judges,
             judging_plan=forged,
@@ -481,7 +486,7 @@ def test_runner_rejects_forged_skip_for_capable_reviewer(monkeypatch) -> None:
     with pytest.raises(ValueError, match="reviewer disposition"):
         judge_session(
             session,
-            object(),
+            {judge.id: object() for judge in judges},
             rubrics=rubrics,
             judges=judges,
             judging_plan=forged,
@@ -528,7 +533,7 @@ def test_runner_rejects_forged_plan_for_incapable_reviewer(monkeypatch) -> None:
     with pytest.raises(ValueError, match="reviewer disposition"):
         judge_session(
             session,
-            object(),
+            {judge.id: object() for judge in judges},
             rubrics=rubrics,
             judges=judges,
             judging_plan=forged,
@@ -556,7 +561,7 @@ def test_runner_rejects_tampered_planned_work_bounds() -> None:
     with pytest.raises(ValueError, match="reviewer disposition"):
         judge_session(
             session,
-            object(),
+            {judge.id: object() for judge in judges},
             rubrics=rubrics,
             judges=judges,
             judging_plan=forged,

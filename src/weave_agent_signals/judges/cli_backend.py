@@ -1,8 +1,8 @@
-"""Confined local-CLI implementation of the judge chat interface.
+"""Confined local-provider implementation of the judge chat interface.
 
-The configured model determines whether the installed ``claude`` or ``codex``
-CLI is invoked. Model selection happens before this transport boundary; this
-module only executes the exact requested model with a restricted environment.
+The selected descriptor binds this client to ``claude``, ``codex``, or ``agy``.
+Model selection happens before this transport boundary; this module only
+executes the exact provider model with a restricted environment.
 """
 
 from __future__ import annotations
@@ -31,13 +31,6 @@ from weave_agent_signals.judges.inference import (
 from weave_agent_signals.judges.process import CODEX_CONFINED_ARGS, prepare_cli_subprocess
 
 log = logging.getLogger("weave_agent_signals.judges")
-
-# Full model ids → the alias the `claude` CLI's --model flag expects.
-_CLAUDE_MODEL_ALIASES = {
-    "claude-sonnet-5": "sonnet",
-    "claude-opus-4-8": "opus",
-    "claude-haiku-4-5": "haiku",
-}
 
 
 def _extract_json(text: str) -> dict:
@@ -269,12 +262,12 @@ def _process_error_category(
     return "process_error"
 
 
-def _build_env(model: str) -> dict[str, str]:
+def _build_env(provider: str) -> dict[str, str]:
     return prepare_cli_subprocess(
         home=_HOME,
         codex_home=_JUDGE_CODEX_HOME,
         cwd=_JUDGE_CWD,
-        family=model_family(model),
+        provider=provider,
     )
 
 
@@ -292,9 +285,16 @@ class CliJudgeClient:
     context manager, so judge execution is transport-independent.
     """
 
-    backend = "cli"
-
-    def __init__(self, timeout: float = 360.0, runner: Callable[..., Any] | None = None):
+    def __init__(
+        self,
+        provider: str,
+        timeout: float = 360.0,
+        runner: Callable[..., Any] | None = None,
+    ):
+        if provider not in {"claude", "codex", "agy"}:
+            raise ValueError(f"unsupported local CLI provider: {provider}")
+        self.backend = provider
+        self._provider = provider
         self._timeout = timeout
         self._runner = runner
         self._activity: Callable[[dict[str, object]], None] | None = None
@@ -343,18 +343,9 @@ class CliJudgeClient:
     ) -> tuple[dict[str, Any], JudgeResponse]:
         system = "\n\n".join(m["content"] for m in messages if m.get("role") == "system")
         user = "\n\n".join(m["content"] for m in messages if m.get("role") == "user")
-        family = model_family(model)
-        if family == "google":
-            raise RuntimeError(
-                "Google local CLI judges are disabled until Gemini has a verified confined mode"
-            )
-        if family not in {"anthropic", "openai"}:
-            raise RuntimeError(
-                "The local CLI judge backend supports only Anthropic and OpenAI families"
-            )
-        env = _build_env(model)
+        env = _build_env(self._provider)
         schema_path: str | None = None
-        if response_schema is not None and family == "openai":
+        if response_schema is not None and self._provider == "codex":
             schema_path = self._write_schema_file(response_schema)
 
         try:
@@ -444,7 +435,8 @@ class CliJudgeClient:
             schema_path=schema_path,
         )
         log.info(
-            "CLI judge started: backend=cli model=%s family=%s prompt_len=%d output_mode=%s",
+            "CLI judge started: provider=%s model=%s family=%s prompt_len=%d output_mode=%s",
+            self._provider,
             model,
             model_family(model),
             len(stdin_text),
@@ -489,8 +481,9 @@ class CliJudgeClient:
                 strict=response_schema is not None,
             )
             log.info(
-                "CLI judge completed: backend=cli model=%s exit=0 output_len=%d "
+                "CLI judge completed: provider=%s model=%s exit=0 output_len=%d "
                 "output_sha256=%s output_mode=%s request_count=1",
+                self._provider,
                 model,
                 len(stdout),
                 _raw_output_digest(stdout),
@@ -516,8 +509,9 @@ class CliJudgeClient:
                     strict=response_schema is not None,
                 )
                 log.info(
-                    "CLI judge completed: backend=cli model=%s exit=0 elapsed=%.1fs "
+                    "CLI judge completed: provider=%s model=%s exit=0 elapsed=%.1fs "
                     "output_len=%d output_sha256=%s output_mode=%s request_count=%d",
+                    self._provider,
                     model,
                     elapsed,
                     len(stdout),
@@ -656,10 +650,11 @@ class CliJudgeClient:
         provider_issue = _provider_issue(_process_diagnostic(diagnostic))
         elapsed_text = "unknown" if elapsed is None else f"{elapsed:.1f}s"
         log.warning(
-            "CLI judge failed: backend=cli model=%s exit=%d elapsed=%s "
+            "CLI judge failed: provider=%s model=%s exit=%d elapsed=%s "
             "stdout_len=%d stderr_len=%d output_sha256=%s output_mode=%s "
             "request_count=%d error_category=%s provider_status=%s "
             "provider_error_code=%s provider_error_message=%s",
+            self._provider,
             model,
             returncode,
             elapsed_text,
@@ -822,21 +817,18 @@ class CliJudgeClient:
     ) -> tuple[list[str], str, str]:
         """Build (argv, stdin_text, mode) for the given judge model.
 
-        Anthropic routes to ``claude`` and OpenAI routes to ``codex``. Other local
-        families fail closed. ``mode`` is "claude" (answer is inside a JSON
-        envelope) or "plain" (Codex prints the answer directly). The prompt is
-        passed on stdin to avoid OS argument-length limits on big digests.
+        The client is bound to one explicit provider. ``mode`` is "claude"
+        (answer is inside a JSON envelope) or "plain" (Codex and Antigravity
+        print the answer directly). Prompts use stdin to avoid argument limits.
         """
-        fam = model_family(model)
-        if fam == "anthropic":
-            alias = _CLAUDE_MODEL_ALIASES.get(model, model)
+        if self._provider == "claude":
             argv = [
                 "claude",
                 "-p",
                 "--output-format",
                 "json",
                 "--model",
-                alias,
+                model,
                 "--tools",
                 "",
                 "--strict-mcp-config",
@@ -854,14 +846,25 @@ class CliJudgeClient:
                 argv += ["--system-prompt", system]
             return argv, user, "claude"
 
-        if fam == "google":
-            raise RuntimeError(
-                "Google local CLI judges are disabled until Gemini has a verified confined mode"
-            )
-
-        if fam != "openai":
-            raise RuntimeError(
-                "The local CLI judge backend supports only Anthropic and OpenAI families"
+        prompt = f"{system}\n\n{user}" if system else user
+        if self._provider == "agy":
+            if response_schema is not None:
+                prompt += (
+                    "\n\nReturn exactly one JSON object matching this JSON Schema:\n"
+                    + json.dumps(response_schema.schema, separators=(",", ":"))
+                )
+            return (
+                [
+                    "agy",
+                    "--print",
+                    "--model",
+                    model,
+                    "--mode",
+                    "plan",
+                    "--sandbox",
+                ],
+                prompt,
+                "plain",
             )
 
         argv = [
@@ -880,7 +883,6 @@ class CliJudgeClient:
                 raise ValueError("Codex schema mode requires an output schema file")
             argv += ["--output-schema", schema_path]
         argv += ["-C", _JUDGE_CWD, "-"]
-        prompt = f"{system}\n\n{user}" if system else user
         return argv, prompt, "plain"
 
     def _extract_text(self, stdout: str, mode: str) -> str:

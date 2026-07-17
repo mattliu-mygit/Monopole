@@ -32,37 +32,64 @@ def test_model_catalog_is_stable_role_oriented_and_immutable():
     data = first.model_dump(mode="json")
     assert set(data) == {
         "catalog_version",
-        "proposal",
-        "recommended_judge_backend",
-        "judge_backends",
+        "available_models",
+        "recommended_proposal_model",
+        "recommended_judges",
+        "recommended_challenge_judges",
+        "proposal_evaluator_preferences",
     }
-    assert data["recommended_judge_backend"] == "cli"
-
-    cli = data["judge_backends"]["cli"]
-    assert len(cli["recommended_judges"]) == 3
-    by_id = {model["id"]: model for model in cli["available_models"]}
-    assert len({by_id[model_id]["family"] for model_id in cli["recommended_judges"]}) == 2
-    assert set(cli["proposal_evaluator_preferences"]) == {
+    by_id = {model["id"]: model for model in data["available_models"]}
+    assert all(model["id"].startswith(f"{model['provider']}:") for model in by_id.values())
+    assert len(data["recommended_judges"]) == 3
+    assert all(model_id in by_id for model_id in data["recommended_judges"])
+    assert data["recommended_challenge_judges"] == [data["recommended_judges"][0]]
+    assert set(data["proposal_evaluator_preferences"]) == {
         model["id"]
-        for model in cli["available_models"]
+        for model in data["available_models"]
         if "proposal_evaluator" in model["supported_roles"]
     }
-    for model in data["proposal"]["available_models"]:
+    for model in data["available_models"]:
         assert set(model) == {
             "id",
             "label",
+            "provider",
+            "provider_model",
             "family",
-            "backend",
             "supported_roles",
             "max_input_tokens",
             "token_counter",
         }
-        assert "proposal_writer" in model["supported_roles"]
 
     with pytest.raises(ValidationError):
         first.catalog_version = "changed"  # type: ignore[misc]
-    with pytest.raises(TypeError):
-        first.judge_backends["cli"] = first.judge_backends["cli"]  # type: ignore[index]
+
+
+def test_model_catalog_is_one_provider_qualified_source_for_every_role():
+    catalog = build_model_catalog(which=_all_executables)
+    data = catalog.model_dump(mode="json")
+
+    assert set(data) == {
+        "catalog_version",
+        "available_models",
+        "recommended_proposal_model",
+        "recommended_judges",
+        "recommended_challenge_judges",
+        "proposal_evaluator_preferences",
+    }
+    by_id = {model["id"]: model for model in data["available_models"]}
+    assert "agy:gemini-3.5-flash-high" in by_id
+    assert "agy:gpt-oss-120b-medium" in by_id
+    assert by_id["agy:gemini-3.5-flash-high"]["provider"] == "agy"
+    assert by_id["agy:gemini-3.5-flash-high"]["provider_model"] == ("Gemini 3.5 Flash (High)")
+    assert by_id["agy:gemini-3.5-flash-high"]["family"] == "google"
+    assert by_id["agy:gpt-oss-120b-medium"]["family"] == "openai"
+    for recommendation in (
+        data["recommended_proposal_model"],
+        *data["recommended_judges"],
+        *data["recommended_challenge_judges"],
+        *data["proposal_evaluator_preferences"],
+    ):
+        assert recommendation in by_id
 
 
 def test_model_catalog_version_tracks_local_availability():
@@ -76,62 +103,97 @@ def test_model_catalog_version_tracks_local_availability():
         none_available.catalog_version,
     }
     assert len(versions) == 3
-    proposal_models = codex_only.model_dump(mode="json")["proposal"]["available_models"]
-    assert [model["id"] for model in proposal_models] == ["gpt-5.6-sol"]
-    assert none_available.model_dump(mode="json")["proposal"] == {
-        "available_models": [],
-        "recommended_model": None,
+    codex_models = [
+        model
+        for model in codex_only.model_dump(mode="json")["available_models"]
+        if model["provider"] == "codex"
+    ]
+    assert [model["id"] for model in codex_models] == [
+        "codex:gpt-5.6-sol",
+        "codex:gpt-5.6-terra",
+        "codex:gpt-5.6-luna",
+        "codex:gpt-5.5",
+        "codex:gpt-5.4",
+        "codex:gpt-5.4-mini",
+    ]
+    assert none_available.recommended_proposal_model is None
+    assert {model.provider for model in none_available.available_models} == {"wandb", "openai"}
+
+
+def test_codex_models_are_available_for_every_run_role():
+    catalog = build_model_catalog(which=lambda name: "/bin/codex" if name == "codex" else None)
+    expected_ids = {
+        "codex:gpt-5.6-sol",
+        "codex:gpt-5.6-terra",
+        "codex:gpt-5.6-luna",
+        "codex:gpt-5.5",
+        "codex:gpt-5.4",
+        "codex:gpt-5.4-mini",
     }
-    assert (
-        all_available.model_dump(mode="json")["judge_backends"]["wandb"]["available_models"]
-        == none_available.model_dump(mode="json")["judge_backends"]["wandb"]["available_models"]
-    )
+
+    by_id = {model.id: model for model in catalog.available_models}
+
+    assert expected_ids <= set(by_id)
+    for model_id in expected_ids:
+        assert by_id[model_id].provider == "codex"
+        assert set(by_id[model_id].supported_roles) == {
+            "proposal_writer",
+            "judge",
+            "proposal_evaluator",
+        }
+        assert by_id[model_id].max_input_tokens == 272_000
+        assert by_id[model_id].token_counter == "o200k_base"
 
 
 def test_every_model_declares_exact_input_capacity_and_token_counter():
     catalog = build_model_catalog(which=lambda _name: "/usr/bin/model")
-    models = {
-        model.id: model
-        for model in (
-            *catalog.proposal.available_models,
-            *(
-                model
-                for backend in catalog.judge_backends.values()
-                for model in backend.available_models
-            ),
-        )
-    }
+    models = {model.id: model for model in catalog.available_models}
 
     assert {
         model_id: (model.max_input_tokens, model.token_counter)
         for model_id, model in models.items()
     } == {
-        "gpt-5.6-sol": (272_000, "o200k_base"),
-        "claude-sonnet-5": (200_000, "utf8_bytes_div_3"),
-        "claude-haiku-4-5": (200_000, "utf8_bytes_div_3"),
-        "gpt-oss-20b": (131_072, "o200k_harmony"),
-        "gpt-oss-120b": (131_072, "o200k_harmony"),
-        "Llama-3.1-8B": (131_072, "utf8_bytes_div_3"),
-        "granite-4.1-8b": (131_072, "utf8_bytes_div_3"),
-        "gpt-4o": (128_000, "o200k_base"),
-        "gpt-4o-mini": (128_000, "o200k_base"),
+        "codex:gpt-5.6-sol": (272_000, "o200k_base"),
+        "codex:gpt-5.6-terra": (272_000, "o200k_base"),
+        "codex:gpt-5.6-luna": (272_000, "o200k_base"),
+        "codex:gpt-5.5": (272_000, "o200k_base"),
+        "codex:gpt-5.4": (272_000, "o200k_base"),
+        "codex:gpt-5.4-mini": (272_000, "o200k_base"),
+        "claude:claude-sonnet-5": (200_000, "utf8_bytes_div_3"),
+        "claude:claude-haiku-4-5": (200_000, "utf8_bytes_div_3"),
+        "agy:gemini-3.5-flash-medium": (1_048_576, "utf8_bytes_div_3"),
+        "agy:gemini-3.5-flash-high": (1_048_576, "utf8_bytes_div_3"),
+        "agy:gemini-3.5-flash-low": (1_048_576, "utf8_bytes_div_3"),
+        "agy:gemini-3.1-pro-low": (1_048_576, "utf8_bytes_div_3"),
+        "agy:gemini-3.1-pro-high": (1_048_576, "utf8_bytes_div_3"),
+        "agy:gpt-oss-120b-medium": (131_072, "o200k_harmony"),
+        "wandb:gpt-oss-20b": (131_072, "o200k_harmony"),
+        "wandb:gpt-oss-120b": (131_072, "o200k_harmony"),
+        "wandb:Llama-3.1-8B": (131_072, "utf8_bytes_div_3"),
+        "wandb:granite-4.1-8b": (131_072, "utf8_bytes_div_3"),
+        "openai:gpt-4o": (128_000, "o200k_base"),
+        "openai:gpt-4o-mini": (128_000, "o200k_base"),
     }
 
 
 def test_model_catalog_version_tracks_recommendations_and_evaluator_order():
     base = build_model_catalog(which=_all_executables)
-    cli = base.model_dump(mode="json")["judge_backends"]["cli"]
 
     recommendation_changed = build_model_catalog(
         which=_all_executables,
-        recommended_judges={"cli": tuple(reversed(cli["recommended_judges"]))},
+        recommended_judges=tuple(reversed(base.recommended_judges)),
+    )
+    challenge_recommendation_changed = build_model_catalog(
+        which=_all_executables,
+        recommended_challenge_judges=(base.recommended_judges[1],),
     )
     evaluator_changed = build_model_catalog(
         which=_all_executables,
-        evaluator_preferences={"cli": tuple(reversed(cli["proposal_evaluator_preferences"]))},
+        evaluator_preferences=tuple(reversed(base.proposal_evaluator_preferences)),
     )
 
     assert recommendation_changed.catalog_version != base.catalog_version
+    assert challenge_recommendation_changed.catalog_version != base.catalog_version
     assert evaluator_changed.catalog_version != base.catalog_version
 
 
@@ -185,10 +247,11 @@ def test_rubric_and_catalog_digests_track_content_and_version_deterministically(
 
 def test_descriptor_membership_is_not_limited_by_preference_registries(monkeypatch):
     added = ModelDescriptor(
-        id="deepseek-r1",
+        id="wandb:deepseek-r1",
         label="DeepSeek R1",
+        provider="wandb",
+        provider_model="deepseek-r1",
         family="deepseek",
-        backend="wandb",
         supported_roles=("judge", "proposal_evaluator"),
     )
     monkeypatch.setattr(
@@ -198,27 +261,28 @@ def test_descriptor_membership_is_not_limited_by_preference_registries(monkeypat
     )
 
     models = build_model_catalog(which=_all_executables)
-    wandb = models.model_dump(mode="json")["judge_backends"]["wandb"]
-    available_ids = [descriptor["id"] for descriptor in wandb["available_models"]]
+    available_ids = [descriptor.id for descriptor in models.available_models]
 
-    assert available_ids[-1] == added.id
-    assert wandb["proposal_evaluator_preferences"][-1] == added.id
+    assert added.id in available_ids
+    assert models.proposal_evaluator_preferences[-1] == added.id
 
 
 def test_model_descriptor_serializes_only_its_public_fields():
     descriptor = ModelDescriptor(
         id="example",
         label="Example",
+        provider="example-provider",
+        provider_model="example-model",
         family="example-family",
-        backend="example-backend",
         supported_roles=("judge",),
     )
 
     assert descriptor.model_dump(mode="json") == {
         "id": "example",
         "label": "Example",
+        "provider": "example-provider",
+        "provider_model": "example-model",
         "family": "example-family",
-        "backend": "example-backend",
         "supported_roles": ["judge"],
         "max_input_tokens": 128_000,
         "token_counter": "utf8_bytes_div_3",
@@ -231,8 +295,9 @@ def test_model_descriptor_rejects_invalid_input_token_limits(value):
         ModelDescriptor(
             id="example",
             label="Example",
+            provider="example-provider",
+            provider_model="example-model",
             family="example-family",
-            backend="example-backend",
             supported_roles=("judge",),
             max_input_tokens=value,
         )
@@ -243,8 +308,9 @@ def test_model_descriptor_rejects_unknown_token_counter():
         ModelDescriptor(
             id="example",
             label="Example",
+            provider="example-provider",
+            provider_model="example-model",
             family="example-family",
-            backend="example-backend",
             supported_roles=("judge",),
             token_counter="family-inferred",
         )

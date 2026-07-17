@@ -304,6 +304,107 @@ export interface components {
             /** Trends */
             trends: components["schemas"]["TrendEntryResponse"][];
         };
+        /** ArmResult */
+        ArmResult: {
+            /**
+             * Arm
+             * @enum {string}
+             */
+            arm: "baseline" | "candidate";
+            /**
+             * Artifact Changes
+             * @default []
+             */
+            artifact_changes: components["schemas"]["ArtifactChange"][];
+            /** Artifact Digests */
+            artifact_digests: {
+                [key: string]: string;
+            };
+            /** Duration Seconds */
+            duration_seconds: number;
+            /** Exit Code */
+            exit_code: number | null;
+            /** Final Workspace Digest */
+            final_workspace_digest: string | null;
+            /** Infrastructure Error */
+            infrastructure_error?: string | null;
+            /** Initial Workspace Digest */
+            initial_workspace_digest: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "exited" | "timed_out" | "infrastructure_failed";
+            /** Transcript */
+            transcript: string;
+            /** Transcript Digest */
+            transcript_digest: string;
+        };
+        /** ArtifactChange */
+        ArtifactChange: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "added" | "modified" | "deleted";
+            /** After Digest */
+            after_digest: string | null;
+            /** Before Digest */
+            before_digest: string | null;
+            /** Diff */
+            diff: string;
+            /** Path */
+            path: string;
+        };
+        /** AuthoredTask */
+        AuthoredTask: {
+            /** Author Backend */
+            author_backend: string;
+            /** Author Model */
+            author_model: string;
+            /** Goal */
+            goal: string;
+            /**
+             * Judging Criteria
+             * @default [
+             *       "The stated goal is achieved."
+             *     ]
+             */
+            judging_criteria: string[];
+            /**
+             * Materials
+             * @default []
+             */
+            materials: components["schemas"]["TaskMaterial"][];
+            /** Prompt */
+            prompt: string;
+            /**
+             * Schema Version
+             * @default 2
+             * @constant
+             */
+            schema_version: "2";
+            /**
+             * Setup Mode
+             * @default agent_bootstrap
+             * @enum {string}
+             */
+            setup_mode: "prepared_workspace" | "agent_bootstrap";
+            /**
+             * Start Checks
+             * @default [
+             *       "The supplied workspace is available."
+             *     ]
+             */
+            start_checks: string[];
+            /**
+             * Task Id
+             * @default pending
+             */
+            task_id: string;
+            /** Workspace Digest */
+            workspace_digest: string;
+        };
         /** AutoRunRequest */
         AutoRunRequest: {
             /** Auto Run */
@@ -325,6 +426,40 @@ export interface components {
             scope: components["schemas"]["ScopeDescriptorResponse"] | null;
             /** Targets */
             targets: components["schemas"]["TargetSnapshotResponse"][];
+        };
+        /** ChallengeResult */
+        ChallengeResult: {
+            baseline: components["schemas"]["ArmResult"] | null;
+            candidate: components["schemas"]["ArmResult"] | null;
+            /** Candidate Id */
+            candidate_id: string;
+            /**
+             * Challenge Id
+             * @default pending
+             */
+            challenge_id: string;
+            execution: components["schemas"]["ExecutionIdentity"];
+            /** Judges */
+            judges: components["schemas"]["JudgeVerdict"][];
+            /** Reason */
+            reason: string | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: "1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "complete" | "incomplete" | "invalid_task";
+            task: components["schemas"]["AuthoredTask"] | null;
+            /**
+             * Winner
+             * @enum {string}
+             */
+            winner: "baseline" | "candidate" | "tie";
         };
         /** ChatSpanResponse */
         ChatSpanResponse: {
@@ -377,6 +512,8 @@ export interface components {
         };
         /** EffectiveModelSelection */
         EffectiveModelSelection: {
+            /** Challenge Judges */
+            challenge_judges: components["schemas"]["PositionedJudge"][];
             /** Judges */
             judges: components["schemas"]["PositionedJudge"][];
             proposal_evaluator: components["schemas"]["ModelDescriptor"];
@@ -388,8 +525,6 @@ export interface components {
             candidate_budget: number;
             /** Force */
             force: boolean;
-            /** Judge Backend */
-            judge_backend: string;
             judging_context: components["schemas"]["JudgingContextPolicy"];
             /** Model Catalog Version */
             model_catalog_version: string;
@@ -402,10 +537,10 @@ export interface components {
             rubrics: components["schemas"]["RubricDescriptor"][];
             /**
              * Schema Version
-             * @default 3
+             * @default 5
              * @constant
              */
-            schema_version: "3";
+            schema_version: "5";
             /** Selection Warnings */
             selection_warnings: components["schemas"]["SelectionWarning"][];
         };
@@ -442,6 +577,49 @@ export interface components {
             usage: {
                 [key: string]: number;
             };
+        };
+        /** ExecutionIdentity */
+        ExecutionIdentity: {
+            /** Command */
+            command: string[];
+            /** Effort */
+            effort: string | null;
+            /** Environment */
+            environment: components["schemas"]["NamedDigest"][];
+            /**
+             * Execution Id
+             * @default pending
+             */
+            execution_id: string;
+            /**
+             * Harness
+             * @enum {string}
+             */
+            harness: "codex" | "claude";
+            /** Harness Version */
+            harness_version: string;
+            /** Image */
+            image: string;
+            /** Image Digest */
+            image_digest: string;
+            /** Model */
+            model: string;
+            /** Model Family */
+            model_family: string;
+            /** Network Enabled */
+            network_enabled: boolean;
+            /** Runtime Files */
+            runtime_files: components["schemas"]["NamedDigest"][];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: "1";
+            /** Timeout Seconds */
+            timeout_seconds: number;
+            /** Workspace Digest */
+            workspace_digest: string;
         };
         /** FeedbackItemResponse */
         FeedbackItemResponse: {
@@ -549,14 +727,42 @@ export interface components {
                 [key: string]: number;
             };
         };
-        /** JudgeBackendCatalog */
-        JudgeBackendCatalog: {
-            /** Available Models */
-            available_models: components["schemas"]["ModelDescriptor"][];
-            /** Proposal Evaluator Preferences */
-            proposal_evaluator_preferences: string[];
-            /** Recommended Judges */
-            recommended_judges: string[];
+        /** JudgeVerdict */
+        JudgeVerdict: {
+            /** Backend */
+            backend: string;
+            /** Baseline Label */
+            baseline_label: string;
+            /** Candidate Label */
+            candidate_label: string;
+            /** Family */
+            family: string;
+            /** Position */
+            position: number;
+            /** Rationale */
+            rationale: string;
+            /** Requested Model */
+            requested_model: string;
+            /** Resolved Model */
+            resolved_model: string;
+            /** Rubrics */
+            rubrics: components["schemas"]["RubricVerdict"][];
+            /** Task Invalid Reason */
+            task_invalid_reason?: string | null;
+            /**
+             * Task Valid
+             * @default true
+             */
+            task_valid: boolean;
+            /** Usage */
+            usage: {
+                [key: string]: number;
+            };
+            /**
+             * Winner
+             * @enum {string}
+             */
+            winner: "baseline" | "candidate" | "tie";
         };
         /** JudgingActivityEventResponse */
         JudgingActivityEventResponse: {
@@ -965,20 +1171,21 @@ export interface components {
         };
         /** ModelCatalogResponse */
         ModelCatalogResponse: {
+            /** Available Models */
+            available_models: components["schemas"]["ModelDescriptor"][];
             /** Catalog Version */
             catalog_version: string;
-            /** Judge Backends */
-            judge_backends: {
-                [key: string]: components["schemas"]["JudgeBackendCatalog"];
-            };
-            proposal: components["schemas"]["ProposalCatalog"];
-            /** Recommended Judge Backend */
-            recommended_judge_backend: string;
+            /** Proposal Evaluator Preferences */
+            proposal_evaluator_preferences: string[];
+            /** Recommended Challenge Judges */
+            recommended_challenge_judges: string[];
+            /** Recommended Judges */
+            recommended_judges: string[];
+            /** Recommended Proposal Model */
+            recommended_proposal_model: string | null;
         };
         /** ModelDescriptor */
         ModelDescriptor: {
-            /** Backend */
-            backend: string;
             /** Family */
             family: string;
             /** Id */
@@ -990,6 +1197,10 @@ export interface components {
              * @default 128000
              */
             max_input_tokens: number;
+            /** Provider */
+            provider: string;
+            /** Provider Model */
+            provider_model: string;
             /** Supported Roles */
             supported_roles: ("proposal_writer" | "judge" | "proposal_evaluator")[];
             /**
@@ -999,10 +1210,15 @@ export interface components {
              */
             token_counter: "utf8_bytes_div_3" | "o200k_base" | "o200k_harmony";
         };
+        /** NamedDigest */
+        NamedDigest: {
+            /** Digest */
+            digest: string;
+            /** Name */
+            name: string;
+        };
         /** PositionedJudge */
         PositionedJudge: {
-            /** Backend */
-            backend: string;
             /** Family */
             family: string;
             /** Id */
@@ -1016,6 +1232,10 @@ export interface components {
             max_input_tokens: number;
             /** Position */
             position: number;
+            /** Provider */
+            provider: string;
+            /** Provider Model */
+            provider_model: string;
             /**
              * Role
              * @default judge
@@ -1085,13 +1305,6 @@ export interface components {
              * @enum {string}
              */
             status: "applied" | "not_applied";
-        };
-        /** ProposalCatalog */
-        ProposalCatalog: {
-            /** Available Models */
-            available_models: components["schemas"]["ModelDescriptor"][];
-            /** Recommended Model */
-            recommended_model: string | null;
         };
         /** ReflectingProgressResponse */
         ReflectingProgressResponse: {
@@ -1288,14 +1501,32 @@ export interface components {
             /** Version */
             version: string;
         };
+        /** RubricVerdict */
+        RubricVerdict: {
+            /** Baseline Score */
+            baseline_score: number;
+            /** Candidate Score */
+            candidate_score: number;
+            /** Delta */
+            delta?: number | null;
+            /** Rationale */
+            rationale: string;
+            /** Rubric Id */
+            rubric_id: string;
+            /**
+             * Winner
+             * @enum {string}
+             */
+            winner: "baseline" | "candidate" | "tie";
+        };
         /** RunConfig */
         RunConfig: {
             /** Candidate Budget */
             candidate_budget: number;
+            /** Challenge Judge Models */
+            challenge_judge_models: string[];
             /** Force */
             force: boolean;
-            /** Judge Backend */
-            judge_backend: string;
             /** Judge Models */
             judge_models: string[];
             /** Model Catalog Version */
@@ -1586,8 +1817,11 @@ export interface components {
             baseline_won: boolean;
             /** Candidates */
             candidates: components["schemas"]["ReflectionCandidateResponse"][];
+            challenge: components["schemas"]["ChallengeResult"] | null;
             /** Generation Attempts */
             generation_attempts: components["schemas"]["GenerationAttemptResponse"][];
+            /** Provisional Candidate Id */
+            provisional_candidate_id: string | null;
             /** Reason */
             reason: string | null;
             /** Recommended Candidate Id */
@@ -1614,6 +1848,21 @@ export interface components {
             path: string | null;
             /** Revision */
             revision: string;
+        };
+        /** TaskMaterial */
+        TaskMaterial: {
+            /** Destination */
+            destination: string;
+            /**
+             * Kind
+             * @default git_repository
+             * @constant
+             */
+            kind: "git_repository";
+            /** Revision */
+            revision: string;
+            /** Url */
+            url: string;
         };
         /** ToolCallResponse */
         ToolCallResponse: {

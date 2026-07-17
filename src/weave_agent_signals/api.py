@@ -27,6 +27,10 @@ from weave_agent_signals.routes.inspection import create_inspection_router
 from weave_agent_signals.routes.reviews import create_reviews_router
 from weave_agent_signals.routes.runs import create_runs_router
 from weave_agent_signals.run_config import EffectiveRunConfig, ModelDescriptor
+from weave_agent_signals.runs.challenges.runtime import (
+    create_challenge_runner,
+    load_sandbox_runtime,
+)
 from weave_agent_signals.runs.cohort import discover_turn_cohort, hydrate_turn_cohort
 from weave_agent_signals.runs.promotion import TargetPromoter
 from weave_agent_signals.runs.review import ReviewService
@@ -74,14 +78,14 @@ class _LazyReference:
 
 
 def _chat_client(
-    backend: str,
+    provider: str,
     *,
     entity: str,
     project: str,
 ) -> AbstractContextManager[ChatClient]:
-    if backend == "cli":
-        return CliJudgeClient()
-    return InferenceClient(entity=entity, project=project, backend=backend)
+    if provider in {"claude", "codex", "agy"}:
+        return CliJudgeClient(provider=provider)
+    return InferenceClient(entity=entity, project=project, backend=provider)
 
 
 def _build_default_dependencies(
@@ -89,6 +93,7 @@ def _build_default_dependencies(
     entity: str,
     project: str,
     target_registry: Path | None,
+    sandbox_runtime: Path | None,
     db_path: str | Path | None,
 ) -> ApiDependencies:
     """Build production services once during application startup."""
@@ -132,8 +137,8 @@ def _build_default_dependencies(
             dependencies=JudgingDependencies(
                 store=store,
                 client_factory=client_factory,
-                chat_client_factory=lambda: _chat_client(
-                    config.judge_backend,
+                chat_client_factory=lambda judge: _chat_client(
+                    judge.provider,
                     entity=entity,
                     project=project,
                 ),
@@ -145,14 +150,17 @@ def _build_default_dependencies(
         descriptor: ModelDescriptor,
     ) -> AbstractContextManager[ChatClient]:
         return _chat_client(
-            descriptor.backend,
+            descriptor.provider,
             entity=entity,
             project=project,
         )
 
     if target_registry is None:
         raise RuntimeError("TARGET_REGISTRY is required to start the server")
+    if sandbox_runtime is None:
+        raise RuntimeError("SMOLMACHINES_RUNTIME is required to start the server")
     registry = load_target_registry(target_registry)
+    runtime = load_sandbox_runtime(sandbox_runtime)
     reflection_dependencies = ReflectionDependencies(
         store=store,
         client_factory=client_factory,
@@ -160,6 +168,7 @@ def _build_default_dependencies(
         writer_client_factory=model_client,
         evaluator_client_factory=model_client,
         coaching_digest=coaching_digest,
+        challenge_runner=create_challenge_runner(runtime),
     )
 
     def reflection_stage(
@@ -232,6 +241,7 @@ def create_app(
     entity: str | None = None,
     project: str | None = None,
     target_registry: str | Path | None = None,
+    sandbox_runtime: str | Path | None = None,
     db_path: str | Path | None = None,
     frontend_dist: str | Path | None = None,
 ) -> FastAPI:
@@ -241,6 +251,8 @@ def create_app(
     resolved_project = project or os.environ.get("WANDB_PROJECT", "agent-sessions")
     registry_value = target_registry or os.environ.get("TARGET_REGISTRY")
     resolved_registry = Path(registry_value).expanduser() if registry_value else None
+    runtime_value = sandbox_runtime or os.environ.get("SMOLMACHINES_RUNTIME")
+    resolved_runtime = Path(runtime_value).expanduser() if runtime_value else None
     resolved_db = db_path or os.environ.get("WEAVE_AGENT_SIGNALS_RUN_DB")
 
     run_reference = _LazyReference()
@@ -259,6 +271,7 @@ def create_app(
                 entity=resolved_entity,
                 project=resolved_project,
                 target_registry=resolved_registry,
+                sandbox_runtime=resolved_runtime,
                 db_path=resolved_db,
             )
             run_reference.bind(active.run_service)

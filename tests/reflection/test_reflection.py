@@ -16,6 +16,15 @@ from weave_agent_signals.runs.bundles import (
     bundle_from_content_map,
     compare_bundles,
 )
+from weave_agent_signals.runs.challenges.contracts import (
+    ArmResult,
+    AuthoredTask,
+    ChallengeResult,
+    ExecutionIdentity,
+    JudgeVerdict,
+    NamedDigest,
+    RubricVerdict,
+)
 from weave_agent_signals.runs.proposals import (
     REFLECTION_PROPOSAL_SCHEMA,
     CandidateProposal,
@@ -34,15 +43,17 @@ SCOPE = ScopeDescriptor("file", "/project", ("CLAUDE.md", ".claude/**/*.md"))
 WRITER = ModelDescriptor(
     id="writer-requested",
     label="Writer",
+    provider="claude",
+    provider_model="writer-requested",
     family="anthropic",
-    backend="cli",
     supported_roles=("proposal_writer",),
 )
 EVALUATOR = ModelDescriptor(
     id="evaluator-requested",
     label="Evaluator",
+    provider="wandb",
+    provider_model="evaluator-requested",
     family="meta",
-    backend="wandb",
     supported_roles=("proposal_evaluator",),
 )
 SCOPE_POLICY = {
@@ -56,6 +67,83 @@ SCOPE_POLICY = {
 
 def _bundle(**contents: str) -> BundleSnapshot:
     return bundle_from_content_map(contents, scope=SCOPE)
+
+
+def _challenge(candidate_id: str, winner: str) -> ChallengeResult:
+    task = AuthoredTask(
+        prompt="Fix the regression.",
+        goal="Regression tests pass.",
+        workspace_digest="sha256:workspace",
+        author_model="author-model",
+        author_backend="cli",
+    )
+    execution = ExecutionIdentity(
+        model="gpt-5.6-sol",
+        model_family="openai",
+        harness="codex",
+        harness_version="codex-cli 0.144.1",
+        effort="high",
+        image="runtime",
+        image_digest=f"sha256:{'a' * 64}",
+        command=("codex", "exec", "{task}"),
+        timeout_seconds=60,
+        network_enabled=True,
+        environment=(NamedDigest(name="PATH", digest="sha256:path"),),
+        runtime_files=(),
+        workspace_digest="sha256:workspace",
+    )
+    arms = {
+        arm: ArmResult(
+            arm=arm,
+            status="exited",
+            exit_code=0,
+            duration_seconds=1,
+            initial_workspace_digest=f"sha256:{arm}-initial",
+            final_workspace_digest=f"sha256:{arm}-final",
+            transcript=f"{arm} result",
+            transcript_digest=f"sha256:{arm}-transcript",
+            artifact_digests={},
+        )
+        for arm in ("baseline", "candidate")
+    }
+    scores = {
+        "candidate": (0.5, 1.0),
+        "baseline": (1.0, 0.5),
+        "tie": (0.75, 0.75),
+    }[winner]
+    return ChallengeResult(
+        candidate_id=candidate_id,
+        status="complete",
+        winner=winner,
+        reason=None,
+        task=task,
+        execution=execution,
+        baseline=arms["baseline"],
+        candidate=arms["candidate"],
+        judges=(
+            JudgeVerdict(
+                position=1,
+                requested_model="judge",
+                resolved_model="judge",
+                family="unknown",
+                backend="cli",
+                baseline_label="arm-2",
+                candidate_label="arm-1",
+                winner=winner,
+                rationale="paired result",
+                rubrics=(
+                    RubricVerdict(
+                        rubric_id="judge.verification",
+                        baseline_score=scores[0],
+                        candidate_score=scores[1],
+                        winner=winner,
+                        rationale="paired rubric result",
+                    ),
+                ),
+                usage={},
+            ),
+        ),
+    )
 
 
 class SequenceClient:
@@ -754,6 +842,7 @@ def test_writer_passes_proposal_schema_to_chat_client():
     baseline = _bundle(**{"AGENTS.md": "old"})
     proposal = _proposal([{"action": "update", "locator": "AGENTS.md", "content": "new"}])
     writer_client = _writer_outputs(proposal)
+    evaluator_client = _evaluator_client(0.4, 0.5)
 
     def optimize(*, seed_candidate, evaluator, config, **_kwargs):
         evaluator(seed_candidate)
@@ -769,13 +858,20 @@ def test_writer_passes_proposal_schema_to_chat_client():
         requested_writer=WRITER,
         requested_evaluator=EVALUATOR,
         writer_client=writer_client,
-        evaluator_client=_evaluator_client(0.4, 0.5),
+        evaluator_client=evaluator_client,
         resolve_locator=_resolve_locator,
         candidate_budget=1,
         optimizer=optimize,
     )
 
     assert writer_client.calls[0]["response_schema"] is REFLECTION_PROPOSAL_SCHEMA
+    evaluator_schema = evaluator_client.calls[0]["response_schema"]
+    assert evaluator_schema.name == "reflection_bundle_evaluation"
+    assert evaluator_schema.schema["properties"]["score"] == {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+    }
 
 
 def test_gepa_applies_one_proposal_to_update_and_create_targets():
@@ -945,7 +1041,7 @@ def test_reflection_records_exact_writer_evaluator_and_bundle_provenance():
     assert result.baseline_evaluation.target_revision == baseline.revision
     assert result.baseline_evaluation.requested_model == EVALUATOR.id
     assert result.baseline_evaluation.requested_family == EVALUATOR.family
-    assert result.baseline_evaluation.requested_backend == EVALUATOR.backend
+    assert result.baseline_evaluation.requested_backend == EVALUATOR.provider
     assert result.baseline_evaluation.resolved_model == "Llama-3.1-8B"
     assert result.baseline_evaluation.resolved_family == "meta"
     assert result.baseline_evaluation.resolved_backend == "wandb-resolved"
@@ -1036,6 +1132,53 @@ def test_reflection_recomputes_the_winner_from_evaluated_scores():
 
     assert result.baseline_won is True
     assert result.recommended_candidate_id is None
+
+
+@pytest.mark.parametrize(
+    ("winner", "recommended", "baseline_won"),
+    [
+        ("candidate", True, False),
+        ("baseline", False, True),
+        ("tie", False, True),
+    ],
+)
+def test_paired_challenge_replaces_provisional_prediction_for_recommendation(
+    winner: str,
+    recommended: bool,
+    baseline_won: bool,
+):
+    baseline = _bundle(**{"CLAUDE.md": "old"})
+    proposal = _proposal([{"action": "update", "locator": "CLAUDE.md", "content": "new"}])
+
+    def optimize(*, seed_candidate, evaluator, config, **_kwargs):
+        evaluator(seed_candidate)
+        generated = config.reflection.reflection_lm("propose")
+        assert generated == proposal
+        evaluator(generated)
+        return SimpleNamespace()
+
+    provisional = run_reflection(
+        baseline=baseline,
+        feedback=_feedback(),
+        coaching_text="Improve.",
+        scope_policy=SCOPE_POLICY,
+        requested_writer=WRITER,
+        requested_evaluator=EVALUATOR,
+        writer_client=_writer_outputs(proposal),
+        evaluator_client=_evaluator_client(0.3, 0.8),
+        resolve_locator=_resolve_locator,
+        candidate_budget=1,
+        optimizer=optimize,
+    )
+    candidate_id = provisional.recommended_candidate_id
+    assert candidate_id is not None
+
+    verified = provisional.with_challenge(_challenge(candidate_id, winner))
+
+    assert verified.provisional_candidate_id == candidate_id
+    assert verified.recommended_candidate_id == (candidate_id if recommended else None)
+    assert verified.baseline_won is baseline_won
+    assert ReflectionResult.from_dict(verified.to_dict()) == verified
 
 
 def test_result_rejects_candidate_revision_equal_to_baseline():

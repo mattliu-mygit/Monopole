@@ -9,12 +9,14 @@ import sys
 import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from unittest.mock import MagicMock
 
 import pytest
 
 from weave_agent_signals.judges import cli_backend, inference
-from weave_agent_signals.judges.cli_backend import CliJudgeClient, _extract_json
+from weave_agent_signals.judges.cli_backend import CliJudgeClient as _CliJudgeClient
+from weave_agent_signals.judges.cli_backend import _extract_json
 from weave_agent_signals.judges.inference import (
     ChatClient,
     InferenceCancelled,
@@ -27,6 +29,9 @@ class _FakeProc:
         self.stdout = stdout
         self.stderr = stderr
         self.returncode = returncode
+
+
+CliJudgeClient = partial(_CliJudgeClient, provider="codex")
 
 
 def _msgs(system="sys prompt", user="judge this turn"):
@@ -80,10 +85,11 @@ def test_claude_family_model_routes_to_claude_cli():
             stdout=json.dumps({"result": json.dumps({"score": 0.8, "rationale": "ok"})})
         )
 
-    client = CliJudgeClient(runner=fake_run)
+    client = CliJudgeClient(provider="claude", runner=fake_run)
     parsed, resp = client.chat_json(model="claude-sonnet-5", messages=_msgs())
 
     assert seen["argv"][0] == "claude"
+    assert seen["argv"][seen["argv"].index("--model") + 1] == "claude-sonnet-5"
     assert parsed["score"] == 0.8
     assert resp.model == "claude-sonnet-5"
 
@@ -102,11 +108,38 @@ def test_openai_family_model_routes_to_codex_cli():
     assert parsed["score"] == 0.5
 
 
-def test_google_family_model_is_rejected_without_a_confined_cli_mode():
-    client = CliJudgeClient(runner=lambda *_args, **_kwargs: pytest.fail("must not execute"))
+def test_unknown_local_cli_provider_is_rejected():
+    with pytest.raises(ValueError, match="unsupported local CLI provider"):
+        _CliJudgeClient(provider="unknown")
 
-    with pytest.raises(RuntimeError, match="verified confined mode"):
-        client.chat_json(model="gemini-2.5-pro", messages=_msgs())
+
+def test_antigravity_provider_routes_google_and_open_source_models_through_agy():
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append((argv, kwargs))
+        return _FakeProc(stdout='{"score": 0.75, "rationale": "ok"}')
+
+    client = CliJudgeClient(provider="agy", runner=fake_run)
+
+    for model in ("Gemini 3.1 Pro (High)", "GPT-OSS 120B (Medium)"):
+        parsed, response = client.chat_json(model=model, messages=_msgs())
+        assert parsed["score"] == 0.75
+        assert response.model == model
+
+    for (argv, kwargs), model in zip(seen, ("Gemini 3.1 Pro (High)", "GPT-OSS 120B (Medium)")):
+        assert argv == [
+            "agy",
+            "--print",
+            "--model",
+            model,
+            "--mode",
+            "plan",
+            "--sandbox",
+        ]
+        assert kwargs["cwd"] == cli_backend._JUDGE_CWD
+        assert "sys prompt" in kwargs["input"]
+        assert "judge this turn" in kwargs["input"]
 
 
 def test_system_and_user_prompts_reach_the_cli():
@@ -136,7 +169,7 @@ def test_claude_receives_schema_and_reads_structured_output():
             )
         )
 
-    parsed, response = CliJudgeClient(runner=fake_run).chat_json(
+    parsed, response = CliJudgeClient(provider="claude", runner=fake_run).chat_json(
         model="claude-sonnet-5",
         messages=_msgs(),
         response_schema=_schema(),
@@ -415,14 +448,15 @@ def test_strict_schema_path_rejects_fenced_or_embedded_json(output, tmp_path, mo
 
 
 @pytest.mark.parametrize(
-    ("model", "expected_auth_path", "other_auth_path"),
+    ("provider", "model", "expected_auth_path", "other_auth_path"),
     [
-        ("gpt-5.1", "CODEX_HOME", "CLAUDE_CONFIG_DIR"),
-        ("claude-sonnet-5", "CLAUDE_CONFIG_DIR", "CODEX_HOME"),
+        ("codex", "gpt-5.1", "CODEX_HOME", "CLAUDE_CONFIG_DIR"),
+        ("claude", "claude-sonnet-5", "CLAUDE_CONFIG_DIR", "CODEX_HOME"),
+        ("agy", "Gemini 3.1 Pro (High)", None, "CODEX_HOME"),
     ],
 )
 def test_cli_judge_subprocess_environment_is_allowlisted(
-    model, expected_auth_path, other_auth_path, tmp_path, monkeypatch
+    provider, model, expected_auth_path, other_auth_path, tmp_path, monkeypatch
 ):
     seen = {}
     home = tmp_path / "home"
@@ -451,7 +485,7 @@ def test_cli_judge_subprocess_environment_is_allowlisted(
         seen["cwd"] = kwargs.get("cwd")
         return _FakeProc(stdout='{"score": 0.5, "rationale": "ok"}')
 
-    CliJudgeClient(runner=fake_run).chat_json(model=model, messages=_msgs())
+    CliJudgeClient(provider=provider, runner=fake_run).chat_json(model=model, messages=_msgs())
 
     env = seen["env"]
     assert seen["cwd"] == str(sandbox)
@@ -459,8 +493,9 @@ def test_cli_judge_subprocess_environment_is_allowlisted(
     assert env["HOME"] == str(expected_home)
     assert env["PATH"] == "/safe/bin"
     assert env["LANG"] == "en_US.UTF-8"
-    expected_path = codex_home if expected_auth_path == "CODEX_HOME" else claude_config
-    assert env[expected_auth_path] == str(expected_path)
+    if expected_auth_path is not None:
+        expected_path = codex_home if expected_auth_path == "CODEX_HOME" else claude_config
+        assert env[expected_auth_path] == str(expected_path)
     assert other_auth_path not in env
     assert env["WEAVE_AGENT_ADAPTER_DISABLE"] == "1"
     assert env["WANDB_MODE"] == "disabled"
@@ -476,10 +511,14 @@ def test_cli_judge_subprocess_environment_is_allowlisted(
 
 
 def test_cli_judge_argv_hardens_stored_credential_execution():
-    client = CliJudgeClient(runner=lambda *_args, **_kwargs: _FakeProc(stdout='{"score":0}'))
+    codex = CliJudgeClient(runner=lambda *_args, **_kwargs: _FakeProc(stdout='{"score":0}'))
+    claude = CliJudgeClient(
+        provider="claude",
+        runner=lambda *_args, **_kwargs: _FakeProc(stdout='{"score":0}'),
+    )
 
-    codex_argv, _, _ = client._build("gpt-5.1", "system", "user")
-    claude_argv, _, _ = client._build("claude-sonnet-5", "system", "user")
+    codex_argv, _, _ = codex._build("gpt-5.1", "system", "user")
+    claude_argv, _, _ = claude._build("claude-sonnet-5", "system", "user")
 
     assert "--ignore-user-config" in codex_argv
     assert "--ignore-rules" in codex_argv
@@ -502,13 +541,6 @@ def test_cli_judge_argv_hardens_stored_credential_execution():
     assert "--no-chrome" in claude_argv
     assert "--no-session-persistence" in claude_argv
     assert claude_argv[claude_argv.index("--tools") + 1] == ""
-
-
-def test_non_anthropic_or_openai_family_is_rejected_by_local_cli_backend():
-    client = CliJudgeClient(runner=lambda *_args, **_kwargs: pytest.fail("must not execute"))
-
-    with pytest.raises(RuntimeError, match="supports only Anthropic and OpenAI"):
-        client.chat_json(model="deepseek-r1", messages=_msgs())
 
 
 # --- JSON extraction from messy CLI output ---
@@ -669,7 +701,7 @@ def test_claude_timeout_envelope_is_retried_and_safely_described(tmp_path, monke
     monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "codex-home"))
     monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(tmp_path / "sandbox"))
     monkeypatch.setattr(cli_backend.time, "sleep", lambda _delay: None)
-    client = CliJudgeClient()
+    client = CliJudgeClient(provider="claude")
     activity = []
     client.set_activity(activity.append)
     secret = "SENTINEL_PRIVATE_PROVIDER_DETAIL"
@@ -708,7 +740,7 @@ def test_claude_structured_output_exhaustion_retries_the_same_schema(tmp_path, m
     monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "codex-home"))
     monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(tmp_path / "sandbox"))
     monkeypatch.setattr(cli_backend.time, "sleep", lambda _delay: None)
-    client = CliJudgeClient()
+    client = CliJudgeClient(provider="claude")
     activity = []
     client.set_activity(activity.append)
     failure = json.dumps(
@@ -930,7 +962,7 @@ def test_end_to_end_with_fake_cli_on_path(tmp_path, monkeypatch):
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
 
-    client = CliJudgeClient()  # real subprocess.run
+    client = CliJudgeClient(provider="claude")  # real subprocess.run
     parsed, resp = client.chat_json(model="claude-sonnet-5", messages=_msgs())
     assert parsed["score"] == 0.7
     assert parsed["rationale"] == "e2e"
@@ -969,4 +1001,4 @@ def test_codex_subprocess_skips_repo_check_from_isolated_cwd(tmp_path, monkeypat
 
 def test_is_context_manager_and_has_backend_tag():
     with CliJudgeClient(runner=lambda *a, **k: _FakeProc(stdout='{"score":0}')) as c:
-        assert c.backend == "cli"
+        assert c.backend == "codex"

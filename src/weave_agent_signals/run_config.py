@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from types import MappingProxyType
+from collections.abc import Sequence
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -12,17 +11,16 @@ from pydantic import (
     Field,
     StrictBool,
     StrictStr,
-    field_serializer,
     field_validator,
     model_validator,
 )
 
 from weave_agent_signals.judges.tokens import TokenCounterName
 
-PIPELINE_VERSION = "5"
-MODEL_CATALOG_SCHEMA_VERSION = "3"
+PIPELINE_VERSION = "8"
+MODEL_CATALOG_SCHEMA_VERSION = "5"
 RUBRIC_CATALOG_SCHEMA_VERSION = "1"
-EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION = "3"
+EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION = "5"
 MAX_CANDIDATE_BUDGET = 10
 
 ModelRole = Literal["proposal_writer", "judge", "proposal_evaluator"]
@@ -85,15 +83,16 @@ DEFAULT_JUDGING_CONTEXT_POLICY = JudgingContextPolicy()
 class ModelDescriptor(StrictFrozenModel):
     id: StrictStr
     label: StrictStr
+    provider: StrictStr
+    provider_model: StrictStr
     family: StrictStr
-    backend: StrictStr
     supported_roles: tuple[ModelRole, ...]
     max_input_tokens: Annotated[int, Field(strict=True, ge=1)] = 128_000
     token_counter: TokenCounterName = "utf8_bytes_div_3"
 
     @model_validator(mode="after")
     def validate_descriptor(self) -> ModelDescriptor:
-        for field_name in ("id", "label", "family", "backend"):
+        for field_name in ("id", "label", "provider", "provider_model", "family"):
             _require_nonblank(getattr(self, field_name), field_name)
         if not self.supported_roles:
             raise ValueError("supported_roles must not be empty")
@@ -143,37 +142,59 @@ class SelectionWarning(StrictFrozenModel):
         return self
 
 
-class ProposalCatalog(StrictFrozenModel):
+class ModelCatalog(StrictFrozenModel):
+    catalog_version: StrictStr
     available_models: tuple[ModelDescriptor, ...]
-    recommended_model: StrictStr | None
-
-    @model_validator(mode="after")
-    def validate_recommendation(self) -> ProposalCatalog:
-        ids = tuple(model.id for model in self.available_models)
-        _require_nonblank_unique(ids, "proposal model IDs")
-        if self.recommended_model is not None and self.recommended_model not in ids:
-            raise ValueError("recommended proposal model must be available")
-        return self
-
-
-class JudgeBackendCatalog(StrictFrozenModel):
-    available_models: tuple[ModelDescriptor, ...]
+    recommended_proposal_model: StrictStr | None
     recommended_judges: tuple[StrictStr, ...]
+    recommended_challenge_judges: tuple[StrictStr, ...]
     proposal_evaluator_preferences: tuple[StrictStr, ...]
 
     @model_validator(mode="after")
-    def validate_backend(self) -> JudgeBackendCatalog:
+    def validate_catalog(self) -> ModelCatalog:
+        _require_nonblank(self.catalog_version, "catalog_version")
         ids = tuple(model.id for model in self.available_models)
-        _require_nonblank_unique(ids, "backend model IDs")
+        _require_nonblank_unique(ids, "model IDs")
         _require_nonblank_unique(self.recommended_judges, "recommended_judges")
+        _require_nonblank_unique(
+            self.recommended_challenge_judges,
+            "recommended_challenge_judges",
+        )
         _require_nonblank_unique(
             self.proposal_evaluator_preferences,
             "proposal_evaluator_preferences",
         )
+        if self.recommended_proposal_model is not None:
+            _require_nonblank(self.recommended_proposal_model, "recommended_proposal_model")
+            if self.recommended_proposal_model not in ids:
+                raise ValueError("recommended proposal model must be available")
+            if "proposal_writer" not in self.model(self.recommended_proposal_model).supported_roles:
+                raise ValueError("recommended proposal model must support proposal_writer")
+        if not 1 <= len(self.recommended_judges) <= 3:
+            raise ValueError("recommended judges must contain one through three models")
         if not set(self.recommended_judges) <= set(ids):
             raise ValueError("recommended judges must be available")
+        if not 1 <= len(self.recommended_challenge_judges) <= 3:
+            raise ValueError("recommended challenge judges must contain one through three models")
+        if not set(self.recommended_challenge_judges) <= set(ids):
+            raise ValueError("recommended challenge judges must be available")
         if not set(self.proposal_evaluator_preferences) <= set(ids):
             raise ValueError("proposal evaluator preferences must be available")
+        if any(
+            "judge" not in self.model(model_id).supported_roles
+            for model_id in self.recommended_judges
+        ):
+            raise ValueError("recommended judges must support judging")
+        if any(
+            "judge" not in self.model(model_id).supported_roles
+            for model_id in self.recommended_challenge_judges
+        ):
+            raise ValueError("recommended challenge judges must support judging")
+        if any(
+            "proposal_evaluator" not in self.model(model_id).supported_roles
+            for model_id in self.proposal_evaluator_preferences
+        ):
+            raise ValueError("proposal evaluator preferences must support proposal evaluation")
         return self
 
     def model(self, model_id: str) -> ModelDescriptor:
@@ -181,47 +202,6 @@ class JudgeBackendCatalog(StrictFrozenModel):
             if descriptor.id == model_id:
                 return descriptor
         raise KeyError(model_id)
-
-
-class ModelCatalog(StrictFrozenModel):
-    catalog_version: StrictStr
-    proposal: ProposalCatalog
-    recommended_judge_backend: StrictStr
-    judge_backends: Mapping[StrictStr, JudgeBackendCatalog]
-
-    @field_validator("judge_backends", mode="after")
-    @classmethod
-    def freeze_mapping(cls, value: Mapping) -> Mapping:
-        return MappingProxyType(dict(value))
-
-    @field_serializer("judge_backends")
-    def serialize_mapping(self, value: Mapping) -> dict:
-        return dict(value)
-
-    @model_validator(mode="after")
-    def validate_catalog(self) -> ModelCatalog:
-        _require_nonblank(self.catalog_version, "catalog_version")
-        _require_nonblank(self.recommended_judge_backend, "recommended_judge_backend")
-        if self.recommended_judge_backend not in self.judge_backends:
-            raise ValueError("recommended judge backend must be available")
-        return self
-
-    def model(self, model_id: str) -> ModelDescriptor:
-        for descriptor in self.proposal.available_models:
-            if descriptor.id == model_id:
-                return descriptor
-        for backend in self.judge_backends.values():
-            try:
-                return backend.model(model_id)
-            except KeyError:
-                continue
-        raise KeyError(model_id)
-
-    def backend(self, backend: str) -> JudgeBackendCatalog:
-        try:
-            return self.judge_backends[backend]
-        except KeyError as exc:
-            raise KeyError(f"unknown judge backend: {backend}") from exc
 
 
 class RubricCatalog(StrictFrozenModel):
@@ -244,8 +224,8 @@ class RubricCatalog(StrictFrozenModel):
 class RunConfig(StrictFrozenModel):
     model_catalog_version: StrictStr
     rubric_catalog_version: StrictStr
-    judge_backend: StrictStr
     judge_models: tuple[StrictStr, ...]
+    challenge_judge_models: tuple[StrictStr, ...]
     proposal_model: StrictStr
     proposal_evaluator_model: StrictStr
     rubrics: tuple[StrictStr, ...]
@@ -260,16 +240,18 @@ class RunConfig(StrictFrozenModel):
         for field_name in (
             "model_catalog_version",
             "rubric_catalog_version",
-            "judge_backend",
             "proposal_model",
             "proposal_evaluator_model",
         ):
             _require_nonblank(getattr(self, field_name), field_name)
         _require_nonblank_unique(self.judge_models, "judge_models")
+        _require_nonblank_unique(self.challenge_judge_models, "challenge_judge_models")
         _require_nonblank_unique(self.rubrics, "rubrics")
 
         if not 1 <= len(self.judge_models) <= 3:
             raise ValueError("judge_models must contain one through three models")
+        if not 1 <= len(self.challenge_judge_models) <= 3:
+            raise ValueError("challenge_judge_models must contain one through three models")
         return self
 
 
@@ -297,6 +279,7 @@ class PositionedJudge(ModelDescriptor):
 class EffectiveModelSelection(StrictFrozenModel):
     proposal_writer: ModelDescriptor
     judges: tuple[PositionedJudge, ...]
+    challenge_judges: tuple[PositionedJudge, ...]
     proposal_evaluator: ModelDescriptor
 
     @model_validator(mode="after")
@@ -307,21 +290,26 @@ class EffectiveModelSelection(StrictFrozenModel):
             raise ValueError("proposal evaluator does not support proposal_evaluator")
         if any("judge" not in judge.supported_roles for judge in self.judges):
             raise ValueError("every positioned judge must support judging")
-        if tuple(judge.position for judge in self.judges) != tuple(range(1, len(self.judges) + 1)):
-            raise ValueError("judge positions must be contiguous and 1-based")
-        if len({judge.id for judge in self.judges}) != len(self.judges):
-            raise ValueError("positioned judges must be unique")
-        if not 1 <= len(self.judges) <= 3:
-            raise ValueError("judges must contain one through three models")
+        if any("judge" not in judge.supported_roles for judge in self.challenge_judges):
+            raise ValueError("every challenge judge must support judging")
+        for label, judges in (
+            ("judge", self.judges),
+            ("challenge judge", self.challenge_judges),
+        ):
+            if tuple(judge.position for judge in judges) != tuple(range(1, len(judges) + 1)):
+                raise ValueError(f"{label} positions must be contiguous and 1-based")
+            if len({judge.id for judge in judges}) != len(judges):
+                raise ValueError(f"positioned {label}s must be unique")
+            if not 1 <= len(judges) <= 3:
+                raise ValueError(f"{label}s must contain one through three models")
         return self
 
 
 class EffectiveRunConfig(StrictFrozenModel):
-    schema_version: Literal["3"] = "3"
+    schema_version: Literal["5"] = "5"
     pipeline_version: StrictStr
     model_catalog_version: StrictStr
     rubric_catalog_version: StrictStr
-    judge_backend: StrictStr
     models: EffectiveModelSelection
     rubrics: tuple[RubricDescriptor, ...]
     selection_warnings: tuple[SelectionWarning, ...]
@@ -337,22 +325,18 @@ class EffectiveRunConfig(StrictFrozenModel):
         _require_nonblank(self.pipeline_version, "pipeline_version")
         _require_nonblank(self.model_catalog_version, "model_catalog_version")
         _require_nonblank(self.rubric_catalog_version, "rubric_catalog_version")
-        _require_nonblank(self.judge_backend, "judge_backend")
         if not self.rubrics:
             raise ValueError("effective configuration must contain at least one rubric")
-        if self.models.proposal_evaluator.backend != self.judge_backend or any(
-            judge.backend != self.judge_backend for judge in self.models.judges
-        ):
-            raise ValueError("judge and evaluator backends must match judge_backend")
-
         return self
 
 
-def _selection_warnings(
+def _panel_selection_warnings(
     judges: Sequence[ModelDescriptor],
-    proposal_writer: ModelDescriptor,
-    proposal_evaluator: ModelDescriptor,
     evaluated_models: Sequence[EvaluatedModelIdentity],
+    *,
+    code_prefix: str,
+    role_prefix: str,
+    panel_label: str,
 ) -> tuple[SelectionWarning, ...]:
     warnings: list[SelectionWarning] = []
     judge_families = tuple(judge.family for judge in judges)
@@ -366,10 +350,10 @@ def _selection_warnings(
     if repeated_families:
         warnings.append(
             SelectionWarning(
-                code="judge_family_overlap",
-                message="Multiple selected judges share a model family.",
+                code=f"{code_prefix}judge_family_overlap",
+                message=f"Multiple selected {panel_label} judges share a model family.",
                 affected_roles=tuple(
-                    f"judge_{position}"
+                    f"{role_prefix}_{position}"
                     for position, judge in enumerate(judges, start=1)
                     if judge.family in repeated_families
                 ),
@@ -384,9 +368,11 @@ def _selection_warnings(
     if len(judges) > 1 and len(known_judge_families) < len(judges):
         warnings.append(
             SelectionWarning(
-                code="low_judge_family_diversity",
-                message="The selected judge panel has fewer distinct families than models.",
-                affected_roles=tuple(f"judge_{position}" for position in range(1, len(judges) + 1)),
+                code=f"low_{code_prefix}judge_family_diversity",
+                message=f"The selected {panel_label} judge panel has fewer families than models.",
+                affected_roles=tuple(
+                    f"{role_prefix}_{position}" for position in range(1, len(judges) + 1)
+                ),
                 selected_model_ids=tuple(judge.id for judge in judges),
                 compared_families=tuple(sorted(known_judge_families)),
             )
@@ -399,11 +385,11 @@ def _selection_warnings(
     if overlaps:
         warnings.append(
             SelectionWarning(
-                code="judge_evaluated_family_overlap",
-                message="A selected judge shares a family with an evaluated model.",
+                code=f"{code_prefix}judge_evaluated_family_overlap",
+                message=f"A selected {panel_label} judge shares a family with an evaluated model.",
                 affected_roles=tuple(
                     [
-                        f"judge_{position}"
+                        f"{role_prefix}_{position}"
                         for position, judge in enumerate(judges, start=1)
                         if judge.family in overlaps
                     ]
@@ -418,6 +404,34 @@ def _selection_warnings(
                 compared_families=overlaps,
             )
         )
+    return tuple(warnings)
+
+
+def _selection_warnings(
+    judges: Sequence[ModelDescriptor],
+    challenge_judges: Sequence[ModelDescriptor],
+    proposal_writer: ModelDescriptor,
+    proposal_evaluator: ModelDescriptor,
+    evaluated_models: Sequence[EvaluatedModelIdentity],
+) -> tuple[SelectionWarning, ...]:
+    warnings = list(
+        _panel_selection_warnings(
+            judges,
+            evaluated_models,
+            code_prefix="",
+            role_prefix="judge",
+            panel_label="session",
+        )
+    )
+    warnings.extend(
+        _panel_selection_warnings(
+            challenge_judges,
+            evaluated_models,
+            code_prefix="challenge_",
+            role_prefix="challenge_judge",
+            panel_label="B/C verification",
+        )
+    )
 
     if proposal_writer.family != "unknown" and proposal_writer.family == proposal_evaluator.family:
         warnings.append(
@@ -447,40 +461,40 @@ def resolve_run_config(
     if requested.rubric_catalog_version != rubric_catalog.catalog_version:
         raise ValueError("stale rubric catalog version")
 
-    try:
-        backend = model_catalog.backend(requested.judge_backend)
-    except KeyError as exc:
-        raise ValueError(str(exc)) from exc
     judges: list[ModelDescriptor] = []
     for model_id in requested.judge_models:
         try:
             descriptor = model_catalog.model(model_id)
         except KeyError as exc:
-            raise ValueError(
-                f"judge model {model_id} is unknown or unavailable for {requested.judge_backend}"
-            ) from exc
-        if (
-            descriptor.backend != requested.judge_backend
-            or "judge" not in descriptor.supported_roles
-        ):
-            raise ValueError(
-                f"model {model_id} does not support judging on {requested.judge_backend}"
-            )
+            raise ValueError(f"judge model {model_id} is unknown or unavailable") from exc
+        if "judge" not in descriptor.supported_roles:
+            raise ValueError(f"model {model_id} does not support judging")
         judges.append(descriptor)
 
-    proposal_models = {
-        descriptor.id: descriptor for descriptor in model_catalog.proposal.available_models
-    }
-    proposal_writer = proposal_models.get(requested.proposal_model)
-    if proposal_writer is None or "proposal_writer" not in proposal_writer.supported_roles:
+    challenge_judges: list[ModelDescriptor] = []
+    for model_id in requested.challenge_judge_models:
+        try:
+            descriptor = model_catalog.model(model_id)
+        except KeyError as exc:
+            raise ValueError(f"challenge judge model {model_id} is unknown or unavailable") from exc
+        if "judge" not in descriptor.supported_roles:
+            raise ValueError(f"model {model_id} does not support challenge judging")
+        challenge_judges.append(descriptor)
+
+    try:
+        proposal_writer = model_catalog.model(requested.proposal_model)
+    except KeyError as exc:
+        raise ValueError(
+            f"unknown or unavailable proposal model: {requested.proposal_model}"
+        ) from exc
+    if "proposal_writer" not in proposal_writer.supported_roles:
         raise ValueError(f"unknown or unavailable proposal model: {requested.proposal_model}")
 
     try:
-        proposal_evaluator = backend.model(requested.proposal_evaluator_model)
+        proposal_evaluator = model_catalog.model(requested.proposal_evaluator_model)
     except KeyError as exc:
         raise ValueError(
-            f"proposal evaluator {requested.proposal_evaluator_model} is unknown or unavailable "
-            f"for {requested.judge_backend}"
+            f"proposal evaluator {requested.proposal_evaluator_model} is unknown or unavailable"
         ) from exc
     if "proposal_evaluator" not in proposal_evaluator.supported_roles:
         raise ValueError(
@@ -499,6 +513,7 @@ def resolve_run_config(
 
     warnings = _selection_warnings(
         judges,
+        challenge_judges,
         proposal_writer,
         proposal_evaluator,
         evaluated_models,
@@ -507,7 +522,6 @@ def resolve_run_config(
         pipeline_version=pipeline_version,
         model_catalog_version=model_catalog.catalog_version,
         rubric_catalog_version=rubric_catalog.catalog_version,
-        judge_backend=requested.judge_backend,
         models=EffectiveModelSelection(
             proposal_writer=proposal_writer,
             judges=tuple(
@@ -518,6 +532,15 @@ def resolve_run_config(
                     }
                 )
                 for position, descriptor in enumerate(judges, start=1)
+            ),
+            challenge_judges=tuple(
+                PositionedJudge.model_validate(
+                    {
+                        **descriptor.model_dump(),
+                        "position": position,
+                    }
+                )
+                for position, descriptor in enumerate(challenge_judges, start=1)
             ),
             proposal_evaluator=proposal_evaluator,
         ),

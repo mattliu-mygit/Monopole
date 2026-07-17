@@ -50,8 +50,9 @@ def _judge(model_id: str, position: int, limit: int = 128_000) -> PositionedJudg
     return PositionedJudge(
         id=model_id,
         label=model_id,
+        provider="openai",
+        provider_model=model_id,
         family=f"family-{position}",
-        backend="openai",
         supported_roles=("judge",),
         max_input_tokens=limit,
         position=position,

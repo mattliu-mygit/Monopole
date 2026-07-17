@@ -37,7 +37,8 @@ const writer: ModelDescriptor = {
   id: 'writer-openai',
   label: 'Writer OpenAI',
   family: 'openai',
-  backend: 'cli',
+  provider: 'codex',
+  provider_model: 'writer-openai',
   supported_roles: ['proposal_writer'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
@@ -47,7 +48,8 @@ const judge: ModelDescriptor = {
   id: 'judge-anthropic',
   label: 'Judge Anthropic',
   family: 'anthropic',
-  backend: 'cli',
+  provider: 'claude',
+  provider_model: 'judge-anthropic',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
@@ -64,18 +66,11 @@ const rubric = {
 
 const modelCatalog: ModelCatalog = {
   catalog_version: 'sha256:models',
-  proposal: {
-    available_models: [writer],
-    recommended_model: writer.id,
-  },
-  recommended_judge_backend: 'cli',
-  judge_backends: {
-    cli: {
-      available_models: [judge],
-      recommended_judges: [judge.id],
-      proposal_evaluator_preferences: [judge.id],
-    },
-  },
+  available_models: [writer, judge],
+  recommended_proposal_model: writer.id,
+  recommended_judges: [judge.id],
+  recommended_challenge_judges: [judge.id],
+  proposal_evaluator_preferences: [judge.id],
 }
 
 const rubricCatalog: RubricCatalog = {
@@ -86,8 +81,8 @@ const rubricCatalog: RubricCatalog = {
 const runConfig: RunConfig = {
   model_catalog_version: modelCatalog.catalog_version,
   rubric_catalog_version: rubricCatalog.catalog_version,
-  judge_backend: 'cli',
   judge_models: [judge.id],
+  challenge_judge_models: [judge.id],
   proposal_model: writer.id,
   proposal_evaluator_model: judge.id,
   rubrics: [],
@@ -96,14 +91,14 @@ const runConfig: RunConfig = {
 }
 
 const effectiveConfig: EffectiveRunConfig = {
-  schema_version: '3',
-  pipeline_version: '1',
+  schema_version: '5',
+  pipeline_version: '8',
   model_catalog_version: modelCatalog.catalog_version,
   rubric_catalog_version: rubricCatalog.catalog_version,
-  judge_backend: 'cli',
   models: {
     proposal_writer: writer,
     judges: [{ ...judge, role: 'judge', position: 1 }],
+    challenge_judges: [{ ...judge, role: 'judge', position: 1 }],
     proposal_evaluator: judge,
   },
   rubrics: [rubric],

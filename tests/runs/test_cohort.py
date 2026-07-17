@@ -117,7 +117,7 @@ def test_discover_turn_cohort_is_stable_and_pins_exact_hydrated_identity():
         project="custom-project",
     )
 
-    assert cohort["schema_version"] == 1
+    assert cohort["schema_version"] == 2
     assert cohort["turn_count"] == 2
     assert cohort["session_count"] == 2
     assert [entry["trace_id"] for entry in cohort["turns"]] == ["turn-a", "turn-b"]
@@ -128,6 +128,7 @@ def test_discover_turn_cohort_is_stable_and_pins_exact_hydrated_identity():
         "started_at": started.isoformat(),
         "model": "gpt-5.6-sol",
         "model_family": model_family("gpt-5.6-sol"),
+        "effort_level": "medium",
     }
     assert cohort["sessions"] == [
         {
@@ -327,7 +328,7 @@ def test_hydrate_turn_cohort_rejects_role_drift_before_child_hydration():
     assert client.hydration_calls == []
 
 
-@pytest.mark.parametrize("changed_field", ["conversation", "started_at", "model"])
+@pytest.mark.parametrize("changed_field", ["conversation", "started_at", "model", "effort_level"])
 def test_hydrate_turn_cohort_fails_when_live_metadata_or_model_identity_changes(
     changed_field,
 ):
@@ -345,8 +346,10 @@ def test_hydrate_turn_cohort_fails_when_live_metadata_or_model_identity_changes(
         changed.conversation_id = "different-session"
     elif changed_field == "started_at":
         changed.started_at += timedelta(seconds=1)
-    else:
+    elif changed_field == "model":
         changed.model = "claude-sonnet-5"
+    else:
+        changed.effort_level = "high"
 
     client = FakeClient(hydrated=[changed])
     with pytest.raises(RuntimeError, match="metadata changed for trace IDs: turn-1"):

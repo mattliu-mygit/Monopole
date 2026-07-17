@@ -76,8 +76,9 @@ def _judge(**updates: object) -> PositionedJudge:
     values = {
         "id": "judge-1",
         "label": "Judge One",
+        "provider": "openai",
+        "provider_model": "judge-1",
         "family": "family-1",
-        "backend": "openai",
         "supported_roles": ("judge",),
         "max_input_tokens": 60_000,
         "position": 1,
@@ -427,7 +428,45 @@ def test_cross_window_finding_identity_ignores_duplicate_citation_multiplicity()
         )
     )
 
-    assert findings == (first_finding,)
+    assert findings == (first_finding.model_copy(update={"finding_id": "window-1:shared-finding"}),)
+
+
+def test_cross_window_finding_ids_are_scoped_to_their_window() -> None:
+    reviewer, _, _, _ = _reviewer()
+
+    findings = reviewer._deduplicated_findings(
+        (
+            WindowFindings(
+                schema_version=1,
+                window_id="window-1",
+                findings=(
+                    WindowFinding(
+                        finding_id="tool-match-positive",
+                        polarity="positive",
+                        observation="The agent chose appropriate repository tools.",
+                        evidence_ids=("trace-1",),
+                    ),
+                ),
+            ),
+            WindowFindings(
+                schema_version=1,
+                window_id="window-2",
+                findings=(
+                    WindowFinding(
+                        finding_id="tool-match-positive",
+                        polarity="positive",
+                        observation="The agent chose appropriate verification tools.",
+                        evidence_ids=("trace-2",),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    assert [finding.finding_id for finding in findings] == [
+        "window-1:tool-match-positive",
+        "window-2:tool-match-positive",
+    ]
 
 
 def test_window_replaces_own_digest_and_keeps_surrounding_digests_chronological() -> None:
@@ -611,7 +650,7 @@ def test_replay_rejects_arbitrary_schema_fallback_detail_without_persisting_it()
 @pytest.mark.parametrize(
     "judge",
     [
-        _judge(backend="wandb"),
+        _judge(provider="wandb"),
         _judge(family="different-family"),
         _judge(max_input_tokens=61_000),
     ],

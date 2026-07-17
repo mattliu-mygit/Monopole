@@ -8,7 +8,7 @@ import logging
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from types import MappingProxyType
 from typing import Any, Literal
 
@@ -16,11 +16,13 @@ from weave_agent_signals.judges.families import model_family
 from weave_agent_signals.judges.inference import (
     ChatClient,
     InferenceCancelled,
+    JsonSchemaSpec,
     JudgeResponse,
 )
 from weave_agent_signals.patterns import is_evaluation_feedback_eligible
 from weave_agent_signals.run_config import MAX_CANDIDATE_BUDGET, ModelDescriptor
 from weave_agent_signals.runs.bundles import BundleSnapshot
+from weave_agent_signals.runs.challenges.contracts import ChallengeResult
 from weave_agent_signals.runs.proposals import (
     REFLECTION_PROPOSAL_SCHEMA,
     CandidateProposal,
@@ -89,6 +91,18 @@ _EVALUATOR_USER = (
     "## Complete managed instruction bundle\n\n{bundle_text}\n\n"
     "Respond with JSON: "
     '{{"score": <float 0.0-1.0>, "rationale": "<brief explanation>"}}'
+)
+_EVALUATOR_SCHEMA = JsonSchemaSpec(
+    name="reflection_bundle_evaluation",
+    schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "score": {"type": "number", "minimum": 0, "maximum": 1},
+            "rationale": {"type": "string"},
+        },
+        "required": ["score", "rationale"],
+    },
 )
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -169,6 +183,8 @@ def _strict_data(value: Mapping[str, Any], model: type[Any], label: str) -> dict
 
 def _json_value(value: Any) -> Any:
     if isinstance(value, BundleSnapshot):
+        return value.to_dict()
+    if isinstance(value, ChallengeResult):
         return value.to_dict()
     if isinstance(value, ModelDescriptor):
         return value.model_dump(mode="json")
@@ -521,6 +537,8 @@ class ReflectionResult:
     baseline_won: bool
     reason: str | None = None
     score_basis: str = PREDICTED_EVALUATOR_SCORE_BASIS
+    provisional_candidate_id: str | None = None
+    challenge: ChallengeResult | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.baseline, BundleSnapshot):
@@ -590,6 +608,21 @@ class ReflectionResult:
             _nonblank(self.recommended_candidate_id, "recommended_candidate_id")
             if self.recommended_candidate_id not in candidate_ids:
                 raise ValueError("recommended candidate is not present")
+        provisional_candidate_id = self.provisional_candidate_id
+        if provisional_candidate_id is None and self.challenge is None:
+            provisional_candidate_id = self.recommended_candidate_id
+            object.__setattr__(self, "provisional_candidate_id", provisional_candidate_id)
+        if provisional_candidate_id is not None:
+            _nonblank(provisional_candidate_id, "provisional_candidate_id")
+            if provisional_candidate_id not in candidate_ids:
+                raise ValueError("provisional candidate is not present")
+        if self.challenge is not None:
+            if not isinstance(self.challenge, ChallengeResult):
+                raise ValueError("challenge must be a ChallengeResult")
+            if provisional_candidate_id != self.challenge.candidate_id:
+                raise ValueError("challenge does not target the provisional candidate")
+            if self.recommended_candidate_id != self.challenge.recommendation():
+                raise ValueError("recommendation does not match paired challenge evidence")
         if type(self.baseline_won) is not bool:
             raise ValueError("baseline_won must be boolean")
         if self.reason is not None:
@@ -617,6 +650,23 @@ class ReflectionResult:
         object.__setattr__(self, "candidates", candidates)
         object.__setattr__(self, "generation_attempts", attempts)
 
+    def with_challenge(self, challenge: ChallengeResult) -> ReflectionResult:
+        """Replace the predicted recommendation with authenticated paired evidence."""
+
+        provisional = self.provisional_candidate_id or self.recommended_candidate_id
+        if provisional is None:
+            raise ValueError("paired challenge requires a provisional candidate")
+        if challenge.candidate_id != provisional:
+            raise ValueError("challenge does not target the provisional candidate")
+        recommended = challenge.recommendation()
+        return replace(
+            self,
+            provisional_candidate_id=provisional,
+            challenge=challenge,
+            recommended_candidate_id=recommended,
+            baseline_won=recommended is None,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return _model_dict(self)
 
@@ -631,6 +681,8 @@ class ReflectionResult:
         data["generation_attempts"] = tuple(
             GenerationAttempt.from_dict(item) for item in data["generation_attempts"]
         )
+        if data["challenge"] is not None:
+            data["challenge"] = ChallengeResult.from_dict(data["challenge"])
         return cls(**data)
 
 
@@ -989,7 +1041,7 @@ class _WriterLM:
                     }
                 )
             _, response = self.client.chat_json(
-                model=self.ledger.writer.id,
+                model=self.ledger.writer.provider_model,
                 messages=messages,
                 temperature=0.0,
                 max_tokens=4096,
@@ -998,7 +1050,7 @@ class _WriterLM:
             self.ledger.set_writer_provenance(
                 attempt,
                 response,
-                getattr(self.client, "backend", self.ledger.writer.backend),
+                getattr(self.client, "backend", self.ledger.writer.provider),
             )
             _check_cancel(self.cancel_requested)
             canonical = self.ledger.accept_writer_response(attempt, response.content)
@@ -1085,7 +1137,7 @@ def _evaluator(
         )
         try:
             parsed, response = client.chat_json(
-                model=ledger.evaluator.id,
+                model=ledger.evaluator.provider_model,
                 messages=[
                     {"role": "system", "content": _EVALUATOR_SYSTEM},
                     {
@@ -1098,6 +1150,7 @@ def _evaluator(
                 ],
                 temperature=0.0,
                 max_tokens=512,
+                response_schema=_EVALUATOR_SCHEMA,
             )
             quality = _score(
                 parsed.get("score") if isinstance(parsed, Mapping) else None,
@@ -1111,11 +1164,11 @@ def _evaluator(
                 target_revision=bundle.revision,
                 requested_model=ledger.evaluator.id,
                 requested_family=ledger.evaluator.family,
-                requested_backend=ledger.evaluator.backend,
+                requested_backend=ledger.evaluator.provider,
                 resolved_model=response.model,
                 resolved_family=model_family(response.model),
                 resolved_backend=_nonblank(
-                    getattr(client, "backend", ledger.evaluator.backend),
+                    getattr(client, "backend", ledger.evaluator.provider),
                     "resolved evaluator backend",
                 ),
                 score=quality,
@@ -1375,4 +1428,5 @@ def run_reflection(
         recommended_candidate_id=recommended_candidate_id,
         baseline_won=baseline_won,
         reason=reason,
+        provisional_candidate_id=recommended_candidate_id,
     )

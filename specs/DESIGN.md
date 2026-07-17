@@ -17,7 +17,8 @@ flowchart LR
     E --> F["Analysis and monitoring"]
     E --> G["Pinned evaluation run"]
     G --> H["Whole-bundle proposals"]
-    H --> I["B / C / D human review"]
+    H --> P["Paired B / C microVM verification"]
+    P --> I["B / C / D human review"]
     I --> J["Drift-checked promotion"]
 ```
 
@@ -52,10 +53,11 @@ Evaluation is layered:
    behavioral feedback, and retains every inference step and reviewer attempt.
 4. Analysis admits only complete, context-compatible session judgments before
    comparing configurations or trends.
-5. Evaluation runs pin their cohort and configuration, score and judge it, then
-   evaluate complete instruction-bundle proposals.
-6. Human review compares Past B, evaluated proposal C, and optional unevaluated
-   edit D before a drift-checked promotion.
+5. Evaluation runs pin their cohort and configuration, score and judge it,
+   predict complete instruction-bundle improvements, then verify the provisional
+   candidate against B in isolated paired executions.
+6. Human review compares Past B, behaviorally verified proposal C, and optional
+   unevaluated edit D before a drift-checked promotion.
 
 Every persisted rating is a boolean or finite number in `[0, 1]`, and higher
 always means better. Harmful raw measures such as correction density or
@@ -76,9 +78,16 @@ Selection and configuration are editable only while a run is created. Starting
 pins the exact trace cohort, evaluator configuration, rubric and model catalogs,
 and one compatible pipeline version. Every stage rehydrates the pinned
 identities and fails closed if evidence or configuration no longer matches.
+The model catalog is one provider-qualified source for every inference role;
+descriptors separate durable model identity from the exact provider model name,
+and each call dispatches through the selected descriptor's provider.
 
-Reflection pins the feedback it consumed, captures exact Past B, evaluates B
-and generated candidates, and initializes immutable review evidence. Review is
+Reflection pins the feedback it consumed, captures exact Past B, predicts B and
+candidate scores, authors a reproducible task package, prepares any pinned
+public Git inputs once when requested, then runs the provisional C and B with
+the original model identity in two otherwise identical local microVMs. Only a
+separately configured blinded B/C-panel C win
+initializes immutable review evidence. Review is
 separate from pipeline status. The user may select an evaluated C, edit its
 contents as unevaluated D, promote, or dismiss. D requires explicit
 acknowledgement but not another inference run. A later evaluation run can assess
@@ -110,6 +119,14 @@ are not.
 - Reflection evaluates complete Markdown bundle revisions admitted by one
   explicit registry. Markdown roots update only listed files and may authorize
   recursive creation that is registered before publication.
+- Paired agent execution intentionally receives the configured original access:
+  an immutable runtime image, full inherited environment, explicit CLI config
+  files, and optional network. Hypervisor isolation protects the host, but a
+  network-enabled agent can use inherited credentials; this is a trusted local
+  evaluator boundary, not a secret-safe untrusted-code service.
+- Prepared public repositories are fetched at pinned commits before the fork;
+  bootstrap tasks instead give both network-enabled arms the same pinned source
+  specification.
 - The frontend polls persisted state; there is no raw-log or streaming endpoint.
 - Standalone `reflect` previews proposals and never mutates managed files.
 

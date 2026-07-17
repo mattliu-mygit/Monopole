@@ -42,10 +42,10 @@ def _run_inputs(*, candidate_budget: int = 3):
     requested = RunConfig(
         model_catalog_version=models.catalog_version,
         rubric_catalog_version=rubrics.catalog_version,
-        judge_backend="cli",
-        judge_models=("claude-sonnet-5", "gpt-5.6-sol"),
-        proposal_model="gpt-5.6-sol",
-        proposal_evaluator_model="claude-sonnet-5",
+        judge_models=("claude:claude-sonnet-5", "codex:gpt-5.6-sol"),
+        challenge_judge_models=("codex:gpt-5.6-sol",),
+        proposal_model="codex:gpt-5.6-sol",
+        proposal_evaluator_model="claude:claude-sonnet-5",
         rubrics=(),
         candidate_budget=candidate_budget,
         force=False,
@@ -187,7 +187,7 @@ def _reflection_evidence() -> dict:
     }
 
 
-def test_schema_v8_resets_disposable_database_on_version_mismatch(tmp_path):
+def test_schema_v9_resets_disposable_database_on_version_mismatch(tmp_path):
     path = tmp_path / "runs.db"
     connection = sqlite3.connect(path)
     connection.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, obsolete TEXT)")
@@ -199,14 +199,14 @@ def test_schema_v8_resets_disposable_database_on_version_mismatch(tmp_path):
     store = RunStore(path)
     columns = {row[1] for row in store._conn.execute("PRAGMA table_info(runs)").fetchall()}
 
-    assert RUN_DB_SCHEMA_VERSION == 8
+    assert RUN_DB_SCHEMA_VERSION == 9
     assert store.get("legacy") is None
     assert {"run_id", "run_config", "effective_config"} <= columns
-    assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 9
     store.close()
 
 
-def test_schema_v8_resets_collided_v5_database_missing_judging_artifacts(tmp_path):
+def test_schema_v9_resets_collided_v5_database_missing_judging_artifacts(tmp_path):
     path = tmp_path / "runs.db"
     connection = sqlite3.connect(path)
     legacy_schema = _SCHEMA.replace("    judging_artifacts TEXT,\n", "")
@@ -222,29 +222,34 @@ def test_schema_v8_resets_collided_v5_database_missing_judging_artifacts(tmp_pat
     store = RunStore(path)
     columns = {row[1] for row in store._conn.execute("PRAGMA table_info(runs)").fetchall()}
 
-    assert RUN_DB_SCHEMA_VERSION == 8
+    assert RUN_DB_SCHEMA_VERSION == 9
     assert "judging_artifacts" in columns
     assert store.list_active() == []
     store.close()
 
 
-def test_schema_v8_resets_schema_v7_rows_with_stale_effective_config(tmp_path):
+def test_schema_v9_resets_schema_v8_rows_with_stale_run_config(tmp_path):
     path = tmp_path / "runs.db"
     connection = sqlite3.connect(path)
     connection.execute(_SCHEMA)
     connection.execute(
-        "INSERT INTO runs (run_id, status, created_at, effective_config) VALUES (?, ?, ?, ?)",
-        ("legacy", "complete", "2026-07-15T00:00:00+00:00", '{"schema_version":"2"}'),
+        "INSERT INTO runs (run_id, status, created_at, run_config) VALUES (?, ?, ?, ?)",
+        (
+            "legacy",
+            "complete",
+            "2026-07-15T00:00:00+00:00",
+            '{"judge_models":["gpt-5.6-sol"]}',
+        ),
     )
-    connection.execute("PRAGMA user_version = 7")
+    connection.execute("PRAGMA user_version = 8")
     connection.commit()
     connection.close()
 
     store = RunStore(path)
 
     assert store.get("legacy") is None
-    assert RUN_DB_SCHEMA_VERSION == 8
-    assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert RUN_DB_SCHEMA_VERSION == 9
+    assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 9
     store.close()
 
 

@@ -19,7 +19,8 @@ function ModelCard({
       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-xs text-gray-500">
         <span>{model.id}</span>
         <span>{model.family}</span>
-        <span>{model.backend}</span>
+        <span>{model.provider}</span>
+        <span>{model.provider_model}</span>
       </div>
       <div className="mt-1 text-xs text-gray-500">{model.max_input_tokens.toLocaleString()} max input tokens</div>
     </div>
@@ -37,6 +38,43 @@ function AuditItem({
     <div>
       <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</dt>
       <dd className="mt-1 text-sm text-gray-800">{children}</dd>
+    </div>
+  )
+}
+
+function JudgeCards({
+  title,
+  labelPrefix,
+  judges,
+}: {
+  title: string
+  labelPrefix: string
+  judges: EffectiveRunConfig['models']['judges']
+}) {
+  return (
+    <div>
+      <h5 className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+        {title}
+      </h5>
+      <ol className="grid gap-3 md:grid-cols-3">
+        {judges.map((judge) => (
+          <li key={judge.position} className="rounded-lg border border-gray-200 bg-white p-3">
+            <div className="text-xs font-medium text-gray-500">
+              {labelPrefix} {judge.position}
+            </div>
+            <div className="mt-1 font-medium text-gray-900">{judge.label}</div>
+            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-xs text-gray-500">
+              <span>{judge.id}</span>
+              <span>{judge.family}</span>
+              <span>{judge.provider}</span>
+              <span>{judge.provider_model}</span>
+            </div>
+            <div className="mt-1 text-xs text-gray-500">
+              {judge.max_input_tokens.toLocaleString()} max input tokens
+            </div>
+          </li>
+        ))}
+      </ol>
     </div>
   )
 }
@@ -59,29 +97,20 @@ export default function RunConfigAudit({ config }: RunConfigAuditProps) {
         <ModelCard title="Proposal evaluator" model={config.models.proposal_evaluator} />
       </div>
 
-      <div>
-        <h5 className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
-          Ordered judges
-        </h5>
-        <ol className="grid gap-3 md:grid-cols-3">
-          {config.models.judges.map((judge) => (
-            <li key={judge.position} className="rounded-lg border border-gray-200 bg-white p-3">
-              <div className="text-xs font-medium text-gray-500">Judge {judge.position}</div>
-              <div className="mt-1 font-medium text-gray-900">{judge.label}</div>
-              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-xs text-gray-500">
-                <span>{judge.id}</span>
-                <span>{judge.family}</span>
-                <span>{judge.backend}</span>
-              </div>
-              <div className="mt-1 text-xs text-gray-500">{judge.max_input_tokens.toLocaleString()} max input tokens</div>
-            </li>
-          ))}
-        </ol>
-      </div>
+      <JudgeCards title="Ordered judges" labelPrefix="Judge" judges={config.models.judges} />
+      <JudgeCards
+        title="B/C verification judges"
+        labelPrefix="B/C judge"
+        judges={config.models.challenge_judges}
+      />
 
       <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <AuditItem label="Judge panel">
           {config.models.judges.length} judge{config.models.judges.length === 1 ? '' : 's'}
+        </AuditItem>
+        <AuditItem label="B/C judge panel">
+          {config.models.challenge_judges.length} judge
+          {config.models.challenge_judges.length === 1 ? '' : 's'}
         </AuditItem>
         <AuditItem label="Proposal attempt limit">
           {config.candidate_budget} attempt{config.candidate_budget === 1 ? '' : 's'}

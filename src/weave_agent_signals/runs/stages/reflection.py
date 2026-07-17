@@ -16,6 +16,8 @@ from weave_agent_signals.judges.inference import ChatClient, InferenceCancelled
 from weave_agent_signals.patterns import is_evaluation_feedback_eligible
 from weave_agent_signals.run_config import EffectiveRunConfig, ModelDescriptor
 from weave_agent_signals.runs.bundles import BundleSnapshot
+from weave_agent_signals.runs.challenges.contracts import ChallengeResult
+from weave_agent_signals.runs.challenges.smol import ChallengeCancelled
 from weave_agent_signals.runs.progress import ReflectionProgressRecorder
 from weave_agent_signals.runs.reflection import (
     NO_IMPROVEMENT_PATIENCE,
@@ -47,6 +49,7 @@ class ReflectionTargetAdapter(Protocol):
 
 
 ReflectionRunner = Callable[..., ReflectionResult]
+ChallengeRunner = Callable[..., ChallengeResult]
 FeedbackDigest = Callable[[list[dict[str, Any]]], str]
 Clock = Callable[[], datetime]
 
@@ -60,6 +63,7 @@ class ReflectionDependencies:
     evaluator_client_factory: Callable[[ModelDescriptor], AbstractContextManager[ChatClient]]
     coaching_digest: FeedbackDigest
     reflect: ReflectionRunner = run_reflection
+    challenge_runner: ChallengeRunner | None = None
     clock: Clock = lambda: datetime.now(timezone.utc)
 
 
@@ -497,8 +501,41 @@ def _execute_reflection_stage(
             cancel_requested=cancel.is_set,
         )
 
-    if not isinstance(result, ReflectionResult):
-        raise ValueError("Reflection runner must return ReflectionResult")
+        if not isinstance(result, ReflectionResult):
+            raise ValueError("Reflection runner must return ReflectionResult")
+        if result.provisional_candidate_id is not None:
+            if dependencies.challenge_runner is None:
+                raise ValueError("paired challenge runner is required for provisional C")
+            judge_clients = {}
+            for judge in config.models.challenge_judges:
+                client = stack.enter_context(dependencies.evaluator_client_factory(judge.model))
+                _set_cancel(client, cancel)
+                judge_clients[judge.id] = client
+            candidate = next(
+                item
+                for item in result.candidates
+                if item.candidate_id == result.provisional_candidate_id
+            )
+            _require_active(dependencies.store, run.run_id, cancel)
+            recorder.record(
+                "starting_challenge",
+                "Running the provisional bundle against the baseline in paired sandboxes",
+            )
+            challenge = dependencies.challenge_runner(
+                baseline=baseline,
+                candidate=candidate,
+                coaching_text=coaching_text,
+                config=config,
+                cohort=cohort,
+                adapter=adapter,
+                author_client=evaluator_client,
+                judge_clients=judge_clients,
+                cancel_requested=cancel.is_set,
+            )
+            if not isinstance(challenge, ChallengeResult):
+                raise ValueError("Challenge runner must return ChallengeResult")
+            result = result.with_challenge(challenge)
+
     _require_active(dependencies.store, run.run_id, cancel)
     attempted_count = len(result.generation_attempts)
     valid_count = sum(attempt.status == "succeeded" for attempt in result.generation_attempts)
@@ -606,7 +643,7 @@ def run_reflection_stage(
         )
     except StageCancelled:
         raise
-    except (ReflectionCancelled, InferenceCancelled) as exc:
+    except (ReflectionCancelled, InferenceCancelled, ChallengeCancelled) as exc:
         raise StageCancelled() from exc
     except Exception as exc:
         if isinstance(exc, RunStoreConflictError):

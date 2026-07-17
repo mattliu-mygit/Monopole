@@ -19,10 +19,8 @@ from weave_agent_signals.judges.rubrics import SESSION_RUBRICS, Rubric
 from weave_agent_signals.run_config import (
     MODEL_CATALOG_SCHEMA_VERSION,
     RUBRIC_CATALOG_SCHEMA_VERSION,
-    JudgeBackendCatalog,
     ModelCatalog,
     ModelDescriptor,
-    ProposalCatalog,
     RubricCatalog,
     RubricDescriptor,
 )
@@ -44,78 +42,192 @@ def _digest(value: object) -> str:
 
 _MODEL_DESCRIPTORS = (
     ModelDescriptor(
-        id="claude-sonnet-5",
+        id="claude:claude-sonnet-5",
         label="Claude Sonnet 5",
+        provider="claude",
+        provider_model="claude-sonnet-5",
         family="anthropic",
-        backend="cli",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=200_000,
     ),
     ModelDescriptor(
-        id="gpt-5.6-sol",
+        id="codex:gpt-5.6-sol",
         label="GPT-5.6 Sol",
+        provider="codex",
+        provider_model="gpt-5.6-sol",
         family="openai",
-        backend="cli",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=272_000,
         token_counter="o200k_base",
     ),
     ModelDescriptor(
-        id="claude-haiku-4-5",
+        id="codex:gpt-5.6-terra",
+        label="GPT-5.6 Terra",
+        provider="codex",
+        provider_model="gpt-5.6-terra",
+        family="openai",
+        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=272_000,
+        token_counter="o200k_base",
+    ),
+    ModelDescriptor(
+        id="codex:gpt-5.6-luna",
+        label="GPT-5.6 Luna",
+        provider="codex",
+        provider_model="gpt-5.6-luna",
+        family="openai",
+        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=272_000,
+        token_counter="o200k_base",
+    ),
+    ModelDescriptor(
+        id="codex:gpt-5.5",
+        label="GPT-5.5",
+        provider="codex",
+        provider_model="gpt-5.5",
+        family="openai",
+        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=272_000,
+        token_counter="o200k_base",
+    ),
+    ModelDescriptor(
+        id="codex:gpt-5.4",
+        label="GPT-5.4",
+        provider="codex",
+        provider_model="gpt-5.4",
+        family="openai",
+        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=272_000,
+        token_counter="o200k_base",
+    ),
+    ModelDescriptor(
+        id="codex:gpt-5.4-mini",
+        label="GPT-5.4 Mini",
+        provider="codex",
+        provider_model="gpt-5.4-mini",
+        family="openai",
+        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=272_000,
+        token_counter="o200k_base",
+    ),
+    ModelDescriptor(
+        id="claude:claude-haiku-4-5",
         label="Claude Haiku 4.5",
+        provider="claude",
+        provider_model="claude-haiku-4-5",
         family="anthropic",
-        backend="cli",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=200_000,
     ),
     ModelDescriptor(
-        id="gpt-oss-20b",
+        id="agy:gemini-3.5-flash-medium",
+        label="Gemini 3.5 Flash (Medium)",
+        provider="agy",
+        provider_model="Gemini 3.5 Flash (Medium)",
+        family="google",
+        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=1_048_576,
+    ),
+    ModelDescriptor(
+        id="agy:gemini-3.5-flash-high",
+        label="Gemini 3.5 Flash (High)",
+        provider="agy",
+        provider_model="Gemini 3.5 Flash (High)",
+        family="google",
+        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=1_048_576,
+    ),
+    ModelDescriptor(
+        id="agy:gemini-3.5-flash-low",
+        label="Gemini 3.5 Flash (Low)",
+        provider="agy",
+        provider_model="Gemini 3.5 Flash (Low)",
+        family="google",
+        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=1_048_576,
+    ),
+    ModelDescriptor(
+        id="agy:gemini-3.1-pro-low",
+        label="Gemini 3.1 Pro (Low)",
+        provider="agy",
+        provider_model="Gemini 3.1 Pro (Low)",
+        family="google",
+        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=1_048_576,
+    ),
+    ModelDescriptor(
+        id="agy:gemini-3.1-pro-high",
+        label="Gemini 3.1 Pro (High)",
+        provider="agy",
+        provider_model="Gemini 3.1 Pro (High)",
+        family="google",
+        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=1_048_576,
+    ),
+    ModelDescriptor(
+        id="agy:gpt-oss-120b-medium",
+        label="GPT-OSS 120B (Medium)",
+        provider="agy",
+        provider_model="GPT-OSS 120B (Medium)",
+        family="openai",
+        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=131_072,
+        token_counter="o200k_harmony",
+    ),
+    ModelDescriptor(
+        id="wandb:gpt-oss-20b",
         label="GPT-OSS 20B",
+        provider="wandb",
+        provider_model="gpt-oss-20b",
         family="openai",
-        backend="wandb",
         supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=131_072,
         token_counter="o200k_harmony",
     ),
     ModelDescriptor(
-        id="Llama-3.1-8B",
+        id="wandb:Llama-3.1-8B",
         label="Llama 3.1 8B",
+        provider="wandb",
+        provider_model="Llama-3.1-8B",
         family="meta",
-        backend="wandb",
         supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=131_072,
     ),
     ModelDescriptor(
-        id="granite-4.1-8b",
+        id="wandb:granite-4.1-8b",
         label="Granite 4.1 8B",
+        provider="wandb",
+        provider_model="granite-4.1-8b",
         family="ibm",
-        backend="wandb",
         supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=131_072,
     ),
     ModelDescriptor(
-        id="gpt-oss-120b",
+        id="wandb:gpt-oss-120b",
         label="GPT-OSS 120B",
+        provider="wandb",
+        provider_model="gpt-oss-120b",
         family="openai",
-        backend="wandb",
         supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=131_072,
         token_counter="o200k_harmony",
     ),
     ModelDescriptor(
-        id="gpt-4o-mini",
+        id="openai:gpt-4o-mini",
         label="GPT-4o mini",
+        provider="openai",
+        provider_model="gpt-4o-mini",
         family="openai",
-        backend="openai",
         supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=128_000,
         token_counter="o200k_base",
     ),
     ModelDescriptor(
-        id="gpt-4o",
+        id="openai:gpt-4o",
         label="GPT-4o",
+        provider="openai",
+        provider_model="gpt-4o",
         family="openai",
-        backend="openai",
         supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=128_000,
         token_counter="o200k_base",
@@ -124,27 +236,51 @@ _MODEL_DESCRIPTORS = (
 
 _LOCAL_MODEL_EXECUTABLES = MappingProxyType(
     {
-        "claude-sonnet-5": "claude",
-        "claude-haiku-4-5": "claude",
-        "gpt-5.6-sol": "codex",
+        descriptor.id: descriptor.provider
+        for descriptor in _MODEL_DESCRIPTORS
+        if descriptor.provider in {"claude", "codex", "agy"}
     }
 )
-_JUDGE_PREFERENCES = MappingProxyType(
-    {
-        "cli": ("claude-sonnet-5", "gpt-5.6-sol", "claude-haiku-4-5"),
-        "wandb": ("gpt-oss-20b", "Llama-3.1-8B", "granite-4.1-8b", "gpt-oss-120b"),
-        "openai": ("gpt-4o-mini", "gpt-4o"),
-    }
+_JUDGE_PREFERENCES = (
+    "claude:claude-sonnet-5",
+    "codex:gpt-5.6-sol",
+    "agy:gemini-3.1-pro-high",
+    "claude:claude-haiku-4-5",
+    "agy:gpt-oss-120b-medium",
+    "wandb:gpt-oss-20b",
+    "wandb:Llama-3.1-8B",
+    "wandb:granite-4.1-8b",
+    "wandb:gpt-oss-120b",
+    "openai:gpt-4o-mini",
+    "openai:gpt-4o",
 )
-_EVALUATOR_PREFERENCES = MappingProxyType(
-    {
-        "cli": ("gpt-5.6-sol", "claude-sonnet-5", "claude-haiku-4-5"),
-        "wandb": ("gpt-oss-120b", "gpt-oss-20b", "Llama-3.1-8B", "granite-4.1-8b"),
-        "openai": ("gpt-4o", "gpt-4o-mini"),
-    }
+_EVALUATOR_PREFERENCES = (
+    "codex:gpt-5.6-sol",
+    "agy:gemini-3.1-pro-high",
+    "claude:claude-sonnet-5",
+    "agy:gemini-3.5-flash-high",
+    "agy:gpt-oss-120b-medium",
+    "wandb:gpt-oss-120b",
+    "wandb:gpt-oss-20b",
+    "wandb:Llama-3.1-8B",
+    "wandb:granite-4.1-8b",
+    "openai:gpt-4o",
+    "openai:gpt-4o-mini",
 )
-_PROPOSAL_PREFERENCES = ("gpt-5.6-sol", "claude-sonnet-5", "claude-haiku-4-5")
-_BACKEND_PREFERENCES = ("cli", "wandb", "openai")
+_PROPOSAL_PREFERENCES = (
+    "codex:gpt-5.6-sol",
+    "agy:gemini-3.1-pro-high",
+    "claude:claude-sonnet-5",
+    "agy:gemini-3.5-flash-high",
+    "agy:gemini-3.5-flash-medium",
+    "agy:gpt-oss-120b-medium",
+    "codex:gpt-5.6-terra",
+    "codex:gpt-5.6-luna",
+    "codex:gpt-5.5",
+    "codex:gpt-5.4",
+    "codex:gpt-5.4-mini",
+    "claude:claude-haiku-4-5",
+)
 
 
 def _descriptors_by_id() -> dict[str, ModelDescriptor]:
@@ -152,7 +288,12 @@ def _descriptors_by_id() -> dict[str, ModelDescriptor]:
     for descriptor in _MODEL_DESCRIPTORS:
         if descriptor.id in descriptors:
             raise ValueError(f"duplicate model descriptor ID: {descriptor.id}")
-        if descriptor.family == "unknown" or descriptor.family != model_family(descriptor.id):
+        if not descriptor.id.startswith(f"{descriptor.provider}:"):
+            raise ValueError(f"model descriptor ID is not provider-qualified: {descriptor.id}")
+        inferred_family = model_family(descriptor.provider_model)
+        if descriptor.family == "unknown" or (
+            inferred_family != "unknown" and descriptor.family != inferred_family
+        ):
             raise ValueError(f"model descriptor has an invalid family: {descriptor.id}")
         descriptors[descriptor.id] = descriptor
     return descriptors
@@ -174,44 +315,16 @@ def _ordered_descriptors(
     return tuple(ordered)
 
 
-def _ordered_backends(backends: Iterable[str]) -> tuple[str, ...]:
-    remaining = set(backends)
-    ordered: list[str] = []
-    for backend in _BACKEND_PREFERENCES:
-        if backend in remaining:
-            remaining.remove(backend)
-            ordered.append(backend)
-    ordered.extend(sorted(remaining))
-    return tuple(ordered)
-
-
 def _recommended_judges(
     candidates: Sequence[str],
     descriptors: Mapping[str, ModelDescriptor],
 ) -> tuple[str, ...]:
-    selected: list[str] = []
-    selected_families: set[str] = set()
-    for model_id in candidates:
-        descriptor = descriptors.get(model_id)
-        if descriptor is None or _JUDGE_ROLE not in descriptor.supported_roles:
-            continue
-        if descriptor.family in selected_families:
-            continue
-        selected.append(model_id)
-        selected_families.add(descriptor.family)
-        if len(selected) == 3:
-            return tuple(selected)
-
-    for model_id in candidates:
-        if model_id in selected:
-            continue
-        descriptor = descriptors.get(model_id)
-        if descriptor is None or _JUDGE_ROLE not in descriptor.supported_roles:
-            continue
-        selected.append(model_id)
-        if len(selected) == 3:
-            break
-    return tuple(selected)
+    return tuple(
+        model_id
+        for model_id in candidates
+        if (descriptor := descriptors.get(model_id)) is not None
+        and _JUDGE_ROLE in descriptor.supported_roles
+    )[:3]
 
 
 def _validate_model_id_order(
@@ -247,14 +360,16 @@ def _validate_model_id_order(
 def build_model_catalog(
     which: Callable[[str], str | None] = shutil.which,
     *,
-    recommended_judges: Mapping[str, Sequence[str]] | None = None,
-    evaluator_preferences: Mapping[str, Sequence[str]] | None = None,
+    recommended_proposal_model: str | None = None,
+    recommended_judges: Sequence[str] | None = None,
+    recommended_challenge_judges: Sequence[str] | None = None,
+    evaluator_preferences: Sequence[str] | None = None,
 ) -> ModelCatalog:
-    """Build the current role-oriented model catalog.
+    """Build the unified provider-qualified model catalog.
 
-    Provider backends describe their selectable capabilities independent of
-    local credentials. Local CLI models are included only when the executable
-    that owns them is currently discoverable.
+    Descriptors expose role capabilities independent of local credentials.
+    Local CLI models are included only when their provider executable is
+    currently discoverable.
     """
 
     descriptors = _descriptors_by_id()
@@ -268,113 +383,80 @@ def build_model_catalog(
         or executable_available[_LOCAL_MODEL_EXECUTABLES[model_id]]
     }
 
-    proposal_models = _ordered_descriptors(
-        (
-            descriptor
-            for descriptor in available_descriptors.values()
-            if _PROPOSAL_ROLE in descriptor.supported_roles
-        ),
+    ordered_models = _ordered_descriptors(
+        available_descriptors.values(),
         _PROPOSAL_PREFERENCES,
     )
-    proposal = ProposalCatalog(
-        available_models=proposal_models,
-        recommended_model=proposal_models[0].id if proposal_models else None,
+    available_by_id = {descriptor.id: descriptor for descriptor in ordered_models}
+    proposal_ids = tuple(
+        descriptor.id
+        for descriptor in ordered_models
+        if _PROPOSAL_ROLE in descriptor.supported_roles
     )
+    proposal_recommendation = recommended_proposal_model or (
+        proposal_ids[0] if proposal_ids else None
+    )
+    if proposal_recommendation is not None and proposal_recommendation not in available_by_id:
+        raise ValueError("recommended proposal model is unavailable")
+    if proposal_recommendation is not None and (
+        _PROPOSAL_ROLE not in available_by_id[proposal_recommendation].supported_roles
+    ):
+        raise ValueError("recommended proposal model does not support proposal_writer")
 
-    recommendation_overrides = dict(recommended_judges or {})
-    evaluator_overrides = dict(evaluator_preferences or {})
-    backend_names = _ordered_backends(
-        descriptor.backend
-        for descriptor in available_descriptors.values()
-        if {_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE} & set(descriptor.supported_roles)
+    judge_ids = tuple(model_id for model_id in _JUDGE_PREFERENCES if model_id in available_by_id)
+    judge_recommendations = _validate_model_id_order(
+        recommended_judges or _recommended_judges(judge_ids, available_by_id),
+        available=available_by_id,
+        role=_JUDGE_ROLE,
+        label="recommended judges",
     )
-    unknown_overrides = (set(recommendation_overrides) | set(evaluator_overrides)) - set(
-        backend_names
-    )
-    if unknown_overrides:
-        raise ValueError("unknown backend overrides: " + ", ".join(sorted(unknown_overrides)))
+    if not 1 <= len(judge_recommendations) <= 3:
+        raise ValueError("recommended judges must contain one through three models")
 
-    backend_catalogs: dict[str, JudgeBackendCatalog] = {}
-    for backend_name in backend_names:
-        backend_descriptors = _ordered_descriptors(
+    challenge_recommendations = _validate_model_id_order(
+        recommended_challenge_judges or judge_recommendations[:1],
+        available=available_by_id,
+        role=_JUDGE_ROLE,
+        label="recommended challenge judges",
+    )
+    if not 1 <= len(challenge_recommendations) <= 3:
+        raise ValueError("recommended challenge judges must contain one through three models")
+
+    if evaluator_preferences is None:
+        ordered_evaluators = _ordered_descriptors(
             (
                 descriptor
-                for descriptor in available_descriptors.values()
-                if descriptor.backend == backend_name
-                and {_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE} & set(descriptor.supported_roles)
+                for descriptor in ordered_models
+                if _PROPOSAL_EVALUATOR_ROLE in descriptor.supported_roles
             ),
-            _JUDGE_PREFERENCES.get(backend_name, ()),
+            _EVALUATOR_PREFERENCES,
         )
-        available_by_id = {descriptor.id: descriptor for descriptor in backend_descriptors}
-        judge_ids = tuple(
-            descriptor.id
-            for descriptor in backend_descriptors
-            if _JUDGE_ROLE in descriptor.supported_roles
-        )
-
-        if backend_name in recommendation_overrides:
-            backend_recommendations = _validate_model_id_order(
-                recommendation_overrides[backend_name],
-                available=available_by_id,
-                role=_JUDGE_ROLE,
-                label=f"{backend_name} recommended judges",
-            )
-        else:
-            backend_recommendations = _recommended_judges(
-                judge_ids,
-                available_by_id,
-            )
-
-        if backend_name in evaluator_overrides:
-            backend_evaluator_preferences = _validate_model_id_order(
-                evaluator_overrides[backend_name],
-                available=available_by_id,
-                role=_PROPOSAL_EVALUATOR_ROLE,
-                label=f"{backend_name} evaluator preferences",
-                require_all=True,
-            )
-        else:
-            ordered_evaluators = _ordered_descriptors(
-                (
-                    descriptor
-                    for descriptor in backend_descriptors
-                    if _PROPOSAL_EVALUATOR_ROLE in descriptor.supported_roles
-                ),
-                _EVALUATOR_PREFERENCES.get(backend_name, ()),
-            )
-            backend_evaluator_preferences = _validate_model_id_order(
-                [descriptor.id for descriptor in ordered_evaluators],
-                available=available_by_id,
-                role=_PROPOSAL_EVALUATOR_ROLE,
-                label=f"{backend_name} evaluator preferences",
-                require_all=True,
-            )
-
-        backend_catalogs[backend_name] = JudgeBackendCatalog(
-            available_models=backend_descriptors,
-            recommended_judges=backend_recommendations,
-            proposal_evaluator_preferences=backend_evaluator_preferences,
-        )
-
-    recommended_backend = next(
-        (backend for backend in backend_names if backend_catalogs[backend].recommended_judges),
-        None,
+        evaluator_values = tuple(descriptor.id for descriptor in ordered_evaluators)
+    else:
+        evaluator_values = tuple(evaluator_preferences)
+    evaluator_order = _validate_model_id_order(
+        evaluator_values,
+        available=available_by_id,
+        role=_PROPOSAL_EVALUATOR_ROLE,
+        label="proposal evaluator preferences",
+        require_all=True,
     )
-    if recommended_backend is None:
-        raise ValueError("model catalog has no judge-capable backend")
+
     version_payload = {
         "schema_version": MODEL_CATALOG_SCHEMA_VERSION,
-        "proposal": proposal.model_dump(mode="json"),
-        "recommended_judge_backend": recommended_backend,
-        "judge_backends": {
-            name: backend.model_dump(mode="json") for name, backend in backend_catalogs.items()
-        },
+        "available_models": [model.model_dump(mode="json") for model in ordered_models],
+        "recommended_proposal_model": proposal_recommendation,
+        "recommended_judges": list(judge_recommendations),
+        "recommended_challenge_judges": list(challenge_recommendations),
+        "proposal_evaluator_preferences": list(evaluator_order),
     }
     return ModelCatalog(
         catalog_version=_digest(version_payload),
-        proposal=proposal,
-        recommended_judge_backend=recommended_backend,
-        judge_backends=MappingProxyType(backend_catalogs),
+        available_models=ordered_models,
+        recommended_proposal_model=proposal_recommendation,
+        recommended_judges=judge_recommendations,
+        recommended_challenge_judges=challenge_recommendations,
+        proposal_evaluator_preferences=evaluator_order,
     )
 
 

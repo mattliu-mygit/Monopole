@@ -1,5 +1,5 @@
 {
-  "plan_id": "sha256:291d8d326ffd4368ede5ef7e48e70b2439569efa65f3f421ea6b536c0da6fa1f",
+  "plan_id": "sha256:97dfb972c8e3a9f0c8cd4002db5e6d826617a53bbf58d8aff1981bf20decc80f",
   "schema_version": "3",
   "cohort_id": "cohort-1",
   "panel_size": 2,
@@ -33,7 +33,7 @@
     "prompt_templates": {
       "digest_system": "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. Preserve important actions, results, omissions, corrections, and constraints. Every digest must cite at least one ID from ALLOWED_EVIDENCE_IDS. Do not cite any other ID; the response schema enforces the exact chunk and evidence scope. Return the requested JSON.",
       "digest_user": "EXPECTED_CHUNK_ID: {chunk_id}\nEXAMPLE_EVIDENCE_ID: {example_evidence_id}\nALLOWED_EVIDENCE_IDS: {allowed_evidence_ids}\nRAW_CHUNK:\n{raw_text}",
-      "window_system": "PHASE: window\n{rubric_system}\nReturn bounded findings, not a score. Every finding must cite at least one ID from ALLOWED_FINDING_EVIDENCE_IDS. If no supported finding exists, return \"findings\": [] instead of an uncited finding. Do not cite any other ID; the response schema enforces the active raw window's exact evidence scope.",
+      "window_system": "PHASE: window\n{rubric_system}\nReturn bounded findings, not a score. Every finding must cite at least one ID from ALLOWED_FINDING_EVIDENCE_IDS. If no supported finding exists, return \"findings\": [] instead of an uncited finding. Do not cite any other ID; the response schema enforces the active raw window's exact evidence scope. Finding IDs need only be unique within this response; aggregation scopes them to EXPECTED_WINDOW_ID.",
       "window_user": "EXPECTED_WINDOW_ID: {window_id}\nEXAMPLE_EVIDENCE_ID: {example_evidence_id}\nALLOWED_FINDING_EVIDENCE_IDS: {allowed_evidence_ids}\nRUBRIC_CRITERIA:\n{rubric_criteria}\n{sections}",
       "merge_system": "PHASE: merge\n{rubric_system}\nReturn one anchored session verdict with evidence-cited behavioral feedback. Behavioral feedback describes what the agent did or should do; reflection separately decides whether and how to edit managed instructions. The response schema limits citations to this session. A scored verdict must cite at least one ID from ALLOWED_EVIDENCE_IDS; an insufficient_evidence verdict must cite none.",
       "merge_user": "COVERAGE_MANIFEST: {coverage_manifest}\nORDERED_CHUNK_DIGESTS: {digest_context}\nORDERED_DEDUPLICATED_FINDINGS: {finding_context}\nALLOWED_EVIDENCE_IDS: {allowed_evidence_ids}\nRUBRIC_CRITERIA:\n{rubric_criteria}"
@@ -301,8 +301,9 @@
           "judge": {
             "id": "judge-a",
             "label": "Judge A",
+            "provider": "claude",
+            "provider_model": "judge-a",
             "family": "family-a",
-            "backend": "cli",
             "supported_roles": [
               "judge"
             ],
@@ -374,8 +375,9 @@
           "judge": {
             "id": "judge-b",
             "label": "Judge B",
+            "provider": "codex",
+            "provider_model": "judge-b",
             "family": "family-b",
-            "backend": "cli",
             "supported_roles": [
               "judge"
             ],

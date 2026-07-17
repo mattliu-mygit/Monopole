@@ -134,8 +134,9 @@ product behavior; standalone reflection does not mutate managed files.
   Claude is tool-disabled. Codex uses a deny-by-default filesystem profile with
   an isolated `HOME`; only its empty workspace and minimal runtime paths are
   readable, and network, web search, apps, login shells, customizations, and
-  persistence are disabled. Google-family local models remain disabled until
-  Gemini has a verified confined mode.
+  persistence are disabled. Antigravity runs from the same empty workspace in
+  plan mode with `--sandbox`, a minimal child environment, and the existing
+  home needed for its stored Gemini credentials and state.
 
 ## Weave correctness checklist
 

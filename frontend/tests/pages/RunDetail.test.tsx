@@ -58,7 +58,8 @@ const writer: ModelDescriptor = {
   id: 'writer-openai',
   label: 'Writer OpenAI',
   family: 'openai',
-  backend: 'cli',
+  provider: 'codex',
+  provider_model: 'writer-openai',
   supported_roles: ['proposal_writer'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
@@ -67,7 +68,8 @@ const judgeOne: ModelDescriptor = {
   id: 'judge-anthropic',
   label: 'Judge Anthropic',
   family: 'anthropic',
-  backend: 'cli',
+  provider: 'claude',
+  provider_model: 'judge-anthropic',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
@@ -76,7 +78,8 @@ const judgeTwo: ModelDescriptor = {
   id: 'judge-openai',
   label: 'Judge OpenAI',
   family: 'openai',
-  backend: 'cli',
+  provider: 'codex',
+  provider_model: 'judge-openai',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
@@ -85,7 +88,8 @@ const judgeThree: ModelDescriptor = {
   id: 'judge-meta',
   label: 'Judge Meta',
   family: 'meta',
-  backend: 'cli',
+  provider: 'agy',
+  provider_model: 'judge-meta',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
@@ -93,15 +97,11 @@ const judgeThree: ModelDescriptor = {
 
 const models: ModelCatalog = {
   catalog_version: 'models-v1',
-  proposal: { available_models: [writer], recommended_model: writer.id },
-  recommended_judge_backend: 'cli',
-  judge_backends: {
-    cli: {
-      available_models: [judgeOne, judgeTwo, judgeThree],
-      recommended_judges: [judgeOne.id, judgeTwo.id, judgeThree.id],
-      proposal_evaluator_preferences: [judgeOne.id, judgeTwo.id],
-    },
-  },
+  available_models: [writer, judgeOne, judgeTwo, judgeThree],
+  recommended_proposal_model: writer.id,
+  recommended_judges: [judgeOne.id, judgeTwo.id, judgeThree.id],
+  recommended_challenge_judges: [judgeOne.id],
+  proposal_evaluator_preferences: [judgeOne.id, judgeTwo.id],
 }
 
 const rubrics: RubricCatalog = {
@@ -129,8 +129,8 @@ const rubrics: RubricCatalog = {
 const requestedConfig: RunConfig = {
   model_catalog_version: models.catalog_version,
   rubric_catalog_version: rubrics.catalog_version,
-  judge_backend: 'cli',
   judge_models: [judgeOne.id, judgeTwo.id, judgeThree.id],
+  challenge_judge_models: [judgeOne.id],
   proposal_model: writer.id,
   proposal_evaluator_model: judgeOne.id,
   rubrics: rubrics.rubrics.map((rubric) => rubric.id),
@@ -139,11 +139,10 @@ const requestedConfig: RunConfig = {
 }
 
 const effectiveConfig: EffectiveRunConfig = {
-  schema_version: '3',
-  pipeline_version: 'pipeline-v1',
+  schema_version: '5',
+  pipeline_version: '8',
   model_catalog_version: models.catalog_version,
   rubric_catalog_version: rubrics.catalog_version,
-  judge_backend: 'cli',
   models: {
     proposal_writer: writer,
     judges: [judgeOne, judgeTwo, judgeThree].map((judge, index) => ({
@@ -151,6 +150,7 @@ const effectiveConfig: EffectiveRunConfig = {
       role: 'judge' as const,
       position: index + 1,
     })),
+    challenge_judges: [{ ...judgeOne, role: 'judge' as const, position: 1 }],
     proposal_evaluator: judgeOne,
   },
   rubrics: rubrics.rubrics,
@@ -303,7 +303,7 @@ function completedReflectionRun(): Run {
           requested_writer: writer,
           resolved_writer_model: writer.id,
           resolved_writer_family: writer.family,
-          resolved_writer_backend: writer.backend,
+          resolved_writer_backend: writer.provider,
           evaluation: {
             evaluation_id: 'evaluation-c',
             target_revision: 'bundle:c',
@@ -324,6 +324,8 @@ function completedReflectionRun(): Run {
       baseline_won: false,
       reason: null,
       score_basis: 'predicted_evaluator',
+      provisional_candidate_id: 'candidate-1',
+      challenge: null,
     },
     reflection_review: {
       status: 'pending',

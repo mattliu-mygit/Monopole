@@ -12,6 +12,15 @@ from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catal
 from weave_agent_signals.patterns import coaching_digest
 from weave_agent_signals.run_config import RunConfig, resolve_run_config
 from weave_agent_signals.runs.bundles import ScopeDescriptor, bundle_from_content_map
+from weave_agent_signals.runs.challenges.contracts import (
+    ArmResult,
+    AuthoredTask,
+    ChallengeResult,
+    ExecutionIdentity,
+    JudgeVerdict,
+    NamedDigest,
+    RubricVerdict,
+)
 from weave_agent_signals.runs.reflection import (
     NO_VALID_PROPOSAL_REASON,
     EvaluatorRecord,
@@ -86,10 +95,10 @@ def _reflecting_run(
     requested = RunConfig(
         model_catalog_version=models.catalog_version,
         rubric_catalog_version=rubrics.catalog_version,
-        judge_backend="cli",
-        judge_models=("claude-sonnet-5", "gpt-5.6-sol"),
-        proposal_model="gpt-5.6-sol",
-        proposal_evaluator_model="claude-sonnet-5",
+        judge_models=("claude:claude-sonnet-5", "codex:gpt-5.6-sol"),
+        challenge_judge_models=("codex:gpt-5.6-sol",),
+        proposal_model="codex:gpt-5.6-sol",
+        proposal_evaluator_model="claude:claude-sonnet-5",
         rubrics=(rubrics.rubrics[0].id,),
         candidate_budget=candidate_budget,
         force=False,
@@ -259,10 +268,10 @@ def _result(baseline, config) -> ReflectionResult:
         target_revision=baseline.revision,
         requested_model=config.models.proposal_evaluator.id,
         requested_family=config.models.proposal_evaluator.family,
-        requested_backend=config.models.proposal_evaluator.backend,
+        requested_backend=config.models.proposal_evaluator.provider,
         resolved_model=config.models.proposal_evaluator.id,
         resolved_family=config.models.proposal_evaluator.family,
-        resolved_backend=config.models.proposal_evaluator.backend,
+        resolved_backend=config.models.proposal_evaluator.provider,
         score=0.3,
         rationale="Baseline misses verification.",
         usage={},
@@ -272,10 +281,10 @@ def _result(baseline, config) -> ReflectionResult:
         target_revision=candidate_bundle.revision,
         requested_model=config.models.proposal_evaluator.id,
         requested_family=config.models.proposal_evaluator.family,
-        requested_backend=config.models.proposal_evaluator.backend,
+        requested_backend=config.models.proposal_evaluator.provider,
         resolved_model=config.models.proposal_evaluator.id,
         resolved_family=config.models.proposal_evaluator.family,
-        resolved_backend=config.models.proposal_evaluator.backend,
+        resolved_backend=config.models.proposal_evaluator.provider,
         score=0.8,
         rationale="Candidate adds verification.",
         usage={},
@@ -287,7 +296,7 @@ def _result(baseline, config) -> ReflectionResult:
         requested_writer=config.models.proposal_writer,
         resolved_model=config.models.proposal_writer.id,
         resolved_family=config.models.proposal_writer.family,
-        resolved_backend=config.models.proposal_writer.backend,
+        resolved_backend=config.models.proposal_writer.provider,
         usage={},
         candidate_revision=candidate_bundle.revision,
         changed_paths=("CLAUDE.md", ".claude/skills/review.md"),
@@ -322,7 +331,7 @@ def _result(baseline, config) -> ReflectionResult:
         requested_writer=config.models.proposal_writer,
         resolved_writer_model=config.models.proposal_writer.id,
         resolved_writer_family=config.models.proposal_writer.family,
-        resolved_writer_backend=config.models.proposal_writer.backend,
+        resolved_writer_backend=config.models.proposal_writer.provider,
         evaluation=candidate_evaluation,
     )
     return ReflectionResult(
@@ -342,10 +351,10 @@ def _all_invalid_result(baseline, config) -> ReflectionResult:
         target_revision=baseline.revision,
         requested_model=config.models.proposal_evaluator.id,
         requested_family=config.models.proposal_evaluator.family,
-        requested_backend=config.models.proposal_evaluator.backend,
+        requested_backend=config.models.proposal_evaluator.provider,
         resolved_model=config.models.proposal_evaluator.id,
         resolved_family=config.models.proposal_evaluator.family,
-        resolved_backend=config.models.proposal_evaluator.backend,
+        resolved_backend=config.models.proposal_evaluator.provider,
         score=0.3,
         rationale="Baseline evidence remains authoritative.",
         usage={},
@@ -357,7 +366,7 @@ def _all_invalid_result(baseline, config) -> ReflectionResult:
         requested_writer=config.models.proposal_writer,
         resolved_model=config.models.proposal_writer.id,
         resolved_family=config.models.proposal_writer.family,
-        resolved_backend=config.models.proposal_writer.backend,
+        resolved_backend=config.models.proposal_writer.provider,
         usage={},
         candidate_revision=None,
         changed_paths=("../secret.md",),
@@ -376,6 +385,83 @@ def _all_invalid_result(baseline, config) -> ReflectionResult:
         baseline_won=False,
         reason=NO_VALID_PROPOSAL_REASON,
     )
+
+
+def _challenge_result(candidate_id: str, winner: str) -> ChallengeResult:
+    execution = ExecutionIdentity(
+        model="gpt-5.6-sol",
+        model_family="openai",
+        harness="codex",
+        harness_version="codex-cli 0.144.1",
+        effort="high",
+        image="runtime",
+        image_digest=f"sha256:{'a' * 64}",
+        command=("codex", "exec", "{task}"),
+        timeout_seconds=60,
+        network_enabled=True,
+        environment=(NamedDigest(name="PATH", digest="sha256:path"),),
+        runtime_files=(),
+        workspace_digest="sha256:workspace",
+    )
+    task = AuthoredTask(
+        prompt="Fix the regression.",
+        goal="Regression tests pass.",
+        workspace_digest="sha256:workspace",
+        author_model="author",
+        author_backend="cli",
+    )
+    arms = {
+        arm: ArmResult(
+            arm=arm,
+            status="exited",
+            exit_code=0,
+            duration_seconds=1,
+            initial_workspace_digest=f"sha256:{arm}-initial",
+            final_workspace_digest=f"sha256:{arm}-final",
+            transcript=f"{arm} result",
+            transcript_digest=f"sha256:{arm}-transcript",
+            artifact_digests={},
+        )
+        for arm in ("baseline", "candidate")
+    }
+    scores = {"candidate": (0.5, 1.0), "tie": (0.75, 0.75)}[winner]
+    return ChallengeResult(
+        candidate_id=candidate_id,
+        status="complete",
+        winner=winner,
+        reason=None,
+        task=task,
+        execution=execution,
+        baseline=arms["baseline"],
+        candidate=arms["candidate"],
+        judges=(
+            JudgeVerdict(
+                position=1,
+                requested_model="judge",
+                resolved_model="judge",
+                family="unknown",
+                backend="cli",
+                baseline_label="arm-2",
+                candidate_label="arm-1",
+                winner=winner,
+                rationale="paired result",
+                rubrics=(
+                    RubricVerdict(
+                        rubric_id="judge.verification",
+                        baseline_score=scores[0],
+                        candidate_score=scores[1],
+                        winner=winner,
+                        rationale="paired rubric result",
+                    ),
+                ),
+                usage={},
+            ),
+        ),
+    )
+
+
+def _candidate_challenge(**kwargs) -> ChallengeResult:
+    return _challenge_result(kwargs["candidate"].candidate_id, "candidate")
 
 
 def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store):
@@ -430,6 +516,7 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
         evaluator_client_factory=lambda descriptor: nullcontext(evaluator_client),
         coaching_digest=coaching_digest,
         reflect=reflect,
+        challenge_runner=_candidate_challenge,
         clock=lambda: datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc),
     )
 
@@ -468,7 +555,10 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
         "digest": updated.reflection_input["feedback"][0]["digest"],
     }
     assert updated.reflection_input["baseline"] == baseline.to_dict()
-    assert updated.reflecting_result == _result(baseline, config).to_dict()
+    expected = _result(baseline, config).with_challenge(
+        _challenge_result("candidate-1", "candidate")
+    )
+    assert updated.reflecting_result == expected.to_dict()
     assert updated.reflection_review == {
         "status": "pending",
         "selected_candidate_id": "candidate-1",
@@ -492,6 +582,87 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
         and event.get("model") == config.models.proposal_evaluator.id
         for event in events
     )
+
+
+@pytest.mark.parametrize(("winner", "review_created"), [("candidate", True), ("tie", False)])
+def test_stage_applies_paired_challenge_before_initializing_review(
+    store,
+    winner: str,
+    review_created: bool,
+):
+    run, config = _reflecting_run(store)
+    baseline = bundle_from_content_map({"CLAUDE.md": "old"}, scope=SCOPE)
+    adapter = Adapter(baseline)
+    weave = WeaveClient([_session_feedback()])
+    writer_client = ModelClient()
+    evaluator_client = ModelClient()
+    evaluator_descriptors = []
+    challenge_calls: list[dict[str, Any]] = []
+
+    def reflect(**kwargs):
+        return _result(kwargs["baseline"], config)
+
+    def challenge_runner(**kwargs):
+        challenge_calls.append(kwargs)
+        return _challenge_result("candidate-1", winner)
+
+    def evaluator_factory(descriptor):
+        evaluator_descriptors.append(descriptor)
+        return nullcontext(evaluator_client)
+
+    dependencies = ReflectionDependencies(
+        store=store,
+        client_factory=lambda: weave,
+        adapter_factory=lambda: adapter,
+        writer_client_factory=lambda _descriptor: nullcontext(writer_client),
+        evaluator_client_factory=evaluator_factory,
+        coaching_digest=coaching_digest,
+        reflect=reflect,
+        challenge_runner=challenge_runner,
+    )
+
+    run_reflection_stage(run, config, threading.Event(), dependencies=dependencies)
+
+    updated = store.get(run.run_id)
+    result = ReflectionResult.from_dict(updated.reflecting_result)
+    assert result.provisional_candidate_id == "candidate-1"
+    assert result.challenge is not None
+    assert result.challenge.winner == winner
+    assert result.recommended_candidate_id == ("candidate-1" if review_created else None)
+    assert (updated.reflection_review is not None) is review_created
+    assert len(challenge_calls) == 1
+    assert challenge_calls[0]["candidate"].candidate_id == "candidate-1"
+    assert challenge_calls[0]["baseline"] is baseline
+    assert challenge_calls[0]["author_client"] is evaluator_client
+    assert challenge_calls[0]["judge_clients"] == {
+        judge.id: evaluator_client for judge in config.models.challenge_judges
+    }
+    assert evaluator_descriptors == [
+        config.models.proposal_evaluator,
+        *(judge.model for judge in config.models.challenge_judges),
+    ]
+
+
+def test_stage_fails_closed_when_provisional_candidate_has_no_challenge_runner(store):
+    run, config = _reflecting_run(store)
+    baseline = bundle_from_content_map({"CLAUDE.md": "old"}, scope=SCOPE)
+
+    dependencies = ReflectionDependencies(
+        store=store,
+        client_factory=lambda: WeaveClient([_session_feedback()]),
+        adapter_factory=lambda: Adapter(baseline),
+        writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
+        evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
+        coaching_digest=coaching_digest,
+        reflect=lambda **kwargs: _result(kwargs["baseline"], config),
+    )
+
+    with pytest.raises(ReflectionStageError, match="invalid"):
+        run_reflection_stage(run, config, threading.Event(), dependencies=dependencies)
+
+    updated = store.get(run.run_id)
+    assert updated.reflecting_result is None
+    assert updated.reflection_review is None
 
 
 def test_all_invalid_stage_result_persists_audit_without_review(store):
@@ -673,6 +844,7 @@ def test_stage_sanitizes_failures_across_the_full_reflection_boundary(
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         coaching_digest=coaching_digest,
         reflect=reflect,
+        challenge_runner=_candidate_challenge,
     )
 
     with pytest.raises(ReflectionStageError, match="failed unexpectedly") as captured:
@@ -773,6 +945,7 @@ def test_stage_reuses_pinned_baseline_instead_of_recapturing_on_resume(store):
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         coaching_digest=lambda _feedback: "digest",
         reflect=resumed,
+        challenge_runner=_candidate_challenge,
     )
     run_reflection_stage(
         store.get(run.run_id),
@@ -976,6 +1149,7 @@ def test_stage_pins_and_passes_only_eligible_reflection_feedback(store):
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         coaching_digest=lambda feedback: digested.append(feedback) or "digest",
         reflect=reflect,
+        challenge_runner=_candidate_challenge,
     )
 
     run_reflection_stage(run, config, threading.Event(), dependencies=dependencies)
@@ -1021,6 +1195,7 @@ def test_resume_ignores_changes_to_unusable_judge_audit_rows(store):
         reflect=lambda **kwargs: (
             reflected.append(kwargs["feedback"]) or _result(kwargs["baseline"], config)
         ),
+        challenge_runner=_candidate_challenge,
     )
 
     run_reflection_stage(

@@ -18,7 +18,7 @@ from typing import Any
 from weave_agent_signals.run_config import EffectiveRunConfig, RunConfig
 
 _DEFAULT_DB_DIR = Path.home() / ".weave-agent-signals"
-RUN_DB_SCHEMA_VERSION = 8
+RUN_DB_SCHEMA_VERSION = 9
 
 
 def _default_db_path() -> Path:
@@ -554,8 +554,9 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
                 {
                     "id",
                     "label",
+                    "provider",
+                    "provider_model",
                     "family",
-                    "backend",
                     "supported_roles",
                     "max_input_tokens",
                     "token_counter",
@@ -576,7 +577,7 @@ def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
             if (
                 any(
                     not isinstance(judge[key], str) or not judge[key].strip()
-                    for key in ("id", "label", "family", "backend")
+                    for key in ("id", "label", "provider", "provider_model", "family")
                 )
                 or not isinstance(roles, list)
                 or "judge" not in roles

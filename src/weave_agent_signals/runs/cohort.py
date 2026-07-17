@@ -14,7 +14,7 @@ from weave_agent_signals.judges.families import model_family
 from weave_agent_signals.models import SessionView, TurnSpan, session_is_evaluable
 from weave_agent_signals.runs.store import DataSelection
 
-_COHORT_SCHEMA_VERSION = 1
+_COHORT_SCHEMA_VERSION = 2
 _COHORT_KEYS = {
     "schema_version",
     "cohort_id",
@@ -31,6 +31,7 @@ _TURN_KEYS = {
     "started_at",
     "model",
     "model_family",
+    "effort_level",
 }
 _SESSION_KEYS = {"conversation_id", "weave_ref", "turn_count"}
 
@@ -127,6 +128,7 @@ def _build_cohort(
             "started_at": turn.started_at.isoformat(),
             "model": turn.model,
             "model_family": model_family(turn.model or ""),
+            "effort_level": turn.effort_level,
         }
         for turn in ordered
     ]
@@ -242,6 +244,7 @@ def _validated_cohort(
         conversation_id = entry.get("conversation_id")
         model = entry.get("model")
         family = entry.get("model_family")
+        effort_level = entry.get("effort_level")
         if not all(
             isinstance(item, str) and item
             for item in (trace_id, weave_ref, conversation_id, family)
@@ -249,6 +252,8 @@ def _validated_cohort(
             raise RuntimeError("invalid pinned turn cohort: turn metadata")
         if model is not None and (not isinstance(model, str) or not model):
             raise RuntimeError("invalid pinned turn cohort: model")
+        if effort_level is not None and (not isinstance(effort_level, str) or not effort_level):
+            raise RuntimeError("invalid pinned turn cohort: effort level")
         if family != model_family(model or ""):
             raise RuntimeError("invalid pinned turn cohort: model family")
         if trace_id in seen_traces or weave_ref in seen_refs:
@@ -357,6 +362,7 @@ def hydrate_turn_cohort(
                 or turn.started_at.isoformat() != entry["started_at"]
                 or turn.model != entry["model"]
                 or model_family(turn.model or "") != entry["model_family"]
+                or turn.effort_level != entry["effort_level"]
             ):
                 changed.append(turn.trace_id)
         if changed:

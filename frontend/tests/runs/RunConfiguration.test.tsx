@@ -12,7 +12,8 @@ const writerOpenAI: ModelDescriptor = {
   id: 'writer-openai',
   label: 'Writer OpenAI',
   family: 'openai',
-  backend: 'cli',
+  provider: 'codex',
+  provider_model: 'writer-openai',
   supported_roles: ['proposal_writer'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
@@ -21,7 +22,8 @@ const writerAnthropic: ModelDescriptor = {
   id: 'writer-anthropic',
   label: 'Writer Anthropic',
   family: 'anthropic',
-  backend: 'cli',
+  provider: 'claude',
+  provider_model: 'writer-anthropic',
   supported_roles: ['proposal_writer'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
@@ -30,7 +32,8 @@ const cliAnthropic: ModelDescriptor = {
   id: 'cli-anthropic',
   label: 'CLI Anthropic',
   family: 'anthropic',
-  backend: 'cli',
+  provider: 'claude',
+  provider_model: 'cli-anthropic',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
@@ -39,7 +42,8 @@ const cliOpenAI: ModelDescriptor = {
   id: 'cli-openai',
   label: 'CLI OpenAI',
   family: 'openai',
-  backend: 'cli',
+  provider: 'codex',
+  provider_model: 'cli-openai',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
@@ -48,7 +52,8 @@ const cliMeta: ModelDescriptor = {
   id: 'cli-meta',
   label: 'CLI Meta',
   family: 'meta',
-  backend: 'cli',
+  provider: 'agy',
+  provider_model: 'cli-meta',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
@@ -57,7 +62,8 @@ const cliMetaAlt: ModelDescriptor = {
   id: 'cli-meta-alt',
   label: 'CLI Meta Alternate',
   family: 'meta',
-  backend: 'cli',
+  provider: 'agy',
+  provider_model: 'cli-meta-alt',
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
@@ -65,23 +71,13 @@ const cliMetaAlt: ModelDescriptor = {
 
 const models: ModelCatalog = {
   catalog_version: 'models-v1',
-  proposal: {
-    available_models: [writerOpenAI, writerAnthropic],
-    recommended_model: writerOpenAI.id,
-  },
-  recommended_judge_backend: 'cli',
-  judge_backends: {
-    cli: {
-      available_models: [cliAnthropic, cliOpenAI, cliMeta, cliMetaAlt],
-      recommended_judges: [cliAnthropic.id, cliOpenAI.id, cliMeta.id],
-      proposal_evaluator_preferences: [cliOpenAI.id, cliAnthropic.id, cliMeta.id],
-    },
-    wandb: {
-      available_models: [],
-      recommended_judges: [],
-      proposal_evaluator_preferences: [],
-    },
-  },
+  available_models: [
+    writerOpenAI, writerAnthropic, cliAnthropic, cliOpenAI, cliMeta, cliMetaAlt,
+  ],
+  recommended_proposal_model: writerOpenAI.id,
+  recommended_judges: [cliAnthropic.id, cliOpenAI.id, cliMeta.id],
+  recommended_challenge_judges: [cliOpenAI.id],
+  proposal_evaluator_preferences: [cliOpenAI.id, cliAnthropic.id, cliMeta.id],
 }
 
 const rubrics: RubricCatalog = {
@@ -108,11 +104,11 @@ const rubrics: RubricCatalog = {
 
 const state: RunConfigState = {
   proposalModel: { value: writerOpenAI.id, source: 'recommended' },
-  judgeBackend: { value: 'cli', source: 'recommended' },
   judgeModels: {
     value: [cliAnthropic.id, cliOpenAI.id, cliMeta.id],
     source: 'recommended',
   },
+  challengeJudgeModels: { value: [cliOpenAI.id], source: 'recommended' },
   proposalEvaluatorModel: { value: cliAnthropic.id, source: 'automatic' },
   rubricIds: ['judge.verification', 'judge.session_outcome'],
   candidateBudget: 3,
@@ -131,13 +127,15 @@ describe('RunConfiguration', () => {
     )
 
     expect(screen.getByRole('combobox', { name: 'Proposal writer' })).not.toBeNull()
-    expect(screen.getByRole('combobox', { name: 'Judge backend' })).not.toBeNull()
+    expect(screen.queryByRole('combobox', { name: 'Judge backend' })).toBeNull()
     expect(screen.getByRole('combobox', { name: 'Judge 1' })).not.toBeNull()
     expect(screen.getByRole('combobox', { name: 'Judge 2' })).not.toBeNull()
     expect(screen.getByRole('combobox', { name: 'Judge 3' })).not.toBeNull()
+    expect(screen.getByRole('combobox', { name: 'B/C verification judge 1' })).not.toBeNull()
     expect(screen.getByRole('combobox', { name: 'Proposal evaluator' })).not.toBeNull()
     expect(screen.getByLabelText('Proposal writer source').textContent).toBe('recommended')
     expect(screen.getByLabelText('Ordered judges source').textContent).toBe('recommended')
+    expect(screen.getByLabelText('B/C verification judges source').textContent).toBe('recommended')
     expect(screen.getByLabelText('Proposal evaluator source').textContent).toBe('automatic')
     expect(screen.queryByRole('textbox')).toBeNull()
   })
@@ -156,10 +154,10 @@ describe('RunConfiguration', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Proposal writer' }), {
       target: { value: writerAnthropic.id },
     })
-    fireEvent.change(screen.getByRole('combobox', { name: 'Judge backend' }), {
-      target: { value: 'wandb' },
-    })
     fireEvent.change(screen.getByRole('combobox', { name: 'Judge 1' }), {
+      target: { value: cliMeta.id },
+    })
+    fireEvent.change(screen.getByRole('combobox', { name: 'B/C verification judge 1' }), {
       target: { value: cliMeta.id },
     })
     fireEvent.change(screen.getByRole('combobox', { name: 'Proposal evaluator' }), {
@@ -175,8 +173,8 @@ describe('RunConfiguration', () => {
 
     expect(onAction.mock.calls.map(([action]) => action)).toEqual([
       { type: 'select-writer', modelId: writerAnthropic.id },
-      { type: 'select-backend', backend: 'wandb' },
       { type: 'select-judge', position: 1, modelId: cliMeta.id },
+      { type: 'select-challenge-judge', position: 1, modelId: cliMeta.id },
       { type: 'select-evaluator', modelId: cliMeta.id },
       { type: 'set-rubrics', rubricIds: ['judge.session_outcome'] },
       { type: 'set-budget', value: 5 },
@@ -235,6 +233,25 @@ describe('RunConfiguration', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'Remove last judge' }))
     expect(onAction).toHaveBeenLastCalledWith({ type: 'remove-last-judge' })
+  })
+
+  it('supports one through three B/C verification judges independently', () => {
+    const onAction = vi.fn()
+    render(
+      <RunConfiguration
+        state={state}
+        models={models}
+        rubrics={rubrics}
+        onAction={onAction}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add B/C verification judge' }))
+    expect(onAction).toHaveBeenLastCalledWith({
+      type: 'select-challenge-judge',
+      position: 2,
+      modelId: cliAnthropic.id,
+    })
   })
 
   it('keeps the selected rubrics explicit and restores the full catalog explicitly', () => {

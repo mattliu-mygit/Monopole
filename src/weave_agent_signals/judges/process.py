@@ -47,21 +47,21 @@ def prepare_cli_subprocess(
     home: str,
     codex_home: str,
     cwd: str,
-    family: str,
+    provider: str,
     source_env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """Create the isolated Codex credential store and a minimal child environment.
+    """Create provider state and a minimal local-CLI child environment.
 
     Local CLIs authenticate from their existing on-disk/keychain stores. API keys,
     OAuth tokens, cloud-provider credentials, proxies, and unrelated parent values
     are intentionally not inherited.
     """
-    if family not in {"anthropic", "openai"}:
-        raise ValueError(f"unsupported local CLI family: {family}")
+    if provider not in {"claude", "codex", "agy"}:
+        raise ValueError(f"unsupported local CLI provider: {provider}")
 
     os.makedirs(cwd, exist_ok=True)
     child_home = home
-    if family == "openai":
+    if provider == "codex":
         child_home = os.path.join(cwd, "home")
         os.makedirs(child_home, exist_ok=True)
         real_auth = os.path.join(home, ".codex", "auth.json")
@@ -82,8 +82,8 @@ def prepare_cli_subprocess(
             "WANDB_MODE": "disabled",
         }
     )
-    if family == "openai":
+    if provider == "codex":
         env["CODEX_HOME"] = codex_home
-    elif source.get("CLAUDE_CONFIG_DIR"):
+    elif provider == "claude" and source.get("CLAUDE_CONFIG_DIR"):
         env["CLAUDE_CONFIG_DIR"] = source["CLAUDE_CONFIG_DIR"]
     return env

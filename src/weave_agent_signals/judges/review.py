@@ -359,7 +359,7 @@ def execute_panel(
             trigger="panel",
             requested_model=judge.id,
             requested_family=judge.family,
-            requested_backend=judge.backend,
+            requested_backend=judge.provider,
             observation=observations[judge.position],
         )
         for judge in judges

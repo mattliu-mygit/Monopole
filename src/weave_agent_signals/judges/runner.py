@@ -294,7 +294,7 @@ def _resolve(descriptor: RubricDescriptor) -> object:
 
 def judge_session(
     session: SessionView,
-    client: ChatClient,
+    clients: Mapping[str, ChatClient],
     *,
     rubrics: Sequence[RubricDescriptor],
     judges: Sequence[PositionedJudge],
@@ -328,6 +328,10 @@ def judge_session(
     def reviewer(judge: PositionedJudge) -> SlidingReviewer:
         current = reviewer_cache.get(judge.id)
         if current is None:
+            try:
+                client = clients[judge.id]
+            except KeyError as exc:
+                raise ValueError(f"missing chat client for judge {judge.id}") from exc
             current = SlidingReviewer(
                 session=session,
                 judge=judge,
@@ -344,8 +348,18 @@ def judge_session(
 
     scores: list[Score] = []
     not_evaluable: list[JudgeNotEvaluable] = []
-    abort = getattr(client, "abort", None)
-    cancel_pending = abort if callable(abort) else lambda: None
+
+    def cancel_pending() -> None:
+        seen: set[int] = set()
+        for client in clients.values():
+            identity = id(client)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            abort = getattr(client, "abort", None)
+            if callable(abort):
+                abort()
+
     evaluated_models = sorted({turn.model for turn in session.turns if turn.model})
     evaluated_families = sorted({model_family(turn.model or "") for turn in session.turns})
     for descriptor in rubrics:

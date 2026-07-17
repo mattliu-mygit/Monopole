@@ -1,5 +1,4 @@
 import type {
-  JudgeBackendCatalog,
   ModelCatalog,
   ModelDescriptor,
   RubricCatalog,
@@ -50,7 +49,7 @@ function supports(model: ModelDescriptor, role: 'judge' | 'proposal_evaluator'):
 }
 
 function modelLabel(model: ModelDescriptor): string {
-  return `${model.label} · ${model.family}`
+  return `${model.label} · ${model.provider} · ${model.family}`
 }
 
 function ChoiceLabel({
@@ -72,19 +71,17 @@ function ChoiceLabel({
   )
 }
 
-function selectedBackend(
-  models: ModelCatalog,
-  backendName: string,
-): JudgeBackendCatalog | undefined {
-  return models.judge_backends[backendName]
+function writerChoices(models: ModelCatalog): ModelDescriptor[] {
+  return models.available_models.filter((model) =>
+    model.supported_roles.includes('proposal_writer'))
 }
 
-function uniqueJudgeChoices(backend: JudgeBackendCatalog | undefined): ModelDescriptor[] {
-  return backend?.available_models.filter((model) => supports(model, 'judge')) ?? []
+function uniqueJudgeChoices(models: ModelCatalog): ModelDescriptor[] {
+  return models.available_models.filter((model) => supports(model, 'judge'))
 }
 
-function evaluatorChoices(backend: JudgeBackendCatalog | undefined): ModelDescriptor[] {
-  return backend?.available_models.filter((model) => supports(model, 'proposal_evaluator')) ?? []
+function evaluatorChoices(models: ModelCatalog): ModelDescriptor[] {
+  return models.available_models.filter((model) => supports(model, 'proposal_evaluator'))
 }
 
 function UnavailableOption({
@@ -106,20 +103,28 @@ export default function RunConfiguration({
   onAction,
 }: RunConfigurationProps) {
   const assessment = assessRunConfig(state, models, rubrics)
-  const backend = selectedBackend(models, state.judgeBackend.value)
-  const judgeChoices = uniqueJudgeChoices(backend)
-  const evaluatorModels = evaluatorChoices(backend)
+  const proposalModels = writerChoices(models)
+  const judgeChoices = uniqueJudgeChoices(models)
+  const evaluatorModels = evaluatorChoices(models)
   const catalogRubricIds = rubrics.rubrics.map((rubric) => rubric.id)
   const selectedRubrics = new Set(state.rubricIds)
   const allRubrics =
     state.rubricIds.length === catalogRubricIds.length &&
     catalogRubricIds.every((rubricId) => selectedRubrics.has(rubricId))
   const orderedJudgeIds = [
-    ...(backend?.recommended_judges ?? []),
+    ...models.recommended_judges,
     ...judgeChoices.map((model) => model.id),
   ].filter((modelId, index, values) => values.indexOf(modelId) === index)
   const addJudgeId = orderedJudgeIds.find(
     (modelId) => !state.judgeModels.value.includes(modelId),
+  )
+  const orderedChallengeJudgeIds = [
+    ...models.recommended_challenge_judges,
+    ...models.recommended_judges,
+    ...judgeChoices.map((model) => model.id),
+  ].filter((modelId, index, values) => values.indexOf(modelId) === index)
+  const addChallengeJudgeId = orderedChallengeJudgeIds.find(
+    (modelId) => !state.challengeJudgeModels.value.includes(modelId),
   )
 
   function toggleRubric(rubricId: string) {
@@ -171,39 +176,11 @@ export default function RunConfiguration({
             >
               <UnavailableOption
                 value={state.proposalModel.value}
-                choices={models.proposal.available_models}
+                choices={proposalModels}
               />
-              {models.proposal.available_models.map((model) => (
+              {proposalModels.map((model) => (
                 <option key={model.id} value={model.id}>
                   {modelLabel(model)}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <ChoiceLabel
-              htmlFor="judge-backend"
-              source={state.judgeBackend.source}
-            >
-              Judge backend
-            </ChoiceLabel>
-            <select
-              id="judge-backend"
-              value={state.judgeBackend.value}
-              onChange={(event) =>
-                onAction({ type: 'select-backend', backend: event.target.value })
-              }
-              className={inputClass}
-            >
-              {!backend && (
-                <option value={state.judgeBackend.value}>
-                  Unavailable · {state.judgeBackend.value}
-                </option>
-              )}
-              {Object.keys(models.judge_backends).map((backendName) => (
-                <option key={backendName} value={backendName}>
-                  {backendName}
                 </option>
               ))}
             </select>
@@ -309,6 +286,79 @@ export default function RunConfiguration({
                   Remove last judge
                 </button>
               )}
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend className="mb-2 flex w-full items-center justify-between gap-2 text-sm font-medium text-gray-700">
+            <span>B/C verification judges</span>
+            <SourceBadge
+              label="B/C verification judges"
+              source={state.challengeJudgeModels.source}
+            />
+          </legend>
+          <p className="mb-2 text-xs text-gray-500">
+            Paired proposal verification defaults to one judge and is configured independently.
+          </p>
+          <div className="grid gap-3 md:grid-cols-3">
+            {state.challengeJudgeModels.value.map((modelId, index) => (
+              <div key={index}>
+                <label
+                  htmlFor={`challenge-judge-${index + 1}`}
+                  className="mb-1 block text-xs font-medium text-gray-600"
+                >
+                  B/C verification judge {index + 1}
+                </label>
+                <select
+                  id={`challenge-judge-${index + 1}`}
+                  value={modelId}
+                  onChange={(event) =>
+                    onAction({
+                      type: 'select-challenge-judge',
+                      position: index + 1,
+                      modelId: event.target.value,
+                    })
+                  }
+                  className={inputClass}
+                >
+                  <UnavailableOption value={modelId} choices={judgeChoices} />
+                  {judgeChoices.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {modelLabel(model)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 flex gap-4">
+            {state.challengeJudgeModels.value.length < 3 && (
+              <button
+                type="button"
+                disabled={!addChallengeJudgeId}
+                onClick={() => {
+                  if (addChallengeJudgeId) {
+                    onAction({
+                      type: 'select-challenge-judge',
+                      position: state.challengeJudgeModels.value.length + 1,
+                      modelId: addChallengeJudgeId,
+                    })
+                  }
+                }}
+                className="text-xs font-medium text-blue-700 hover:text-blue-900 disabled:text-gray-400"
+              >
+                Add B/C verification judge
+              </button>
+            )}
+            {state.challengeJudgeModels.value.length > 1 && (
+              <button
+                type="button"
+                onClick={() => onAction({ type: 'remove-last-challenge-judge' })}
+                className="text-xs font-medium text-blue-700 hover:text-blue-900"
+              >
+                Remove last B/C verification judge
+              </button>
+            )}
           </div>
         </fieldset>
 

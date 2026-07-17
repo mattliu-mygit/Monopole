@@ -84,7 +84,8 @@ _WINDOW_SYSTEM_TEMPLATE = (
     "PHASE: window\n{rubric_system}\nReturn bounded findings, not a score. Every finding must "
     "cite at least one ID from ALLOWED_FINDING_EVIDENCE_IDS. If no supported finding exists, "
     'return "findings": [] instead of an uncited finding. Do not cite any other ID; the response '
-    "schema enforces the active raw window's exact evidence scope."
+    "schema enforces the active raw window's exact evidence scope. Finding IDs need only be "
+    "unique within this response; aggregation scopes them to EXPECTED_WINDOW_ID."
 )
 _WINDOW_USER_TEMPLATE = (
     "EXPECTED_WINDOW_ID: {window_id}\n"
@@ -511,7 +512,7 @@ class SlidingReviewer:
         self._emit_activity(event)
         try:
             parsed, response = self.client.chat_json(
-                model=self.judge.id,
+                model=self.judge.provider_model,
                 messages=messages,
                 temperature=0.0,
                 max_tokens=max_tokens,
@@ -790,7 +791,6 @@ class SlidingReviewer:
         values: Sequence[WindowFindings],
     ) -> tuple[WindowFinding, ...]:
         ordered: list[WindowFinding] = []
-        identities: dict[str, tuple[object, ...]] = {}
         semantic_seen: set[tuple[object, ...]] = set()
         for window in values:
             for finding in window.findings:
@@ -799,14 +799,14 @@ class SlidingReviewer:
                     finding.observation,
                     tuple(sorted(set(finding.evidence_ids))),
                 )
-                prior = identities.get(finding.finding_id)
-                if prior is not None and prior != semantic:
-                    raise ValueError("finding ID maps to conflicting content across windows")
-                identities[finding.finding_id] = semantic
                 if semantic in semantic_seen:
                     continue
                 semantic_seen.add(semantic)
-                ordered.append(finding)
+                ordered.append(
+                    finding.model_copy(
+                        update={"finding_id": f"{window.window_id}:{finding.finding_id}"}
+                    )
+                )
         return tuple(ordered)
 
     def _merge_messages(

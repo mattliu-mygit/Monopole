@@ -50,10 +50,8 @@ def test_run_transport_fields_used_by_ui_have_named_schemas() -> None:
     for field, model in expected.items():
         assert _referenced_schema(run[field]) == f"#/components/schemas/{model}"
 
-    judge_backends = schemas["ModelCatalogResponse"]["properties"]["judge_backends"]
-    assert judge_backends["additionalProperties"]["$ref"] == (
-        "#/components/schemas/JudgeBackendCatalog"
-    )
+    available_models = schemas["ModelCatalogResponse"]["properties"]["available_models"]
+    assert available_models["items"]["$ref"] == "#/components/schemas/ModelDescriptor"
 
 
 def test_frontend_transport_does_not_cast_generated_run_or_session_responses() -> None:

@@ -101,12 +101,12 @@ class _WriteStats:
 def _make_model_client(args: argparse.Namespace, model: ModelDescriptor):
     """Build a chat client for one catalog-resolved model role."""
 
-    if model.backend == "cli":
-        return CliJudgeClient()
+    if model.provider in {"claude", "codex", "agy"}:
+        return CliJudgeClient(provider=model.provider)
     return InferenceClient(
         entity=args.entity,
         project=args.project,
-        backend=model.backend,
+        backend=model.provider,
     )
 
 
@@ -118,21 +118,15 @@ def _resolve_judge_panel(args: argparse.Namespace) -> tuple[PositionedJudge, ...
     """Resolve the standalone ordered judge panel through the current catalog."""
 
     catalog = build_model_catalog()
-    backend_name = args.judge_backend or catalog.recommended_judge_backend
-    try:
-        backend = catalog.backend(backend_name)
-    except KeyError as exc:
-        raise RuntimeError(str(exc)) from exc
-
-    model_ids = tuple(args.judge_models or backend.recommended_judges)
+    model_ids = tuple(args.judge_models or catalog.recommended_judges)
     if not 1 <= len(model_ids) <= 3:
         raise RuntimeError("judge_models must contain one through three models")
     judges: list[PositionedJudge] = []
     for position, model_id in enumerate(model_ids, start=1):
         try:
-            model = backend.model(model_id)
+            model = catalog.model(model_id)
         except KeyError as exc:
-            raise RuntimeError(f"Unknown judge model for {backend_name}: {model_id}") from exc
+            raise RuntimeError(f"Unknown judge model: {model_id}") from exc
         if "judge" not in model.supported_roles:
             raise RuntimeError(f"Model {model_id} does not support judging")
         judges.append(_positioned_judge(model, position))
@@ -148,28 +142,23 @@ def _resolve_reflection_models(
     """Resolve standalone reflection's writer and evaluator independently."""
 
     catalog = build_model_catalog()
-    writer_id = args.model or catalog.proposal.recommended_model
-    writers = {model.id: model for model in catalog.proposal.available_models}
-    writer = writers.get(writer_id) if writer_id is not None else None
+    writer_id = args.model or catalog.recommended_proposal_model
+    try:
+        writer = catalog.model(writer_id) if writer_id is not None else None
+    except KeyError:
+        writer = None
     if writer is None or "proposal_writer" not in writer.supported_roles:
         raise RuntimeError(f"Unknown or unavailable proposal model: {writer_id}")
 
-    backend_name = args.judge_backend or catalog.recommended_judge_backend
-    try:
-        backend = catalog.backend(backend_name)
-    except KeyError as exc:
-        raise RuntimeError(str(exc)) from exc
     evaluator_id = args.proposal_evaluator_model
     if evaluator_id is None:
-        evaluator_id = next(iter(backend.proposal_evaluator_preferences), None)
+        evaluator_id = next(iter(catalog.proposal_evaluator_preferences), None)
     if evaluator_id is None:
-        raise RuntimeError(f"Judge backend {backend_name} has no proposal evaluator")
+        raise RuntimeError("Model catalog has no proposal evaluator")
     try:
-        evaluator = backend.model(evaluator_id)
+        evaluator = catalog.model(evaluator_id)
     except KeyError as exc:
-        raise RuntimeError(
-            f"Unknown proposal evaluator for {backend_name}: {evaluator_id}"
-        ) from exc
+        raise RuntimeError(f"Unknown proposal evaluator: {evaluator_id}") from exc
     if "proposal_evaluator" not in evaluator.supported_roles:
         raise RuntimeError(f"Model {evaluator_id} does not support proposal evaluation")
     return writer, evaluator
@@ -493,7 +482,11 @@ def cmd_judge(args: argparse.Namespace) -> int:
             judge_models=judges,
             context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
         )
-        with _make_model_client(args, judges[0].model) as inference:
+        with ExitStack() as stack:
+            inference = {
+                judge.id: stack.enter_context(_make_model_client(args, judge.model))
+                for judge in judges
+            }
             artifacts: dict[str, dict] = {}
 
             def record_artifact(key: str, value: dict) -> None:
@@ -821,12 +814,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated rubric names (default: all)",
     )
     p_judge.add_argument(
-        "--judge-backend",
-        type=str,
-        default=None,
-        help="Judge catalog backend ID: cli, wandb, or openai (default: catalog recommendation)",
-    )
-    p_judge.add_argument(
         "--judge-model",
         dest="judge_models",
         action="append",
@@ -894,17 +881,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Proposal-writer model ID (default: catalog recommendation)",
     )
     p_reflect.add_argument(
-        "--judge-backend",
-        type=str,
-        default=None,
-        help="Proposal-evaluator catalog backend ID: cli, wandb, or openai "
-        "(default: catalog recommendation)",
-    )
-    p_reflect.add_argument(
         "--proposal-evaluator-model",
         type=str,
         default=None,
-        help="Proposal-evaluator model ID (default: selected backend recommendation)",
+        help="Proposal-evaluator model ID (default: catalog recommendation)",
     )
     p_reflect.add_argument(
         "--candidate-budget",
@@ -936,6 +916,12 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Closed JSON registry of exact files and bounded skill collections",
     )
+    p_serve.add_argument(
+        "--sandbox-runtime",
+        type=str,
+        required=True,
+        help="Closed JSON runtime for identical local Smol Machines comparison arms",
+    )
 
     return parser
 
@@ -944,6 +930,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     os.environ["TARGET_REGISTRY"] = args.target_registry
+    os.environ["SMOLMACHINES_RUNTIME"] = args.sandbox_runtime
     os.environ.setdefault("WANDB_ENTITY", args.entity)
     os.environ.setdefault("WANDB_PROJECT", args.project)
 
@@ -968,7 +955,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    load_dotenv()  # load .env (OPENAI_API_KEY, JUDGE_BACKEND, …) before parsing
+    load_dotenv()  # load optional provider credentials before parsing
 
     parser = build_parser()
     args = parser.parse_args(argv)

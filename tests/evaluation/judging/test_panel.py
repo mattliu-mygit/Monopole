@@ -18,8 +18,9 @@ def _judge(position: int) -> PositionedJudge:
     return PositionedJudge(
         id=f"judge-{position}",
         label=f"Judge {position}",
+        provider="codex",
+        provider_model=f"judge-{position}",
         family=f"family-{position}",
-        backend="cli",
         supported_roles=("judge",),
         position=position,
     )

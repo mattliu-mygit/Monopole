@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -19,7 +19,7 @@ from weave_agent_signals.judges.runner import (
     judge_session,
 )
 from weave_agent_signals.models import Score, SessionView, TurnSpan
-from weave_agent_signals.run_config import EffectiveRunConfig, RubricDescriptor
+from weave_agent_signals.run_config import EffectiveRunConfig, PositionedJudge, RubricDescriptor
 from weave_agent_signals.runs.judging_activity import JudgingActivityLog
 from weave_agent_signals.runs.stages import StageCancelled
 from weave_agent_signals.runs.store import (
@@ -44,7 +44,7 @@ _Target = SessionView
 class JudgingDependencies:
     store: RunStore
     client_factory: Callable[[], WeaveClient]
-    chat_client_factory: Callable[[], AbstractContextManager[ChatClient]]
+    chat_client_factory: Callable[[PositionedJudge], AbstractContextManager[ChatClient]]
     hydrate_cohort: Callable[
         [Mapping[str, Any]],
         tuple[list[TurnSpan], dict[str, SessionView]],
@@ -642,12 +642,14 @@ def run_judging_stage(
         for session_plan in plan["sessions"]
         for reviewer in session_plan["reviewers"]
     )
-    chat_context: AbstractContextManager[ChatClient | None] = (
-        dependencies.chat_client_factory() if has_applicable_reviewers else nullcontext(None)
-    )
     _active(dependencies.store, run_id, cancel)
-    with chat_context as chat_client:
-        if chat_client is not None:
+    with ExitStack() as stack:
+        chat_clients = {
+            judge.id: stack.enter_context(dependencies.chat_client_factory(judge))
+            for judge in config.models.judges
+            if has_applicable_reviewers
+        }
+        for chat_client in chat_clients.values():
             set_cancel = getattr(chat_client, "set_cancel", None)
             if callable(set_cancel):
                 set_cancel(cancel)
@@ -702,7 +704,7 @@ def run_judging_stage(
                 expected,
                 lambda: judge_session(
                     session,
-                    chat_client,
+                    chat_clients,
                     rubrics=expected,
                     judges=config.models.judges,
                     judging_plan=plan,

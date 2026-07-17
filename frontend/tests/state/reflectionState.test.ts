@@ -21,7 +21,8 @@ const writer: ModelDescriptor = {
   id: 'writer-1',
   label: 'Writer 1',
   family: 'writer-family',
-  backend: 'cli',
+  provider: 'codex',
+  provider_model: 'writer-1',
   supported_roles: ['proposal_writer'],
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
@@ -54,7 +55,7 @@ function candidate(id: string, value: ReflectionBundleSnapshot, score: number): 
     requested_writer: writer,
     resolved_writer_model: writer.id,
     resolved_writer_family: writer.family,
-    resolved_writer_backend: writer.backend,
+    resolved_writer_backend: writer.provider,
     evaluation: {
       evaluation_id: `evaluation-${id}`,
       target_revision: value.revision,
@@ -98,6 +99,8 @@ const result: SuccessfulReflectionResult = {
   baseline_won: false,
   reason: null,
   score_basis: 'predicted_evaluator',
+  provisional_candidate_id: 'candidate-one',
+  challenge: null,
 }
 
 function run(overrides: Partial<Run> = {}): Run {

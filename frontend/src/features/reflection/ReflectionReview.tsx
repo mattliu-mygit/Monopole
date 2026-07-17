@@ -248,6 +248,142 @@ function BaselineResult({ result }: { result: SuccessfulReflectionResult }) {
   )
 }
 
+type Challenge = NonNullable<SuccessfulReflectionResult['challenge']>
+type ChallengeArm = NonNullable<Challenge['baseline']>
+
+function challengeTitle(challenge: Challenge): string {
+  if (challenge.status !== 'complete') return 'Paired sandbox verification incomplete'
+  if (challenge.winner === 'candidate') return 'C won paired sandbox verification'
+  if (challenge.winner === 'baseline') return 'B won paired sandbox verification'
+  return 'Paired sandbox verification tied'
+}
+
+function PairedArmEvidence({ label, arm }: { label: 'B' | 'C', arm: ChallengeArm | null }) {
+  if (!arm) return null
+  return (
+    <details className="rounded border border-sky-200 bg-white p-3 text-xs">
+      <summary className="cursor-pointer font-medium text-sky-950">
+        {label} arm: {arm.status} · exit {arm.exit_code ?? 'none'} · {arm.duration_seconds.toFixed(1)}s
+      </summary>
+      <div className="mt-3 space-y-3">
+        {arm.infrastructure_error && <p className="text-red-700">{arm.infrastructure_error}</p>}
+        <div>
+          <p className="font-medium text-gray-800">Transcript</p>
+          <pre className="mt-1 max-h-80 overflow-auto whitespace-pre-wrap rounded bg-gray-950 p-3 text-gray-100">
+            {arm.transcript || 'No transcript output.'}
+          </pre>
+        </div>
+        <div>
+          <p className="font-medium text-gray-800">Changed artifacts ({arm.artifact_changes.length})</p>
+          <div className="mt-1 space-y-2">
+            {arm.artifact_changes.map((artifact) => (
+              <details key={artifact.path} className="rounded border border-gray-200 p-2">
+                <summary className="cursor-pointer font-mono">
+                  {artifact.action} {artifact.path}
+                </summary>
+                <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded bg-gray-950 p-3 text-gray-100">
+                  {artifact.diff}
+                </pre>
+              </details>
+            ))}
+          </div>
+        </div>
+      </div>
+    </details>
+  )
+}
+
+function PairedChallengeEvidence({ challenge }: { challenge: Challenge }) {
+  const execution = challenge.execution
+  return (
+    <section
+      aria-label="Paired sandbox verification"
+      className="space-y-3 rounded-lg border border-sky-200 bg-sky-50/50 p-4"
+    >
+      <div>
+        <h4 className="text-sm font-semibold text-sky-950">{challengeTitle(challenge)}</h4>
+        {challenge.reason && <p className="mt-1 text-sm text-sky-900">{challenge.reason}</p>}
+      </div>
+      {challenge.task && (
+        <div className="space-y-2 text-sm">
+          <dl className="grid gap-2 sm:grid-cols-2">
+            <div><dt className="font-medium text-sky-950">Prompt</dt><dd>{challenge.task.prompt}</dd></div>
+            <div><dt className="font-medium text-sky-950">Goal</dt><dd>{challenge.task.goal}</dd></div>
+            <div><dt className="font-medium text-sky-950">Setup mode</dt><dd>{challenge.task.setup_mode}</dd></div>
+          </dl>
+          {challenge.task.materials.length > 0 && (
+            <div>
+              <p className="font-medium text-sky-950">Pinned materials</p>
+              <ul className="list-disc pl-5">
+                {challenge.task.materials.map((material) => (
+                  <li key={`${material.destination}:${material.revision}`}>
+                    <span>{material.url}</span>{' '}
+                    <span className="font-mono text-xs">@ {material.revision} → {material.destination}/</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div>
+              <p className="font-medium text-sky-950">Task judging criteria</p>
+              <ul className="list-disc pl-5">
+                {challenge.task.judging_criteria.map((criterion) => <li key={criterion}>{criterion}</li>)}
+              </ul>
+            </div>
+            <div>
+              <p className="font-medium text-sky-950">Starting-state checks</p>
+              <ul className="list-disc pl-5">
+                {challenge.task.start_checks.map((check) => <li key={check}>{check}</li>)}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
+      <p className="text-xs text-sky-900">
+        {execution.model} via {execution.harness_version} · {execution.effort ?? 'default effort'} ·{' '}
+        {execution.timeout_seconds}s timeout · {execution.network_enabled ? 'network enabled' : 'network disabled'}
+      </p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <PairedArmEvidence label="B" arm={challenge.baseline} />
+        <PairedArmEvidence label="C" arm={challenge.candidate} />
+      </div>
+      <details className="rounded border border-sky-200 bg-white p-3 text-xs">
+        <summary className="cursor-pointer font-medium text-sky-950">
+          Blinded judge evidence ({challenge.judges.length})
+        </summary>
+        <div className="mt-3 space-y-3">
+          {challenge.judges.map((judge) => (
+            <div key={judge.position}>
+              <p className="font-medium">Judge {judge.position}: {judge.winner} · {judge.resolved_model}</p>
+              {!judge.task_valid && (
+                <p className="mt-1 font-medium text-amber-700">
+                  Invalid task: {judge.task_invalid_reason}
+                </p>
+              )}
+              <p className="mt-1 text-gray-600">{judge.rationale}</p>
+              <ul className="mt-2 space-y-1 font-mono">
+                {judge.rubrics.map((rubric) => (
+                  <li key={rubric.rubric_id}>
+                    {rubric.rubric_id}: B {rubric.baseline_score.toFixed(2)} / C{' '}
+                    {rubric.candidate_score.toFixed(2)} · Δ{' '}
+                    {(rubric.delta ?? rubric.candidate_score - rubric.baseline_score) >= 0 ? '+' : ''}
+                    {(rubric.delta ?? rubric.candidate_score - rubric.baseline_score).toFixed(2)}{' '}
+                    ({rubric.winner})
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      </details>
+      <p className="break-all font-mono text-[11px] text-sky-800">
+        {challenge.challenge_id} · {execution.execution_id}
+      </p>
+    </section>
+  )
+}
+
 function NoValidProposalResult({ result }: { result: SuccessfulReflectionResult }) {
   return (
     <section aria-label="Reflection review" className="space-y-4">
@@ -440,6 +576,8 @@ export default function ReflectionReview({
         )}
       </div>
 
+      {result.challenge && <PairedChallengeEvidence challenge={result.challenge} />}
+
       {review?.stale && (
         <StaleEvidence
           past={result.baseline}
@@ -501,7 +639,7 @@ export default function ReflectionReview({
         <dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
           <div><dt className="text-gray-500">Generation attempt</dt><dd className="font-mono">{activeCandidate.generation_attempt_id}</dd></div>
           <div><dt className="text-gray-500">Candidate ID</dt><dd className="break-all font-mono">{activeCandidate.candidate_id}</dd></div>
-          <div><dt className="text-gray-500">Requested writer</dt><dd>{activeCandidate.requested_writer.id} · {activeCandidate.requested_writer.family} · {activeCandidate.requested_writer.backend}</dd></div>
+          <div><dt className="text-gray-500">Requested writer</dt><dd>{activeCandidate.requested_writer.id} · {activeCandidate.requested_writer.family} · {activeCandidate.requested_writer.provider}</dd></div>
           <div><dt className="text-gray-500">Resolved writer</dt><dd>{activeCandidate.resolved_writer_model} · {activeCandidate.resolved_writer_family} · {activeCandidate.resolved_writer_backend}</dd></div>
         </dl>
       </section>

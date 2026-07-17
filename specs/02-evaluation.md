@@ -114,12 +114,13 @@ Every reviewer's final merge returns the closed versioned verdict contract:
 
 Chunk digests must cite their exact core evidence. Window findings cite only
 evidence visible in that raw window, are capped in count and size, and carry
-stable finding identities. A reused finding identity with conflicting content,
-unknown citation, blank required text, duplicate semantic finding, or oversized
-artifact fails closed. The merge prompt asks for feedback about what the agent
-did or should do, while reflection separately decides whether and how to edit
-managed instructions. Imperfect semantic wording is not itself a validation
-failure.
+finding identities unique within that window. Aggregation scopes each identity
+to its authenticated window before deduplicating exact semantic findings in
+session order. An unknown citation, blank required text, duplicate semantic
+finding within one window, or oversized artifact fails closed. The merge prompt
+asks for feedback about what the agent did or should do, while reflection
+separately decides whether and how to edit managed instructions. Imperfect
+semantic wording is not itself a validation failure.
 
 Boolean, missing, nonnumeric, non-finite, out-of-range, non-anchor, malformed,
 or improperly cited output is rejected. Scores are never clamped or coerced.
@@ -144,6 +145,13 @@ the model and rubric catalog versions, exact descriptors, rubric thresholds,
 the ordered panel, and visible family-overlap warnings. A panel contains one,
 two, or three unique judges. The runtime honors the chosen order, plans or skips
 each selected judge per session, and never silently replaces one.
+
+One versioned catalog is authoritative for proposal writers, run judges, B/C
+verification judges, and proposal evaluators. Each globally unique model ID is
+provider-qualified, while its descriptor separately pins the provider's exact
+model name. Role capability is part of the descriptor. A panel may therefore
+mix providers without a separate backend selection, and execution dispatches
+each selected model through its pinned provider.
 
 Only planned reviewers call inference. A capacity skip remains in the judging
 plan and attempt audit, but does not count as a completed reviewer attempt or an
@@ -192,11 +200,15 @@ cleanup failures remain visible.
 ## Inference trust boundary
 
 Catalog-backed HTTP evaluation supports direct OpenAI and W&B Inference. Local
-Claude and Codex evaluation runs with tools and customization disabled, a
-minimal child environment, isolated state, and bounded model-readable
-filesystem access. The Codex repository-check override only removes its CLI
-precondition; it does not weaken the sandbox or evidence pinning. Local model
-families without a verified equivalent confinement mode remain disabled.
+evaluation supports Claude, Codex, and Antigravity (`agy`) from the same
+provider-qualified catalog. Every local provider receives a minimal child
+environment and an empty working directory. Claude is tool-disabled. Codex
+uses isolated state and a deny-by-default filesystem profile; its
+repository-check override only removes a CLI precondition. Antigravity runs in
+non-mutating plan mode with its sandbox enabled and uses the existing user home
+only for Antigravity/Gemini authentication and state. These controls do not
+weaken evidence pinning or permit arbitrary parent secrets and proxy variables
+to enter the child environment.
 
 Prompts, raw model output, credentials, and arbitrary parent environment values
 are not written to application logs or run errors. Audit records retain safe

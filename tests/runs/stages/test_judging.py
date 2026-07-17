@@ -82,10 +82,10 @@ def _setup(
     request = RunConfig(
         model_catalog_version=models.catalog_version,
         rubric_catalog_version=rubrics.catalog_version,
-        judge_backend="cli",
-        judge_models=("claude-sonnet-5",),
-        proposal_model="gpt-5.6-sol",
-        proposal_evaluator_model="claude-sonnet-5",
+        judge_models=("claude:claude-sonnet-5",),
+        challenge_judge_models=("codex:gpt-5.6-sol",),
+        proposal_model="codex:gpt-5.6-sol",
+        proposal_evaluator_model="claude:claude-sonnet-5",
         rubrics=rubric_ids,
         candidate_budget=3,
         force=force,
@@ -232,7 +232,7 @@ def test_stage_persists_artifacts_buffers_scores_and_writes_only_session_refs(st
     dependencies = JudgingDependencies(
         store,
         lambda: weave,
-        lambda: context(None),
+        lambda _judge: context(None),
         lambda _cohort: ([turn], {"session-1": session}),
     )
     run_judging_stage(run, effective, threading.Event(), dependencies=dependencies)
@@ -249,7 +249,8 @@ def test_stage_persists_safe_semantic_and_transport_activity(store, monkeypatch)
     chat = _ActivityChat()
     secret = "do-not-persist"
 
-    def fake_judge(_session, client, **kwargs):
+    def fake_judge(_session, clients, **kwargs):
+        client = next(iter(clients.values()))
         kwargs["activity"](
             {
                 "phase": "digest_started",
@@ -294,7 +295,7 @@ def test_stage_persists_safe_semantic_and_transport_activity(store, monkeypatch)
     deps = JudgingDependencies(
         store,
         _Weave,
-        lambda: context(chat),
+        lambda _judge: context(chat),
         lambda _: ([turn], {"session-1": session}),
     )
 
@@ -341,7 +342,7 @@ def test_stage_does_not_write_partial_scores_when_any_session_rubric_fails(store
     deps = JudgingDependencies(
         store,
         lambda: weave,
-        lambda: context(None),
+        lambda _judge: context(None),
         lambda _cohort: ([turn], {"session-1": session}),
     )
     with pytest.raises(runner.JudgeExecutionError):
@@ -374,7 +375,7 @@ def test_stage_preserves_successful_reviewer_count_for_failed_panel(store, monke
     deps = JudgingDependencies(
         store,
         _Weave,
-        lambda: context(None),
+        lambda _judge: context(None),
         lambda _cohort: ([turn], {"session-1": session}),
     )
 
@@ -405,7 +406,7 @@ def test_stage_stops_remaining_sessions_after_first_review_failure(store, monkey
     deps = JudgingDependencies(
         store,
         _Weave,
-        lambda: context(None),
+        lambda _judge: context(None),
         lambda _cohort: (
             [turn, second_turn],
             {"session-1": session, "session-2": second_session},
@@ -430,7 +431,7 @@ def test_stage_completes_unanimous_abstention_without_writing_feedback(store, mo
     deps = JudgingDependencies(
         store,
         lambda: weave,
-        lambda: context(None),
+        lambda _judge: context(None),
         lambda _cohort: ([turn], {"session-1": session}),
     )
 
@@ -477,7 +478,10 @@ def test_stage_passes_exact_pinned_plan_and_context_to_runner(store, monkeypatch
     )
     monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", captured)
     deps = JudgingDependencies(
-        store, _Weave, lambda: context(None), lambda _cohort: ([turn], {"session-1": session})
+        store,
+        _Weave,
+        lambda _judge: context(None),
+        lambda _cohort: ([turn], {"session-1": session}),
     )
     run_judging_stage(run, effective, threading.Event(), dependencies=deps)
     kwargs = captured.call_args.kwargs
@@ -509,7 +513,7 @@ def test_stage_persists_unique_artifact_progress_before_mid_session_cancellation
     deps = JudgingDependencies(
         store,
         _Weave,
-        lambda: context(None),
+        lambda _judge: context(None),
         lambda _cohort: ([turn], {"session-1": session}),
     )
     with pytest.raises(InferenceCancelled):
@@ -526,7 +530,7 @@ def test_stage_honors_cancellation_before_inference(store):
     deps = JudgingDependencies(
         store,
         _Weave,
-        lambda: context(None),
+        lambda _judge: context(None),
         lambda _cohort: ([turn], {"session-1": session}),
     )
     with pytest.raises(StageCancelled):
@@ -544,7 +548,10 @@ def test_stage_cancellation_after_inference_blocks_external_writes(store, monkey
 
     monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", finish_then_cancel)
     deps = JudgingDependencies(
-        store, lambda: weave, lambda: context(None), lambda _: ([turn], {"session-1": session})
+        store,
+        lambda: weave,
+        lambda _judge: context(None),
+        lambda _: ([turn], {"session-1": session}),
     )
     with pytest.raises(StageCancelled):
         run_judging_stage(run, effective, cancel, dependencies=deps)
@@ -566,7 +573,10 @@ def test_durable_cancellation_race_at_write_barrier_becomes_stage_cancelled(stor
 
     monkeypatch.setattr(store, "external_write_barrier", cancel_then_barrier)
     deps = JudgingDependencies(
-        store, lambda: weave, lambda: context(None), lambda _: ([turn], {"session-1": session})
+        store,
+        lambda: weave,
+        lambda _judge: context(None),
+        lambda _: ([turn], {"session-1": session}),
     )
     with pytest.raises(StageCancelled):
         run_judging_stage(run, effective, threading.Event(), dependencies=deps)
@@ -590,7 +600,10 @@ def test_force_writes_new_score_before_deleting_prior_feedback(store, monkeypatc
         lambda *_args, **_kwargs: _scores_for(("judge.session_outcome",)),
     )
     deps = JudgingDependencies(
-        store, lambda: weave, lambda: context(None), lambda _: ([turn], {"session-1": session})
+        store,
+        lambda: weave,
+        lambda _judge: context(None),
+        lambda _: ([turn], {"session-1": session}),
     )
     run_judging_stage(run, effective, threading.Event(), dependencies=deps)
     assert weave.events == [
@@ -609,7 +622,10 @@ def test_force_create_failure_preserves_prior_feedback(store, monkeypatch):
         lambda *_args, **_kwargs: _scores_for(("judge.session_outcome",)),
     )
     deps = JudgingDependencies(
-        store, lambda: weave, lambda: context(None), lambda _: ([turn], {"session-1": session})
+        store,
+        lambda: weave,
+        lambda _judge: context(None),
+        lambda _: ([turn], {"session-1": session}),
     )
     with pytest.raises(RuntimeError, match="write incomplete"):
         run_judging_stage(run, effective, threading.Event(), dependencies=deps)
@@ -626,7 +642,10 @@ def test_force_cleanup_failure_reports_incomplete_after_new_score_exists(store, 
         lambda *_args, **_kwargs: _scores_for(("judge.session_outcome",)),
     )
     deps = JudgingDependencies(
-        store, lambda: weave, lambda: context(None), lambda _: ([turn], {"session-1": session})
+        store,
+        lambda: weave,
+        lambda _judge: context(None),
+        lambda _: ([turn], {"session-1": session}),
     )
     with pytest.raises(RuntimeError, match="write incomplete"):
         run_judging_stage(run, effective, threading.Event(), dependencies=deps)
@@ -643,7 +662,10 @@ def test_partial_write_failure_reports_incomplete_after_attempting_all_scores(st
         lambda *_args, **_kwargs: _scores_for(rubric_ids),
     )
     deps = JudgingDependencies(
-        store, lambda: weave, lambda: context(None), lambda _: ([turn], {"session-1": session})
+        store,
+        lambda: weave,
+        lambda _judge: context(None),
+        lambda _: ([turn], {"session-1": session}),
     )
     with pytest.raises(RuntimeError, match="write incomplete"):
         run_judging_stage(run, effective, threading.Event(), dependencies=deps)
@@ -686,7 +708,10 @@ def test_resumed_artifact_progress_is_reconstructed_and_not_double_counted(store
         lambda *_args, **_kwargs: [score],
     )
     deps = JudgingDependencies(
-        store, _Weave, lambda: context(None), lambda _: ([turn], {"session-1": session})
+        store,
+        _Weave,
+        lambda _judge: context(None),
+        lambda _: ([turn], {"session-1": session}),
     )
     run_judging_stage(run, effective, threading.Event(), dependencies=deps)
     current = store.get(run.run_id)
@@ -706,7 +731,10 @@ def test_failure_and_attempt_summaries_are_bounded(store, monkeypatch):
 
     monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", fail)
     deps = JudgingDependencies(
-        store, _Weave, lambda: context(None), lambda _: ([turn], {"session-1": session})
+        store,
+        _Weave,
+        lambda _judge: context(None),
+        lambda _: ([turn], {"session-1": session}),
     )
     with pytest.raises(runner.JudgeExecutionError):
         run_judging_stage(run, effective, threading.Event(), dependencies=deps)

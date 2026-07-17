@@ -19,6 +19,7 @@ an explicit nonempty session selection.
 Start atomically pins:
 
 - the ordered turn cohort and its session identities;
+- the evaluated model family, model ID, and effort level for every pinned turn;
 - the resolved model and rubric catalogs, including each model's context
   capacity and token-counter identity;
 - the proposal writer, one through three ordered run judges, and proposal evaluator;
@@ -53,18 +54,23 @@ external write batches or finalized review evidence.
 
 ## Model roles and activity
 
-Runs pin three independent roles:
+Runs pin four independent roles:
 
 1. the proposal writer generates candidate Markdown bundles;
 2. run judges evaluate complete sessions through sliding raw windows and a final
-   merge; and
+   merge;
 3. the proposal evaluator predicts whole-bundle scores for Past B and candidate
-   C revisions.
+   revisions, then authors one blinded verification task package for the
+   provisional C; and
+4. a separately pinned B/C verification panel compares B and the provisional C
+   on that task.
 
 The form uses catalog-backed selectors with recommendations preselected and
-user overrides allowed. The evaluator recommendation prefers a different model
-family from the writer when available, but explicit compatible choices remain
-authoritative and produce visible bias warnings rather than silent replacement.
+user overrides allowed. Normal judging recommends three available reviewers;
+B/C verification independently recommends one and permits one through three.
+The evaluator recommendation prefers a different model family from the writer
+when available, but explicit compatible choices remain authoritative and
+produce visible bias warnings rather than silent replacement.
 
 Reflection records semantic activity rather than raw process logs. Its snapshot
 contains phase, status, start time, configured attempt budget, monotonic counts
@@ -134,6 +140,12 @@ two consecutive scored attempts fail to improve the best predicted evaluator
 score; rejected or duplicate revisions do not falsely count as scored
 non-improvements.
 
+Writer, evaluator, run-judge, and B/C-judge choices all resolve through one
+versioned model catalog. A model's provider-qualified ID is the durable
+selection and audit identity; its pinned provider and exact provider model name
+determine whether the call uses Claude, Codex, Antigravity, W&B Inference, or
+OpenAI. Roles may independently select models from different providers.
+
 Every proposal is a complete action set against B, not an unstructured patch.
 The writer must return valid create or update actions for registry locators,
 and a no-op proposal is rejected. Candidate provenance must map
@@ -146,20 +158,102 @@ evidence. The baseline and each candidate retain evaluator identity, score, and
 rationale; generation attempts retain writer identity, outcome, usage, changed
 paths, and safe rejection evidence.
 
-The recommended revision is recomputed from persisted scores. Ties keep the
-earliest revision, so B wins a tie. When eligible feedback or managed targets
-are empty, reflection performs no model calls and records why it did not run.
+The predicted scores choose one provisional C; they do not authorize review or
+promotion. Ties keep the earliest revision, so B wins a predicted-score tie.
+When eligible feedback or managed targets are empty, reflection performs no
+model calls and records why it did not run.
 Valid deterministic scores are eligible; model judgments are eligible only as
 complete current session judgments with fully identified comparison context.
 When every proposal is invalid, the product still shows evaluated B and the
 failed-attempt audit. When B beats every valid C, alternatives remain read-only
 evidence and no promotion review is created.
 
+## Paired sandbox verification
+
+Before a provisional C becomes reviewable, the proposal evaluator acts as a
+blinded task author. One structured call receives the pinned bounded evaluation
+digest and a compact deterministic summary of the seed workspace, with managed
+instruction contents removed. It sees neither instruction bundle, arm identity,
+nor evaluated agent identity. It emits one complete task package: prompt,
+measurable goal, setup mode, pinned public materials, task-specific judging
+criteria, and starting-state checks.
+
+Public source preparation is deliberately narrow. A material may name an HTTPS
+Git repository on GitHub, GitLab, Bitbucket, or Codeberg, a full commit SHA,
+and a safe relative destination; model-
+authored host shell commands, credentials, private sources, and moving branches
+are rejected. In `prepared_workspace` mode, the service fetches each repository
+once into a temporary checkout, excludes Git metadata, overlays it on the common
+workspace, validates the bounded snapshot, and only then forks B and C. In
+`agent_bootstrap` mode, no fetch occurs before the fork; both agents receive the
+same pinned material specification and must perform the requested clone, pull,
+or other repository setup themselves. Fetch or capability-preflight failure
+invalidates the task before either arm runs. The product does not choose a
+different harness by task category; coding and research tasks use the same
+configured runtime boundary. Author-supplied starting-state checks are task and
+judge context; they are not executed as arbitrary host commands.
+
+The service creates two concurrent local Smol Machines microVMs from one
+content-addressed OCI image or digest-authenticated local `.smolmachine`
+artifact. Each receives a private copy of the same prepared or bootstrap
+workspace snapshot, parent environment, declared config and credential files,
+network policy, timeout, and command. The image digest pins the remaining
+toolchain and filesystem. B gets
+the captured managed Markdown; C gets exactly the provisional bundle changes.
+Managed paths beneath the configured workspace remain in `/workspace`;
+managed paths beneath the host home are mirrored at the corresponding guest
+home path. Materialization proves that these declared Markdown paths are the
+only initial differences. There are no live host mounts.
+
+The evaluated turn cohort must identify one model, family, and effort level.
+That identity selects the Codex or Claude CLI command; the guest CLI version
+must equal the pinned host version before either task counts. The immutable
+runtime image supplies the CLI, repository toolchain, and excluded dependency
+trees. Explicit runtime files reproduce local CLI configuration or stored
+credentials without persisting their contents. Every inherited environment
+value and runtime file is named and content-hashed in the execution identity.
+
+Both agent processes receive the same task package and run until they exit or
+reach the pinned timeout. The example runtime defaults to 1,800 seconds, while
+the deployed runtime may pin another positive timeout for longer experiments.
+A nonzero exit, timeout, or unsuccessful task is
+behavioral evidence. VM creation, image, workspace setup, harness preflight, or
+artifact-extraction failure makes the pair incomplete and is not scored as an
+agent failure. Workspace file count, per-file bytes, total bytes, archive bytes,
+process-output capture, and persisted text diffs are bounded; exceeding a
+sandbox evidence bound fails infrastructure closed rather than exhausting the
+service. Dependency and cache trees excluded from the frozen source snapshot
+are also excluded from final artifact capture in both arms.
+
+The separately configured ordered panel of one through three B/C judges then
+receives blinded arm labels, the task package, bounded transcripts, exit
+outcomes, artifact counts, bounded changed-file diffs, and the exact run
+rubrics. Managed instruction
+paths, shortened path forms, and contents are excluded from artifact counts,
+transcript evidence, and diff evidence so they cannot reveal which blinded arm
+received B or C. The complete request, including its schema, is token-counted
+against each configured judge and evidence is reduced
+deterministically before inference when necessary. Each judge first decides
+whether the task was achievable, workspace-applicable, and fair; an invalid-task
+panel majority fails closed without selecting either arm. The B/C catalog
+recommendation is one judge by default for cost, independent of the three-judge
+normal evaluation recommendation; users may explicitly choose two or three. A
+multi-model B/C panel receives the same family-diversity and evaluated-family
+bias warnings as the normal judge panel. A
+strict panel majority selects B or C; otherwise the result is a tie. Each panel
+member uses the backend pinned by its own selected model descriptor. Only a
+complete C win preserves the recommendation and initializes human review. A B
+win, tie, invalid task, or incomplete comparison conservatively retains B. The
+task, execution identity, arm evidence, blinded verdicts, per-rubric B/C scores,
+signed deltas, transcripts, and changed-file diffs remain attached to the
+immutable reflection result and are lazily inspectable in review.
+
 ## B, C, and D
 
 - **B — Past** is the exact evaluated baseline and owns its score.
-- **C — Proposed** is an exact immutable generated bundle and owns its score,
-  rationale, B-to-C delta, writer provenance, and evaluator provenance.
+- **C — Proposed** is an exact immutable generated bundle and owns its predicted
+  score, rationale, B-to-C delta, writer provenance, evaluator provenance, and
+  paired sandbox evidence when it is the provisional candidate.
 - **D — Edited proposal** is optional user-edited content derived from selected
   C. It is not evaluated and never inherits C's score.
 
@@ -168,10 +262,10 @@ review keeps relevant Markdown snapshots and diffs beside the whole-bundle
 scores so a user can audit interactions across multiple changed files.
 
 D can alter file contents but must preserve C's target membership and
-create/update action set. Promoting D requires explicit acknowledgement
-that it was not evaluated. There is no mandatory pre-promotion inference run:
-the user accepts the deviation and can start a later evaluation run after
-promotion.
+create/update action set. Promoting D requires explicit acknowledgement that D
+did not receive C's paired verification. The mandatory comparison applies to C;
+there is no second pre-promotion run for edited D. The user accepts the
+deviation and can start a later evaluation run after promotion.
 
 Review decisions use compare-and-swap revisions. Candidate selection, draft
 save/reset, promotion, and dismissal cannot overwrite a concurrent or already

@@ -8,17 +8,17 @@ import RunConfigAudit from '../../src/features/runs/RunConfigAudit'
 afterEach(cleanup)
 
 const config: EffectiveRunConfig = {
-  schema_version: '3',
-  pipeline_version: 'pipeline-v7',
+  schema_version: '5',
+  pipeline_version: '8',
   model_catalog_version: 'models-v4',
   rubric_catalog_version: 'rubrics-v9',
-  judge_backend: 'cli',
   models: {
     proposal_writer: {
       id: 'writer-openai',
       label: 'Writer OpenAI',
       family: 'openai',
-      backend: 'cli',
+      provider: 'codex',
+      provider_model: 'writer-openai',
       supported_roles: ['proposal_writer'],
       max_input_tokens: 128_000,
       token_counter: 'utf8_bytes_div_3',
@@ -28,7 +28,8 @@ const config: EffectiveRunConfig = {
         id: 'judge-anthropic',
         label: 'Judge Anthropic',
         family: 'anthropic',
-        backend: 'cli',
+        provider: 'claude',
+        provider_model: 'judge-anthropic',
         supported_roles: ['judge'],
         max_input_tokens: 128_000,
         token_counter: 'utf8_bytes_div_3',
@@ -39,7 +40,8 @@ const config: EffectiveRunConfig = {
         id: 'judge-meta',
         label: 'Judge Meta',
         family: 'meta',
-        backend: 'cli',
+        provider: 'agy',
+        provider_model: 'judge-meta',
         supported_roles: ['judge', 'proposal_evaluator'],
         max_input_tokens: 128_000,
         token_counter: 'utf8_bytes_div_3',
@@ -47,11 +49,26 @@ const config: EffectiveRunConfig = {
         position: 2,
       },
     ],
+    challenge_judges: [
+      {
+        id: 'judge-meta',
+        label: 'Judge Meta',
+        family: 'meta',
+        provider: 'agy',
+        provider_model: 'judge-meta',
+        supported_roles: ['judge', 'proposal_evaluator'],
+        max_input_tokens: 128_000,
+        token_counter: 'utf8_bytes_div_3',
+        role: 'judge',
+        position: 1,
+      },
+    ],
     proposal_evaluator: {
       id: 'judge-meta',
       label: 'Judge Meta',
       family: 'meta',
-      backend: 'cli',
+      provider: 'agy',
+      provider_model: 'judge-meta',
       supported_roles: ['judge', 'proposal_evaluator'],
       max_input_tokens: 128_000,
       token_counter: 'utf8_bytes_div_3',
@@ -103,21 +120,25 @@ describe('RunConfigAudit', () => {
     expect(screen.getByRole('region', { name: 'Pinned run configuration' })).not.toBeNull()
     expect(screen.getByText('Writer OpenAI')).not.toBeNull()
     expect(screen.getByText('Judge Anthropic')).not.toBeNull()
-    expect(screen.getAllByText('Judge Meta').length).toBe(2)
+    expect(screen.getAllByText('Judge Meta').length).toBe(3)
     expect(screen.getByText('Judge 1')).not.toBeNull()
     expect(screen.getByText('Judge 2')).not.toBeNull()
     expect(screen.getByText('Judge panel')).not.toBeNull()
     expect(screen.getByText('2 judges')).not.toBeNull()
+    expect(screen.getByText('B/C verification judges')).not.toBeNull()
+    expect(screen.getByText('B/C judge 1')).not.toBeNull()
+    expect(screen.getByText('B/C judge panel')).not.toBeNull()
+    expect(screen.getByText('1 judge')).not.toBeNull()
     expect(screen.getByText('Verification discipline')).not.toBeNull()
     expect(screen.getByText('v3 · whole session · threshold 0.65')).not.toBeNull()
     expect(screen.getByText('v2 · whole session · threshold 0.50')).not.toBeNull()
-    expect(screen.getByText('pipeline-v7')).not.toBeNull()
+    expect(screen.getByText('8')).not.toBeNull()
     expect(screen.getByText('models-v4')).not.toBeNull()
     expect(screen.getByText('rubrics-v9')).not.toBeNull()
     expect(screen.getByText('50,000 small-model · 100,000 large-model reserve')).not.toBeNull()
     expect(screen.getByText('50,000 small-model · 128,000 large-model raw target')).not.toBeNull()
     expect(screen.getByText('1,000 digest · 4,000 findings · 1 turn overlap')).not.toBeNull()
-    expect(screen.getAllByText('128,000 max input tokens').length).toBe(4)
+    expect(screen.getAllByText('128,000 max input tokens').length).toBe(5)
     expect(screen.getByText('Proposal attempt limit')).not.toBeNull()
     expect(screen.getByText('4 attempts')).not.toBeNull()
     expect(screen.queryByText('Candidate budget')).toBeNull()

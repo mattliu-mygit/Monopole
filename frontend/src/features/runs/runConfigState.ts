@@ -1,18 +1,12 @@
-import type {
-  JudgeBackendCatalog,
-  ModelCatalog,
-  ModelDescriptor,
-  RubricCatalog,
-  RunConfig,
-} from '../../types'
+import type { ModelCatalog, ModelDescriptor, RubricCatalog, RunConfig } from '../../types'
 
 export type ChoiceSource = 'recommended' | 'automatic' | 'overridden'
 export interface Choice<T> { value: T; source: ChoiceSource }
 
 export interface RunConfigState {
   proposalModel: Choice<string>
-  judgeBackend: Choice<string>
   judgeModels: Choice<string[]>
+  challengeJudgeModels: Choice<string[]>
   proposalEvaluatorModel: Choice<string>
   rubricIds: string[]
   candidateBudget: number
@@ -22,9 +16,10 @@ export interface RunConfigState {
 export type RunConfigAction =
   | { type: 'use-recommended' }
   | { type: 'select-writer'; modelId: string }
-  | { type: 'select-backend'; backend: string }
   | { type: 'select-judge'; position: number; modelId: string }
   | { type: 'remove-last-judge' }
+  | { type: 'select-challenge-judge'; position: number; modelId: string }
+  | { type: 'remove-last-challenge-judge' }
   | { type: 'select-evaluator'; modelId: string }
   | { type: 'set-rubrics'; rubricIds: string[] }
   | { type: 'set-budget'; value: number }
@@ -34,40 +29,34 @@ function supports(model: ModelDescriptor, role: ModelDescriptor['supported_roles
   return model.supported_roles.includes(role)
 }
 
-function backend(models: ModelCatalog, name: string): JudgeBackendCatalog | undefined {
-  return models.judge_backends[name]
+function model(models: ModelCatalog, id: string) {
+  return models.available_models.find((candidate) => candidate.id === id)
 }
 
-function model(source: JudgeBackendCatalog | undefined, id: string) {
-  return source?.available_models.find((candidate) => candidate.id === id)
-}
-
-function writer(models: ModelCatalog, id: string) {
-  return models.proposal.available_models.find((candidate) => candidate.id === id)
-}
-
-function evaluator(models: ModelCatalog, backendName: string, writerId: string): string {
-  const source = backend(models, backendName)
-  const writerFamily = writer(models, writerId)?.family
-  const candidates = source?.proposal_evaluator_preferences
-    .map((id) => model(source, id))
+function evaluator(models: ModelCatalog, writerId: string): string {
+  const writerFamily = model(models, writerId)?.family
+  const candidates = models.proposal_evaluator_preferences
+    .map((id) => model(models, id))
     .filter((candidate): candidate is ModelDescriptor =>
-      candidate !== undefined && supports(candidate, 'proposal_evaluator')) ?? []
+      candidate !== undefined && supports(candidate, 'proposal_evaluator'))
   return (candidates.find((candidate) => candidate.family !== writerFamily) ?? candidates[0])?.id ?? ''
 }
 
+function same(values: readonly string[], recommended: readonly string[]): boolean {
+  return values.length === recommended.length &&
+    values.every((value, index) => value === recommended[index])
+}
+
 function recommendedState(models: ModelCatalog, rubricIds: readonly string[]): RunConfigState {
-  const backendName = models.recommended_judge_backend
-  const source = backend(models, backendName)
-  const writerId = models.proposal.recommended_model ?? ''
+  const writerId = models.recommended_proposal_model ?? ''
   return {
     proposalModel: { value: writerId, source: 'recommended' },
-    judgeBackend: { value: backendName, source: 'recommended' },
-    judgeModels: { value: [...(source?.recommended_judges ?? []).slice(0, 3)], source: 'recommended' },
-    proposalEvaluatorModel: {
-      value: evaluator(models, backendName, writerId),
-      source: 'automatic',
+    judgeModels: { value: [...models.recommended_judges.slice(0, 3)], source: 'recommended' },
+    challengeJudgeModels: {
+      value: [...models.recommended_challenge_judges.slice(0, 3)],
+      source: 'recommended',
     },
+    proposalEvaluatorModel: { value: evaluator(models, writerId), source: 'automatic' },
     rubricIds: [...rubricIds],
     candidateBudget: 3,
     force: false,
@@ -80,21 +69,19 @@ export function initializeRunConfigState(
   saved?: RunConfig | null,
 ): RunConfigState {
   if (!saved) return recommendedState(models, rubrics.rubrics.map((rubric) => rubric.id))
-  const source = backend(models, saved.judge_backend)
-  const automaticEvaluator = evaluator(models, saved.judge_backend, saved.proposal_model)
+  const automaticEvaluator = evaluator(models, saved.proposal_model)
   return {
     proposalModel: {
       value: saved.proposal_model,
-      source: saved.proposal_model === models.proposal.recommended_model ? 'recommended' : 'overridden',
-    },
-    judgeBackend: {
-      value: saved.judge_backend,
-      source: saved.judge_backend === models.recommended_judge_backend ? 'recommended' : 'overridden',
+      source: saved.proposal_model === models.recommended_proposal_model ? 'recommended' : 'overridden',
     },
     judgeModels: {
       value: [...saved.judge_models],
-      source: saved.judge_models.length === source?.recommended_judges.length &&
-        saved.judge_models.every((id, index) => id === source.recommended_judges[index])
+      source: same(saved.judge_models, models.recommended_judges) ? 'recommended' : 'overridden',
+    },
+    challengeJudgeModels: {
+      value: [...saved.challenge_judge_models],
+      source: same(saved.challenge_judge_models, models.recommended_challenge_judges)
         ? 'recommended' : 'overridden',
     },
     proposalEvaluatorModel: {
@@ -123,20 +110,8 @@ export function transitionRunConfig(
         proposalModel: { value: action.modelId, source: 'overridden' },
         proposalEvaluatorModel: state.proposalEvaluatorModel.source === 'overridden'
           ? state.proposalEvaluatorModel
-          : { value: evaluator(models, state.judgeBackend.value, action.modelId), source: 'automatic' },
+          : { value: evaluator(models, action.modelId), source: 'automatic' },
       }
-    case 'select-backend': {
-      const source = backend(models, action.backend)
-      return {
-        ...state,
-        judgeBackend: { value: action.backend, source: 'overridden' },
-        judgeModels: { value: [...(source?.recommended_judges ?? []).slice(0, 3)], source: 'recommended' },
-        proposalEvaluatorModel: {
-          value: evaluator(models, action.backend, state.proposalModel.value),
-          source: 'automatic',
-        },
-      }
-    }
     case 'select-judge': {
       if (action.position < 1 || action.position > 3) return state
       const values = [...state.judgeModels.value]
@@ -148,6 +123,21 @@ export function transitionRunConfig(
       return state.judgeModels.value.length <= 1 ? state : {
         ...state,
         judgeModels: { value: state.judgeModels.value.slice(0, -1), source: 'overridden' },
+      }
+    case 'select-challenge-judge': {
+      if (action.position < 1 || action.position > 3) return state
+      const values = [...state.challengeJudgeModels.value]
+      if (action.position > values.length + 1) return state
+      values[action.position - 1] = action.modelId
+      return { ...state, challengeJudgeModels: { value: values, source: 'overridden' } }
+    }
+    case 'remove-last-challenge-judge':
+      return state.challengeJudgeModels.value.length <= 1 ? state : {
+        ...state,
+        challengeJudgeModels: {
+          value: state.challengeJudgeModels.value.slice(0, -1),
+          source: 'overridden',
+        },
       }
     case 'select-evaluator':
       return { ...state, proposalEvaluatorModel: { value: action.modelId, source: 'overridden' } }
@@ -164,29 +154,38 @@ export function assessRunConfig(
 ): { errors: string[]; warnings: string[] } {
   const errors: string[] = []
   const warnings: string[] = []
-  const selectedWriter = writer(models, state.proposalModel.value)
+  const selectedWriter = model(models, state.proposalModel.value)
   if (!selectedWriter || !supports(selectedWriter, 'proposal_writer')) {
     errors.push('Select an available proposal writer.')
   }
-  const source = backend(models, state.judgeBackend.value)
-  if (!source) errors.push('Select an available judge backend.')
   if (state.judgeModels.value.length < 1 || state.judgeModels.value.length > 3) {
     errors.push('Select one through three judges.')
   }
-  const judges = state.judgeModels.value.map((id) => model(source, id))
+  const judges = state.judgeModels.value.map((id) => model(models, id))
   if (judges.some((judge) => judge === undefined || !supports(judge, 'judge'))) {
     errors.push('Select only available judge models.')
   }
   if (new Set(state.judgeModels.value).size !== state.judgeModels.value.length) {
     errors.push('Judge selections must be unique.')
   }
-  const selectedEvaluator = model(source, state.proposalEvaluatorModel.value)
+  if (state.challengeJudgeModels.value.length < 1 || state.challengeJudgeModels.value.length > 3) {
+    errors.push('Select one through three B/C verification judges.')
+  }
+  const challengeJudges = state.challengeJudgeModels.value.map((id) => model(models, id))
+  if (challengeJudges.some((judge) => judge === undefined || !supports(judge, 'judge'))) {
+    errors.push('Select only available B/C verification judge models.')
+  }
+  if (new Set(state.challengeJudgeModels.value).size !== state.challengeJudgeModels.value.length) {
+    errors.push('B/C verification judge selections must be unique.')
+  }
+  const selectedEvaluator = model(models, state.proposalEvaluatorModel.value)
   if (!selectedEvaluator || !supports(selectedEvaluator, 'proposal_evaluator')) {
     errors.push('Select an available proposal evaluator.')
   }
   const rubricIds = new Set(rubrics.rubrics.map((rubric) => rubric.id))
   if (!state.rubricIds.length) errors.push('Select at least one rubric.')
-  else if (state.rubricIds.some((id) => !rubricIds.has(id)) || new Set(state.rubricIds).size !== state.rubricIds.length) {
+  else if (state.rubricIds.some((id) => !rubricIds.has(id)) ||
+    new Set(state.rubricIds).size !== state.rubricIds.length) {
     errors.push('Select only available rubrics.')
   }
   if (!Number.isInteger(state.candidateBudget) || state.candidateBudget < 1) {
@@ -217,8 +216,8 @@ export function toRunConfig(
   return {
     model_catalog_version: models.catalog_version,
     rubric_catalog_version: rubrics.catalog_version,
-    judge_backend: state.judgeBackend.value,
     judge_models: [...state.judgeModels.value],
+    challenge_judge_models: [...state.challengeJudgeModels.value],
     proposal_model: state.proposalModel.value,
     proposal_evaluator_model: state.proposalEvaluatorModel.value,
     rubrics: [...state.rubricIds],

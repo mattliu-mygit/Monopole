@@ -18,6 +18,8 @@ development mode.
 - Python 3.11 or newer
 - [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
 - Node.js `20.19.x` or `22.12+` and npm
+- Apple Silicon macOS, or Linux with KVM, for local paired verification
+- The self-contained [Smol CLI](https://smolmachines.com/docs/installation)
 - Access to the W&B entity and project that contain your Weave traces
 
 Clone the repository if you have not already:
@@ -38,6 +40,13 @@ npm --prefix frontend ci
 
 The lockfiles provide the exact Python and frontend dependency versions used by
 the project.
+
+Install and verify the local microVM runtime separately:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/smol-machines/smol/main/scripts/install.sh | bash
+smol --version
+```
 
 ### 3. Configure W&B access
 
@@ -64,12 +73,45 @@ cp targets.example.json targets.local.json
 different repository or a larger set of instruction files. Do not add secrets
 or credentials to it.
 
-### 5. Start the API and UI
+### 5. Configure the paired Smol Machines runtime
+
+Every web evaluation verifies its provisional instruction proposal in two local
+microVMs. Copy the runtime example and set its workspace, image, and exact image
+digest:
+
+```bash
+cp smol-runtime.example.json smol-runtime.local.json
+```
+
+The image may be an OCI `@sha256:` reference or an absolute local
+`.smolmachine` artifact whose bytes match `image_digest`. A local artifact also
+supports offline/no-network evaluations. It must contain the same Codex and/or
+Claude CLI, repository toolchain, and tools used by the recorded agent. The
+service copies the source workspace into each VM without a live host mount. It
+also copies every server environment variable into both arms, applies the
+declared guest `HOME` and `PWD`, and may copy explicit host config or credential
+files through `runtime_files`. Those files are written only inside each
+disposable VM; persisted evidence contains their hashes, not their contents.
+Keep the runtime file local and never commit credentials.
+
+Managed instruction files inside the configured workspace stay under
+`/workspace`. Managed files under the host home, such as `~/.codex/AGENTS.md`,
+are mirrored to the same relative location under the guest home. Dependency
+and cache directories omitted from the frozen source are also omitted from
+final artifact capture, so installs do not dominate comparison evidence.
+
+The same runtime is used for coding and research tasks. Enable network only
+when the evaluated agent should retain network access; inherited credentials
+are reachable by the sandboxed agent when network is enabled.
+
+### 6. Start the API and UI
 
 In one terminal, from the repository root:
 
 ```bash
-uv run weave-agent-signals serve --target-registry targets.local.json
+uv run weave-agent-signals serve \
+  --target-registry targets.local.json \
+  --sandbox-runtime smol-runtime.local.json
 ```
 
 In a second terminal:
@@ -85,7 +127,9 @@ For a one-process production-style check:
 
 ```bash
 npm --prefix frontend run build
-uv run weave-agent-signals serve --target-registry targets.local.json
+uv run weave-agent-signals serve \
+  --target-registry targets.local.json \
+  --sandbox-runtime smol-runtime.local.json
 ```
 
 Then open [http://127.0.0.1:8787](http://127.0.0.1:8787).
@@ -97,11 +141,14 @@ reflection additionally need a usable model backend:
 
 - W&B Inference uses `WANDB_API_KEY` and requires inference credits.
 - OpenAI inference uses `OPENAI_API_KEY`.
-- Local Claude or Codex inference requires an installed, authenticated `claude`
-  or `codex` CLI on `PATH`.
+- Local Claude, Codex, or Antigravity inference requires an installed,
+  authenticated `claude`, `codex`, or `agy` CLI on `PATH`.
 
-Reflection proposal writing currently uses an available local Claude or Codex
-CLI. The web UI only offers local models whose executables it detects.
+One provider-qualified model catalog supplies proposal writers, judges, B/C
+verification judges, and proposal evaluators. The web UI only offers local
+models whose provider executable it detects. Antigravity contributes its
+Gemini/Google and open-source models; duplicate Anthropic choices remain under
+the Claude provider.
 
 ## Try the CLI
 
@@ -127,7 +174,10 @@ Run `uv run weave-agent-signals COMMAND --help` for arguments and defaults.
 Standalone `reflect` only previews output. Use an evaluation run in the web UI
 to persist candidates, edit a proposal, promote it, or retain a receipt.
 Displayed reflection scores are predicted evaluator scores, not verification
-runs.
+runs. The default proposal loop evaluates up to three candidate bundles, then
+runs only the selected provisional C against B. Normal session judging defaults
+to three recommended reviewers; the independently configured B/C verification
+panel defaults to one for cost.
 
 ## Target registries
 
@@ -219,7 +269,13 @@ and optional webhook before loading it into `~/Library/LaunchAgents/`.
   entry to `~/.netrc`.
 - **The UI cannot reach the API:** keep `serve` running on port `8787`; the Vite
   development server expects that port.
-- **No proposal-writer model is available:** install and authenticate either the
-  Claude or Codex CLI, then restart the API so the model catalog is rebuilt.
+- **No proposal-writer model is available:** install and authenticate Claude,
+  Codex, or Antigravity, then restart the API so the model catalog is rebuilt.
+- **Paired verification cannot start:** verify that the Smol runtime uses an
+  immutable OCI `@sha256:` reference or digest-matching local `.smolmachine`,
+  contains the pinned agent CLI and tools, and that every declared runtime file
+  exists. Prepared task repositories additionally require host `git` access to
+  their exact commit on GitHub, GitLab, Bitbucket, or Codeberg; bootstrap tasks
+  require guest network access when cloning or pulling is part of the agent task.
 - **W&B Inference returns HTTP 402:** inference credits are disabled for the
   configured project; choose another backend or enable credits.

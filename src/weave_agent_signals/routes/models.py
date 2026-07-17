@@ -10,14 +10,13 @@ from pydantic import BaseModel, ConfigDict, RootModel
 from weave_agent_signals.judges.tokens import TokenCounterName
 from weave_agent_signals.run_config import (
     EffectiveRunConfig,
-    JudgeBackendCatalog,
     JudgingContextPolicy,
     ModelDescriptor,
     PositionedJudge,
-    ProposalCatalog,
     RubricDescriptor,
     RunConfig,
 )
+from weave_agent_signals.runs.challenges.contracts import ChallengeResult
 
 
 class ResponseModel(BaseModel):
@@ -105,9 +104,11 @@ class SuccessfulReflectionResultResponse(ResponseModel):
     candidates: list[ReflectionCandidateResponse]
     generation_attempts: list[GenerationAttemptResponse]
     recommended_candidate_id: str | None
+    provisional_candidate_id: str | None
     baseline_won: bool
     reason: str | None
     score_basis: Literal["predicted_evaluator"]
+    challenge: ChallengeResult | None
 
 
 class EmptyReflectionResultResponse(ResponseModel):
@@ -442,9 +443,11 @@ class ReflectingProgressResponse(ResponseModel):
 
 class ModelCatalogResponse(ResponseModel):
     catalog_version: str
-    proposal: ProposalCatalog
-    recommended_judge_backend: str
-    judge_backends: dict[str, JudgeBackendCatalog]
+    available_models: list[ModelDescriptor]
+    recommended_proposal_model: str | None
+    recommended_judges: list[str]
+    recommended_challenge_judges: list[str]
+    proposal_evaluator_preferences: list[str]
 
 
 class RunResponse(ResponseModel):

@@ -16,16 +16,17 @@ def test_judge_parser_accepts_ordered_explicit_panel():
     args = cli.build_parser().parse_args(
         [
             "judge",
-            "--judge-backend",
-            "cli",
             "--judge-model",
-            "claude-sonnet-5",
+            "claude:claude-sonnet-5",
             "--judge-model",
-            "gpt-5.6-sol",
+            "agy:gemini-3.1-pro-high",
         ]
     )
 
-    assert args.judge_models == ["claude-sonnet-5", "gpt-5.6-sol"]
+    assert args.judge_models == [
+        "claude:claude-sonnet-5",
+        "agy:gemini-3.1-pro-high",
+    ]
 
 
 def test_reflect_parser_exposes_explicit_evaluator_and_rejects_zero_budget():
@@ -53,24 +54,31 @@ def test_reflect_parser_exposes_explicit_evaluator_and_rejects_zero_budget():
 
 
 def test_serve_defaults_to_the_local_trust_boundary():
-    args = cli.build_parser().parse_args(["serve", "--target-registry", "targets.json"])
+    args = cli.build_parser().parse_args(
+        [
+            "serve",
+            "--target-registry",
+            "targets.json",
+            "--sandbox-runtime",
+            "runtime.json",
+        ]
+    )
 
     assert args.host == "127.0.0.1"
 
 
-def test_reflection_model_defaults_come_from_the_selected_catalog_backend(monkeypatch):
+def test_reflection_model_defaults_come_from_the_unified_catalog(monkeypatch):
     catalog = build_model_catalog(which=lambda _executable: "/bin/fake")
     monkeypatch.setattr(cli, "build_model_catalog", lambda: catalog)
     args = argparse.Namespace(
         model=None,
-        judge_backend="cli",
         proposal_evaluator_model=None,
     )
 
     writer, evaluator = cli._resolve_reflection_models(args)
 
-    assert writer.id == catalog.proposal.recommended_model
-    assert evaluator.id == catalog.backend("cli").proposal_evaluator_preferences[0]
+    assert writer.id == catalog.recommended_proposal_model
+    assert evaluator.id == catalog.proposal_evaluator_preferences[0]
 
 
 def test_standalone_reflect_stops_before_local_or_model_setup_for_audit_only_feedback(
@@ -108,9 +116,8 @@ def test_standalone_reflect_stops_before_local_or_model_setup_for_audit_only_fee
             project="project",
             limit=10,
             target_registry=str(tmp_path / "targets.json"),
-            model="gpt-5.6-sol",
-            judge_backend="cli",
-            proposal_evaluator_model="claude-sonnet-5",
+            model="codex:gpt-5.6-sol",
+            proposal_evaluator_model="claude:claude-sonnet-5",
             candidate_budget=3,
         )
     )
@@ -174,9 +181,8 @@ def test_standalone_reflect_always_infers_with_resolved_roles_and_only_prints_di
             project="project",
             limit=10,
             target_registry=str(tmp_path / "targets.json"),
-            model="gpt-5.6-sol",
-            judge_backend="cli",
-            proposal_evaluator_model="claude-sonnet-5",
+            model="codex:gpt-5.6-sol",
+            proposal_evaluator_model="claude:claude-sonnet-5",
             candidate_budget=3,
         )
     )
@@ -190,13 +196,13 @@ def test_standalone_reflect_always_infers_with_resolved_roles_and_only_prints_di
         }
     ]
     assert call["baseline"] is baseline
-    assert call["requested_writer"].id == "gpt-5.6-sol"
-    assert call["requested_evaluator"].id == "claude-sonnet-5"
+    assert call["requested_writer"].id == "codex:gpt-5.6-sol"
+    assert call["requested_evaluator"].id == "claude:claude-sonnet-5"
     assert call["resolve_locator"] == adapter.resolve_locator
     assert call["scope_policy"] == adapter.contract_manifest.return_value
     output = capsys.readouterr().out
-    assert "proposal_writer=gpt-5.6-sol" in output
-    assert "proposal_evaluator=claude-sonnet-5" in output
+    assert "proposal_writer=codex:gpt-5.6-sol" in output
+    assert "proposal_evaluator=claude:claude-sonnet-5" in output
     assert "--- B/CLAUDE.md" in output
     assert "+++ C/CLAUDE.md" in output
     assert "preview-only" in output
@@ -221,10 +227,10 @@ def test_cli_help_lists_current_commands():
 
 
 @pytest.mark.parametrize("command", ["judge", "reflect"])
-def test_model_backend_help_describes_catalog_selection(command, capsys):
+def test_model_help_describes_catalog_selection(command, capsys):
     with pytest.raises(SystemExit, match="0"):
         cli.build_parser().parse_args([command, "--help"])
 
     output = capsys.readouterr().out
-    assert "catalog backend ID" in output
+    assert "model ID" in output
     assert "custom URL" not in output

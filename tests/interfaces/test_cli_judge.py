@@ -22,8 +22,7 @@ def _args(**updates):
         "since": None,
         "limit": 10,
         "rubric": None,
-        "judge_backend": "cli",
-        "judge_models": ["claude-sonnet-5", "gpt-5.6-sol"],
+        "judge_models": ["claude:claude-sonnet-5", "codex:gpt-5.6-sol"],
         "force": False,
     }
     values.update(updates)
@@ -44,9 +43,8 @@ def _turn():
 def test_default_panel_resolves_catalog_recommendations(monkeypatch):
     catalog = _catalog()
     monkeypatch.setattr(cli, "build_model_catalog", lambda: catalog)
-    judges = cli._resolve_judge_panel(_args(judge_backend=None, judge_models=None))
-    backend = catalog.backend(catalog.recommended_judge_backend)
-    assert [judge.id for judge in judges] == list(backend.recommended_judges)
+    judges = cli._resolve_judge_panel(_args(judge_models=None))
+    assert [judge.id for judge in judges] == list(catalog.recommended_judges)
 
 
 def test_group_sessions_breaks_equal_timestamp_ties_by_trace_id():
@@ -92,8 +90,8 @@ def test_direct_cli_uses_one_session_plan_runner_and_in_memory_artifacts(monkeyp
     kwargs = judge.call_args.kwargs
     assert kwargs["judging_plan"] is plan
     assert [item.id for item in kwargs["judges"]] == [
-        "claude-sonnet-5",
-        "gpt-5.6-sol",
+        "claude:claude-sonnet-5",
+        "codex:gpt-5.6-sol",
     ]
     assert callable(kwargs["artifact_loader"])
     assert callable(kwargs["artifact_recorder"])

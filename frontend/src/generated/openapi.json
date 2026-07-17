@@ -66,6 +66,247 @@
         "title": "AnalysisResponse",
         "type": "object"
       },
+      "ArmResult": {
+        "additionalProperties": false,
+        "properties": {
+          "arm": {
+            "enum": [
+              "baseline",
+              "candidate"
+            ],
+            "title": "Arm",
+            "type": "string"
+          },
+          "artifact_changes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ArtifactChange"
+            },
+            "title": "Artifact Changes",
+            "type": "array"
+          },
+          "artifact_digests": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Artifact Digests",
+            "type": "object"
+          },
+          "duration_seconds": {
+            "minimum": 0.0,
+            "title": "Duration Seconds",
+            "type": "number"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "final_workspace_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Workspace Digest"
+          },
+          "infrastructure_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Infrastructure Error"
+          },
+          "initial_workspace_digest": {
+            "title": "Initial Workspace Digest",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "exited",
+              "timed_out",
+              "infrastructure_failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "transcript": {
+            "title": "Transcript",
+            "type": "string"
+          },
+          "transcript_digest": {
+            "title": "Transcript Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "arm",
+          "status",
+          "exit_code",
+          "duration_seconds",
+          "initial_workspace_digest",
+          "final_workspace_digest",
+          "transcript",
+          "transcript_digest",
+          "artifact_digests"
+        ],
+        "title": "ArmResult",
+        "type": "object"
+      },
+      "ArtifactChange": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "added",
+              "modified",
+              "deleted"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "after_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Digest"
+          },
+          "before_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before Digest"
+          },
+          "diff": {
+            "maxLength": 40000,
+            "title": "Diff",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "action",
+          "before_digest",
+          "after_digest",
+          "diff"
+        ],
+        "title": "ArtifactChange",
+        "type": "object"
+      },
+      "AuthoredTask": {
+        "additionalProperties": false,
+        "properties": {
+          "author_backend": {
+            "title": "Author Backend",
+            "type": "string"
+          },
+          "author_model": {
+            "title": "Author Model",
+            "type": "string"
+          },
+          "goal": {
+            "title": "Goal",
+            "type": "string"
+          },
+          "judging_criteria": {
+            "default": [
+              "The stated goal is achieved."
+            ],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Judging Criteria",
+            "type": "array"
+          },
+          "materials": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/TaskMaterial"
+            },
+            "maxItems": 3,
+            "title": "Materials",
+            "type": "array"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "2",
+            "default": "2",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "setup_mode": {
+            "default": "agent_bootstrap",
+            "enum": [
+              "prepared_workspace",
+              "agent_bootstrap"
+            ],
+            "title": "Setup Mode",
+            "type": "string"
+          },
+          "start_checks": {
+            "default": [
+              "The supplied workspace is available."
+            ],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Start Checks",
+            "type": "array"
+          },
+          "task_id": {
+            "default": "pending",
+            "title": "Task Id",
+            "type": "string"
+          },
+          "workspace_digest": {
+            "title": "Workspace Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "prompt",
+          "goal",
+          "workspace_digest",
+          "author_model",
+          "author_backend"
+        ],
+        "title": "AuthoredTask",
+        "type": "object"
+      },
       "AutoRunRequest": {
         "additionalProperties": false,
         "properties": {
@@ -156,6 +397,108 @@
           "revision"
         ],
         "title": "BundleSnapshotResponse",
+        "type": "object"
+      },
+      "ChallengeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArmResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArmResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidate_id": {
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "challenge_id": {
+            "default": "pending",
+            "title": "Challenge Id",
+            "type": "string"
+          },
+          "execution": {
+            "$ref": "#/components/schemas/ExecutionIdentity"
+          },
+          "judges": {
+            "items": {
+              "$ref": "#/components/schemas/JudgeVerdict"
+            },
+            "title": "Judges",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "schema_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "complete",
+              "incomplete",
+              "invalid_task"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "task": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AuthoredTask"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "winner": {
+            "enum": [
+              "baseline",
+              "candidate",
+              "tie"
+            ],
+            "title": "Winner",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "status",
+          "winner",
+          "reason",
+          "task",
+          "execution",
+          "baseline",
+          "candidate",
+          "judges"
+        ],
+        "title": "ChallengeResult",
         "type": "object"
       },
       "ChatSpanResponse": {
@@ -342,6 +685,13 @@
       "EffectiveModelSelection": {
         "additionalProperties": false,
         "properties": {
+          "challenge_judges": {
+            "items": {
+              "$ref": "#/components/schemas/PositionedJudge"
+            },
+            "title": "Challenge Judges",
+            "type": "array"
+          },
           "judges": {
             "items": {
               "$ref": "#/components/schemas/PositionedJudge"
@@ -359,6 +709,7 @@
         "required": [
           "proposal_writer",
           "judges",
+          "challenge_judges",
           "proposal_evaluator"
         ],
         "title": "EffectiveModelSelection",
@@ -376,10 +727,6 @@
           "force": {
             "title": "Force",
             "type": "boolean"
-          },
-          "judge_backend": {
-            "title": "Judge Backend",
-            "type": "string"
           },
           "judging_context": {
             "$ref": "#/components/schemas/JudgingContextPolicy"
@@ -407,8 +754,8 @@
             "type": "array"
           },
           "schema_version": {
-            "const": "3",
-            "default": "3",
+            "const": "5",
+            "default": "5",
             "title": "Schema Version",
             "type": "string"
           },
@@ -424,7 +771,6 @@
           "pipeline_version",
           "model_catalog_version",
           "rubric_catalog_version",
-          "judge_backend",
           "models",
           "rubrics",
           "selection_warnings",
@@ -522,6 +868,112 @@
           "usage"
         ],
         "title": "EvaluatorRecordResponse",
+        "type": "object"
+      },
+      "ExecutionIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Command",
+            "type": "array"
+          },
+          "effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effort"
+          },
+          "environment": {
+            "items": {
+              "$ref": "#/components/schemas/NamedDigest"
+            },
+            "title": "Environment",
+            "type": "array"
+          },
+          "execution_id": {
+            "default": "pending",
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "harness": {
+            "enum": [
+              "codex",
+              "claude"
+            ],
+            "title": "Harness",
+            "type": "string"
+          },
+          "harness_version": {
+            "title": "Harness Version",
+            "type": "string"
+          },
+          "image": {
+            "title": "Image",
+            "type": "string"
+          },
+          "image_digest": {
+            "title": "Image Digest",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "model_family": {
+            "title": "Model Family",
+            "type": "string"
+          },
+          "network_enabled": {
+            "title": "Network Enabled",
+            "type": "boolean"
+          },
+          "runtime_files": {
+            "items": {
+              "$ref": "#/components/schemas/NamedDigest"
+            },
+            "title": "Runtime Files",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "minimum": 1.0,
+            "title": "Timeout Seconds",
+            "type": "integer"
+          },
+          "workspace_digest": {
+            "title": "Workspace Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "model_family",
+          "harness",
+          "harness_version",
+          "effort",
+          "image",
+          "image_digest",
+          "command",
+          "timeout_seconds",
+          "network_enabled",
+          "environment",
+          "runtime_files",
+          "workspace_digest"
+        ],
+        "title": "ExecutionIdentity",
         "type": "object"
       },
       "FeedbackItemResponse": {
@@ -846,37 +1298,98 @@
         "title": "InferenceStepAuditResponse",
         "type": "object"
       },
-      "JudgeBackendCatalog": {
+      "JudgeVerdict": {
         "additionalProperties": false,
         "properties": {
-          "available_models": {
+          "backend": {
+            "title": "Backend",
+            "type": "string"
+          },
+          "baseline_label": {
+            "title": "Baseline Label",
+            "type": "string"
+          },
+          "candidate_label": {
+            "title": "Candidate Label",
+            "type": "string"
+          },
+          "family": {
+            "title": "Family",
+            "type": "string"
+          },
+          "position": {
+            "maximum": 3.0,
+            "minimum": 1.0,
+            "title": "Position",
+            "type": "integer"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "requested_model": {
+            "title": "Requested Model",
+            "type": "string"
+          },
+          "resolved_model": {
+            "title": "Resolved Model",
+            "type": "string"
+          },
+          "rubrics": {
             "items": {
-              "$ref": "#/components/schemas/ModelDescriptor"
+              "$ref": "#/components/schemas/RubricVerdict"
             },
-            "title": "Available Models",
+            "title": "Rubrics",
             "type": "array"
           },
-          "proposal_evaluator_preferences": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Proposal Evaluator Preferences",
-            "type": "array"
+          "task_invalid_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Invalid Reason"
           },
-          "recommended_judges": {
-            "items": {
-              "type": "string"
+          "task_valid": {
+            "default": true,
+            "title": "Task Valid",
+            "type": "boolean"
+          },
+          "usage": {
+            "additionalProperties": {
+              "minimum": 0.0,
+              "type": "integer"
             },
-            "title": "Recommended Judges",
-            "type": "array"
+            "title": "Usage",
+            "type": "object"
+          },
+          "winner": {
+            "enum": [
+              "baseline",
+              "candidate",
+              "tie"
+            ],
+            "title": "Winner",
+            "type": "string"
           }
         },
         "required": [
-          "available_models",
-          "recommended_judges",
-          "proposal_evaluator_preferences"
+          "position",
+          "requested_model",
+          "resolved_model",
+          "family",
+          "backend",
+          "baseline_label",
+          "candidate_label",
+          "winner",
+          "rationale",
+          "rubrics",
+          "usage"
         ],
-        "title": "JudgeBackendCatalog",
+        "title": "JudgeVerdict",
         "type": "object"
       },
       "JudgingActivityEventResponse": {
@@ -2023,30 +2536,57 @@
       "ModelCatalogResponse": {
         "additionalProperties": false,
         "properties": {
+          "available_models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelDescriptor"
+            },
+            "title": "Available Models",
+            "type": "array"
+          },
           "catalog_version": {
             "title": "Catalog Version",
             "type": "string"
           },
-          "judge_backends": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/JudgeBackendCatalog"
+          "proposal_evaluator_preferences": {
+            "items": {
+              "type": "string"
             },
-            "title": "Judge Backends",
-            "type": "object"
+            "title": "Proposal Evaluator Preferences",
+            "type": "array"
           },
-          "proposal": {
-            "$ref": "#/components/schemas/ProposalCatalog"
+          "recommended_challenge_judges": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Recommended Challenge Judges",
+            "type": "array"
           },
-          "recommended_judge_backend": {
-            "title": "Recommended Judge Backend",
-            "type": "string"
+          "recommended_judges": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Recommended Judges",
+            "type": "array"
+          },
+          "recommended_proposal_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended Proposal Model"
           }
         },
         "required": [
           "catalog_version",
-          "proposal",
-          "recommended_judge_backend",
-          "judge_backends"
+          "available_models",
+          "recommended_proposal_model",
+          "recommended_judges",
+          "recommended_challenge_judges",
+          "proposal_evaluator_preferences"
         ],
         "title": "ModelCatalogResponse",
         "type": "object"
@@ -2054,10 +2594,6 @@
       "ModelDescriptor": {
         "additionalProperties": false,
         "properties": {
-          "backend": {
-            "title": "Backend",
-            "type": "string"
-          },
           "family": {
             "title": "Family",
             "type": "string"
@@ -2075,6 +2611,14 @@
             "minimum": 1.0,
             "title": "Max Input Tokens",
             "type": "integer"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_model": {
+            "title": "Provider Model",
+            "type": "string"
           },
           "supported_roles": {
             "items": {
@@ -2102,20 +2646,36 @@
         "required": [
           "id",
           "label",
+          "provider",
+          "provider_model",
           "family",
-          "backend",
           "supported_roles"
         ],
         "title": "ModelDescriptor",
         "type": "object"
       },
+      "NamedDigest": {
+        "additionalProperties": false,
+        "properties": {
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "digest"
+        ],
+        "title": "NamedDigest",
+        "type": "object"
+      },
       "PositionedJudge": {
         "additionalProperties": false,
         "properties": {
-          "backend": {
-            "title": "Backend",
-            "type": "string"
-          },
           "family": {
             "title": "Family",
             "type": "string"
@@ -2138,6 +2698,14 @@
             "minimum": 1.0,
             "title": "Position",
             "type": "integer"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_model": {
+            "title": "Provider Model",
+            "type": "string"
           },
           "role": {
             "const": "judge",
@@ -2171,8 +2739,9 @@
         "required": [
           "id",
           "label",
+          "provider",
+          "provider_model",
           "family",
-          "backend",
           "supported_roles",
           "position"
         ],
@@ -2339,35 +2908,6 @@
           "message"
         ],
         "title": "PromotionTargetOutcomeResponse",
-        "type": "object"
-      },
-      "ProposalCatalog": {
-        "additionalProperties": false,
-        "properties": {
-          "available_models": {
-            "items": {
-              "$ref": "#/components/schemas/ModelDescriptor"
-            },
-            "title": "Available Models",
-            "type": "array"
-          },
-          "recommended_model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Recommended Model"
-          }
-        },
-        "required": [
-          "available_models",
-          "recommended_model"
-        ],
-        "title": "ProposalCatalog",
         "type": "object"
       },
       "ReflectingProgressResponse": {
@@ -3100,6 +3640,62 @@
         "title": "RubricDescriptor",
         "type": "object"
       },
+      "RubricVerdict": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline_score": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Baseline Score",
+            "type": "number"
+          },
+          "candidate_score": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Candidate Score",
+            "type": "number"
+          },
+          "delta": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": -1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "rubric_id": {
+            "title": "Rubric Id",
+            "type": "string"
+          },
+          "winner": {
+            "enum": [
+              "baseline",
+              "candidate",
+              "tie"
+            ],
+            "title": "Winner",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rubric_id",
+          "baseline_score",
+          "candidate_score",
+          "winner",
+          "rationale"
+        ],
+        "title": "RubricVerdict",
+        "type": "object"
+      },
       "RunConfig": {
         "additionalProperties": false,
         "properties": {
@@ -3109,13 +3705,16 @@
             "title": "Candidate Budget",
             "type": "integer"
           },
+          "challenge_judge_models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Challenge Judge Models",
+            "type": "array"
+          },
           "force": {
             "title": "Force",
             "type": "boolean"
-          },
-          "judge_backend": {
-            "title": "Judge Backend",
-            "type": "string"
           },
           "judge_models": {
             "items": {
@@ -3151,8 +3750,8 @@
         "required": [
           "model_catalog_version",
           "rubric_catalog_version",
-          "judge_backend",
           "judge_models",
+          "challenge_judge_models",
           "proposal_model",
           "proposal_evaluator_model",
           "rubrics",
@@ -4162,12 +4761,33 @@
             "title": "Candidates",
             "type": "array"
           },
+          "challenge": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChallengeResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "generation_attempts": {
             "items": {
               "$ref": "#/components/schemas/GenerationAttemptResponse"
             },
             "title": "Generation Attempts",
             "type": "array"
+          },
+          "provisional_candidate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provisional Candidate Id"
           },
           "reason": {
             "anyOf": [
@@ -4204,9 +4824,11 @@
           "candidates",
           "generation_attempts",
           "recommended_candidate_id",
+          "provisional_candidate_id",
           "baseline_won",
           "reason",
-          "score_basis"
+          "score_basis",
+          "challenge"
         ],
         "title": "SuccessfulReflectionResultResponse",
         "type": "object"
@@ -4267,6 +4889,36 @@
           "revision"
         ],
         "title": "TargetSnapshotResponse",
+        "type": "object"
+      },
+      "TaskMaterial": {
+        "additionalProperties": false,
+        "properties": {
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "kind": {
+            "const": "git_repository",
+            "default": "git_repository",
+            "title": "Kind",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "revision",
+          "destination"
+        ],
+        "title": "TaskMaterial",
         "type": "object"
       },
       "ToolCallResponse": {

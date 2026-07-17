@@ -44,10 +44,10 @@ def valid_request(**changes):
     values = {
         "model_catalog_version": "sha256:model",
         "rubric_catalog_version": "sha256:rubric",
-        "judge_backend": "cli",
-        "judge_models": ("claude-sonnet-5", "gpt-5.6-sol"),
-        "proposal_model": "gpt-5.6-sol",
-        "proposal_evaluator_model": "claude-sonnet-5",
+        "judge_models": ("claude:claude-sonnet-5", "codex:gpt-5.6-sol"),
+        "challenge_judge_models": ("codex:gpt-5.6-sol",),
+        "proposal_model": "codex:gpt-5.6-sol",
+        "proposal_evaluator_model": "claude:claude-sonnet-5",
         "rubrics": ("judge.tool_choice",),
         "candidate_budget": 3,
         "force": False,
@@ -70,19 +70,28 @@ def test_run_config_rejects_unknown_fields():
     ],
 )
 def test_run_config_accepts_one_through_three_judges(judges):
-    request = RunConfig.model_validate(valid_request(judge_models=judges))
+    request = RunConfig.model_validate(
+        valid_request(judge_models=judges, challenge_judge_models=judges)
+    )
     assert request.judge_models == judges
+    assert request.challenge_judge_models == judges
 
 
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
         ({"judge_models": ("judge-a", "judge-a")}, "judge_models must be unique"),
+        (
+            {"challenge_judge_models": ("judge-a", "judge-a")},
+            "challenge_judge_models must be unique",
+        ),
         ({"judge_models": ("judge-a", "")}, "judge_models must contain nonblank"),
         ({"rubrics": ("judge.tool_choice", "judge.tool_choice")}, "rubrics must be unique"),
         ({"proposal_model": ""}, "proposal_model must be nonblank"),
         ({"judge_models": ()}, "one through three"),
         ({"judge_models": ("a", "b", "c", "d")}, "one through three"),
+        ({"challenge_judge_models": ()}, "one through three"),
+        ({"challenge_judge_models": ("a", "b", "c", "d")}, "one through three"),
     ],
 )
 def test_run_config_rejects_invalid_explicit_selection(changes, message):
@@ -130,7 +139,7 @@ def _catalog_request(**changes):
 
 def test_resolve_run_config_pins_exact_order_descriptors_and_pipeline_version():
     models, rubrics, request = _catalog_request(
-        judge_models=("gpt-5.6-sol", "claude-sonnet-5"),
+        judge_models=("codex:gpt-5.6-sol", "agy:gemini-3.1-pro-high"),
         rubrics=tuple(rubric.id for rubric in build_rubric_catalog().rubrics[:2]),
     )
 
@@ -140,12 +149,14 @@ def test_resolve_run_config_pins_exact_order_descriptors_and_pipeline_version():
         rubric_catalog=rubrics,
     )
 
-    assert effective.pipeline_version == PIPELINE_VERSION == "5"
+    assert effective.pipeline_version == PIPELINE_VERSION == "8"
     assert [judge.id for judge in effective.models.judges] == [
-        "gpt-5.6-sol",
-        "claude-sonnet-5",
+        "codex:gpt-5.6-sol",
+        "agy:gemini-3.1-pro-high",
     ]
     assert [judge.position for judge in effective.models.judges] == [1, 2]
+    assert [judge.id for judge in effective.models.challenge_judges] == ["codex:gpt-5.6-sol"]
+    assert [judge.position for judge in effective.models.challenge_judges] == [1]
     assert effective.models.proposal_writer == models.model(request.proposal_model)
     assert effective.models.proposal_evaluator == models.model(request.proposal_evaluator_model)
     assert effective.rubrics == rubrics.rubrics[:2]
@@ -155,10 +166,10 @@ def test_resolve_run_config_pins_exact_order_descriptors_and_pipeline_version():
 
 
 def test_capacity_metadata_bumps_model_and_effective_config_schema_versions():
-    assert MODEL_CATALOG_SCHEMA_VERSION == "3"
+    assert MODEL_CATALOG_SCHEMA_VERSION == "5"
     assert RUBRIC_CATALOG_SCHEMA_VERSION == "1"
-    assert EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION == "3"
-    assert EffectiveRunConfig.model_fields["schema_version"].default == "3"
+    assert EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION == "5"
+    assert EffectiveRunConfig.model_fields["schema_version"].default == "5"
 
 
 def test_resolve_run_config_defaults_empty_rubrics_to_exact_catalog_snapshot():
@@ -191,16 +202,21 @@ def test_resolve_run_config_rejects_stale_catalog_versions(version_field, messag
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
-        ({"judge_backend": "missing"}, "unknown judge backend"),
-        ({"judge_models": ("gpt-oss-20b", "claude-sonnet-5")}, "does not support judging on cli"),
-        ({"proposal_model": "gpt-oss-20b"}, "unknown or unavailable proposal model"),
+        ({"judge_models": ("missing",)}, "judge model missing is unknown or unavailable"),
+        (
+            {"challenge_judge_models": ("missing",)},
+            "challenge judge model missing is unknown or unavailable",
+        ),
+        (
+            {"proposal_model": "wandb:gpt-oss-20b"},
+            "unknown or unavailable proposal model",
+        ),
         ({"proposal_model": "missing"}, "unknown or unavailable proposal model"),
-        ({"proposal_evaluator_model": "gpt-4o"}, "unknown or unavailable for cli"),
-        ({"proposal_evaluator_model": "missing"}, "unknown or unavailable for cli"),
+        ({"proposal_evaluator_model": "missing"}, "unknown or unavailable"),
         ({"rubrics": ("judge.missing",)}, "unknown rubric"),
     ],
 )
-def test_resolve_run_config_rejects_wrong_backend_role_or_unknown_ids(changes, message):
+def test_resolve_run_config_rejects_wrong_role_or_unknown_ids(changes, message):
     models, rubrics, request = _catalog_request(**changes)
 
     with pytest.raises(ValueError, match=message):
@@ -209,24 +225,21 @@ def test_resolve_run_config_rejects_wrong_backend_role_or_unknown_ids(changes, m
 
 def test_resolve_run_config_rejects_model_without_requested_role():
     models, rubrics, request = _catalog_request(
-        judge_models=("writer-only", "gpt-5.6-sol"),
+        judge_models=("test:writer-only", "codex:gpt-5.6-sol"),
     )
     writer_only = ModelDescriptor(
-        id="writer-only",
+        id="test:writer-only",
         label="Writer only",
+        provider="test",
+        provider_model="writer-only",
         family="example",
-        backend="cli",
         supported_roles=("proposal_writer",),
     )
-    cli = models.backend("cli")
-    restricted_cli = cli.model_copy(
-        update={"available_models": (*cli.available_models, writer_only)}
-    )
     restricted_catalog = models.model_copy(
-        update={"judge_backends": {**models.judge_backends, "cli": restricted_cli}}
+        update={"available_models": (*models.available_models, writer_only)}
     )
 
-    with pytest.raises(ValueError, match="does not support judging on cli"):
+    with pytest.raises(ValueError, match="does not support judging"):
         resolve_run_config(
             request,
             model_catalog=restricted_catalog,
@@ -236,7 +249,7 @@ def test_resolve_run_config_rejects_model_without_requested_role():
 
 def test_resolve_run_config_emits_evaluated_family_warning_without_changing_order():
     models, rubrics, request = _catalog_request(
-        judge_models=("claude-sonnet-5", "gpt-5.6-sol"),
+        judge_models=("claude:claude-sonnet-5", "codex:gpt-5.6-sol"),
     )
 
     effective = resolve_run_config(
@@ -253,5 +266,36 @@ def test_resolve_run_config_emits_evaluated_family_warning_without_changing_orde
         if warning.code == "judge_evaluated_family_overlap"
     )
     assert warning.affected_roles == ("judge_2", "evaluated_agent")
-    assert warning.selected_model_ids == ("gpt-5.6-sol", "provider-resolved-model")
+    assert warning.selected_model_ids == ("codex:gpt-5.6-sol", "provider-resolved-model")
     assert warning.compared_families == ("openai",)
+
+
+def test_resolve_run_config_warns_for_challenge_panel_family_bias():
+    models, rubrics, request = _catalog_request(
+        challenge_judge_models=(
+            "claude:claude-sonnet-5",
+            "claude:claude-haiku-4-5",
+        ),
+    )
+
+    effective = resolve_run_config(
+        request,
+        model_catalog=models,
+        rubric_catalog=rubrics,
+        evaluated_models=(EvaluatedModelIdentity(id="evaluated-claude", family="anthropic"),),
+    )
+
+    warnings = {warning.code: warning for warning in effective.selection_warnings}
+    assert warnings["challenge_judge_family_overlap"].affected_roles == (
+        "challenge_judge_1",
+        "challenge_judge_2",
+    )
+    assert warnings["low_challenge_judge_family_diversity"].selected_model_ids == (
+        "claude:claude-sonnet-5",
+        "claude:claude-haiku-4-5",
+    )
+    assert warnings["challenge_judge_evaluated_family_overlap"].affected_roles == (
+        "challenge_judge_1",
+        "challenge_judge_2",
+        "evaluated_agent",
+    )
