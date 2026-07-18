@@ -16,6 +16,7 @@ from types import MappingProxyType
 
 from weave_agent_signals.judges.families import model_family
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS, Rubric
+from weave_agent_signals.judges.tokens import TokenCounterName
 from weave_agent_signals.run_config import (
     DEFAULT_JUDGING_CONTEXT_POLICY,
     MODEL_CATALOG_SCHEMA_VERSION,
@@ -29,6 +30,149 @@ from weave_agent_signals.run_config import (
 _PROPOSAL_ROLE = "proposal_writer"
 _JUDGE_ROLE = "judge"
 _PROPOSAL_EVALUATOR_ROLE = "proposal_evaluator"
+
+
+def _wandb_model(
+    model_id: str,
+    label: str,
+    provider_model: str,
+    family: str,
+    max_input_tokens: int,
+    token_counter: TokenCounterName = "utf8_bytes_div_3",
+) -> ModelDescriptor:
+    return ModelDescriptor(
+        id=model_id,
+        label=label,
+        provider="wandb",
+        provider_model=provider_model,
+        family=family,
+        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=max_input_tokens,
+        token_counter=token_counter,
+    )
+
+
+_WANDB_MODELS = tuple(
+    _wandb_model(*spec)
+    for spec in (
+        (
+            "wandb:Mellum2-12B-A2.5B-Instruct",
+            "Mellum2 12B A2.5B",
+            "JetBrains/Mellum2-12B-A2.5B-Instruct",
+            "jetbrains",
+            131_000,
+        ),
+        ("wandb:MiniMax-M2.5", "MiniMax M2.5", "MiniMaxAI/MiniMax-M2.5", "minimax", 197_000),
+        (
+            "wandb:Qwen3-14B-Instruct",
+            "Qwen3 14B Instruct",
+            "OpenPipe/Qwen3-14B-Instruct",
+            "qwen",
+            32_800,
+        ),
+        (
+            "wandb:Qwen3-30B-A3B-Instruct-2507",
+            "Qwen3 30B A3B Instruct",
+            "Qwen/Qwen3-30B-A3B-Instruct-2507",
+            "qwen",
+            262_000,
+        ),
+        (
+            "wandb:Qwen3-Coder-480B-A35B-Instruct",
+            "Qwen3 Coder 480B A35B",
+            "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+            "qwen",
+            262_000,
+        ),
+        ("wandb:Qwen3.5-35B-A3B", "Qwen3.5 35B A3B", "Qwen/Qwen3.5-35B-A3B", "qwen", 262_000),
+        ("wandb:Qwen3.6-27B", "Qwen3.6 27B", "Qwen/Qwen3.6-27B", "qwen", 262_000),
+        ("wandb:Qwen3.6-35B-A3B", "Qwen3.6 35B A3B", "Qwen/Qwen3.6-35B-A3B", "qwen", 262_000),
+        ("wandb:DeepSeek-V3.1", "DeepSeek V3.1", "deepseek-ai/DeepSeek-V3.1", "deepseek", 161_000),
+        (
+            "wandb:DeepSeek-V4-Flash",
+            "DeepSeek V4 Flash",
+            "deepseek-ai/DeepSeek-V4-Flash",
+            "deepseek",
+            1_049_000,
+        ),
+        (
+            "wandb:DeepSeek-V4-Pro",
+            "DeepSeek V4 Pro",
+            "deepseek-ai/DeepSeek-V4-Pro",
+            "deepseek",
+            1_049_000,
+        ),
+        ("wandb:gemma-4-31B-it", "Gemma 4 31B", "google/gemma-4-31B-it", "google", 262_000),
+        (
+            "wandb:granite-4.1-8b",
+            "Granite 4.1 8B",
+            "ibm-granite/granite-4.1-8b",
+            "ibm",
+            131_072,
+        ),
+        (
+            "wandb:Llama-3.1-70B",
+            "Llama 3.1 70B",
+            "meta-llama/Llama-3.1-70B-Instruct",
+            "meta",
+            128_000,
+        ),
+        (
+            "wandb:Llama-3.1-8B",
+            "Llama 3.1 8B",
+            "meta-llama/Llama-3.1-8B-Instruct",
+            "meta",
+            131_072,
+        ),
+        (
+            "wandb:Llama-3.3-70B",
+            "Llama 3.3 70B",
+            "meta-llama/Llama-3.3-70B-Instruct",
+            "meta",
+            128_000,
+        ),
+        ("wandb:Kimi-K2.6", "Kimi K2.6", "moonshotai/Kimi-K2.6", "moonshot", 262_000),
+        (
+            "wandb:Kimi-K2.7-Code",
+            "Kimi K2.7 Code",
+            "moonshotai/Kimi-K2.7-Code",
+            "moonshot",
+            262_000,
+        ),
+        (
+            "wandb:Nemotron-3-Super-120B",
+            "Nemotron 3 Super 120B",
+            "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+            "nvidia",
+            262_000,
+        ),
+        (
+            "wandb:Nemotron-3-Ultra-550B",
+            "Nemotron 3 Ultra 550B",
+            "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
+            "nvidia",
+            262_000,
+        ),
+        (
+            "wandb:gpt-oss-20b",
+            "GPT-OSS 20B",
+            "openai/gpt-oss-20b",
+            "openai",
+            131_072,
+            "o200k_harmony",
+        ),
+        (
+            "wandb:gpt-oss-120b",
+            "GPT-OSS 120B",
+            "openai/gpt-oss-120b",
+            "openai",
+            131_072,
+            "o200k_harmony",
+        ),
+        ("wandb:GLM-5.1", "GLM 5.1", "zai-org/GLM-5.1", "zai", 203_000),
+        ("wandb:GLM-5.2", "GLM 5.2", "zai-org/GLM-5.2", "zai", 262_000),
+    )
+)
 
 
 def _digest(value: object) -> str:
@@ -175,44 +319,7 @@ _MODEL_DESCRIPTORS = (
         max_input_tokens=131_072,
         token_counter="o200k_harmony",
     ),
-    ModelDescriptor(
-        id="wandb:gpt-oss-20b",
-        label="GPT-OSS 20B",
-        provider="wandb",
-        provider_model="openai/gpt-oss-20b",
-        family="openai",
-        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
-        max_input_tokens=131_072,
-        token_counter="o200k_harmony",
-    ),
-    ModelDescriptor(
-        id="wandb:Llama-3.1-8B",
-        label="Llama 3.1 8B",
-        provider="wandb",
-        provider_model="meta-llama/Llama-3.1-8B-Instruct",
-        family="meta",
-        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
-        max_input_tokens=131_072,
-    ),
-    ModelDescriptor(
-        id="wandb:granite-4.1-8b",
-        label="Granite 4.1 8B",
-        provider="wandb",
-        provider_model="ibm-granite/granite-4.1-8b",
-        family="ibm",
-        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
-        max_input_tokens=131_072,
-    ),
-    ModelDescriptor(
-        id="wandb:gpt-oss-120b",
-        label="GPT-OSS 120B",
-        provider="wandb",
-        provider_model="openai/gpt-oss-120b",
-        family="openai",
-        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
-        max_input_tokens=131_072,
-        token_counter="o200k_harmony",
-    ),
+    *_WANDB_MODELS,
     ModelDescriptor(
         id="openai:gpt-4o-mini",
         label="GPT-4o mini",

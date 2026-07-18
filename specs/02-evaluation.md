@@ -170,6 +170,13 @@ context capacity and, once sessions are selected, whether the model can support
 the estimated judging requests. A non-fitting option is disabled and a selected
 configuration that becomes non-fitting cannot start.
 
+The W&B entries cover its generally available Serverless Inference catalog and
+exclude models that W&B marks deprecated. Their provider IDs, families, context
+capacities, and role capabilities are maintained in the versioned local catalog:
+W&B's live models endpoint reports accessible IDs but not the metadata required
+to pin a reproducible run. Catalog construction therefore remains deterministic
+and offline; explicit catalog updates track W&B lifecycle changes.
+
 Selection-time capacity estimation hydrates only the selected sessions, renders
 their compact judging evidence once, and counts it with each catalog token-counter
 identity. For each selected session and model, the largest rendered turn estimates the minimum indivisible

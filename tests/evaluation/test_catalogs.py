@@ -23,6 +23,42 @@ def _assert_sha256_version(value: str) -> None:
     assert re.fullmatch(r"sha256:[0-9a-f]{64}", value)
 
 
+EXPECTED_WANDB_MODELS = {
+    "JetBrains/Mellum2-12B-A2.5B-Instruct": 131_000,
+    "MiniMaxAI/MiniMax-M2.5": 197_000,
+    "OpenPipe/Qwen3-14B-Instruct": 32_800,
+    "Qwen/Qwen3-30B-A3B-Instruct-2507": 262_000,
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct": 262_000,
+    "Qwen/Qwen3.5-35B-A3B": 262_000,
+    "Qwen/Qwen3.6-27B": 262_000,
+    "Qwen/Qwen3.6-35B-A3B": 262_000,
+    "deepseek-ai/DeepSeek-V3.1": 161_000,
+    "deepseek-ai/DeepSeek-V4-Flash": 1_049_000,
+    "deepseek-ai/DeepSeek-V4-Pro": 1_049_000,
+    "google/gemma-4-31B-it": 262_000,
+    "ibm-granite/granite-4.1-8b": 131_072,
+    "meta-llama/Llama-3.1-70B-Instruct": 128_000,
+    "meta-llama/Llama-3.1-8B-Instruct": 131_072,
+    "meta-llama/Llama-3.3-70B-Instruct": 128_000,
+    "moonshotai/Kimi-K2.6": 262_000,
+    "moonshotai/Kimi-K2.7-Code": 262_000,
+    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8": 262_000,
+    "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": 262_000,
+    "openai/gpt-oss-120b": 131_072,
+    "openai/gpt-oss-20b": 131_072,
+    "zai-org/GLM-5.1": 203_000,
+    "zai-org/GLM-5.2": 262_000,
+}
+
+DEPRECATED_WANDB_MODELS = {
+    "microsoft/Phi-4-mini-instruct",
+    "moonshotai/Kimi-K2.5",
+    "Qwen/Qwen3.5-27B",
+    "Qwen/Qwen3-235B-A22B-Instruct-2507",
+    "Qwen/Qwen3-235B-A22B-Thinking-2507",
+}
+
+
 def test_model_catalog_is_stable_role_oriented_and_immutable():
     first = build_model_catalog(which=_all_executables)
     second = build_model_catalog(which=_all_executables)
@@ -96,24 +132,25 @@ def test_model_catalog_is_one_provider_qualified_source_for_every_role():
         assert recommendation in by_id
 
 
-def test_wandb_models_use_live_fully_qualified_provider_ids():
+def test_wandb_catalog_contains_every_non_deprecated_live_model():
     catalog = build_model_catalog(which=lambda _name: "/usr/bin/model")
-    models = {model.id: model.provider_model for model in catalog.available_models}
+    models = [model for model in catalog.available_models if model.provider == "wandb"]
 
-    assert {
-        model_id: models[model_id]
-        for model_id in (
-            "wandb:gpt-oss-20b",
-            "wandb:gpt-oss-120b",
-            "wandb:Llama-3.1-8B",
-            "wandb:granite-4.1-8b",
+    assert {model.provider_model: model.max_input_tokens for model in models} == (
+        EXPECTED_WANDB_MODELS
+    )
+    assert not DEPRECATED_WANDB_MODELS & {model.provider_model for model in models}
+    for model in models:
+        assert set(model.supported_roles) == {
+            "proposal_writer",
+            "judge",
+            "proposal_evaluator",
+        }
+        assert model.token_counter == (
+            "o200k_harmony"
+            if model.provider_model.startswith("openai/gpt-oss-")
+            else "utf8_bytes_div_3"
         )
-    } == {
-        "wandb:gpt-oss-20b": "openai/gpt-oss-20b",
-        "wandb:gpt-oss-120b": "openai/gpt-oss-120b",
-        "wandb:Llama-3.1-8B": "meta-llama/Llama-3.1-8B-Instruct",
-        "wandb:granite-4.1-8b": "ibm-granite/granite-4.1-8b",
-    }
 
 
 def test_wandb_inference_is_preferred_and_supports_every_run_role():
@@ -194,14 +231,15 @@ def test_codex_models_are_available_for_every_run_role():
         assert by_id[model_id].token_counter == "o200k_base"
 
 
-def test_every_model_declares_exact_input_capacity_and_token_counter():
+def test_every_non_wandb_model_declares_exact_input_capacity_and_token_counter():
     catalog = build_model_catalog(which=lambda _name: "/usr/bin/model")
-    models = {model.id: model for model in catalog.available_models}
+    models = {model.id: model for model in catalog.available_models if model.provider != "wandb"}
 
-    assert {
+    expected = {
         model_id: (model.max_input_tokens, model.token_counter)
         for model_id, model in models.items()
-    } == {
+    }
+    assert expected == {
         "codex:gpt-5.6-sol": (272_000, "o200k_base"),
         "codex:gpt-5.6-terra": (272_000, "o200k_base"),
         "codex:gpt-5.6-luna": (272_000, "o200k_base"),
@@ -216,10 +254,6 @@ def test_every_model_declares_exact_input_capacity_and_token_counter():
         "agy:gemini-3.1-pro-low": (1_048_576, "utf8_bytes_div_3"),
         "agy:gemini-3.1-pro-high": (1_048_576, "utf8_bytes_div_3"),
         "agy:gpt-oss-120b-medium": (131_072, "o200k_harmony"),
-        "wandb:gpt-oss-20b": (131_072, "o200k_harmony"),
-        "wandb:gpt-oss-120b": (131_072, "o200k_harmony"),
-        "wandb:Llama-3.1-8B": (131_072, "utf8_bytes_div_3"),
-        "wandb:granite-4.1-8b": (131_072, "utf8_bytes_div_3"),
         "openai:gpt-4o": (128_000, "o200k_base"),
         "openai:gpt-4o-mini": (128_000, "o200k_base"),
     }
@@ -313,7 +347,7 @@ def test_descriptor_membership_is_not_limited_by_preference_registries(monkeypat
     available_ids = [descriptor.id for descriptor in models.available_models]
 
     assert added.id in available_ids
-    assert models.proposal_evaluator_preferences[-1] == added.id
+    assert added.id in models.proposal_evaluator_preferences
 
 
 def test_model_descriptor_serializes_only_its_public_fields():
