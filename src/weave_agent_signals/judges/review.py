@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Literal
 
 from weave_agent_signals.judges.inference import InferenceCancelled
+from weave_agent_signals.judges.records import PanelResult, ReviewerOutcome
 from weave_agent_signals.run_config import PositionedJudge
 
 ObservationStatus = Literal["succeeded", "abstained", "failed", "skipped"]
@@ -222,23 +223,15 @@ class AttemptObservation:
             if self.skip_reason != "insufficient_context_capacity":
                 raise ValueError("skipped observations require a valid skip reason")
             if (
-                self.resolved_model is not None
-                or self.score is not None
+                self.score is not None
                 or self.rationale is not None
                 or self.evidence_ids
-                or self.usage
                 or self.error_type is not None
                 or self.message is not None
-                or self.output_mode is not None
-                or self.schema_name is not None
-                or self.schema_fallback_reason is not None
-                or self.transport_request_count != 0
                 or self.verdict_schema_version is not None
-                or self.raw_output_digest is not None
                 or self.behavioral_feedback is not None
-                or self.steps
             ):
-                raise ValueError("skipped observations cannot contain inference fields")
+                raise ValueError("skipped observations cannot contain verdict fields")
             return
 
         if self.skip_reason is not None:
@@ -272,6 +265,45 @@ class PanelOutcome:
     minimum: float | None
     maximum: float | None
     spread: float | None
+
+
+def panel_result_from_outcome(
+    *,
+    conversation_id: str,
+    rubric_id: str,
+    outcome: PanelOutcome,
+    call_ids_by_position: Mapping[int, tuple[str, ...]],
+) -> PanelResult:
+    """Freeze one executor outcome into the canonical persisted panel result."""
+
+    return PanelResult(
+        conversation_id=conversation_id,
+        rubric_id=rubric_id,
+        status=outcome.status,
+        rating=outcome.rating,
+        attempts=tuple(
+            ReviewerOutcome(
+                position=attempt.position,
+                requested_model_id=attempt.requested_model,
+                status=attempt.observation.status,
+                score=attempt.observation.score,
+                rationale=attempt.observation.rationale,
+                evidence_ids=attempt.observation.evidence_ids,
+                skip_reason=attempt.observation.skip_reason,
+                behavioral_feedback=(
+                    dict(attempt.observation.behavioral_feedback)
+                    if attempt.observation.behavioral_feedback is not None
+                    else None
+                ),
+                call_ids=call_ids_by_position.get(attempt.position, ()),
+            )
+            for attempt in outcome.attempts
+        ),
+        successful_count=outcome.successful_count,
+        minimum=outcome.minimum,
+        maximum=outcome.maximum,
+        spread=outcome.spread,
+    )
 
 
 def execute_panel(

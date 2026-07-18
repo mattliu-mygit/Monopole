@@ -20,6 +20,7 @@ from weave_agent_signals.runs.challenges.contracts import (
     JudgeVerdict,
     RubricVerdict,
     TaskMaterial,
+    TaskMaterialPlan,
     Winner,
 )
 from weave_agent_signals.runs.challenges.workspace import WorkspaceSnapshot
@@ -28,16 +29,15 @@ _INFERENCE_SAFETY_TOKENS = 1_024
 _JUDGE_MAX_TRANSCRIPT_CHARACTERS = 100_000
 _JUDGE_MAX_ARTIFACT_DIFF_CHARACTERS = 50_000
 _JUDGE_MAX_ARTIFACT_CHANGES = 200
+_TASK_WORKSPACE_MANIFEST_PATHS = 64
 _REDACTED_INSTRUCTION_EVIDENCE = "managed instruction evidence withheld from blinded judge"
 
-TASK_SCHEMA = JsonSchemaSpec(
-    name="paired_challenge_task",
+MATERIAL_PLAN_SCHEMA = JsonSchemaSpec(
+    name="paired_challenge_material_plan",
     schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "prompt": {"type": "string", "minLength": 1},
-            "goal": {"type": "string", "minLength": 1},
             "setup_mode": {
                 "type": "string",
                 "enum": ["prepared_workspace", "agent_bootstrap"],
@@ -63,6 +63,19 @@ TASK_SCHEMA = JsonSchemaSpec(
                     "required": ["kind", "url", "revision", "destination"],
                 },
             },
+        },
+        "required": ["setup_mode", "materials"],
+    },
+)
+
+TASK_SCHEMA = JsonSchemaSpec(
+    name="paired_challenge_task",
+    schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "prompt": {"type": "string", "minLength": 1},
+            "goal": {"type": "string", "minLength": 1},
             "judging_criteria": {
                 "type": "array",
                 "minItems": 1,
@@ -77,30 +90,68 @@ TASK_SCHEMA = JsonSchemaSpec(
                 "uniqueItems": True,
                 "items": {"type": "string", "minLength": 1},
             },
+            "required_files": {
+                "type": "array",
+                "maxItems": 32,
+                "uniqueItems": True,
+                "items": {"type": "string", "minLength": 1},
+            },
+            "required_executables": {
+                "type": "array",
+                "maxItems": 16,
+                "uniqueItems": True,
+                "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$",
+                },
+            },
+            "requires_git_metadata": {"type": "boolean"},
         },
         "required": [
             "prompt",
             "goal",
-            "setup_mode",
-            "materials",
             "judging_criteria",
             "start_checks",
+            "required_files",
+            "required_executables",
+            "requires_git_metadata",
         ],
     },
 )
 
-_TASK_SYSTEM = """\
-Design one fresh, realistic verification task that exercises the behavioral weaknesses in the
-evaluation digest. Return a complete task package: prompt, measurable goal, setup mode, pinned
-public materials, judging criteria, and starting-state checks. You do not know which instruction
-variant or evaluated model will run it and must not infer or mention them.
+_MATERIAL_SYSTEM = """\
+Select pinned public source material for one fresh verification task that exercises the behavioral
+weaknesses in the evaluation digest. The task is an analogous current challenge, not a replay of
+the historical task or its exact source tree. Return only the setup mode and material plan. You do
+not know which instruction variant or evaluated model will run it and must not infer or mention
+them.
 
-Use prepared_workspace when public source files should be fetched once and copied identically
-into both environments. Use agent_bootstrap only when obtaining or updating the sources is itself
-part of the task; then state the exact fetch requirement in the prompt. Git materials must use a
-public HTTPS URL, a full 40-character commit SHA, and a safe relative destination. Do not request
-credentials, private sources, moving branches, arbitrary setup scripts, commits, tags, or pushes.
+Use prepared_workspace when public files should be fetched once and copied identically into both
+environments. Use agent_bootstrap only when source acquisition is itself part of the challenge.
+Git materials must use a public HTTPS URL, a full 40-character commit SHA, and a safe relative
+destination. Do not request credentials, private sources, moving branches, or host shell commands.
 Supported repository hosts are github.com, gitlab.com, bitbucket.org, and codeberg.org.
+"""
+
+_TASK_SYSTEM = """\
+Author one fresh, realistic verification task against the supplied prepared workspace manifest.
+The task must exercise the behavioral weaknesses in the evaluation digest without attempting to
+replay the historical task or assuming that historical source still exists. Reference only files
+listed in the manifest. Return a measurable prompt and goal, judging criteria, descriptive
+starting-state checks, and declarative preflight requirements.
+
+required_files are safe relative file paths that must exist before either agent starts.
+required_executables are bare executable names that must be available in the sandbox image.
+requires_git_metadata declares whether the task needs repository history or status. A
+prepared_workspace excludes Git metadata, so such a task must set requires_git_metadata to false
+and must not ask agents to inspect commits, branches, status, or logs. Starting-state checks are
+judge context and are not host commands. Do not request credentials, private sources, commits,
+tags, pushes, dependency-version changes, or unrelated generated artifacts.
+
+The workspace_manifest is the material-aware authoring context. The initial_workspace_manifest is
+what agents actually receive before work begins. In agent_bootstrap mode, required_files may name
+only files in initial_workspace_manifest; fetched public files remain context for authoring the
+task but the agents must obtain the pinned material themselves.
 """
 
 _PAIR_SYSTEM = """\
@@ -148,22 +199,27 @@ def _workspace_summary(workspace: WorkspaceSnapshot) -> dict[str, object]:
     }
 
 
-def author_task(
+def _workspace_manifest(workspace: WorkspaceSnapshot) -> tuple[list[str], bool]:
+    paths = list(workspace.paths)
+    return paths[:_TASK_WORKSPACE_MANIFEST_PATHS], len(paths) > _TASK_WORKSPACE_MANIFEST_PATHS
+
+
+def plan_task_materials(
     client: ChatClient,
     *,
     author: ModelDescriptor,
     coaching_digest: str,
     workspace_digest: str,
     workspace: WorkspaceSnapshot,
-) -> AuthoredTask:
-    """Author one complete task package without exposing either instruction arm."""
+) -> TaskMaterialPlan:
+    """Select immutable public material before the final task is authored."""
 
     if "proposal_evaluator" not in author.supported_roles:
         raise ValueError("task author must support proposal evaluation")
     if not isinstance(coaching_digest, str) or not coaching_digest.strip():
         raise ValueError("task author requires a nonblank coaching digest")
-    task_messages = [
-        {"role": "system", "content": _TASK_SYSTEM},
+    messages = [
+        {"role": "system", "content": _MATERIAL_SYSTEM},
         {
             "role": "user",
             "content": json.dumps(
@@ -171,6 +227,66 @@ def author_task(
                     "evaluation_digest": coaching_digest,
                     "seed_workspace_digest": workspace_digest,
                     "workspace_summary": _workspace_summary(workspace),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        },
+    ]
+    if _input_tokens(
+        messages,
+        MATERIAL_PLAN_SCHEMA,
+        token_counter=author.token_counter,
+    ) > _input_limit(author, max_output_tokens=512):
+        raise ValueError("task material planner input cannot fit the configured model context")
+    parsed, _response = client.chat_json(
+        model=author.provider_model,
+        messages=messages,
+        temperature=0.0,
+        max_tokens=512,
+        response_schema=MATERIAL_PLAN_SCHEMA,
+    )
+    value = _strict_object(parsed, {"setup_mode", "materials"}, "task material response")
+    return TaskMaterialPlan(
+        setup_mode=value["setup_mode"],
+        materials=tuple(TaskMaterial.model_validate(item) for item in value["materials"]),
+    )
+
+
+def author_task(
+    client: ChatClient,
+    *,
+    author: ModelDescriptor,
+    coaching_digest: str,
+    material_plan: TaskMaterialPlan,
+    workspace_digest: str,
+    workspace: WorkspaceSnapshot,
+    initial_workspace: WorkspaceSnapshot | None = None,
+) -> AuthoredTask:
+    """Author one complete task package without exposing either instruction arm."""
+
+    if "proposal_evaluator" not in author.supported_roles:
+        raise ValueError("task author must support proposal evaluation")
+    if not isinstance(coaching_digest, str) or not coaching_digest.strip():
+        raise ValueError("task author requires a nonblank coaching digest")
+    manifest, manifest_truncated = _workspace_manifest(workspace)
+    initial_manifest, initial_manifest_truncated = _workspace_manifest(
+        workspace if initial_workspace is None else initial_workspace
+    )
+    task_messages = [
+        {"role": "system", "content": _TASK_SYSTEM},
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "evaluation_digest": coaching_digest,
+                    "material_plan": material_plan.to_dict(),
+                    "prepared_workspace_digest": workspace_digest,
+                    "workspace_summary": _workspace_summary(workspace),
+                    "workspace_manifest": manifest,
+                    "workspace_manifest_truncated": manifest_truncated,
+                    "initial_workspace_manifest": initial_manifest,
+                    "initial_workspace_manifest_truncated": initial_manifest_truncated,
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -192,19 +308,23 @@ def author_task(
     expected = {
         "prompt",
         "goal",
-        "setup_mode",
-        "materials",
         "judging_criteria",
         "start_checks",
+        "required_files",
+        "required_executables",
+        "requires_git_metadata",
     }
     value = _strict_object(parsed, expected, "task author response")
     return AuthoredTask(
         prompt=value["prompt"],
         goal=value["goal"],
-        setup_mode=value["setup_mode"],
-        materials=tuple(TaskMaterial.model_validate(item) for item in value["materials"]),
+        setup_mode=material_plan.setup_mode,
+        materials=material_plan.materials,
         judging_criteria=tuple(value["judging_criteria"]),
         start_checks=tuple(value["start_checks"]),
+        required_files=tuple(value["required_files"]),
+        required_executables=tuple(value["required_executables"]),
+        requires_git_metadata=value["requires_git_metadata"],
         workspace_digest=workspace_digest,
         author_model=response.model,
         author_backend=client.backend,

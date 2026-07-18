@@ -8,7 +8,7 @@ import type {
   ReviewAttempt,
 } from '../../src/types'
 import JudgingProgress from '../../src/features/runs/JudgingProgress'
-import persistedPlan from '../fixtures/judging-plan.json'
+import persistedPlan from '../fixtures/judging-plan-view.json'
 
 afterEach(cleanup)
 

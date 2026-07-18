@@ -167,7 +167,7 @@ def _usage(value: Mapping[str, Any] | None) -> Mapping[str, int]:
     for key, count in (value or {}).items():
         if not isinstance(key, str) or not key:
             raise ValueError("usage keys must be nonblank strings")
-        if isinstance(count, Mapping):
+        if not key.endswith("_tokens"):
             continue
         if type(count) is not int or count < 0:
             raise ValueError("usage values must be non-negative integers")

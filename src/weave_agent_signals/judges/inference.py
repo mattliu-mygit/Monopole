@@ -67,6 +67,13 @@ class InferenceCancelled(RuntimeError):
     """Inference stopped because the owning run was cancelled."""
 
 
+class InferenceContextExceeded(RuntimeError):
+    """The provider explicitly rejected a request for exceeding context capacity."""
+
+    def __init__(self) -> None:
+        super().__init__("provider context capacity exceeded")
+
+
 _SCHEMA_TOKEN = (
     r"(?:json[_ -]?schema|response[_ -]?format|structured[- ]outputs?|"
     r"schema[- ]output|output[- ]schema|--json-schema|--output-schema)"
@@ -202,6 +209,33 @@ def _http_schema_rejection_reason(error: httpx.HTTPStatusError) -> str | None:
     return SCHEMA_FALLBACK_UNSUPPORTED
 
 
+def _is_http_context_rejection(error: httpx.HTTPStatusError) -> bool:
+    response = error.response
+    if response.status_code not in {400, 413, 422}:
+        return False
+    text = response.text
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, Mapping):
+        detail = payload.get("error", payload)
+        if isinstance(detail, Mapping):
+            text = " ".join(str(detail.get(key, "")) for key in ("message", "code", "type"))
+    lowered = " ".join(text.lower().split())
+    return bool(re.search(r"max_tokens must be at least 1, got -\d+", lowered)) or any(
+        marker in lowered
+        for marker in (
+            "context_length_exceeded",
+            "maximum context length",
+            "context window",
+            "too many tokens",
+            "input is too long",
+            "prompt is too long",
+        )
+    )
+
+
 def _add_transport_request_count(error: Exception, additional: int) -> None:
     """Attach a cumulative safe transport-attempt count to a raised error."""
 
@@ -263,7 +297,7 @@ class InferenceClient:
         self._http = httpx.Client(
             base_url=resolved_url,
             headers=headers,
-            timeout=60.0,
+            timeout=180.0,
         )
 
     def _post_with_retry(
@@ -294,6 +328,10 @@ class InferenceClient:
             try:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as error:
+                if _is_http_context_rejection(error):
+                    capacity_error = InferenceContextExceeded()
+                    capacity_error._transport_request_count = attempt + 1  # type: ignore[attr-defined]
+                    raise capacity_error from None
                 error._transport_request_count = attempt + 1  # type: ignore[attr-defined]
                 raise
             try:

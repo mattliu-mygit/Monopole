@@ -8,12 +8,19 @@ from datetime import datetime, timezone
 import pytest
 
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
-from weave_agent_signals.judges.plan import build_judging_plan
+from weave_agent_signals.judges.plan import build_canonical_judging_plan, judging_plan_totals
+from weave_agent_signals.judges.records import JudgeCallAudit, JudgeCallRecord
 from weave_agent_signals.models import SessionView, TurnSpan
 from weave_agent_signals.run_config import RunConfig, resolve_run_config
+from weave_agent_signals.runs.bundles import ScopeDescriptor, bundle_from_content_map
+from weave_agent_signals.runs.events import sanitize_event
+from weave_agent_signals.runs.reflection_records import (
+    EvaluatorRecord,
+    GenerationAttemptRecord,
+    ReflectionInputRecord,
+    ReflectionResultRecord,
+)
 from weave_agent_signals.runs.store import (
-    _SCHEMA,
-    RUN_DB_SCHEMA_VERSION,
     DataSelection,
     ReflectionReviewLifecycleConflictError,
     ReflectionReviewRevisionConflictError,
@@ -165,7 +172,7 @@ def _judging_plan() -> dict:
         user_input="request",
         assistant_output="response",
     )
-    return build_judging_plan(
+    return build_canonical_judging_plan(
         [SessionView("conv-1", [turn], "cfg", "main")],
         cohort_id="cohort-test",
         rubrics=effective.rubrics[:1],
@@ -174,20 +181,52 @@ def _judging_plan() -> dict:
     )
 
 
-def _reflection_evidence() -> dict:
-    return {
-        "baseline": {"revision": "baseline-rev"},
-        "candidates": [
-            {
-                "candidate_id": "candidate-1",
-                "revision": "candidate-rev",
-            }
-        ],
-        "recommended_candidate_id": "candidate-1",
-    }
+def _reflection_evidence() -> ReflectionResultRecord:
+    scope = ScopeDescriptor("file", "/project", ("AGENTS.md",))
+    baseline = bundle_from_content_map({"AGENTS.md": "before"}, scope=scope)
+    candidate = bundle_from_content_map({"AGENTS.md": "after"}, scope=scope)
+    writer = next(
+        model
+        for model in build_model_catalog().available_models
+        if "proposal_writer" in model.supported_roles
+    )
+    attempt = GenerationAttemptRecord(
+        attempt_id="attempt-1",
+        number=1,
+        status="succeeded",
+        requested_writer=writer,
+        resolved_model=writer.provider_model,
+        resolved_family=writer.family,
+        resolved_backend=writer.provider,
+        candidate_id="candidate-1",
+        bundle=candidate,
+        changed_paths=("AGENTS.md",),
+    )
+    evaluations = tuple(
+        EvaluatorRecord(
+            evaluation_id=f"evaluation-{index}",
+            target_id=target,
+            requested_model="evaluator",
+            requested_family="evaluator-family",
+            requested_backend="test",
+            resolved_model="evaluator",
+            resolved_family="evaluator-family",
+            resolved_backend="test",
+            score=score,
+            rationale="test",
+        )
+        for index, (target, score) in enumerate((("baseline", 0.2), ("candidate-1", 0.8)), start=1)
+    )
+    return ReflectionResultRecord(
+        baseline=baseline,
+        attempts=(attempt,),
+        evaluations=evaluations,
+        recommended_candidate_id="candidate-1",
+        baseline_won=False,
+    )
 
 
-def test_schema_v9_resets_disposable_database_on_version_mismatch(tmp_path):
+def test_store_rejects_unknown_schema_without_deleting_rows(tmp_path):
     path = tmp_path / "runs.db"
     connection = sqlite3.connect(path)
     connection.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, obsolete TEXT)")
@@ -196,61 +235,13 @@ def test_schema_v9_resets_disposable_database_on_version_mismatch(tmp_path):
     connection.commit()
     connection.close()
 
-    store = RunStore(path)
-    columns = {row[1] for row in store._conn.execute("PRAGMA table_info(runs)").fetchall()}
+    with pytest.raises(Exception, match="unsupported run database schema"):
+        RunStore(path)
 
-    assert RUN_DB_SCHEMA_VERSION == 9
-    assert store.get("legacy") is None
-    assert {"run_id", "run_config", "effective_config"} <= columns
-    assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 9
-    store.close()
-
-
-def test_schema_v9_resets_collided_v5_database_missing_judging_artifacts(tmp_path):
-    path = tmp_path / "runs.db"
     connection = sqlite3.connect(path)
-    legacy_schema = _SCHEMA.replace("    judging_artifacts TEXT,\n", "")
-    connection.execute(legacy_schema)
-    connection.execute(
-        "INSERT INTO runs (run_id, status, created_at) VALUES (?, ?, ?)",
-        ("legacy-active", "judging", "2026-07-15T00:00:00+00:00"),
-    )
-    connection.execute("PRAGMA user_version = 5")
-    connection.commit()
+    assert connection.execute("SELECT run_id FROM runs").fetchone()[0] == "legacy"
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
     connection.close()
-
-    store = RunStore(path)
-    columns = {row[1] for row in store._conn.execute("PRAGMA table_info(runs)").fetchall()}
-
-    assert RUN_DB_SCHEMA_VERSION == 9
-    assert "judging_artifacts" in columns
-    assert store.list_active() == []
-    store.close()
-
-
-def test_schema_v9_resets_schema_v8_rows_with_stale_run_config(tmp_path):
-    path = tmp_path / "runs.db"
-    connection = sqlite3.connect(path)
-    connection.execute(_SCHEMA)
-    connection.execute(
-        "INSERT INTO runs (run_id, status, created_at, run_config) VALUES (?, ?, ?, ?)",
-        (
-            "legacy",
-            "complete",
-            "2026-07-15T00:00:00+00:00",
-            '{"judge_models":["gpt-5.6-sol"]}',
-        ),
-    )
-    connection.execute("PRAGMA user_version = 8")
-    connection.commit()
-    connection.close()
-
-    store = RunStore(path)
-
-    assert store.get("legacy") is None
-    assert RUN_DB_SCHEMA_VERSION == 9
-    assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 9
-    store.close()
 
 
 def test_list_summaries_projects_only_scalar_fields_without_full_run_decoding(
@@ -560,8 +551,8 @@ def test_judging_plan_and_reflection_input_are_validated_and_write_once(store):
     planned = store.pin_judging_plan(started.run_id, plan)
     assert planned.judging_plan == plan
     assert store.pin_judging_plan(started.run_id, plan).judging_plan == plan
-    changed_plan = {**plan, "schema_version": "changed"}
-    with pytest.raises(ValueError, match="schema_version"):
+    changed_plan = plan.model_copy(update={"cohort_id": "changed"})
+    with pytest.raises(ValueError, match="plan ID"):
         store.pin_judging_plan(started.run_id, changed_plan)
     store.record_stage_result(
         started.run_id,
@@ -573,10 +564,13 @@ def test_judging_plan_and_reflection_input_are_validated_and_write_once(store):
         stage=RunStatus.JUDGING,
         advance=True,
     )
-    reflection_input = {
-        "feedback": [{"feedback_id": "feedback-1", "weave_ref": "weave:///turn-1"}],
-        "feedback_count": 1,
-    }
+    reflection_input = ReflectionInputRecord(
+        cohort_id="cohort-test",
+        captured_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+        feedback=(),
+        target_registry={},
+        baseline=_reflection_evidence().baseline,
+    )
     pinned = store.pin_reflection_input(started.run_id, reflection_input)
     assert pinned.reflection_input == reflection_input
     assert store.pin_reflection_input(started.run_id, reflection_input).reflection_input == (
@@ -585,7 +579,7 @@ def test_judging_plan_and_reflection_input_are_validated_and_write_once(store):
     with pytest.raises(RunStoreConflictError, match="already pinned"):
         store.pin_reflection_input(
             started.run_id,
-            {"feedback": [], "feedback_count": 0},
+            reflection_input.model_copy(update={"captured_at": datetime.now(timezone.utc)}),
         )
 
 
@@ -626,7 +620,7 @@ def test_store_accepts_strict_skipped_reviewer_disposition(store, monkeypatch):
         "request",
         "response",
     )
-    plan = build_judging_plan(
+    plan = build_canonical_judging_plan(
         [SessionView("conv-1", [turn], "cfg", "main")],
         cohort_id="cohort-test",
         rubrics=effective.rubrics[:1],
@@ -636,8 +630,66 @@ def test_store_accepts_strict_skipped_reviewer_disposition(store, monkeypatch):
 
     pinned = store.pin_judging_plan(started.run_id, plan)
 
-    assert pinned.judging_plan["sessions"][0]["reviewers"][0]["status"] == "skipped"
-    assert pinned.judging_plan["totals"]["maximum_reviewer_attempts"] == 0
+    assert pinned.judging_plan.sessions[0].reviewers[0].status == "skipped"
+    assert judging_plan_totals(pinned.judging_plan)["maximum_reviewer_attempts"] == 0
+
+
+def _judge_call(*, request_id: str = "sha256:" + "a" * 64, reusable: bool = True):
+    return JudgeCallRecord(
+        request_id=request_id,
+        phase="window",
+        conversation_id="conv-1",
+        reviewer_position=1,
+        requested_model_id="codex:gpt-5.6-sol",
+        rubric_id="correctness",
+        status="succeeded",
+        reusable=reusable,
+        result={"score": 0.8} if reusable else None,
+        audit=JudgeCallAudit(
+            schema_name="window_findings",
+            transport_request_count=1,
+        ),
+        created_at=datetime(2026, 7, 17, tzinfo=timezone.utc),
+    )
+
+
+def test_judge_calls_are_immutable_and_only_reusable_successes_are_loaded(store):
+    started, _, _ = _start(store)
+    store.record_stage_result(started.run_id, stage=RunStatus.SCORING, result={"written": 1})
+    store.finalize_stage_success(started.run_id, stage=RunStatus.SCORING, advance=True)
+    reusable = _judge_call()
+    audit_only = _judge_call(request_id="sha256:" + "b" * 64, reusable=False)
+
+    assert store.record_judge_call(started.run_id, reusable) == reusable
+    assert store.record_judge_call(started.run_id, reusable) == reusable
+    store.record_judge_call(started.run_id, audit_only)
+
+    assert store.get_judge_call(started.run_id, reusable.request_id) == reusable
+    assert store.get_judge_call(started.run_id, audit_only.request_id) is None
+    assert store.list_judge_calls(started.run_id) == [reusable, audit_only]
+    changed = reusable.model_copy(update={"result": {"score": 0.1}})
+    with pytest.raises(RunStoreConflictError, match="different content"):
+        store.record_judge_call(started.run_id, changed)
+
+
+def test_run_events_receive_monotonic_sequences_and_prune_oldest_rows(store):
+    run = store.create()
+    for index in range(105):
+        store.append_run_event(
+            run.run_id,
+            sanitize_event(
+                "reflecting",
+                "working",
+                f"Event {index}",
+                {},
+                datetime(2026, 7, 17, tzinfo=timezone.utc),
+            ),
+        )
+
+    events = store.list_run_events(run.run_id, stage="reflecting")
+
+    assert len(events) == 100
+    assert [event.sequence for event in events] == list(range(6, 106))
 
 
 def test_review_revision_cas_round_trips_promotion_receipt(store):
@@ -728,5 +780,12 @@ def test_reflecting_result_blocks_cancellation_and_is_immutable_after_review(sto
         store.record_stage_result(
             reflecting.run_id,
             stage=RunStatus.REFLECTING,
-            result={"candidates": []},
+            result=evidence.model_copy(
+                update={
+                    "evaluations": (
+                        evidence.evaluations[0].model_copy(update={"rationale": "changed"}),
+                        *evidence.evaluations[1:],
+                    )
+                }
+            ),
         )

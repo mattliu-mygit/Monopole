@@ -87,6 +87,7 @@ def test_structured_schemas_advertise_parser_bounds_to_models():
     assert feedback["problem"]["anyOf"][0]["maxLength"] == 10_000
     assert feedback["desired_behavior"]["anyOf"][0]["maxLength"] == 10_000
     assert verdict["score"]["enum"] == [0.0, 0.25, 0.5, 0.75, 1.0, None]
+    assert verdict["score"]["anyOf"] == [{"type": "number"}, {"type": "null"}]
 
 
 def test_digest_schema_binds_exact_chunk_and_evidence_ids():
@@ -225,18 +226,21 @@ def test_window_finding_rejects_unknown_blank_duplicate_and_over_limit_content()
             parse_window_finding(payload, allowed_evidence_ids=("trace-1",))
 
 
-def test_window_findings_rejects_duplicate_or_excess_findings():
+def test_window_findings_canonicalizes_local_ids_and_rejects_excess_findings():
     payload = {
         "schema_version": 1,
         "window_id": "window-1",
-        "findings": [_valid_finding(), _valid_finding()],
+        "findings": [
+            _valid_finding(finding_id="reused", observation="First observation."),
+            _valid_finding(finding_id="reused", observation="Second observation."),
+        ],
     }
-    with pytest.raises(ValueError, match="finding IDs must be unique"):
-        parse_window_findings(
-            payload,
-            allowed_evidence_ids=("trace-1",),
-            max_tokens=750,
-        )
+    parsed = parse_window_findings(
+        payload,
+        allowed_evidence_ids=("trace-1",),
+        max_tokens=750,
+    )
+    assert [finding.finding_id for finding in parsed.findings] == ["finding-1", "finding-2"]
 
     payload["findings"] = [_valid_finding(finding_id=f"finding-{index}") for index in range(5)]
     with pytest.raises(ValueError, match="at most 4"):
@@ -490,7 +494,7 @@ def test_contract_parsers_allow_and_retain_duplicate_evidence_ids():
     assert verdict.evidence_ids == duplicate_ids
 
 
-def test_merged_insufficient_evidence_combination_is_fail_closed():
+def test_merged_insufficient_evidence_status_is_canonicalized():
     payload = {
         "schema_version": 1,
         "status": "insufficient_evidence",
@@ -502,17 +506,18 @@ def test_merged_insufficient_evidence_combination_is_fail_closed():
     parsed = parse_merged_verdict(payload, allowed_evidence_ids=("trace-1",))
     assert parsed.status == "insufficient_evidence"
 
-    invalid = (
-        ({"score": 0.0}, "null score"),
-        ({"evidence_ids": ["trace-1"]}, "empty evidence"),
-        ({"feedback": _valid_merged_payload()["feedback"]}, "null feedback"),
+    contradictory = parse_merged_verdict(
+        {
+            **payload,
+            "score": 0.75,
+            "evidence_ids": ["unknown-trace"],
+            "feedback": _valid_merged_payload()["feedback"],
+        },
+        allowed_evidence_ids=("trace-1",),
     )
-    for changes, match in invalid:
-        with pytest.raises(ValueError, match=match):
-            parse_merged_verdict(
-                {**payload, **changes},
-                allowed_evidence_ids=("trace-1",),
-            )
+    assert contradictory.score is None
+    assert contradictory.evidence_ids == ()
+    assert contradictory.feedback is None
 
 
 def test_contract_parsers_reject_invalid_allowed_evidence_ids():

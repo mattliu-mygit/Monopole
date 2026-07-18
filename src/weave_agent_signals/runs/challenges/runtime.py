@@ -13,14 +13,14 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, model_validator
 
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
-from weave_agent_signals.runs.challenges.contracts import AuthoredTask
+from weave_agent_signals.runs.challenges.contracts import TaskMaterialPlan
 from weave_agent_signals.runs.challenges.environment import (
     RuntimeFile,
     capture_execution_environment,
 )
 from weave_agent_signals.runs.challenges.preparation import (
     RepositoryFetcher,
-    prepare_task_workspace,
+    prepare_task_context,
 )
 from weave_agent_signals.runs.challenges.service import PreparedPair, run_challenge
 from weave_agent_signals.runs.challenges.smol import SmolMachineRunner
@@ -166,14 +166,17 @@ def create_challenge_runner(
             environment_kwargs["version_reader"] = version_reader
         environment = capture_execution_environment(**environment_kwargs)
 
-        def prepare_pair(task: AuthoredTask) -> PreparedPair:
+        def prepare_pair(plan: TaskMaterialPlan) -> PreparedPair:
             preparation_kwargs = {}
             if repository_fetcher is not None:
                 preparation_kwargs["fetch_repository"] = repository_fetcher
-            prepared_workspace = prepare_task_workspace(
+            authoring_context = prepare_task_context(
                 arms.authoring,
-                task,
+                plan,
                 **preparation_kwargs,
+            )
+            prepared_workspace = (
+                authoring_context if plan.setup_mode == "prepared_workspace" else arms.authoring
             )
             prepared_arms = materialize_arms(
                 prepared_workspace,
@@ -184,19 +187,12 @@ def create_challenge_runner(
                 guest_home=runtime.environment_overrides["HOME"],
                 verify_baseline=False,
             )
-            prepared_task = AuthoredTask.model_validate(
-                {
-                    **task.model_dump(mode="json"),
-                    "task_id": "pending",
-                    "workspace_digest": prepared_workspace.digest,
-                }
-            )
             prepared_environment_kwargs = {
                 **environment_kwargs,
                 "workspace_digest": prepared_workspace.digest,
             }
             return PreparedPair(
-                task=prepared_task,
+                authoring=authoring_context,
                 arms=prepared_arms,
                 environment=capture_execution_environment(**prepared_environment_kwargs),
             )

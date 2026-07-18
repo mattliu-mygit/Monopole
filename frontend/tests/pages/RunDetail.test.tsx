@@ -15,12 +15,13 @@ import type {
 } from '../../src/types'
 import { ApiError } from '../../src/api'
 import RunDetail from '../../src/pages/RunDetail'
-import persistedPlan from '../fixtures/judging-plan.json'
+import persistedPlan from '../fixtures/judging-plan-view.json'
 import { renderWithQueryClient } from '../support/render'
 
 const api = vi.hoisted(() => ({
   getRun: vi.fn(),
   getSessions: vi.fn(),
+  getSession: vi.fn(),
   getModels: vi.fn(),
   getRubrics: vi.fn(),
   setRunSelection: vi.fn(),
@@ -187,7 +188,6 @@ function baseRun(overrides: Partial<Run> = {}): Run {
     effective_config: null,
     turn_cohort: null,
     judging_plan: null,
-    reflection_input: null,
     scoring_progress: null,
     scoring_result: null,
     judging_progress: null,
@@ -213,10 +213,15 @@ const session: SessionSummary = {
   config_version: null,
   git_branch: null,
   total_tokens: 100,
-  largest_turn_tokens: 60,
   total_tool_calls: 2,
   input_preview: 'Evaluate this session',
   signal_evidence: [],
+}
+
+const sessionEstimates = {
+  utf8_bytes_div_3: { total_tokens: 100, largest_turn_tokens: 60, turn_tokens: [60, 40] },
+  o200k_base: { total_tokens: 90, largest_turn_tokens: 55, turn_tokens: [55, 35] },
+  o200k_harmony: { total_tokens: 85, largest_turn_tokens: 50, turn_tokens: [50, 35] },
 }
 
 const plan = persistedPlan as unknown as JudgingPlan
@@ -350,6 +355,9 @@ beforeEach(() => {
   const created = baseRun()
   api.getRun.mockResolvedValue(created)
   api.getSessions.mockResolvedValue({ sessions: [session], total: 1, truncated: false })
+  api.getSession.mockResolvedValue({
+    judging_token_estimates: sessionEstimates,
+  })
   api.getModels.mockResolvedValue(models)
   api.getRubrics.mockResolvedValue(rubrics)
   api.setRunSelection.mockResolvedValue(created)
@@ -446,6 +454,37 @@ describe('RunDetail wiring', () => {
     })).toHaveProperty('disabled', false))
   })
 
+  it('restores saved form state when navigating to a cached created run', async () => {
+    let cachedRun = baseRun({ run_id: 'run-ui' })
+    api.getRun.mockImplementation(() => Promise.resolve(cachedRun))
+    const rendered = renderPage()
+    await screen.findByText('0 selected')
+    cachedRun = baseRun({
+      run_id: 'run-b',
+      data_selection: {
+        since: '2026-07-10T07:00:00Z',
+        until: null,
+        timezone: 'America/Los_Angeles',
+        session_ids: ['session-1'],
+      },
+      run_config: {
+        ...requestedConfig,
+        judge_models: [judgeOne.id],
+        rubrics: [rubrics.rubrics[0].id],
+        candidate_budget: 1,
+      },
+    })
+    rendered.client.setQueryData(['run', 'run-b'], cachedRun)
+
+    await act(() => rendered.router.navigate('/runs/run-b'))
+
+    expect(await screen.findByRole('checkbox', {
+      name: 'Select session session-1',
+    })).toHaveProperty('checked', true)
+    expect(screen.getByLabelText('Proposal attempt limit')).toHaveProperty('value', '1')
+    expect(screen.queryByLabelText('Judge 2')).toBeNull()
+  })
+
   it('blocks a saved selection whose session summary is not currently loaded', async () => {
     api.getRun.mockResolvedValue(baseRun({
       data_selection: {
@@ -483,10 +522,12 @@ describe('RunDetail wiring', () => {
   })
 
   it('keeps start disabled when the selected session exceeds configured model capacity', async () => {
-    api.getSessions.mockResolvedValue({
-      sessions: [{ ...session, total_tokens: 100_000, largest_turn_tokens: 90_000 }],
-      total: 1,
-      truncated: false,
+    api.getSession.mockResolvedValue({
+      judging_token_estimates: {
+        utf8_bytes_div_3: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
+        o200k_base: { total_tokens: 90_000, largest_turn_tokens: 80_000, turn_tokens: [80_000, 10_000] },
+        o200k_harmony: { total_tokens: 85_000, largest_turn_tokens: 75_000, turn_tokens: [75_000, 10_000] },
+      },
     })
     renderPage()
 
@@ -494,11 +535,10 @@ describe('RunDetail wiring', () => {
       name: 'Select session session-1',
     }))
 
-    expect(screen.getByRole('button', { name: 'Start Scoring' })).toHaveProperty(
-      'disabled',
-      true,
-    )
-    expect(screen.getByRole('alert')).toHaveProperty(
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: 'Start Scoring',
+    })).toHaveProperty('disabled', true))
+    expect(await screen.findByRole('alert')).toHaveProperty(
       'textContent',
       expect.stringContaining('Select models that fit the selected sessions.'),
     )

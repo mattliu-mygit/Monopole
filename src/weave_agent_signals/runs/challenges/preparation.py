@@ -8,7 +8,12 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
-from weave_agent_signals.runs.challenges.contracts import AuthoredTask, TaskMaterial
+from weave_agent_signals.runs.challenges.contracts import (
+    AuthoredTask,
+    TaskMaterial,
+    TaskMaterialPlan,
+    TaskPreflightError,
+)
 from weave_agent_signals.runs.challenges.workspace import (
     WorkspaceFile,
     WorkspaceSnapshot,
@@ -64,16 +69,13 @@ def _fetch_repository(material: TaskMaterial) -> WorkspaceSnapshot:
         return capture_workspace(root)
 
 
-def prepare_task_workspace(
+def prepare_task_context(
     seed: WorkspaceSnapshot,
-    task: AuthoredTask,
+    task: AuthoredTask | TaskMaterialPlan,
     *,
     fetch_repository: RepositoryFetcher = _fetch_repository,
 ) -> WorkspaceSnapshot:
-    """Return the one common workspace snapshot from which B and C are forked."""
-
-    if task.setup_mode == "agent_bootstrap":
-        return seed
+    """Overlay pinned public material for grounded task authoring."""
 
     files = {item.path: item for item in seed.files}
     for material in task.materials:
@@ -85,3 +87,27 @@ def prepare_task_workspace(
                 raise ValueError(f"prepared workspace material collision at {path}")
             files[path] = WorkspaceFile(path, item.content, item.mode)
     return WorkspaceSnapshot(tuple(files.values()))
+
+
+def prepare_task_workspace(
+    seed: WorkspaceSnapshot,
+    task: AuthoredTask | TaskMaterialPlan,
+    *,
+    fetch_repository: RepositoryFetcher = _fetch_repository,
+) -> WorkspaceSnapshot:
+    """Return the one common workspace snapshot from which B and C are forked."""
+
+    if task.setup_mode == "agent_bootstrap":
+        return seed
+    return prepare_task_context(seed, task, fetch_repository=fetch_repository)
+
+
+def validate_task_workspace(workspace: WorkspaceSnapshot, task: AuthoredTask) -> None:
+    """Reject authored file assumptions that the prepared snapshot cannot satisfy."""
+
+    available = frozenset(workspace.paths)
+    missing = tuple(path for path in task.required_files if path not in available)
+    if missing:
+        raise TaskPreflightError(
+            f"prepared workspace is missing required files: {', '.join(missing)}"
+        )

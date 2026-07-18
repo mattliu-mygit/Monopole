@@ -20,7 +20,8 @@ from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catal
 from weave_agent_signals.client import WeaveClient
 from weave_agent_signals.judges.cli_backend import CliJudgeClient
 from weave_agent_signals.judges.inference import InferenceClient
-from weave_agent_signals.judges.plan import build_judging_plan
+from weave_agent_signals.judges.plan import build_canonical_judging_plan, judging_plan_totals
+from weave_agent_signals.judges.records import JudgeCallRecord
 from weave_agent_signals.judges.runner import JudgeExecutionError, judge_session
 from weave_agent_signals.models import (
     Score,
@@ -475,7 +476,7 @@ def cmd_judge(args: argparse.Namespace) -> int:
         client.hydrate_turns_batch(turns)
 
         cohort_id = "cli-direct:" + ",".join(sorted(trace_ids))
-        judging_plan = build_judging_plan(
+        judging_plan = build_canonical_judging_plan(
             sessions,
             cohort_id=cohort_id,
             rubrics=selected_rubrics,
@@ -487,13 +488,12 @@ def cmd_judge(args: argparse.Namespace) -> int:
                 judge.id: stack.enter_context(_make_model_client(args, judge.model))
                 for judge in judges
             }
-            artifacts: dict[str, dict] = {}
+            calls: dict[str, JudgeCallRecord] = {}
 
-            def record_artifact(key: str, value: dict) -> None:
-                normalized = dict(value)
-                existing = artifacts.setdefault(key, normalized)
-                if existing != normalized:
-                    raise ValueError(f"judging artifact conflict: {key}")
+            def record_call(call: JudgeCallRecord) -> None:
+                existing = calls.setdefault(call.request_id, call)
+                if existing != call:
+                    raise ValueError(f"judge call conflict: {call.request_id}")
 
             pending_scores: list[tuple[Score, str]] = []
             for session in sessions:
@@ -507,8 +507,8 @@ def cmd_judge(args: argparse.Namespace) -> int:
                         judges=judges,
                         judging_plan=judging_plan,
                         context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-                        artifact_loader=artifacts.get,
-                        artifact_recorder=record_artifact,
+                        call_loader=calls.get,
+                        call_recorder=record_call,
                     )
                 except JudgeExecutionError as error:
                     if error.failures:
@@ -541,9 +541,10 @@ def cmd_judge(args: argparse.Namespace) -> int:
                 for score, sess_ref in pending_scores:
                     stats.write_score(client, score, sess_ref, force=args.force)
 
+    plan_totals = judging_plan_totals(judging_plan)
     print(
-        f"Judged {judging_plan['totals']['sessions_planned']} sessions across "
-        f"{judging_plan['totals']['windows_planned']} reviewer windows "
+        f"Judged {plan_totals['sessions_planned']} sessions across "
+        f"{plan_totals['windows_planned']} reviewer windows "
         f"({len(pending_scores)} rubric scores). Wrote {stats.total_written}."
     )
     if stats.errors:

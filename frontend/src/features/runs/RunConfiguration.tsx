@@ -2,7 +2,7 @@ import type {
   ModelCatalog,
   ModelDescriptor,
   RubricCatalog,
-  SessionSummary,
+  SessionDetail,
 } from '../../types'
 import {
   estimateModelCapacity,
@@ -19,7 +19,7 @@ export interface RunConfigurationProps {
   state: RunConfigState
   models: ModelCatalog
   rubrics: RubricCatalog
-  sessions?: readonly Pick<SessionSummary, 'total_tokens' | 'largest_turn_tokens'>[]
+  sessions?: readonly Pick<SessionDetail, 'judging_token_estimates'>[]
   disabled?: boolean
   onAction: (action: RunConfigAction) => void
 }
@@ -63,12 +63,12 @@ function modelLabel(
   model: ModelDescriptor,
   estimate: ModelCapacityEstimate,
 ): string {
-  const capacity = `${formatTokens(model.max_input_tokens)} context`
+  const capacity = `${formatTokens(model.max_input_tokens)} model limit`
   const fit = estimate.fits === null
     ? ''
     : estimate.fits
-      ? ` · fits (~${formatTokens(estimate.estimatedRequestTokens ?? 0)} max)`
-      : ` · does not fit (~${formatTokens(estimate.estimatedRequestTokens ?? 0)} needed)`
+      ? ` · estimated largest request ~${formatTokens(estimate.estimatedRequestTokens ?? 0)} · fits`
+      : ` · estimated largest request ~${formatTokens(estimate.estimatedRequestTokens ?? 0)} · does not fit`
   return `${model.label} · ${model.provider} · ${model.family} · ${capacity}${fit}`
 }
 

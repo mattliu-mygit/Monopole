@@ -156,7 +156,13 @@ describe('judge panel configuration state', () => {
 
   it('blocks selected models that cannot fit the largest planned request', () => {
     const state = initializeRunConfigState(models, rubrics)
-    const sessions = [{ total_tokens: 100_000, largest_turn_tokens: 90_000 }]
+    const sessions = [{
+      judging_token_estimates: {
+        utf8_bytes_div_3: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
+        o200k_base: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
+        o200k_harmony: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
+      },
+    }]
 
     expect(assessRunConfig(state, models, rubrics, sessions).errors).toEqual([
       'Select models that fit the selected sessions.',
@@ -181,7 +187,13 @@ describe('judge panel configuration state', () => {
       recommended_challenge_judges: [anthropic.id],
       proposal_evaluator_preferences: [anthropic.id, roomyJudge.id],
     }
-    const sessions = [{ total_tokens: 100_000, largest_turn_tokens: 90_000 }]
+    const sessions = [{
+      judging_token_estimates: {
+        utf8_bytes_div_3: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
+        o200k_base: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
+        o200k_harmony: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
+      },
+    }]
     const initial = initializeRunConfigState(capacityModels, rubrics)
     const next = transitionRunConfig(
       initial,

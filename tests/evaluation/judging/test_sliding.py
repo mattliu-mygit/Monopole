@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -14,10 +13,12 @@ import pytest
 from weave_agent_signals.catalogs import build_rubric_catalog
 from weave_agent_signals.judges.inference import (
     InferenceCancelled,
+    InferenceContextExceeded,
     JsonSchemaSpec,
     JudgeResponse,
 )
-from weave_agent_signals.judges.plan import build_judging_plan
+from weave_agent_signals.judges.plan import build_canonical_judging_plan
+from weave_agent_signals.judges.records import JudgeCallRecord
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.judges.sliding import (
     SlidingReviewer,
@@ -61,6 +62,8 @@ def _turn(trace_id: str, position: int, size: int = 9_000) -> TurnSpan:
 
 def _policy(**updates: int) -> JudgingContextPolicy:
     values = {
+        "large_model_reserve_tokens": 100_000,
+        "small_model_reserve_tokens": 50_000,
         "prompt_reserve_tokens": 3_000,
         "output_reserve_tokens": 3_000,
         "safety_reserve_tokens": 3_000,
@@ -115,6 +118,7 @@ class _ScriptedClient:
         invalid_window_id: bool = False,
         large_digest: bool = False,
         invocation_error: Exception | None = None,
+        invocation_error_phase: str | None = None,
         schema_fallback_reason: str | None = None,
     ):
         self.calls: list[dict[str, Any]] = []
@@ -124,6 +128,7 @@ class _ScriptedClient:
         self.invalid_window_id = invalid_window_id
         self.large_digest = large_digest
         self.invocation_error = invocation_error
+        self.invocation_error_phase = invocation_error_phase
         self.schema_fallback_reason = schema_fallback_reason
         self._lock = threading.Lock()
 
@@ -150,7 +155,9 @@ class _ScriptedClient:
                     "schema": getattr(response_schema, "schema", None),
                 }
             )
-        if self.invocation_error is not None:
+        if self.invocation_error is not None and (
+            self.invocation_error_phase is None or self.invocation_error_phase == phase
+        ):
             raise self.invocation_error
         if phase == "digest":
             payload = {
@@ -220,12 +227,12 @@ class _ScriptedClient:
 def _reviewer(
     *,
     client: _ScriptedClient | None = None,
-    artifacts: dict[str, Mapping[str, Any]] | None = None,
+    calls: dict[str, JudgeCallRecord] | None = None,
     policy: JudgingContextPolicy | None = None,
     cancelled=lambda: False,
     judge: PositionedJudge | None = None,
     activity=None,
-) -> tuple[SlidingReviewer, _ScriptedClient, dict[str, Mapping[str, Any]], dict[str, object]]:
+) -> tuple[SlidingReviewer, _ScriptedClient, dict[str, JudgeCallRecord], dict[str, object]]:
     session = SessionView(
         "session-1",
         [_turn(f"trace-{index}", index) for index in range(1, 5)],
@@ -240,7 +247,7 @@ def _reviewer(
         active_judge.max_input_tokens,
         active_judge.token_counter,
     )
-    judging_plan = build_judging_plan(
+    judging_plan = build_canonical_judging_plan(
         [session],
         cohort_id="cohort",
         rubrics=build_rubric_catalog().rubrics,
@@ -248,23 +255,24 @@ def _reviewer(
         context_policy=active_policy,
     )
     assert len(plan["windows"]) == 2
-    stored = {} if artifacts is None else artifacts
+    stored = {} if calls is None else calls
     scripted = client or _ScriptedClient()
 
-    def record(artifact_id: str, artifact: Mapping[str, Any]) -> None:
-        existing = stored.setdefault(artifact_id, dict(artifact))
-        if existing != artifact:
-            raise ValueError("artifact conflict")
+    def record(call: JudgeCallRecord) -> None:
+        existing = stored.setdefault(call.request_id, call)
+        if existing != call:
+            raise ValueError("judge call conflict")
 
     return (
         SlidingReviewer(
             session=session,
             judge=active_judge,
-            judging_plan=judging_plan,
+            plan_id=judging_plan.plan_id,
+            window_plan=judging_plan.sessions[0].reviewers[0].window_plan.model_dump(mode="json"),
             context_policy=active_policy,
             client=scripted,
-            load_artifact=stored.get,
-            record_artifact=record,
+            load_call=stored.get,
+            record_call=record,
             is_cancelled=cancelled,
             activity=activity,
         ),
@@ -302,6 +310,11 @@ def test_reviewer_digests_once_then_reads_every_window_and_merges() -> None:
     assert [step.reused for step in second.steps] == [True, True, False, False, False]
     assert all(step.requested_model == "judge-1" for step in first.steps)
     assert all(call["temperature"] == 0.0 for call in client.calls)
+    assert all(
+        call["max_tokens"] == reviewer.context_policy.output_reserve_tokens
+        for call in client.calls
+        if call["phase"] == "digest"
+    )
     assert [call["schema_name"] for call in client.calls[:5]] == [
         "chunk_digest",
         "chunk_digest",
@@ -396,7 +409,7 @@ def test_reviewer_narrates_each_live_inference_phase_with_context() -> None:
         "item_index": 1,
         "item_total": 2,
         "estimated_input_tokens": activity[0]["estimated_input_tokens"],
-        "max_output_tokens": 2_000,
+        "max_output_tokens": 3_000,
         "model_context_tokens": 60_000,
     }
     assert activity[0]["estimated_input_tokens"] > 0
@@ -486,15 +499,15 @@ def test_window_replaces_own_digest_and_keeps_surrounding_digests_chronological(
     merge_text = [call for call in client.calls if call["phase"] == "merge"][0]["messages"][-1][
         "content"
     ]
-    assert merge_text.count("shared-finding") == 1
+    assert merge_text.count('"finding_id":') == 1
     assert '"raw_coverage_trace_ids":["trace-1","trace-2","trace-3","trace-4"]' in merge_text
 
 
-def test_artifact_replay_makes_zero_model_calls() -> None:
-    first, _, artifacts, _ = _reviewer()
+def test_exact_call_replay_makes_zero_model_calls() -> None:
+    first, _, calls, _ = _reviewer()
     first_result = first.review(_rubric("judge.session_outcome"))
     replay_client = _ScriptedClient()
-    replay, _, _, _ = _reviewer(client=replay_client, artifacts=artifacts)
+    replay, _, _, _ = _reviewer(client=replay_client, calls=calls)
 
     replay_result = replay.review(_rubric("judge.session_outcome"))
 
@@ -510,11 +523,11 @@ def test_artifact_replay_makes_zero_model_calls() -> None:
 
 
 def test_replay_provenance_matches_a_rubric_that_reused_cached_digests() -> None:
-    first, _, artifacts, _ = _reviewer()
+    first, _, calls, _ = _reviewer()
     first.review(_rubric("judge.session_outcome"))
     original = first.review(_rubric("judge.session_autonomy"))
     replay_client = _ScriptedClient()
-    replay, _, _, _ = _reviewer(client=replay_client, artifacts=artifacts)
+    replay, _, _, _ = _reviewer(client=replay_client, calls=calls)
 
     restored = replay.review(_rubric("judge.session_autonomy"))
 
@@ -528,15 +541,13 @@ def test_replay_provenance_matches_a_rubric_that_reused_cached_digests() -> None
 
 
 def test_partial_replay_charges_only_new_window_and_merge_calls() -> None:
-    first, _, artifacts, _ = _reviewer()
+    first, _, calls, _ = _reviewer()
     first.review(_rubric("judge.session_outcome"))
-    digest_artifacts = {
-        artifact_id: artifact
-        for artifact_id, artifact in artifacts.items()
-        if artifact_id.startswith("digest/")
+    digest_calls = {
+        request_id: call for request_id, call in calls.items() if call.phase == "digest"
     }
     partial_client = _ScriptedClient()
-    partial, _, _, _ = _reviewer(client=partial_client, artifacts=digest_artifacts)
+    partial, _, _, _ = _reviewer(client=partial_client, calls=digest_calls)
 
     result = partial.review(_rubric("judge.session_autonomy"))
 
@@ -546,123 +557,21 @@ def test_partial_replay_charges_only_new_window_and_merge_calls() -> None:
     assert result.transport_request_count == 3
 
 
-def test_replay_rejects_tampered_inference_audit_without_model_call() -> None:
-    first, _, artifacts, _ = _reviewer()
-    first.review(_rubric("judge.session_outcome"))
-    artifact_id = next(iter(artifacts))
-    artifact = dict(artifacts[artifact_id])
-    payload = dict(artifact["payload"])
-    audit = dict(payload["audit"])
-    audit["usage"] = {"total_tokens": "not-an-integer"}
-    payload["audit"] = audit
-    artifact["payload"] = payload
-    artifact["content_digest"] = (
-        "sha256:"
-        + hashlib.sha256(
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
-    )
-    artifacts[artifact_id] = artifact
-    replay_client = _ScriptedClient()
-    replay, _, _, _ = _reviewer(client=replay_client, artifacts=artifacts)
-
-    result = replay.review(_rubric("judge.session_outcome"))
-
-    assert result.status == "failed"
-    assert result.steps == ()
-    assert result.usage == {}
-    assert replay_client.calls == []
-
-
-def test_replay_rejects_an_artifact_persisted_as_already_reused() -> None:
-    first, _, artifacts, _ = _reviewer()
-    first.review(_rubric("judge.session_outcome"))
-    artifact_id = next(iter(artifacts))
-    artifact = dict(artifacts[artifact_id])
-    payload = dict(artifact["payload"])
-    audit = dict(payload["audit"])
-    audit["reused"] = True
-    payload["audit"] = audit
-    artifact["payload"] = payload
-    artifact["content_digest"] = (
-        "sha256:"
-        + hashlib.sha256(
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
-    )
-    artifacts[artifact_id] = artifact
-    replay_client = _ScriptedClient()
-    replay, _, _, _ = _reviewer(client=replay_client, artifacts=artifacts)
-
-    result = replay.review(_rubric("judge.session_outcome"))
-
-    assert result.status == "failed"
-    assert result.steps == ()
-    assert replay_client.calls == []
-
-
-def test_replay_rejects_arbitrary_schema_fallback_detail_without_persisting_it() -> None:
-    first, _, artifacts, _ = _reviewer()
-    first.review(_rubric("judge.session_outcome"))
-    artifact_id = next(iter(artifacts))
-    artifact = dict(artifacts[artifact_id])
-    payload = dict(artifact["payload"])
-    audit = dict(payload["audit"])
-    secret = "SENTINEL_PRIVATE_REPLAY_DETAIL"
-    audit["output_mode"] = "json_object_fallback"
-    audit["schema_fallback_reason"] = secret
-    payload["audit"] = audit
-    artifact["payload"] = payload
-    artifact["content_digest"] = (
-        "sha256:"
-        + hashlib.sha256(
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
-    )
-    artifacts[artifact_id] = artifact
-    replay_client = _ScriptedClient()
-    replay, _, _, _ = _reviewer(client=replay_client, artifacts=artifacts)
-
-    result = replay.review(_rubric("judge.session_outcome"))
-
-    assert result.status == "failed"
-    assert result.message == "schema fallback metadata is invalid"
-    assert secret not in result.message
-    assert result.steps == ()
-    assert replay_client.calls == []
-
-
 @pytest.mark.parametrize(
     "judge",
     [
-        _judge(provider="wandb"),
-        _judge(family="different-family"),
-        _judge(max_input_tokens=61_000),
+        _judge(id="judge-2"),
+        _judge(provider_model="judge-2"),
     ],
 )
-def test_artifact_identity_binds_complete_positioned_judge(judge: PositionedJudge) -> None:
-    first, _, first_artifacts, _ = _reviewer()
+def test_request_identity_binds_requested_and_provider_models(judge: PositionedJudge) -> None:
+    first, _, first_calls, _ = _reviewer()
     first.review(_rubric("judge.session_outcome"))
-    second, _, second_artifacts, _ = _reviewer(judge=judge)
+    second, _, second_calls, _ = _reviewer(judge=judge)
 
     second.review(_rubric("judge.session_outcome"))
 
-    assert set(first_artifacts).isdisjoint(second_artifacts)
+    assert set(first_calls).isdisjoint(second_calls)
 
 
 def test_protocol_contract_digest_binds_version_prompts_and_schemas(
@@ -694,17 +603,17 @@ def test_protocol_contract_digest_binds_version_prompts_and_schemas(
     assert sliding_protocol_contract_digest() not in {original, prompt_changed}
 
 
-def test_artifact_ids_bind_protocol_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_request_ids_bind_protocol_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     import weave_agent_signals.judges.sliding as sliding
 
-    first, _, first_artifacts, _ = _reviewer()
+    first, _, first_calls, _ = _reviewer()
     first.review(_rubric("judge.session_outcome"))
     monkeypatch.setattr(sliding, "SLIDING_PROTOCOL_VERSION", "future-version")
-    second, _, second_artifacts, _ = _reviewer()
+    second, _, second_calls, _ = _reviewer()
 
     second.review(_rubric("judge.session_outcome"))
 
-    assert set(first_artifacts).isdisjoint(second_artifacts)
+    assert set(first_calls).isdisjoint(second_calls)
 
 
 def test_concurrent_rubrics_share_one_digest_generation() -> None:
@@ -845,18 +754,43 @@ def test_inference_exception_message_is_sanitized_before_observation() -> None:
     assert result.steps[0].phase == "digest"
 
 
+def test_provider_context_rejection_skips_reviewer_instead_of_failing() -> None:
+    error = InferenceContextExceeded()
+    error._transport_request_count = 1
+    reviewer, _, _, _ = _reviewer(
+        client=_ScriptedClient(
+            invocation_error=error,
+            invocation_error_phase="window",
+        )
+    )
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "skipped"
+    assert result.skip_reason == "insufficient_context_capacity"
+    assert result.message is None
+    assert len(result.steps) == 3
+    rejected = result.steps[-1]
+    assert rejected.phase == "window"
+    assert rejected.resolved_model is None
+    assert rejected.usage == {}
+    assert rejected.transport_request_count == 1
+    assert result.usage == {"input_tokens": 3, "total_tokens": 5}
+    assert result.transport_request_count == 3
+
+
 @pytest.mark.parametrize("callback", ["load", "record", "cancel"])
 def test_callback_exception_message_is_sanitized_before_observation(callback: str) -> None:
     secret = "SENTINEL_PRIVATE_CALLBACK_DETAIL"
-    reviewer, client, artifacts, _ = _reviewer()
+    reviewer, client, calls, _ = _reviewer()
 
     def fail(*_args: object) -> None:
         raise RuntimeError(secret)
 
     if callback == "load":
-        reviewer._load_artifact = fail
+        reviewer._load_call = fail
     elif callback == "record":
-        reviewer._record_artifact = fail
+        reviewer._record_call = fail
     else:
         reviewer._is_cancelled = fail
 
@@ -868,7 +802,7 @@ def test_callback_exception_message_is_sanitized_before_observation(callback: st
     assert secret not in result.message
     if callback == "load":
         assert client.calls == []
-        assert artifacts == {}
+        assert calls == {}
 
 
 def test_each_phase_prompt_has_one_output_owner_and_unambiguous_task() -> None:
@@ -884,86 +818,7 @@ def test_each_phase_prompt_has_one_output_owner_and_unambiguous_task() -> None:
             assert "session verdict" in system
 
 
-def test_reviewer_rejects_tampered_plan_before_inference() -> None:
-    reviewer, client, artifacts, plan = _reviewer()
-    del reviewer
-    session = SessionView(
-        "session-1",
-        [_turn(f"trace-{index}", index) for index in range(1, 5)],
-        "config-1",
-        "main",
-    )
-    judging_plan = build_judging_plan(
-        [session],
-        cohort_id="cohort",
-        rubrics=build_rubric_catalog().rubrics,
-        judge_models=(_judge(),),
-        context_policy=_policy(),
-    )
-    tampered = dict(judging_plan)
-    tampered["plan_id"] = "sha256:" + "0" * 64
-
-    with pytest.raises(ValueError, match="full content"):
-        SlidingReviewer(
-            session=session,
-            judge=_judge(),
-            judging_plan=tampered,
-            context_policy=_policy(),
-            client=client,
-            load_artifact=artifacts.get,
-            record_artifact=lambda _id, _artifact: None,
-        )
-
-
-def test_reviewer_authenticates_exact_ordinal_against_the_full_plan() -> None:
-    session = SessionView(
-        "session-1",
-        [_turn(f"trace-{index}", index) for index in range(1, 5)],
-        "config-1",
-        "main",
-    )
-    plan = build_judging_plan(
-        [session],
-        cohort_id="cohort",
-        rubrics=build_rubric_catalog().rubrics,
-        judge_models=(_judge(),),
-        context_policy=_policy(),
-    )
-    tampered = json.loads(json.dumps(plan))
-    tampered["sessions"][0]["reviewers"][0]["ordinal"] = 2
-    body = {key: value for key, value in tampered.items() if key != "plan_id"}
-    canonical = json.dumps(
-        body, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
-    )
-    tampered["plan_id"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
-
-    with pytest.raises(ValueError, match="ordinals"):
-        SlidingReviewer(
-            session=session,
-            judge=_judge(),
-            judging_plan=tampered,
-            context_policy=_policy(),
-            client=_ScriptedClient(),
-            load_artifact=lambda _id: None,
-            record_artifact=lambda _id, _artifact: None,
-        )
-
-
-def test_malformed_replayed_artifact_fails_without_model_call() -> None:
-    reviewer, _, artifacts, _ = _reviewer()
-    reviewer.review(_rubric("judge.session_outcome"))
-    artifact_id = next(iter(artifacts))
-    artifacts[artifact_id] = {**artifacts[artifact_id], "kind": "window_findings"}
-    replay_client = _ScriptedClient()
-    replay, _, _, _ = _reviewer(client=replay_client, artifacts=artifacts)
-
-    result = replay.review(_rubric("judge.session_outcome"))
-
-    assert result.status == "failed"
-    assert replay_client.calls == []
-
-
-def test_over_budget_request_fails_before_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_over_budget_request_skips_before_transport(monkeypatch: pytest.MonkeyPatch) -> None:
     rubric = SESSION_RUBRICS["judge.session_outcome"]
     monkeypatch.setitem(
         SESSION_RUBRICS,
@@ -974,7 +829,7 @@ def test_over_budget_request_fails_before_transport(monkeypatch: pytest.MonkeyPa
 
     result = reviewer.review(_rubric("judge.session_outcome"))
 
-    assert result.status == "failed"
-    assert result.error_type == "ValueError"
-    assert "budget" in (result.message or "")
+    assert result.status == "skipped"
+    assert result.skip_reason == "insufficient_context_capacity"
+    assert result.message is None
     assert [call["phase"] for call in client.calls] == ["digest", "digest"]

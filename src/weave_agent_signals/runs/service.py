@@ -92,10 +92,11 @@ def _persisted_result_is_successful(run: Run) -> bool:
             and isinstance(result.get("turn_details"), list)
         )
     if run.status is RunStatus.JUDGING:
-        plan = run.judging_plan or {}
+        plan = run.judging_plan
         return (
-            isinstance(result.get("plan_id"), str)
-            and result["plan_id"] == plan.get("plan_id")
+            plan is not None
+            and isinstance(result.get("plan_id"), str)
+            and result["plan_id"] == plan.plan_id
             and result.get("coverage_complete") is True
             and _nonnegative_int(result.get("planned_rubrics"))
             and _nonnegative_int(result.get("rubrics_completed"))

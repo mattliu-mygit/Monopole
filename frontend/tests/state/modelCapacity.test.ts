@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ModelDescriptor, SessionSummary } from '../../src/types'
+import type { ModelDescriptor, SessionDetail } from '../../src/types'
 import { estimateModelCapacity } from '../../src/features/runs/modelCapacity'
 
 const policy = {
@@ -18,7 +18,10 @@ const policy = {
   max_chunks: 40,
 }
 
-function model(maxInputTokens: number): ModelDescriptor {
+function model(
+  maxInputTokens: number,
+  tokenCounter: ModelDescriptor['token_counter'] = 'utf8_bytes_div_3',
+): ModelDescriptor {
   return {
     id: `test:${maxInputTokens}`,
     label: 'Test model',
@@ -27,27 +30,27 @@ function model(maxInputTokens: number): ModelDescriptor {
     family: 'test',
     supported_roles: ['judge'],
     max_input_tokens: maxInputTokens,
-    token_counter: 'utf8_bytes_div_3',
+    token_counter: tokenCounter,
   }
 }
 
-function session(totalTokens: number, largestTurnTokens: number): SessionSummary {
+function session(
+  totalTokens: number,
+  largestTurnTokens: number,
+  turnTokens: number[] = (() => {
+    const values: number[] = []
+    for (let remaining = totalTokens; remaining > 0; remaining -= largestTurnTokens) {
+      values.push(Math.min(remaining, largestTurnTokens))
+    }
+    return values
+  })(),
+): Pick<SessionDetail, 'judging_token_estimates'> {
   return {
-    conversation_id: `session-${totalTokens}-${largestTurnTokens}`,
-    session_id: null,
-    turn_count: 2,
-    started_at: null,
-    ended_at: null,
-    last_activity: null,
-    model: null,
-    effort_level: null,
-    config_version: null,
-    git_branch: null,
-    total_tokens: totalTokens,
-    largest_turn_tokens: largestTurnTokens,
-    total_tool_calls: 0,
-    input_preview: null,
-    signal_evidence: [],
+    judging_token_estimates: {
+      utf8_bytes_div_3: { total_tokens: totalTokens, largest_turn_tokens: largestTurnTokens, turn_tokens: turnTokens },
+      o200k_base: { total_tokens: totalTokens, largest_turn_tokens: largestTurnTokens, turn_tokens: turnTokens },
+      o200k_harmony: { total_tokens: totalTokens, largest_turn_tokens: largestTurnTokens, turn_tokens: turnTokens },
+    },
   }
 }
 
@@ -63,12 +66,64 @@ describe('estimateModelCapacity', () => {
   it('uses total tokens for chunk overhead and the largest turn for raw-window fit', () => {
     expect(estimateModelCapacity(model(131_072), [session(100_000, 30_000)], policy)).toEqual({
       fits: true,
-      estimatedRequestTokens: 100_000,
+      estimatedRequestTokens: 110_000,
       estimatedChunks: 2,
     })
     expect(estimateModelCapacity(model(131_072), [session(100_000, 90_000)], policy)).toEqual({
       fits: false,
       estimatedRequestTokens: 140_000,
+      estimatedChunks: 1,
+    })
+  })
+
+  it('uses the selected model token counter', () => {
+    const selected = session(100_000, 90_000)
+    selected.judging_token_estimates.o200k_harmony = {
+      total_tokens: 70_000,
+      largest_turn_tokens: 50_000,
+      turn_tokens: [50_000, 20_000],
+    }
+
+    expect(estimateModelCapacity(model(131_072), [selected], policy).fits).toBe(false)
+    expect(estimateModelCapacity(
+      model(131_072, 'o200k_harmony'),
+      [selected],
+      policy,
+    )).toMatchObject({ fits: true, estimatedChunks: 2 })
+  })
+
+  it('does not split one indivisible turn when estimating chunk overhead', () => {
+    const protocolReserve = {
+      ...policy,
+      large_model_reserve_tokens: 18_000,
+      small_model_reserve_tokens: 18_000,
+    }
+
+    expect(estimateModelCapacity(
+      model(131_072),
+      [session(112_000, 112_000)],
+      protocolReserve,
+    )).toEqual({
+      fits: true,
+      estimatedRequestTokens: 130_000,
+      estimatedChunks: 1,
+    })
+  })
+
+  it('counts multiple indivisible large turns as separate fitting chunks', () => {
+    const protocolReserve = {
+      ...policy,
+      large_model_reserve_tokens: 18_000,
+      small_model_reserve_tokens: 18_000,
+    }
+
+    expect(estimateModelCapacity(
+      model(131_072),
+      [session(224_000, 112_000, [112_000, 112_000])],
+      protocolReserve,
+    )).toEqual({
+      fits: true,
+      estimatedRequestTokens: 131_000,
       estimatedChunks: 2,
     })
   })
@@ -77,12 +132,12 @@ describe('estimateModelCapacity', () => {
     expect(estimateModelCapacity(model(1_048_576), [session(2_100_000, 100_000)], policy)).toEqual({
       fits: true,
       estimatedRequestTokens: 228_000,
-      estimatedChunks: 17,
+      estimatedChunks: 21,
     })
   })
 
   it('fails sessions that exceed the pinned chunk limit', () => {
-    expect(estimateModelCapacity(model(131_072), [session(2_100_000, 30_000)], policy)).toEqual({
+    expect(estimateModelCapacity(model(131_072), [session(2_500_000, 30_000)], policy)).toEqual({
       fits: false,
       estimatedRequestTokens: 228_000,
       estimatedChunks: 42,
@@ -97,7 +152,7 @@ describe('estimateModelCapacity', () => {
     )).toEqual({
       fits: true,
       estimatedRequestTokens: 120_000,
-      estimatedChunks: 6,
+      estimatedChunks: 5,
     })
   })
 })

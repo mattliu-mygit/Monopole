@@ -5,11 +5,14 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from typing import get_args
 from urllib.parse import unquote, urlparse
 
 from fastapi import APIRouter, HTTPException, Query
 
 from weave_agent_signals.client import WeaveClient
+from weave_agent_signals.judges.tokens import TokenCounterName, count_tokens
+from weave_agent_signals.judges.windowing import render_raw_turn
 from weave_agent_signals.models import FEEDBACK_PREFIX, TurnSpan, session_is_evaluable
 from weave_agent_signals.patterns import (
     ab_leaderboard,
@@ -193,6 +196,21 @@ def _turn_json(turn: TurnSpan, *, include_children: bool = False) -> dict:
     return value
 
 
+def _judging_token_estimates(turns: list[TurnSpan]) -> dict:
+    rendered_turns = [
+        render_raw_turn(turn, position) for position, turn in enumerate(turns, start=1)
+    ]
+    judging_token_estimates = {}
+    for counter in get_args(TokenCounterName):
+        counts = [count_tokens(rendered, counter) for rendered in rendered_turns]
+        judging_token_estimates[counter] = {
+            "total_tokens": sum(counts),
+            "largest_turn_tokens": max(counts),
+            "turn_tokens": counts,
+        }
+    return judging_token_estimates
+
+
 def _session_summary(conversation_id: str, turns: list[TurnSpan]) -> dict:
     ordered = sorted(turns, key=lambda turn: (turn.started_at, turn.trace_id))
     first, last = ordered[0], ordered[-1]
@@ -209,7 +227,6 @@ def _session_summary(conversation_id: str, turns: list[TurnSpan]) -> dict:
         "config_version": first.config_version,
         "git_branch": first.git_branch,
         "total_tokens": sum(turn.input_tokens + turn.output_tokens for turn in ordered),
-        "largest_turn_tokens": max(turn.input_tokens + turn.output_tokens for turn in ordered),
         "total_tool_calls": sum(len(turn.tool_calls) for turn in ordered),
         "input_preview": first.user_input,
     }
@@ -330,6 +347,7 @@ def create_inspection_router(
                 "git_branch": session.git_branch,
                 "total_tokens": session.total_tokens,
                 "turn_count": len(session.turns),
+                "judging_token_estimates": _judging_token_estimates(session.turns),
                 "turns": [_turn_json(turn, include_children=True) for turn in session.turns],
                 "session_feedback": session_feedback,
                 "turn_feedback": turn_feedback,

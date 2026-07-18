@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+import weave_agent_signals.runs.reflection as reflection_module
 from weave_agent_signals.judges.inference import JudgeResponse
 from weave_agent_signals.run_config import ModelDescriptor
 from weave_agent_signals.runs.bundles import (
@@ -63,6 +64,23 @@ SCOPE_POLICY = {
         "excluded_directories": [".git"],
     },
 }
+
+
+def test_usage_keeps_token_counters_and_ignores_optional_provider_metadata() -> None:
+    usage = reflection_module._usage(
+        {
+            "prompt_tokens": 39,
+            "completion_tokens": 3,
+            "total_tokens": 42,
+            "prompt_tokens_details": None,
+        }
+    )
+
+    assert dict(usage) == {
+        "prompt_tokens": 39,
+        "completion_tokens": 3,
+        "total_tokens": 42,
+    }
 
 
 def _bundle(**contents: str) -> BundleSnapshot:

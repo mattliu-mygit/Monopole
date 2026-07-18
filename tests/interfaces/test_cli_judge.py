@@ -58,7 +58,7 @@ def test_group_sessions_breaks_equal_timestamp_ties_by_trace_id():
     assert [turn.trace_id for turn in sessions[0].turns] == ["turn-a", "turn-b"]
 
 
-def test_direct_cli_uses_one_session_plan_runner_and_in_memory_artifacts(monkeypatch, capsys):
+def test_direct_cli_uses_one_session_plan_runner_and_in_memory_calls(monkeypatch, capsys):
     turn = _turn()
     session = SessionView(
         conversation_id="session-1",
@@ -81,7 +81,8 @@ def test_direct_cli_uses_one_session_plan_runner_and_in_memory_artifacts(monkeyp
     monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
     monkeypatch.setattr(cli, "build_model_catalog", _catalog)
     monkeypatch.setattr(cli, "build_rubric_catalog", build_rubric_catalog)
-    monkeypatch.setattr(cli, "build_judging_plan", lambda *_args, **_kwargs: plan)
+    monkeypatch.setattr(cli, "build_canonical_judging_plan", lambda *_args, **_kwargs: plan)
+    monkeypatch.setattr(cli, "judging_plan_totals", lambda value: value["totals"])
     monkeypatch.setattr(cli, "_make_model_client", lambda *_args: inference)
     monkeypatch.setattr(cli, "judge_session", judge)
     rc = cli.cmd_judge(_args(rubric="judge.session_outcome"))
@@ -93,8 +94,8 @@ def test_direct_cli_uses_one_session_plan_runner_and_in_memory_artifacts(monkeyp
         "claude:claude-sonnet-5",
         "codex:gpt-5.6-sol",
     ]
-    assert callable(kwargs["artifact_loader"])
-    assert callable(kwargs["artifact_recorder"])
+    assert callable(kwargs["call_loader"])
+    assert callable(kwargs["call_recorder"])
     weave.query_session.assert_called_once_with("session-1")
     weave.hydrate_turns_batch.assert_called_once_with([turn])
     assert "1 sessions across 2 reviewer windows" in capsys.readouterr().out
@@ -146,7 +147,8 @@ def test_direct_cli_discovers_conversations_then_judges_complete_hydrated_sessio
     judge = MagicMock(side_effect=[[score], []])
     monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
     monkeypatch.setattr(cli, "build_model_catalog", _catalog)
-    monkeypatch.setattr(cli, "build_judging_plan", build_plan)
+    monkeypatch.setattr(cli, "build_canonical_judging_plan", build_plan)
+    monkeypatch.setattr(cli, "judging_plan_totals", lambda value: value["totals"])
     monkeypatch.setattr(cli, "_make_model_client", lambda *_args: inference)
     monkeypatch.setattr(cli, "judge_session", judge)
 
@@ -193,7 +195,8 @@ def test_direct_cli_fails_when_complete_session_omits_a_discovery_root(monkeypat
     make_client = MagicMock()
     monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
     monkeypatch.setattr(cli, "build_model_catalog", _catalog)
-    monkeypatch.setattr(cli, "build_judging_plan", build_plan)
+    monkeypatch.setattr(cli, "build_canonical_judging_plan", build_plan)
+    monkeypatch.setattr(cli, "judging_plan_totals", lambda value: value["totals"])
     monkeypatch.setattr(cli, "_make_model_client", make_client)
 
     with pytest.raises(RuntimeError, match="missing discovered root"):
@@ -222,7 +225,8 @@ def test_direct_cli_rejects_non_agent_complete_session_before_hydration(monkeypa
     build_plan = MagicMock()
     monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
     monkeypatch.setattr(cli, "build_model_catalog", _catalog)
-    monkeypatch.setattr(cli, "build_judging_plan", build_plan)
+    monkeypatch.setattr(cli, "build_canonical_judging_plan", build_plan)
+    monkeypatch.setattr(cli, "judging_plan_totals", lambda value: value["totals"])
 
     assert cli.cmd_judge(_args(rubric="judge.session_outcome")) == 0
 
@@ -289,7 +293,8 @@ def test_direct_cli_buffers_all_sessions_and_writes_nothing_on_later_failure(mon
     judge = MagicMock(side_effect=[[score], RuntimeError("later failure")])
     monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
     monkeypatch.setattr(cli, "build_model_catalog", _catalog)
-    monkeypatch.setattr(cli, "build_judging_plan", lambda *_args, **_kwargs: plan)
+    monkeypatch.setattr(cli, "build_canonical_judging_plan", lambda *_args, **_kwargs: plan)
+    monkeypatch.setattr(cli, "judging_plan_totals", lambda value: value["totals"])
     monkeypatch.setattr(cli, "_make_model_client", lambda *_args: inference)
     monkeypatch.setattr(cli, "judge_session", judge)
 

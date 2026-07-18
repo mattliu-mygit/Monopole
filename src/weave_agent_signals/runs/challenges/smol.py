@@ -20,7 +20,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from weave_agent_signals.runs.challenges.contracts import ArmName, ArmResult, AuthoredTask
+from weave_agent_signals.runs.challenges.contracts import (
+    ArmName,
+    ArmResult,
+    AuthoredTask,
+    TaskPreflightError,
+)
 from weave_agent_signals.runs.challenges.environment import CapturedEnvironment, RuntimeFile
 from weave_agent_signals.runs.challenges.workspace import (
     DEFAULT_WORKSPACE_EXCLUSIONS,
@@ -306,6 +311,9 @@ def _task_text(task: AuthoredTask) -> str:
         "materials": [item.to_dict() for item in task.materials],
         "start_checks": list(task.start_checks),
         "judging_criteria": list(task.judging_criteria),
+        "required_files": list(task.required_files),
+        "required_executables": list(task.required_executables),
+        "requires_git_metadata": task.requires_git_metadata,
     }
     return (
         f"PROMPT:\n{task.prompt}\n\nGOAL:\n{task.goal}\n\n"
@@ -394,6 +402,73 @@ class SmolMachineRunner:
 
     def __init__(self, *, machine_factory: MachineFactory = _create_machine) -> None:
         self._machine_factory = machine_factory
+
+    def preflight(
+        self,
+        *,
+        workspace: WorkspaceSnapshot,
+        task: AuthoredTask,
+        environment: CapturedEnvironment,
+        cancel_requested: Callable[[], bool] = lambda: False,
+    ) -> None:
+        """Verify the common image and declared capabilities before either arm runs."""
+
+        if task.workspace_digest != environment.identity.workspace_digest:
+            raise ValueError("task and execution workspace digests do not match")
+        machine: Machine | None = None
+        name = f"preflight-{task.task_id.removeprefix('sha256:')[:12]}-{secrets.token_hex(4)}"
+        try:
+            _require_active(cancel_requested)
+            machine = self._machine_factory(
+                name,
+                environment.identity.image,
+                environment.identity.network_enabled,
+            )
+            machine.write_file(_SOURCE_ARCHIVE, workspace.archive, 0o600)
+            if environment.runtime_files:
+                machine.write_file(
+                    _RUNTIME_ARCHIVE,
+                    _runtime_archive(environment.runtime_files),
+                    0o600,
+                )
+                extracted = machine.exec(["tar", "-xf", _RUNTIME_ARCHIVE, "-C", "/"])
+                if extracted.exit_code != 0:
+                    raise RuntimeError(
+                        f"runtime file setup exited {extracted.exit_code}: {extracted.stderr}"
+                    )
+            setup = machine.exec(["mkdir", "-p", _WORKSPACE])
+            if setup.exit_code != 0:
+                raise RuntimeError(f"workspace setup exited {setup.exit_code}: {setup.stderr}")
+            unpack = machine.exec(["tar", "-xf", _SOURCE_ARCHIVE, "-C", _WORKSPACE])
+            if unpack.exit_code != 0:
+                raise RuntimeError(f"workspace unpack exited {unpack.exit_code}: {unpack.stderr}")
+            version = machine.exec([environment.identity.harness, "--version"])
+            if (
+                version.exit_code != 0
+                or version.stdout.strip() != environment.identity.harness_version
+            ):
+                raise RuntimeError("guest harness version does not match the pinned host version")
+            options = ExecutionOptions(
+                env=dict(environment.runtime_env),
+                workdir=_WORKSPACE,
+                timeout=min(60, environment.identity.timeout_seconds),
+                cancel_requested=cancel_requested,
+            )
+            for executable in task.required_executables:
+                available = machine.exec(
+                    ["/bin/sh", "-c", 'command -v "$1" >/dev/null', "sh", executable],
+                    options,
+                )
+                if available.exit_code != 0:
+                    raise TaskPreflightError(
+                        f"required sandbox executable is unavailable: {executable}"
+                    )
+        finally:
+            if machine is not None:
+                try:
+                    machine.delete()
+                except Exception as exc:
+                    _LOG.warning("Smol preflight cleanup failed for %s: %s", name, _safe_error(exc))
 
     def run_pair(
         self,

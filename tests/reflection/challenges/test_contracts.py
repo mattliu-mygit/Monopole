@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
+from weave_agent_signals.runs import reflection_records
 from weave_agent_signals.runs.challenges.contracts import (
     ArmResult,
     ArtifactChange,
@@ -11,6 +12,7 @@ from weave_agent_signals.runs.challenges.contracts import (
     NamedDigest,
     RubricVerdict,
     TaskMaterial,
+    TaskMaterialPlan,
 )
 
 
@@ -46,10 +48,56 @@ def _task() -> AuthoredTask:
         ),
         judging_criteria=("The parser regression is fixed.", "Relevant tests pass."),
         start_checks=("The task repository is present under task/.",),
+        required_files=("task/src/parser.py",),
+        required_executables=("python",),
+        requires_git_metadata=False,
         workspace_digest="sha256:workspace",
         author_model="claude-sonnet-5",
         author_backend="cli",
     )
+
+
+def test_material_plan_round_trips_with_content_authenticated_identity() -> None:
+    plan = TaskMaterialPlan(
+        setup_mode="prepared_workspace",
+        materials=_task().materials,
+    )
+
+    restored = TaskMaterialPlan.from_dict(plan.to_dict())
+
+    assert restored == plan
+    assert plan.plan_id.startswith("sha256:")
+
+
+def test_prepared_workspace_task_cannot_require_git_metadata() -> None:
+    with pytest.raises(ValidationError, match="Git metadata"):
+        AuthoredTask.model_validate(
+            {
+                **_task().model_dump(mode="json"),
+                "task_id": "pending",
+                "requires_git_metadata": True,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("required_files", ("/absolute.py",), "safe relative"),
+        ("required_files", ("task/.git/config",), "Git metadata"),
+        ("required_executables", ("../python",), "executable name"),
+    ],
+)
+def test_task_preflight_requirements_are_closed(
+    field: str,
+    value: tuple[str, ...],
+    message: str,
+) -> None:
+    payload = _task().model_dump(mode="json", exclude={"task_id"})
+    payload[field] = value
+
+    with pytest.raises(ValidationError, match=message):
+        AuthoredTask.model_validate(payload)
 
 
 def _arm(arm: str) -> ArmResult:
@@ -126,7 +174,23 @@ def test_challenge_contract_round_trips_with_content_authenticated_ids() -> None
     assert result.judges[0].rubrics[0].delta == pytest.approx(0.5)
     assert result.to_dict()["judges"][0]["rubrics"][0]["delta"] == pytest.approx(0.5)
     assert result.to_dict()["baseline"]["artifact_changes"][0]["path"] == "src/parser.py"
-    assert result.to_dict()["task"]["schema_version"] == "2"
+    assert result.to_dict()["task"]["schema_version"] == "3"
+
+
+def test_epoch9_challenge_task_v2_upgrades_to_current_authenticated_contract() -> None:
+    value = _result().to_dict()
+    value["challenge_id"] = "sha256:legacy-challenge"
+    value["task"]["schema_version"] = "2"
+    value["task"]["task_id"] = "sha256:legacy-task"
+    value["task"].pop("required_files")
+    value["task"].pop("required_executables")
+    value["task"].pop("requires_git_metadata")
+
+    upgraded = reflection_records._challenge_from_epoch9(value)
+
+    assert isinstance(upgraded, ChallengeResult)
+    assert upgraded.task is not None
+    assert upgraded.task.schema_version == "3"
 
 
 @pytest.mark.parametrize("winner", ["baseline", "tie"])

@@ -6,9 +6,15 @@ import pytest
 
 from weave_agent_signals.catalogs import build_rubric_catalog
 from weave_agent_signals.judges import plan as plan_module
-from weave_agent_signals.judges.plan import build_judging_plan
+from weave_agent_signals.judges.plan import (
+    JudgingPlan,
+    build_canonical_judging_plan,
+    canonical_plan_from_epoch9,
+    judging_plan_totals,
+)
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.models import SessionView, TurnSpan
+from weave_agent_signals.routes.run_views import judging_plan_view
 from weave_agent_signals.run_config import DEFAULT_JUDGING_CONTEXT_POLICY, PositionedJudge
 
 
@@ -59,56 +65,6 @@ def _judge(model_id: str, position: int, limit: int = 128_000) -> PositionedJudg
     )
 
 
-def _plan(
-    *,
-    sessions=(_session(),),
-    judges=(_judge("judge-1", 1),),
-):
-    return build_judging_plan(
-        sessions,
-        cohort_id="cohort-1",
-        rubrics=build_rubric_catalog().rubrics,
-        judge_models=judges,
-        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-    )
-
-
-def test_plan_is_session_only_and_covers_every_turn() -> None:
-    plan = _plan(judges=(_judge("judge-1", 1), _judge("judge-2", 2)))
-    assert plan["schema_version"] == "3"
-    assert plan["totals"]["planned_rubrics"] == 6
-    assert plan["totals"]["sessions_planned"] == 1
-    session = plan["sessions"][0]
-    assert session["raw_coverage_trace_ids"] == [f"turn-{i}" for i in range(1, 5)]
-    assert [row["id"] for row in session["rubrics"]] == list(SESSION_RUBRICS)
-    assert [reviewer["judge"]["position"] for reviewer in session["reviewers"]] == [1, 2]
-    assert all(reviewer["window_plan"]["windows"] for reviewer in session["reviewers"])
-    assert plan["input_policy"] == DEFAULT_JUDGING_CONTEXT_POLICY.model_dump(mode="json")
-    assert plan["panel_size"] == 2
-    assert plan["totals"]["minimum_reviewer_attempts"] == 12
-    assert plan["totals"]["maximum_reviewer_attempts"] == 12
-
-
-def test_plan_id_authenticates_reviewer_ordinal_and_model_limit() -> None:
-    base = _plan(judges=(_judge("judge-1", 1), _judge("judge-2", 2)))
-    reordered = _plan(judges=(_judge("judge-2", 1), _judge("judge-1", 2)))
-    limited = _plan(judges=(_judge("judge-1", 1, 120_000), _judge("judge-2", 2)))
-    assert len({base["plan_id"], reordered["plan_id"], limited["plan_id"]}) == 3
-
-
-def test_plan_rejects_non_session_or_stale_rubrics() -> None:
-    descriptor = build_rubric_catalog().rubrics[0]
-    stale = descriptor.model_copy(update={"version": "stale"})
-    with pytest.raises(ValueError, match="does not match"):
-        build_judging_plan(
-            [_session()],
-            cohort_id="cohort-1",
-            rubrics=(stale,),
-            judge_models=(_judge("judge-1", 1),),
-            context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-        )
-
-
 def test_plan_pins_incapable_reviewer_as_skipped_and_excludes_its_work(
     monkeypatch,
 ) -> None:
@@ -122,23 +78,16 @@ def test_plan_pins_incapable_reviewer_as_skipped_and_excludes_its_work(
         return original(session, policy, limit, counter)
 
     monkeypatch.setattr(plan_module, "build_window_plan", build)
-    plan = _plan(judges=(_judge("small", 1, 64_000), _judge("large", 2)))
+    plan = _canonical_plan(judges=(_judge("small", 1, 64_000), _judge("large", 2)))
 
-    assert plan["schema_version"] == "3"
-    skipped, planned = plan["sessions"][0]["reviewers"]
-    assert skipped["status"] == "skipped"
-    assert skipped["skip_reason"] == "insufficient_context_capacity"
-    assert skipped["window_plan"] is None
-    assert skipped["work_bounds"] == {
-        "digest_calls": 0,
-        "window_calls_per_rubric": 0,
-        "merge_calls_per_rubric": 0,
-    }
-    assert planned["status"] == "planned"
-    assert planned["skip_reason"] is None
-    assert planned["window_plan"] is not None
-    assert all(row["minimum_reviewer_attempts"] == 1 for row in plan["sessions"][0]["rubrics"])
-    assert plan["totals"]["maximum_reviewer_attempts"] == len(plan["requested_rubrics"])
+    skipped, planned = plan.sessions[0].reviewers
+    assert skipped.status == "skipped"
+    assert skipped.skip_reason == "insufficient_context_capacity"
+    assert skipped.window_plan is None
+    assert planned.status == "planned"
+    assert planned.skip_reason is None
+    assert planned.window_plan is not None
+    assert judging_plan_totals(plan)["maximum_reviewer_attempts"] == len(plan.rubrics)
 
 
 def test_plan_does_not_convert_unexpected_window_planning_errors(monkeypatch) -> None:
@@ -147,4 +96,98 @@ def test_plan_does_not_convert_unexpected_window_planning_errors(monkeypatch) ->
 
     monkeypatch.setattr(plan_module, "build_window_plan", fail)
     with pytest.raises(RuntimeError, match="unexpected"):
-        _plan()
+        _canonical_plan()
+
+
+def _canonical_plan(
+    *,
+    sessions=(_session(),),
+    judges=(_judge("judge-1", 1),),
+) -> JudgingPlan:
+    return build_canonical_judging_plan(
+        sessions,
+        cohort_id="cohort-1",
+        rubrics=build_rubric_catalog().rubrics,
+        judge_models=judges,
+        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
+    )
+
+
+def test_canonical_plan_stores_shared_descriptors_and_turn_digests_once() -> None:
+    plan = _canonical_plan(judges=(_judge("judge-1", 1), _judge("judge-2", 2)))
+
+    assert isinstance(plan, JudgingPlan)
+    assert tuple(rubric.id for rubric in plan.rubrics) == tuple(SESSION_RUBRICS)
+    assert tuple(judge.position for judge in plan.reviewers) == (1, 2)
+    assert tuple(turn.trace_id for turn in plan.sessions[0].turns) == tuple(
+        f"turn-{index}" for index in range(1, 5)
+    )
+    assert all(turn.raw_digest.startswith("sha256:") for turn in plan.sessions[0].turns)
+    assert plan.sessions[0].reviewers[0].window_plan is not None
+
+
+def test_canonical_plan_id_authenticates_evidence_model_and_policy() -> None:
+    base = _canonical_plan()
+    changed_evidence = _canonical_plan(sessions=(_session(3),))
+    changed_model = _canonical_plan(judges=(_judge("judge-2", 1),))
+    changed_policy = build_canonical_judging_plan(
+        (_session(),),
+        cohort_id="cohort-1",
+        rubrics=build_rubric_catalog().rubrics,
+        judge_models=(_judge("judge-1", 1),),
+        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY.model_copy(
+            update={"small_model_raw_target_tokens": 40_000}
+        ),
+    )
+
+    assert (
+        len(
+            {
+                base.plan_id,
+                changed_evidence.plan_id,
+                changed_model.plan_id,
+                changed_policy.plan_id,
+            }
+        )
+        == 4
+    )
+
+
+def test_canonical_plan_derives_totals_instead_of_storing_them() -> None:
+    plan = _canonical_plan(judges=(_judge("judge-1", 1), _judge("judge-2", 2)))
+
+    totals = judging_plan_totals(plan)
+
+    assert totals["sessions_planned"] == 1
+    assert totals["turns_considered"] == 4
+    assert totals["planned_rubrics"] == len(SESSION_RUBRICS)
+    assert totals["maximum_reviewer_attempts"] == 2 * len(SESSION_RUBRICS)
+
+
+def test_canonical_plan_locates_exact_session_and_reviewer() -> None:
+    plan = _canonical_plan(judges=(_judge("judge-1", 1), _judge("judge-2", 2)))
+
+    session = plan.session("session-1")
+
+    assert session.reviewer(2).position == 2
+    with pytest.raises(KeyError, match="missing-session"):
+        plan.session("missing-session")
+    with pytest.raises(KeyError, match="3"):
+        session.reviewer(3)
+
+
+def test_epoch9_plan_converts_without_rehydrating_historical_evidence() -> None:
+    legacy = judging_plan_view(_canonical_plan(judges=(_judge("judge-1", 1), _judge("judge-2", 2))))
+    assert legacy is not None
+    legacy["plan_id"] = plan_module._digest(
+        {key: value for key, value in legacy.items() if key != "plan_id"}
+    )
+
+    converted = canonical_plan_from_epoch9(legacy)
+
+    assert converted.cohort_id == legacy["cohort_id"]
+    assert converted.plan_id != legacy["plan_id"]
+    assert tuple(turn.trace_id for turn in converted.sessions[0].turns) == tuple(
+        legacy["sessions"][0]["raw_coverage_trace_ids"]
+    )
+    assert converted.sessions[0].reviewer(1).window_plan is not None

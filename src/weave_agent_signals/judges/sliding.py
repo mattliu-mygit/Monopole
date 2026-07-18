@@ -7,13 +7,24 @@ import json
 import logging
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import ValidationError
 
 from weave_agent_signals.catalogs import build_rubric_catalog
-from weave_agent_signals.judges.inference import ChatClient, InferenceCancelled, JsonSchemaSpec
+from weave_agent_signals.judges.inference import (
+    ChatClient,
+    InferenceCancelled,
+    InferenceContextExceeded,
+    JsonSchemaSpec,
+)
+from weave_agent_signals.judges.records import (
+    JudgeCallAudit,
+    JudgeCallRecord,
+    judge_request_id,
+)
 from weave_agent_signals.judges.review import AttemptObservation, InferenceStepAudit
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS, Rubric
 from weave_agent_signals.judges.sliding_contracts import (
@@ -41,30 +52,12 @@ from weave_agent_signals.judges.windowing import (
 from weave_agent_signals.models import SessionView
 from weave_agent_signals.run_config import JudgingContextPolicy, PositionedJudge, RubricDescriptor
 
-ArtifactKind = Literal["chunk_digest", "window_findings", "merged_verdict"]
-ArtifactLoader = Callable[[str], Mapping[str, Any] | None]
-ArtifactRecorder = Callable[[str, Mapping[str, Any]], object]
+CallLoader = Callable[[str], JudgeCallRecord | None]
+CallRecorder = Callable[[JudgeCallRecord], object]
 ActivityRecorder = Callable[[Mapping[str, object]], None]
 
 log = logging.getLogger("weave_agent_signals.judges")
 
-_ARTIFACT_FIELDS = frozenset({"schema_version", "kind", "content_digest", "payload"})
-_ARTIFACT_PAYLOAD_FIELDS = frozenset({"schema_version", "result", "audit"})
-_AUDIT_FIELDS = frozenset(
-    {
-        "phase",
-        "artifact_id",
-        "requested_model",
-        "resolved_model",
-        "usage",
-        "output_mode",
-        "schema_name",
-        "schema_fallback_reason",
-        "transport_request_count",
-        "raw_output_digest",
-        "reused",
-    }
-)
 _ERROR_TEXT_LIMIT = 500
 SLIDING_PROTOCOL_VERSION = "3"
 
@@ -121,6 +114,14 @@ class _ReviewInfrastructureFailure(RuntimeError):
         self.error_type = error_type
 
 
+@dataclass(frozen=True)
+class _PendingCall:
+    request_id: str
+    phase: Literal["digest", "window", "merge"]
+    rubric_id: str | None
+    audit: JudgeCallAudit
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(
         value,
@@ -133,10 +134,6 @@ def _canonical_json(value: object) -> str:
 
 def _sha256(value: object) -> str:
     return "sha256:" + hashlib.sha256(_canonical_json(value).encode()).hexdigest()
-
-
-def _payload_digest(payload: Mapping[str, Any]) -> str:
-    return _sha256(dict(payload))
 
 
 def sliding_protocol_contract_manifest() -> dict[str, object]:
@@ -212,89 +209,6 @@ def _add_usage(total: dict[str, int], addition: Mapping[str, int]) -> None:
         total[key] = total.get(key, 0) + value
 
 
-def _audit_payload(audit: InferenceStepAudit) -> dict[str, object]:
-    return {
-        "phase": audit.phase,
-        "artifact_id": audit.artifact_id,
-        "requested_model": audit.requested_model,
-        "resolved_model": audit.resolved_model,
-        "usage": dict(audit.usage),
-        "output_mode": audit.output_mode,
-        "schema_name": audit.schema_name,
-        "schema_fallback_reason": audit.schema_fallback_reason,
-        "transport_request_count": audit.transport_request_count,
-        "raw_output_digest": audit.raw_output_digest,
-        "reused": audit.reused,
-    }
-
-
-def _artifact_envelope(
-    kind: ArtifactKind,
-    result: Mapping[str, Any],
-    audit: InferenceStepAudit,
-) -> dict[str, Any]:
-    normalized = json.loads(
-        _canonical_json(
-            {
-                "schema_version": 1,
-                "result": dict(result),
-                "audit": _audit_payload(audit),
-            }
-        )
-    )
-    return {
-        "schema_version": "1",
-        "kind": kind,
-        "content_digest": _payload_digest(normalized),
-        "payload": normalized,
-    }
-
-
-def _artifact_payload(
-    artifact: Mapping[str, Any],
-    *,
-    artifact_id: str,
-    expected_kind: ArtifactKind,
-    expected_phase: Literal["digest", "window", "merge"],
-    expected_schema: JsonSchemaSpec,
-    requested_model: str,
-) -> tuple[Mapping[str, Any], InferenceStepAudit]:
-    value = dict(artifact)
-    if set(value) != _ARTIFACT_FIELDS:
-        raise ValueError(f"artifact {artifact_id} has invalid envelope fields")
-    if value["schema_version"] != "1" or value["kind"] != expected_kind:
-        raise ValueError(f"artifact {artifact_id} has invalid identity")
-    payload = value["payload"]
-    if not isinstance(payload, Mapping):
-        raise ValueError(f"artifact {artifact_id} payload must be an object")
-    if value["content_digest"] != _payload_digest(payload):
-        raise ValueError(f"artifact {artifact_id} content digest is invalid")
-    payload_value = dict(payload)
-    if set(payload_value) != _ARTIFACT_PAYLOAD_FIELDS or payload_value["schema_version"] != 1:
-        raise ValueError(f"artifact {artifact_id} payload contract is invalid")
-    result = payload_value["result"]
-    audit_value = payload_value["audit"]
-    if not isinstance(result, Mapping) or not isinstance(audit_value, Mapping):
-        raise ValueError(f"artifact {artifact_id} result and audit must be objects")
-    audit_data = dict(audit_value)
-    if set(audit_data) != _AUDIT_FIELDS:
-        raise ValueError(f"artifact {artifact_id} audit fields are invalid")
-    audit = InferenceStepAudit(**audit_data)  # type: ignore[arg-type]
-    if (
-        audit.phase != expected_phase
-        or audit.artifact_id != artifact_id
-        or audit.requested_model != requested_model
-        or audit.schema_name != expected_schema.name
-        or audit.resolved_model is None
-        or audit.output_mode is None
-        or audit.transport_request_count < 1
-        or audit.raw_output_digest is None
-        or audit.reused
-    ):
-        raise ValueError(f"artifact {artifact_id} inference audit identity is invalid")
-    return result, replace(audit, reused=True)
-
-
 class SlidingReviewer:
     """Execute every raw window and one final merge for a positioned reviewer."""
 
@@ -303,11 +217,12 @@ class SlidingReviewer:
         *,
         session: SessionView,
         judge: PositionedJudge,
-        judging_plan: Mapping[str, object],
+        plan_id: str,
+        window_plan: Mapping[str, object],
         context_policy: JudgingContextPolicy,
         client: ChatClient,
-        load_artifact: ArtifactLoader,
-        record_artifact: ArtifactRecorder,
+        load_call: CallLoader,
+        record_call: CallRecorder,
         is_cancelled: Callable[[], bool] = lambda: False,
         activity: ActivityRecorder | None = None,
     ) -> None:
@@ -317,72 +232,47 @@ class SlidingReviewer:
             raise TypeError("judge must be a PositionedJudge")
         if not isinstance(context_policy, JudgingContextPolicy):
             raise TypeError("context_policy must be a JudgingContextPolicy")
-        plan = dict(judging_plan)
-        plan_id = plan.get("plan_id")
-        body = {key: value for key, value in plan.items() if key != "plan_id"}
-        if plan_id != _sha256(body):
-            raise ValueError("pinned judging plan ID does not match its full content")
-        if plan.get("schema_version") != "3":
-            raise ValueError("pinned judging plan schema is unsupported")
-        if plan.get("input_policy") != context_policy.model_dump(mode="json"):
-            raise ValueError("pinned judging context policy does not match")
-        if plan.get("protocol") != sliding_protocol_contract_manifest():
-            raise ValueError("pinned sliding protocol does not match")
-        sessions = plan.get("sessions")
-        if not isinstance(sessions, list):
-            raise ValueError("pinned judging plan sessions are invalid")
-        matching_sessions = [
-            value
-            for value in sessions
-            if isinstance(value, Mapping)
-            and value.get("conversation_id") == session.conversation_id
-        ]
-        if len(matching_sessions) != 1:
-            raise ValueError("session is not an exact member of the pinned judging plan")
-        reviewer_rows = matching_sessions[0].get("reviewers")
-        if not isinstance(reviewer_rows, list):
-            raise ValueError("pinned reviewer manifest is invalid")
-        if any(not isinstance(value, Mapping) for value in reviewer_rows) or [
-            value.get("ordinal") for value in reviewer_rows
-        ] != list(range(1, len(reviewer_rows) + 1)):
-            raise ValueError("pinned reviewer ordinals are invalid")
-        if judge.position > len(reviewer_rows):
-            raise ValueError("reviewer ordinal is absent from the pinned judging plan")
-        reviewer_row = reviewer_rows[judge.position - 1]
-        if reviewer_row.get("judge") != judge.model_dump(mode="json"):
-            raise ValueError("reviewer is not the exact pinned plan member at this ordinal")
-        if reviewer_row.get("status") != "planned" or reviewer_row.get("skip_reason") is not None:
-            raise ValueError("reviewer is not planned for this session")
-        window_plan = reviewer_row.get("window_plan")
-        if not isinstance(window_plan, Mapping):
-            raise ValueError("pinned reviewer window plan is invalid")
+        if not isinstance(plan_id, str) or not plan_id.startswith("sha256:"):
+            raise ValueError("pinned judging plan ID is invalid")
         expected_plan = build_window_plan(
             session,
             context_policy,
             judge.max_input_tokens,
             judge.token_counter,
         )
-        if dict(window_plan) != expected_plan:
+        expected_slim = {
+            key: expected_plan[key]
+            for key in (
+                "input_cap_tokens",
+                "raw_budget_tokens",
+                "target_raw_tokens",
+                "token_counter",
+                "capacity_reserve_tokens",
+                "merge_input_tokens",
+            )
+        }
+        expected_slim["windows"] = [
+            {key: value[key] for key in ("index", "core_trace_ids", "raw_trace_ids", "raw_tokens")}
+            for value in expected_plan["windows"]
+        ]
+        if dict(window_plan) != expected_slim:
             raise ValueError(
                 "pinned window plan does not match current session evidence and policy"
             )
 
         self.session = session
         self.judge = judge
+        self.plan_id = plan_id
         self.window_plan = expected_plan
         self.context_policy = context_policy
         self.client = client
-        self._load_artifact = load_artifact
-        self._record_artifact = record_artifact
+        self._load_call = load_call
+        self._record_call = record_call
         self._is_cancelled = is_cancelled
         self._activity = activity
         self._digest_lock = threading.Lock()
         self._digests: tuple[ChunkDigest, ...] | None = None
         self._digest_steps: tuple[InferenceStepAudit, ...] | None = None
-        self._reviewer_key = hashlib.sha256(
-            _canonical_json(judge.model_dump(mode="json")).encode()
-        ).hexdigest()
-        self._protocol_digest = sliding_protocol_contract_digest().removeprefix("sha256:")
         self._positions = {
             turn.trace_id: position for position, turn in enumerate(session.turns, start=1)
         }
@@ -403,20 +293,11 @@ class SlidingReviewer:
     def _chunk_id(self, window: Mapping[str, object]) -> str:
         return _sha256(
             {
-                "plan_id": self.window_plan["plan_id"],
+                "plan_id": self.plan_id,
                 "index": window["index"],
                 "core_trace_ids": window["core_trace_ids"],
             }
         )
-
-    def _artifact_id(
-        self,
-        phase: Literal["digest", "window", "merge"],
-        identity: str,
-    ) -> str:
-        plan_hash = str(self.window_plan["plan_id"]).removeprefix("sha256:")
-        identity_hash = hashlib.sha256(identity.encode()).hexdigest()
-        return f"{phase}/{plan_hash}/{self._reviewer_key}/{self._protocol_digest}/{identity_hash}"
 
     def _rubric(self, descriptor: RubricDescriptor) -> Rubric:
         if not isinstance(descriptor, RubricDescriptor):
@@ -464,14 +345,13 @@ class SlidingReviewer:
             input_tokens + max_tokens + self.context_policy.safety_reserve_tokens
             > self.judge.max_input_tokens
         ):
-            raise ValueError("rendered inference request exceeds the configured context budget")
+            raise InferenceContextExceeded()
         return input_tokens
 
     def _infer(
         self,
         *,
         phase: Literal["digest", "window", "merge"],
-        artifact_id: str,
         messages: list[dict[str, str]],
         max_tokens: int,
         schema: JsonSchemaSpec,
@@ -481,8 +361,37 @@ class SlidingReviewer:
         rubric_label: str | None = None,
         item_index: int | None = None,
         item_total: int | None = None,
-    ) -> Mapping[str, Any]:
+    ) -> tuple[Mapping[str, Any], _PendingCall | None]:
         estimated_input_tokens = self._messages_fit(messages, max_tokens, schema)
+        request_id = judge_request_id(
+            requested_model_id=self.judge.id,
+            provider_model=self.judge.provider_model,
+            messages=messages,
+            response_schema=schema,
+            temperature=0.0,
+            max_tokens=max_tokens,
+            protocol_version=SLIDING_PROTOCOL_VERSION,
+        )
+        stored = _review_callback(self._load_call, request_id)
+        if stored is not None:
+            if stored.result is None:
+                raise ValueError("reusable judge call has no result")
+            steps.append(
+                InferenceStepAudit(
+                    phase=phase,
+                    artifact_id=request_id,
+                    requested_model=self.judge.id,
+                    resolved_model=stored.audit.resolved_model,
+                    usage=stored.audit.usage,
+                    output_mode=stored.audit.output_mode,
+                    schema_name=stored.audit.schema_name,
+                    schema_fallback_reason=stored.audit.schema_fallback_reason,
+                    transport_request_count=stored.audit.transport_request_count,
+                    raw_output_digest=stored.audit.raw_output_digest,
+                    reused=True,
+                )
+            )
+            return stored.result, None
         self._check_cancelled()
         if phase == "digest":
             message = f"{self.judge.label} is digesting chunk {item_index} of {item_total}"
@@ -498,7 +407,7 @@ class SlidingReviewer:
             "message": message,
             "model": self.judge.id,
             "conversation_id": self.session.conversation_id,
-            "artifact_id": artifact_id,
+            "artifact_id": request_id,
             "estimated_input_tokens": estimated_input_tokens,
             "max_output_tokens": max_tokens,
             "model_context_tokens": self.judge.max_input_tokens,
@@ -522,41 +431,120 @@ class SlidingReviewer:
             raise
         except Exception as error:
             request_count = getattr(error, "_transport_request_count", 1)
+            count = request_count if type(request_count) is int and request_count > 0 else 1
+            audit = JudgeCallAudit(
+                schema_name=schema.name,
+                transport_request_count=count,
+                error_type=type(error).__name__,
+                message=_bounded_error(error),
+            )
             steps.append(
                 InferenceStepAudit(
                     phase=phase,
-                    artifact_id=artifact_id,
+                    artifact_id=request_id,
                     requested_model=self.judge.id,
                     resolved_model=None,
                     usage={},
                     output_mode=None,
                     schema_name=schema.name,
                     schema_fallback_reason=None,
-                    transport_request_count=(
-                        request_count if type(request_count) is int and request_count > 0 else 1
-                    ),
+                    transport_request_count=count,
                     raw_output_digest=None,
                 )
             )
+            _review_callback(
+                self._record_call,
+                JudgeCallRecord(
+                    request_id=request_id,
+                    phase=phase,
+                    conversation_id=self.session.conversation_id,
+                    reviewer_position=self.judge.position,
+                    requested_model_id=self.judge.id,
+                    rubric_id=rubric_id,
+                    status="failed",
+                    reusable=False,
+                    result=None,
+                    audit=audit,
+                    created_at=datetime.now(timezone.utc),
+                ),
+            )
+            if isinstance(error, InferenceContextExceeded):
+                raise
             raise _JudgeInvocationFailure(type(error).__name__) from None
 
         normalized_usage = _normalized_usage(response.usage)
         _add_usage(usage, normalized_usage)
+        audit = JudgeCallAudit(
+            resolved_model=response.model,
+            usage=normalized_usage,
+            output_mode=response.output_mode,
+            schema_name=response.schema_name or schema.name,
+            schema_fallback_reason=response.schema_fallback_reason,
+            transport_request_count=response.transport_request_count,
+            raw_output_digest=response.raw_output_digest,
+        )
         steps.append(
             InferenceStepAudit(
                 phase=phase,
-                artifact_id=artifact_id,
+                artifact_id=request_id,
                 requested_model=self.judge.id,
-                resolved_model=response.model,
-                usage=normalized_usage,
-                output_mode=response.output_mode,
-                schema_name=response.schema_name or schema.name,
-                schema_fallback_reason=response.schema_fallback_reason,
-                transport_request_count=response.transport_request_count,
-                raw_output_digest=response.raw_output_digest,
+                resolved_model=audit.resolved_model,
+                usage=audit.usage,
+                output_mode=audit.output_mode,
+                schema_name=audit.schema_name,
+                schema_fallback_reason=audit.schema_fallback_reason,
+                transport_request_count=audit.transport_request_count,
+                raw_output_digest=audit.raw_output_digest,
             )
         )
-        return parsed
+        return parsed, _PendingCall(request_id, phase, rubric_id, audit)
+
+    def _record_success(self, pending: _PendingCall | None, result: Mapping[str, Any]) -> None:
+        if pending is None:
+            return
+        _review_callback(
+            self._record_call,
+            JudgeCallRecord(
+                request_id=pending.request_id,
+                phase=pending.phase,
+                conversation_id=self.session.conversation_id,
+                reviewer_position=self.judge.position,
+                requested_model_id=self.judge.id,
+                rubric_id=pending.rubric_id,
+                status="succeeded",
+                reusable=True,
+                result=dict(result),
+                audit=pending.audit,
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    def _record_validation_failure(
+        self,
+        pending: _PendingCall | None,
+        error: Exception,
+    ) -> None:
+        if pending is None:
+            return
+        audit = pending.audit.model_copy(
+            update={"error_type": type(error).__name__, "message": _bounded_error(error)}
+        )
+        _review_callback(
+            self._record_call,
+            JudgeCallRecord(
+                request_id=pending.request_id,
+                phase=pending.phase,
+                conversation_id=self.session.conversation_id,
+                reviewer_position=self.judge.position,
+                requested_model_id=self.judge.id,
+                rubric_id=pending.rubric_id,
+                status="failed",
+                reusable=False,
+                result=None,
+                audit=audit,
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
 
     def _core_evidence(self, window: Mapping[str, object]) -> tuple[str, tuple[str, ...]]:
         trace_ids = window["core_trace_ids"]
@@ -602,52 +590,33 @@ class SlidingReviewer:
         usage: dict[str, int],
     ) -> ChunkDigest:
         chunk_id = self._chunk_id(window)
-        artifact_id = self._artifact_id("digest", chunk_id)
         raw_text, evidence_ids = self._core_evidence(window)
         response_schema = bind_chunk_digest_schema(chunk_id, evidence_ids)
-        artifact = _review_callback(self._load_artifact, artifact_id)
-        if artifact is not None:
-            payload, audit = _artifact_payload(
-                artifact,
-                artifact_id=artifact_id,
-                expected_kind="chunk_digest",
-                expected_phase="digest",
-                expected_schema=response_schema,
-                requested_model=self.judge.id,
-            )
-            steps.append(audit)
-        else:
-            payload = self._infer(
-                phase="digest",
-                artifact_id=artifact_id,
-                messages=self._digest_messages(
-                    chunk_id=chunk_id,
-                    raw_text=raw_text,
-                    evidence_ids=evidence_ids,
-                ),
-                max_tokens=self.context_policy.digest_max_tokens,
-                schema=response_schema,
-                steps=steps,
-                usage=usage,
-                item_index=int(window["index"]),
-                item_total=len(self._windows),
-            )
-        digest = parse_chunk_digest(
-            payload,
-            allowed_evidence_ids=evidence_ids,
-            max_tokens=self.context_policy.digest_max_tokens,
-            expected_chunk_id=chunk_id,
+        payload, pending = self._infer(
+            phase="digest",
+            messages=self._digest_messages(
+                chunk_id=chunk_id,
+                raw_text=raw_text,
+                evidence_ids=evidence_ids,
+            ),
+            max_tokens=self.context_policy.output_reserve_tokens,
+            schema=response_schema,
+            steps=steps,
+            usage=usage,
+            item_index=int(window["index"]),
+            item_total=len(self._windows),
         )
-        if artifact is None:
-            _review_callback(
-                self._record_artifact,
-                artifact_id,
-                _artifact_envelope(
-                    "chunk_digest",
-                    digest.model_dump(mode="json"),
-                    steps[-1],
-                ),
+        try:
+            digest = parse_chunk_digest(
+                payload,
+                allowed_evidence_ids=evidence_ids,
+                max_tokens=self.context_policy.digest_max_tokens,
+                expected_chunk_id=chunk_id,
             )
+        except Exception as error:
+            self._record_validation_failure(pending, error)
+            raise
+        self._record_success(pending, digest.model_dump(mode="json"))
         return digest
 
     def _ensure_digests(
@@ -729,10 +698,6 @@ class SlidingReviewer:
         steps: list[InferenceStepAudit],
         usage: dict[str, int],
     ) -> WindowFindings:
-        artifact_id = self._artifact_id(
-            "window",
-            f"{descriptor.id}:{descriptor.content_digest}:{window['window_id']}",
-        )
         messages, allowed_evidence_ids = self._window_messages(
             rubric=rubric,
             window_index=window_index,
@@ -743,47 +708,29 @@ class SlidingReviewer:
             str(window["window_id"]),
             allowed_evidence_ids,
         )
-        artifact = _review_callback(self._load_artifact, artifact_id)
-        if artifact is not None:
-            payload, audit = _artifact_payload(
-                artifact,
-                artifact_id=artifact_id,
-                expected_kind="window_findings",
-                expected_phase="window",
-                expected_schema=response_schema,
-                requested_model=self.judge.id,
-            )
-            steps.append(audit)
-        else:
-            payload = self._infer(
-                phase="window",
-                artifact_id=artifact_id,
-                messages=messages,
-                max_tokens=self.context_policy.finding_max_tokens,
-                schema=response_schema,
-                steps=steps,
-                usage=usage,
-                rubric_id=descriptor.id,
-                rubric_label=descriptor.label,
-                item_index=window_index + 1,
-                item_total=len(self._windows),
-            )
-        findings = parse_window_findings(
-            payload,
-            allowed_evidence_ids=allowed_evidence_ids,
+        payload, pending = self._infer(
+            phase="window",
+            messages=messages,
             max_tokens=self.context_policy.finding_max_tokens,
-            expected_window_id=str(window["window_id"]),
+            schema=response_schema,
+            steps=steps,
+            usage=usage,
+            rubric_id=descriptor.id,
+            rubric_label=descriptor.label,
+            item_index=window_index + 1,
+            item_total=len(self._windows),
         )
-        if artifact is None:
-            _review_callback(
-                self._record_artifact,
-                artifact_id,
-                _artifact_envelope(
-                    "window_findings",
-                    findings.model_dump(mode="json"),
-                    steps[-1],
-                ),
+        try:
+            findings = parse_window_findings(
+                payload,
+                allowed_evidence_ids=allowed_evidence_ids,
+                max_tokens=self.context_policy.finding_max_tokens,
+                expected_window_id=str(window["window_id"]),
             )
+        except Exception as error:
+            self._record_validation_failure(pending, error)
+            raise
+        self._record_success(pending, findings.model_dump(mode="json"))
         return findings
 
     def _deduplicated_findings(
@@ -819,7 +766,7 @@ class SlidingReviewer:
         digest_context = [digest.model_dump(mode="json") for digest in digests]
         finding_context = [finding.model_dump(mode="json") for finding in findings]
         manifest = {
-            "plan_id": self.window_plan["plan_id"],
+            "plan_id": self.plan_id,
             "window_ids": [window["window_id"] for window in self._windows],
             "raw_coverage_trace_ids": self.window_plan["raw_coverage_trace_ids"],
         }
@@ -850,45 +797,23 @@ class SlidingReviewer:
         steps: list[InferenceStepAudit],
         usage: dict[str, int],
     ) -> MergedVerdict:
-        artifact_id = self._artifact_id(
-            "merge",
-            f"{descriptor.id}:{descriptor.content_digest}",
-        )
         response_schema = bind_merged_verdict_schema(self._all_evidence_ids)
-        artifact = _review_callback(self._load_artifact, artifact_id)
-        if artifact is not None:
-            payload, audit = _artifact_payload(
-                artifact,
-                artifact_id=artifact_id,
-                expected_kind="merged_verdict",
-                expected_phase="merge",
-                expected_schema=response_schema,
-                requested_model=self.judge.id,
-            )
-            steps.append(audit)
-        else:
-            payload = self._infer(
-                phase="merge",
-                artifact_id=artifact_id,
-                messages=self._merge_messages(rubric=rubric, digests=digests, findings=findings),
-                max_tokens=self.context_policy.output_reserve_tokens,
-                schema=response_schema,
-                steps=steps,
-                usage=usage,
-                rubric_id=descriptor.id,
-                rubric_label=descriptor.label,
-            )
-        verdict = parse_merged_verdict(payload, allowed_evidence_ids=self._all_evidence_ids)
-        if artifact is None:
-            _review_callback(
-                self._record_artifact,
-                artifact_id,
-                _artifact_envelope(
-                    "merged_verdict",
-                    verdict.model_dump(mode="json"),
-                    steps[-1],
-                ),
-            )
+        payload, pending = self._infer(
+            phase="merge",
+            messages=self._merge_messages(rubric=rubric, digests=digests, findings=findings),
+            max_tokens=self.context_policy.output_reserve_tokens,
+            schema=response_schema,
+            steps=steps,
+            usage=usage,
+            rubric_id=descriptor.id,
+            rubric_label=descriptor.label,
+        )
+        try:
+            verdict = parse_merged_verdict(payload, allowed_evidence_ids=self._all_evidence_ids)
+        except Exception as error:
+            self._record_validation_failure(pending, error)
+            raise
+        self._record_success(pending, verdict.model_dump(mode="json"))
         return verdict
 
     def review(self, rubric: RubricDescriptor) -> AttemptObservation:
@@ -922,6 +847,37 @@ class SlidingReviewer:
             )
         except InferenceCancelled:
             raise
+        except InferenceContextExceeded:
+            last_step = steps[-1] if steps else None
+            self._emit_activity(
+                {
+                    "phase": "context_capacity_skipped",
+                    "message": f"{self.judge.label} exceeded its context capacity",
+                    "model": self.judge.id,
+                    "conversation_id": self.session.conversation_id,
+                    "rubric": rubric.id,
+                }
+            )
+            return AttemptObservation(
+                status="skipped",
+                skip_reason="insufficient_context_capacity",
+                resolved_model=last_step.resolved_model if last_step is not None else None,
+                score=None,
+                rationale=None,
+                usage=usage,
+                error_type=None,
+                message=None,
+                output_mode=last_step.output_mode if last_step is not None else None,
+                schema_name=last_step.schema_name if last_step is not None else None,
+                schema_fallback_reason=(
+                    last_step.schema_fallback_reason if last_step is not None else None
+                ),
+                transport_request_count=sum(
+                    step.transport_request_count for step in steps if not step.reused
+                ),
+                raw_output_digest=(last_step.raw_output_digest if last_step is not None else None),
+                steps=tuple(steps),
+            )
         except Exception as error:
             last_step = steps[-1] if steps else None
             error_type = (

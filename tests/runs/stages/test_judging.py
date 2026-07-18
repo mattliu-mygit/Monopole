@@ -11,7 +11,8 @@ import pytest
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
 from weave_agent_signals.judges import runner
 from weave_agent_signals.judges.inference import InferenceCancelled
-from weave_agent_signals.judges.plan import build_judging_plan
+from weave_agent_signals.judges.plan import build_canonical_judging_plan
+from weave_agent_signals.judges.records import JudgeCallAudit, JudgeCallRecord
 from weave_agent_signals.models import Score, SessionView, TurnSpan
 from weave_agent_signals.run_config import RunConfig, resolve_run_config
 from weave_agent_signals.runs.stages import StageCancelled
@@ -20,7 +21,6 @@ from weave_agent_signals.runs.store import (
     DataSelection,
     RunStatus,
     RunStore,
-    judging_artifact_payload_digest,
 )
 
 
@@ -29,6 +29,28 @@ def store(tmp_path):
     value = RunStore(tmp_path / "runs.db")
     yield value
     value.close()
+
+
+def _judge_call() -> JudgeCallRecord:
+    return JudgeCallRecord(
+        request_id="sha256:" + "0" * 64,
+        phase="digest",
+        conversation_id="session-1",
+        reviewer_position=1,
+        requested_model_id="claude:claude-sonnet-5",
+        rubric_id=None,
+        status="succeeded",
+        reusable=True,
+        result={"ok": True},
+        audit=JudgeCallAudit(
+            resolved_model="claude-sonnet-5",
+            output_mode="json_schema",
+            schema_name="chunk_digest",
+            transport_request_count=1,
+            raw_output_digest="0" * 64,
+        ),
+        created_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+    )
 
 
 def _turn() -> TurnSpan:
@@ -196,22 +218,14 @@ class _ActivityChat:
         self.activity(event)
 
 
-def test_stage_persists_artifacts_buffers_scores_and_writes_only_session_refs(store, monkeypatch):
+def test_stage_persists_calls_buffers_scores_and_writes_only_session_refs(store, monkeypatch):
     run, effective, turn, session = _setup(store)
     weave = _Weave()
 
     def fake_judge(_session, _client, **kwargs):
-        payload = {"ok": True}
-        kwargs["artifact_recorder"](
-            "digest/test",
-            {
-                "schema_version": "1",
-                "kind": "chunk_digest",
-                "content_digest": judging_artifact_payload_digest(payload),
-                "payload": payload,
-            },
-        )
-        assert kwargs["artifact_loader"]("digest/test") is not None
+        call = _judge_call()
+        kwargs["call_recorder"](call)
+        assert kwargs["call_loader"](call.request_id) == call
         return [
             Score(
                 "judge.session_outcome",
@@ -237,7 +251,7 @@ def test_stage_persists_artifacts_buffers_scores_and_writes_only_session_refs(st
     )
     run_judging_stage(run, effective, threading.Event(), dependencies=dependencies)
     current = store.get(run.run_id)
-    assert current is not None and current.judging_artifacts
+    assert current is not None and store.list_judge_calls(run.run_id) == [_judge_call()]
     assert len(weave.writes) == 1
     assert "/agent_conversation/" in weave.writes[0][1]
     assert "/agent_turn/" not in weave.writes[0][1]
@@ -304,7 +318,8 @@ def test_stage_persists_safe_semantic_and_transport_activity(store, monkeypatch)
     result = store.get(run.run_id).judging_result
     assert result["phase"] == "judging_complete"
     assert result["started_at"]
-    assert [event["phase"] for event in result["events"]] == [
+    events = store.list_run_events(run.run_id, stage="judging")
+    assert [event.phase for event in events] == [
         "judging_started",
         "session_started",
         "digest_started",
@@ -314,15 +329,15 @@ def test_stage_persists_safe_semantic_and_transport_activity(store, monkeypatch)
         "score_writes_started",
         "judging_complete",
     ]
-    retry = next(event for event in result["events"] if event["phase"] == "transport_retry")
-    assert retry["elapsed_seconds"] == 191.8
-    assert retry["error_category"] == "retryable_process_error"
-    assert retry["provider_status"] == 429
-    assert retry["provider_error_code"] == "rate_limit_exceeded"
-    assert retry["provider_error_message"] == "Too many requests; token=[REDACTED]"
-    assert retry["output_sha256"] == "a" * 64
-    assert "raw_output" not in retry
-    assert secret not in str(result)
+    retry = next(event for event in events if event.phase == "transport_retry")
+    assert retry.details["elapsed_seconds"] == 191.8
+    assert retry.details["error_category"] == "retryable_process_error"
+    assert retry.details["provider_status"] == 429
+    assert retry.details["provider_error_code"] == "rate_limit_exceeded"
+    assert retry.details["provider_error_message"] == "Too many requests; token=[REDACTED]"
+    assert retry.details["output_sha256"] == "a" * 64
+    assert "raw_output" not in retry.details
+    assert secret not in str(events)
 
 
 @contextmanager
@@ -452,7 +467,6 @@ def test_stage_with_no_applicable_reviewers_avoids_chat_and_judge_feedback(store
         raise WindowPlanInapplicable()
 
     monkeypatch.setattr("weave_agent_signals.judges.plan.build_window_plan", inapplicable)
-    monkeypatch.setattr("weave_agent_signals.judges.runner.build_window_plan", inapplicable)
     chat_factory = Mock(side_effect=AssertionError("chat backend must not be created"))
     weave = _Weave()
     deps = JudgingDependencies(
@@ -485,31 +499,21 @@ def test_stage_passes_exact_pinned_plan_and_context_to_runner(store, monkeypatch
     )
     run_judging_stage(run, effective, threading.Event(), dependencies=deps)
     kwargs = captured.call_args.kwargs
-    assert kwargs["judging_plan"]["schema_version"] == "3"
+    assert kwargs["judging_plan"].protocol_version == "3"
     assert kwargs["context_policy"] == effective.judging_context
     assert kwargs["rubrics"] == list(effective.rubrics)
 
 
-def test_stage_persists_unique_artifact_progress_before_mid_session_cancellation(
-    store, monkeypatch
-):
+def test_stage_persists_unique_call_progress_before_mid_session_cancellation(store, monkeypatch):
     run, effective, turn, session = _setup(store)
 
-    def cancel_after_artifact(_session, _client, **kwargs):
-        payload = {"ok": True}
-        artifact = {
-            "schema_version": "1",
-            "kind": "chunk_digest",
-            "content_digest": judging_artifact_payload_digest(payload),
-            "payload": payload,
-        }
-        kwargs["artifact_recorder"]("digest/test", artifact)
-        kwargs["artifact_recorder"]("digest/test", artifact)
+    def cancel_after_call(_session, _client, **kwargs):
+        call = _judge_call()
+        kwargs["call_recorder"](call)
+        kwargs["call_recorder"](call)
         raise InferenceCancelled("cancelled")
 
-    monkeypatch.setattr(
-        "weave_agent_signals.runs.stages.judging.judge_session", cancel_after_artifact
-    )
+    monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", cancel_after_call)
     deps = JudgingDependencies(
         store,
         _Weave,
@@ -674,9 +678,9 @@ def test_partial_write_failure_reports_incomplete_after_attempting_all_scores(st
     assert len(weave.writes) == 1
 
 
-def test_resumed_artifact_progress_is_reconstructed_and_not_double_counted(store, monkeypatch):
+def test_resumed_call_progress_is_reconstructed_and_not_double_counted(store, monkeypatch):
     run, effective, turn, session = _setup(store)
-    plan = build_judging_plan(
+    plan = build_canonical_judging_plan(
         [session],
         cohort_id="cohort",
         rubrics=effective.rubrics,
@@ -684,21 +688,15 @@ def test_resumed_artifact_progress_is_reconstructed_and_not_double_counted(store
         context_policy=effective.judging_context,
     )
     store.pin_judging_plan(run.run_id, plan)
-    payload = {"ok": True}
-    artifact = {
-        "schema_version": "1",
-        "kind": "chunk_digest",
-        "content_digest": judging_artifact_payload_digest(payload),
-        "payload": payload,
-    }
-    store.record_judging_artifact(run.run_id, "digest/test", artifact)
+    call = _judge_call()
+    store.record_judge_call(run.run_id, call)
     score = Score(
         "judge.session_outcome",
         0.75,
         [],
         {
             "attempts": [
-                {"steps": [{"phase": "digest", "artifact_id": "digest/test", "reused": True}]}
+                {"steps": [{"phase": "digest", "artifact_id": call.request_id, "reused": True}]}
             ]
         },
         "session",

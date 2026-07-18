@@ -77,75 +77,68 @@ def call_review(operation: Callable[[], T]) -> T:
 def create_reviews_router(service: ReviewService) -> APIRouter:
     router = APIRouter(prefix="/api/runs", tags=["reviews"])
 
+    def response(run):
+        return RunResponse.model_validate(serialize_run(run, getattr(service, "store", None)))
+
     @router.put("/{run_id}/reflection_selection")
     def select_candidate(run_id: str, request: SelectionRequest) -> RunResponse:
-        return RunResponse.model_validate(
-            serialize_run(
-                call_review(
-                    lambda: service.select_candidate(
-                        run_id,
-                        candidate_id=request.candidate_id,
-                        expected_revision=request.expected_revision,
-                        discard_draft=request.discard_draft,
-                    )
+        return response(
+            call_review(
+                lambda: service.select_candidate(
+                    run_id,
+                    candidate_id=request.candidate_id,
+                    expected_revision=request.expected_revision,
+                    discard_draft=request.discard_draft,
                 )
             )
         )
 
     @router.put("/{run_id}/reflection_draft")
     def save_draft(run_id: str, request: DraftRequest) -> RunResponse:
-        return RunResponse.model_validate(
-            serialize_run(
-                call_review(
-                    lambda: service.save_draft(
-                        run_id,
-                        contents=request.contents,
-                        expected_revision=request.expected_revision,
-                        expected_draft_revision=request.expected_draft_revision,
-                    )
+        return response(
+            call_review(
+                lambda: service.save_draft(
+                    run_id,
+                    contents=request.contents,
+                    expected_revision=request.expected_revision,
+                    expected_draft_revision=request.expected_draft_revision,
                 )
             )
         )
 
     @router.delete("/{run_id}/reflection_draft")
     def reset_draft(run_id: str, request: DraftResetRequest) -> RunResponse:
-        return RunResponse.model_validate(
-            serialize_run(
-                call_review(
-                    lambda: service.reset_draft(
-                        run_id,
-                        expected_revision=request.expected_revision,
-                        expected_draft_revision=request.expected_draft_revision,
-                    )
+        return response(
+            call_review(
+                lambda: service.reset_draft(
+                    run_id,
+                    expected_revision=request.expected_revision,
+                    expected_draft_revision=request.expected_draft_revision,
                 )
             )
         )
 
     @router.post("/{run_id}/promote")
     def promote(run_id: str, request: PromoteRequest) -> RunResponse:
-        return RunResponse.model_validate(
-            serialize_run(
-                call_review(
-                    lambda: service.promote(
-                        run_id,
-                        promotion_id=request.idempotency_key,
-                        expected_revision=request.expected_revision,
-                        expected_draft_revision=request.expected_draft_revision,
-                        acknowledge_unevaluated=request.acknowledge_unevaluated,
-                    )
+        return response(
+            call_review(
+                lambda: service.promote(
+                    run_id,
+                    promotion_id=request.idempotency_key,
+                    expected_revision=request.expected_revision,
+                    expected_draft_revision=request.expected_draft_revision,
+                    acknowledge_unevaluated=request.acknowledge_unevaluated,
                 )
             )
         )
 
     @router.post("/{run_id}/dismiss")
     def dismiss(run_id: str, request: DismissRequest) -> RunResponse:
-        return RunResponse.model_validate(
-            serialize_run(
-                call_review(
-                    lambda: service.dismiss(
-                        run_id,
-                        expected_revision=request.expected_revision,
-                    )
+        return response(
+            call_review(
+                lambda: service.dismiss(
+                    run_id,
+                    expected_revision=request.expected_revision,
                 )
             )
         )

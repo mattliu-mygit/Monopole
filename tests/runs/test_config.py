@@ -20,8 +20,8 @@ def test_judging_context_policy_uses_capacity_tiers_at_exact_threshold():
     policy = JudgingContextPolicy()
 
     assert policy.contract_version == "3"
-    assert policy.capacity_reserve(200_000) == 50_000
-    assert policy.capacity_reserve(200_001) == 100_000
+    assert policy.capacity_reserve(200_000) == 18_000
+    assert policy.capacity_reserve(200_001) == 18_000
     assert policy.raw_window_target(200_000) == 50_000
     assert policy.raw_window_target(200_001) == 128_000
     assert policy.raw_window_target(1_050_000) == 128_000

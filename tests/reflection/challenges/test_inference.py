@@ -4,8 +4,17 @@ from weave_agent_signals.judges.inference import JudgeResponse
 from weave_agent_signals.judges.rubrics import TOOL_CHOICE, VERIFICATION_DISCIPLINE
 from weave_agent_signals.judges.tokens import count_tokens
 from weave_agent_signals.run_config import ModelDescriptor, PositionedJudge
-from weave_agent_signals.runs.challenges.contracts import ArmResult, ArtifactChange, AuthoredTask
-from weave_agent_signals.runs.challenges.inference import author_task, judge_pair
+from weave_agent_signals.runs.challenges.contracts import (
+    ArmResult,
+    ArtifactChange,
+    AuthoredTask,
+    TaskMaterialPlan,
+)
+from weave_agent_signals.runs.challenges.inference import (
+    author_task,
+    judge_pair,
+    plan_task_materials,
+)
 from weave_agent_signals.runs.challenges.workspace import WorkspaceFile, WorkspaceSnapshot
 
 
@@ -65,13 +74,11 @@ def _arm(arm: str, transcript: str) -> ArmResult:
     )
 
 
-def test_task_author_makes_one_complete_task_package_call_without_b_or_c_content() -> None:
+def test_task_author_plans_materials_then_uses_the_fetched_manifest() -> None:
     client = _Client(
         [
             (
                 {
-                    "prompt": "Repair the parser regression in task/.",
-                    "goal": "The parser regression test passes.",
                     "setup_mode": "prepared_workspace",
                     "materials": [
                         {
@@ -81,48 +88,85 @@ def test_task_author_makes_one_complete_task_package_call_without_b_or_c_content
                             "destination": "task",
                         }
                     ],
+                },
+                "claude-sonnet-5",
+            ),
+            (
+                {
+                    "prompt": "Repair the parser regression in task/src/parser.py.",
+                    "goal": "The parser regression test passes.",
                     "judging_criteria": ["The regression is fixed.", "Tests pass."],
-                    "start_checks": ["task/ contains the pinned repository."],
+                    "start_checks": ["The fetched parser sources are available under task/."],
+                    "required_files": ["task/src/parser.py", "task/tests/test_parser.py"],
+                    "required_executables": ["python"],
+                    "requires_git_metadata": False,
                 },
                 "claude-sonnet-5",
             ),
         ]
     )
 
+    plan = plan_task_materials(
+        client,
+        author=_author(),
+        coaching_digest="Agents often failed to verify parser fixes.",
+        workspace_digest="sha256:seed",
+        workspace=WorkspaceSnapshot((WorkspaceFile("README.md", b"seed workspace\n"),)),
+    )
     task = author_task(
         client,
         author=_author(),
         coaching_digest="Agents often failed to verify parser fixes.",
-        workspace_digest="sha256:workspace",
+        material_plan=plan,
+        workspace_digest="sha256:prepared",
         workspace=WorkspaceSnapshot(
             (
-                WorkspaceFile("src/parser.py", b"def parse(value):\n    return value\n"),
-                WorkspaceFile("tests/test_parser.py", b"def test_parse():\n    assert True\n"),
+                WorkspaceFile("task/src/parser.py", b"def parse(value):\n    return value\n"),
+                WorkspaceFile("task/tests/test_parser.py", b"def test_parse():\n    assert True\n"),
+            )
+        ),
+        initial_workspace=WorkspaceSnapshot(
+            (
+                WorkspaceFile("task/src/parser.py", b"def parse(value):\n    return value\n"),
+                WorkspaceFile("task/tests/test_parser.py", b"def test_parse():\n    assert True\n"),
             )
         ),
     )
 
-    assert task.prompt == "Repair the parser regression in task/."
+    assert task.prompt == "Repair the parser regression in task/src/parser.py."
     assert task.goal == "The parser regression test passes."
     assert task.setup_mode == "prepared_workspace"
     assert task.materials[0].revision == "a" * 40
     assert task.judging_criteria == ("The regression is fixed.", "Tests pass.")
-    assert task.start_checks == ("task/ contains the pinned repository.",)
-    assert len(client.calls) == 1
+    assert task.required_files == ("task/src/parser.py", "task/tests/test_parser.py")
+    assert task.required_executables == ("python",)
+    assert task.requires_git_metadata is False
+    assert len(client.calls) == 2
     serialized_messages = str([call["messages"] for call in client.calls])
     assert "baseline agents" not in serialized_messages
     assert "candidate agents" not in serialized_messages
     payload = json.loads(client.calls[0]["messages"][1]["content"])
-    assert payload["workspace_summary"]["file_count"] == 2
-    assert payload["workspace_summary"]["top_level_entries"] == ["src", "tests"]
+    assert payload["workspace_summary"]["file_count"] == 1
+    authored_payload = json.loads(client.calls[1]["messages"][1]["content"])
+    assert authored_payload["workspace_manifest"] == [
+        "task/src/parser.py",
+        "task/tests/test_parser.py",
+    ]
+    assert authored_payload["initial_workspace_manifest"] == authored_payload["workspace_manifest"]
+    assert authored_payload["material_plan"]["plan_id"] == plan.plan_id
     assert "def parse(value)" not in serialized_messages
     assert set(client.calls[0]["response_schema"].schema["properties"]) == {
-        "prompt",
-        "goal",
         "setup_mode",
         "materials",
+    }
+    assert set(client.calls[1]["response_schema"].schema["properties"]) == {
+        "prompt",
+        "goal",
         "judging_criteria",
         "start_checks",
+        "required_files",
+        "required_executables",
+        "requires_git_metadata",
     }
 
 
@@ -202,10 +246,11 @@ def test_task_author_uses_compact_workspace_summary_for_large_workspaces() -> No
                 {
                     "prompt": "Repair the parser.",
                     "goal": "Parser tests pass.",
-                    "setup_mode": "agent_bootstrap",
-                    "materials": [],
                     "judging_criteria": ["Parser tests pass."],
                     "start_checks": ["The workspace is writable."],
+                    "required_files": ["README.md"],
+                    "required_executables": ["python"],
+                    "requires_git_metadata": False,
                 },
                 "claude-sonnet-5",
             ),
@@ -226,6 +271,7 @@ def test_task_author_uses_compact_workspace_summary_for_large_workspaces() -> No
         client,
         author=author,
         coaching_digest="verification was weak",
+        material_plan=TaskMaterialPlan(setup_mode="agent_bootstrap", materials=()),
         workspace_digest="sha256:workspace",
         workspace=workspace,
     )
@@ -236,6 +282,9 @@ def test_task_author_uses_compact_workspace_summary_for_large_workspaces() -> No
     assert count_tokens(rendered, author.token_counter) <= author.max_input_tokens - 1_536
     summary = json.loads(call["messages"][1]["content"])["workspace_summary"]
     assert summary["file_count"] == len(workspace.files)
+    payload = json.loads(call["messages"][1]["content"])
+    assert payload["workspace_manifest_truncated"] is True
+    assert len(payload["workspace_manifest"]) == 64
     assert "workspace overview" not in rendered
     assert len(rendered) < 20_000
 

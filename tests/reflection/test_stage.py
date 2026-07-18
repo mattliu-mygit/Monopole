@@ -30,6 +30,7 @@ from weave_agent_signals.runs.reflection import (
     ReflectionEvaluationError,
     ReflectionResult,
 )
+from weave_agent_signals.runs.reflection_records import ReflectionResultRecord
 from weave_agent_signals.runs.stages import StageCancelled
 from weave_agent_signals.runs.stages.reflection import (
     ReflectionDependencies,
@@ -546,19 +547,20 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
     assert evaluator_client.cancel is writer_client.cancel
 
     updated = store.get(run.run_id)
-    assert updated.reflection_input["cohort_id"] == "cohort-test"
-    assert updated.reflection_input["feedback_count"] == 1
-    assert updated.reflection_input["feedback"][0] == {
+    assert updated.reflection_input.cohort_id == "cohort-test"
+    assert len(updated.reflection_input.feedback) == 1
+    feedback_identity = updated.reflection_input.feedback[0].model_dump(mode="json")
+    assert feedback_identity == {
         "id": "feedback-1",
         "weave_ref": "weave:///session-1",
         "feedback_type": "weave_agent_signals.judge.verification",
-        "digest": updated.reflection_input["feedback"][0]["digest"],
+        "digest": feedback_identity["digest"],
     }
-    assert updated.reflection_input["baseline"] == baseline.to_dict()
+    assert updated.reflection_input.baseline == baseline
     expected = _result(baseline, config).with_challenge(
         _challenge_result("candidate-1", "candidate")
     )
-    assert updated.reflecting_result == expected.to_dict()
+    assert updated.reflecting_result == ReflectionResultRecord.from_epoch9(expected.to_dict())
     assert updated.reflection_review == {
         "status": "pending",
         "selected_candidate_id": "candidate-1",
@@ -571,15 +573,15 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
     assert updated.reflecting_progress["scored"] == 1
     assert updated.reflecting_progress["total_attempts"] == config.candidate_budget
     assert "candidate_budget" not in updated.reflecting_progress
-    events = updated.reflecting_progress["events"]
+    events = store.list_run_events(run.run_id, stage="reflecting")
     assert any(
-        event.get("acting_role") == "proposal_writer"
-        and event.get("model") == config.models.proposal_writer.id
+        event.details.get("acting_role") == "proposal_writer"
+        and event.details.get("model") == config.models.proposal_writer.id
         for event in events
     )
     assert any(
-        event.get("acting_role") == "proposal_evaluator"
-        and event.get("model") == config.models.proposal_evaluator.id
+        event.details.get("acting_role") == "proposal_evaluator"
+        and event.details.get("model") == config.models.proposal_evaluator.id
         for event in events
     )
 
@@ -624,7 +626,7 @@ def test_stage_applies_paired_challenge_before_initializing_review(
     run_reflection_stage(run, config, threading.Event(), dependencies=dependencies)
 
     updated = store.get(run.run_id)
-    result = ReflectionResult.from_dict(updated.reflecting_result)
+    result = updated.reflecting_result
     assert result.provisional_candidate_id == "candidate-1"
     assert result.challenge is not None
     assert result.challenge.winner == winner
@@ -706,21 +708,25 @@ def test_all_invalid_stage_result_persists_audit_without_review(store):
     run_reflection_stage(run, config, threading.Event(), dependencies=dependencies)
 
     updated = store.get(run.run_id)
-    assert updated.reflecting_result == result.to_dict()
-    assert updated.reflecting_result["reason"] == NO_VALID_PROPOSAL_REASON
+    assert updated.reflecting_result == ReflectionResultRecord.from_epoch9(result.to_dict())
+    assert updated.reflecting_result.reason == NO_VALID_PROPOSAL_REASON
     assert updated.reflection_review is None
     assert updated.reflecting_progress["status_message"] == NO_VALID_PROPOSAL_REASON
     rejected_event = next(
         event
-        for event in updated.reflecting_progress["events"]
-        if event["phase"] == "candidate_rejected"
+        for event in store.list_run_events(run.run_id, stage="reflecting")
+        if event.phase == "candidate_rejected"
     )
-    assert rejected_event["changed_paths"] == ["../secret.md"]
-    assert rejected_event["attempt_id"] == result.generation_attempts[0].attempt_id
-    assert rejected_event["error_type"] == result.generation_attempts[0].error_type
-    assert rejected_event["error"] == result.generation_attempts[0].error
-    assert rejected_event["response_digest"] == result.generation_attempts[0].response_digest
-    assert rejected_event["response_excerpt"] == result.generation_attempts[0].response_excerpt
+    assert rejected_event.details["changed_paths"] == ["../secret.md"]
+    assert rejected_event.details["attempt_id"] == result.generation_attempts[0].attempt_id
+    assert rejected_event.details["error_type"] == result.generation_attempts[0].error_type
+    assert rejected_event.details["error"] == result.generation_attempts[0].error
+    assert (
+        rejected_event.details["response_digest"] == result.generation_attempts[0].response_digest
+    )
+    assert (
+        rejected_event.details["response_excerpt"] == result.generation_attempts[0].response_excerpt
+    )
 
 
 def test_stage_failure_progress_keeps_actionable_evaluator_message(store):
@@ -745,7 +751,7 @@ def test_stage_failure_progress_keeps_actionable_evaluator_message(store):
     progress = store.get(run.run_id).reflecting_progress
     assert progress["phase"] == "reflection_failed"
     assert progress["status_message"] == message
-    assert progress["events"][-1]["message"] == message
+    assert store.list_run_events(run.run_id, stage="reflecting")[-1].message == message
 
 
 def test_stage_failure_progress_does_not_persist_arbitrary_exception_text(store):
@@ -768,12 +774,12 @@ def test_stage_failure_progress_does_not_persist_arbitrary_exception_text(store)
     assert secret in str(captured.value.__cause__)
 
     progress = store.get(run.run_id).reflecting_progress
-    terminal = progress["events"][-1]
+    terminal = store.list_run_events(run.run_id, stage="reflecting")[-1]
     assert secret not in str(progress)
-    assert terminal["phase"] == "reflection_failed"
-    assert terminal["message"] == "Reflection failed unexpectedly"
-    assert terminal["error"] == "Reflection failed unexpectedly"
-    assert terminal["error_type"] == "RuntimeError"
+    assert terminal.phase == "reflection_failed"
+    assert terminal.message == "Reflection failed unexpectedly"
+    assert terminal.details["error"] == "Reflection failed unexpectedly"
+    assert terminal.details["error_type"] == "RuntimeError"
 
 
 @pytest.mark.parametrize(
@@ -879,8 +885,7 @@ def test_reflection_input_pins_target_registry_manifest(store):
         run_reflection_stage(run, config, threading.Event(), dependencies=first)
 
     pinned = store.get(run.run_id).reflection_input
-    assert pinned["schema_version"] == "3"
-    assert pinned["target_registry"] == manifest
+    assert pinned.target_registry == manifest
 
     changed_manifest = _manifest("sha256:changed")
     second = ReflectionDependencies(
@@ -957,7 +962,7 @@ def test_stage_reuses_pinned_baseline_instead_of_recapturing_on_resume(store):
     assert first_adapter.capture_calls == 1
     assert second_adapter.capture_calls == 0
     assert baselines == [original]
-    assert store.get(run.run_id).reflecting_result["baseline"] == original.to_dict()
+    assert store.get(run.run_id).reflecting_result.baseline == original
 
 
 def test_stage_cancellation_before_input_capture_writes_nothing(store):
@@ -1037,10 +1042,10 @@ def test_stage_records_no_feedback_without_opening_model_clients(store):
 
     updated = store.get(run.run_id)
     assert opened == []
-    assert updated.reflecting_result == {
-        "candidates": [],
-        "reason": "No evaluation feedback was found for the pinned cohort.",
-    }
+    assert updated.reflecting_result.attempts == ()
+    assert updated.reflecting_result.reason == (
+        "No evaluation feedback was found for the pinned cohort."
+    )
     assert updated.reflection_review is None
 
 
@@ -1080,8 +1085,7 @@ def test_zero_applicable_judging_pins_no_judge_feedback_identity(store):
     run_reflection_stage(run, config, threading.Event(), dependencies=dependencies)
 
     updated = store.get(run.run_id)
-    assert updated.reflection_input["feedback_count"] == 0
-    assert updated.reflection_input["feedback"] == []
+    assert updated.reflection_input.feedback == ()
 
 
 @pytest.mark.parametrize(
@@ -1115,12 +1119,11 @@ def test_stage_treats_audit_only_judge_feedback_as_no_reflection_evidence(store,
     updated = store.get(run.run_id)
     assert opened == []
     assert digest_calls == []
-    assert updated.reflection_input["feedback_count"] == 0
-    assert updated.reflection_input["feedback"] == []
-    assert updated.reflecting_result == {
-        "candidates": [],
-        "reason": "No evaluation feedback was found for the pinned cohort.",
-    }
+    assert updated.reflection_input.feedback == ()
+    assert updated.reflecting_result.attempts == ()
+    assert updated.reflecting_result.reason == (
+        "No evaluation feedback was found for the pinned cohort."
+    )
 
 
 def test_stage_pins_and_passes_only_eligible_reflection_feedback(store):
@@ -1158,8 +1161,8 @@ def test_stage_pins_and_passes_only_eligible_reflection_feedback(store):
     assert reflected == [selected]
     assert digested == [selected]
     pinned = store.get(run.run_id).reflection_input
-    assert pinned["feedback_count"] == 2
-    assert [(item["id"], item["feedback_type"]) for item in pinned["feedback"]] == [
+    assert len(pinned.feedback) == 2
+    assert [(item.id, item.feedback_type) for item in pinned.feedback] == [
         ("feedback-1", "weave_agent_signals.judge.verification"),
         ("deterministic-1", "weave_agent_signals.outcome.test"),
     ]
@@ -1206,7 +1209,7 @@ def test_resume_ignores_changes_to_unusable_judge_audit_rows(store):
     )
 
     assert reflected == [[_deterministic_feedback()]]
-    assert [item["id"] for item in store.get(run.run_id).reflection_input["feedback"]] == [
+    assert [item.id for item in store.get(run.run_id).reflection_input.feedback] == [
         "deterministic-1"
     ]
 
@@ -1231,7 +1234,7 @@ def test_stage_finalizes_persisted_evidence_without_rerunning_inference(store):
     store.record_stage_result(
         run.run_id,
         stage=RunStatus.REFLECTING,
-        result=evidence.to_dict(),
+        result=ReflectionResultRecord.from_epoch9(evidence.to_dict()),
     )
     dependencies = ReflectionDependencies(
         store=store,
@@ -1252,7 +1255,7 @@ def test_stage_finalizes_persisted_evidence_without_rerunning_inference(store):
 
     updated = store.get(run.run_id)
     assert adapter.capture_calls == 1
-    assert updated.reflecting_result == evidence.to_dict()
+    assert updated.reflecting_result == ReflectionResultRecord.from_epoch9(evidence.to_dict())
     assert updated.reflection_review["selected_candidate_id"] == "candidate-1"
 
 
@@ -1276,7 +1279,7 @@ def test_stage_revalidates_pinned_policy_before_finalizing_persisted_result(stor
     store.record_stage_result(
         run.run_id,
         stage=RunStatus.REFLECTING,
-        result=evidence.to_dict(),
+        result=ReflectionResultRecord.from_epoch9(evidence.to_dict()),
     )
     changed_adapter = Adapter(baseline, _manifest("sha256:changed"))
     second = ReflectionDependencies(

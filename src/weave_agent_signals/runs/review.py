@@ -254,18 +254,16 @@ class ReviewService:
             if key not in {"stale", "changed_targets", "current", "stale_reason"}
         }
         result = run.reflecting_result
-        raw_baseline = result.get("baseline") if isinstance(result, Mapping) else None
-        try:
-            baseline = self._stored_bundle(raw_baseline, "Past baseline")
-        except ReviewServiceError as error:
+        if result is None:
             derived = {
                 **derived,
                 "stale": True,
-                "changed_targets": error.context.get("changed_targets", []),
+                "changed_targets": [],
                 "current": None,
-                "stale_reason": str(error),
+                "stale_reason": "Past baseline snapshot is unavailable",
             }
             return replace(run, reflection_review=derived)
+        baseline = result.baseline
         current, changed, reason = self._drift(baseline)
         derived.update(stale=reason is not None, changed_targets=list(changed))
         if reason is not None:
@@ -330,23 +328,18 @@ class ReviewService:
 
     def _evidence(self, run: Run) -> tuple[BundleSnapshot, dict[str, BundleSnapshot]]:
         result = run.reflecting_result
-        if not isinstance(result, Mapping):
+        if result is None:
             raise self._unavailable("Finalized reflection evidence is unavailable")
-        baseline = self._stored_bundle(result.get("baseline"), "Past baseline")
-        raw_candidates = result.get("candidates")
-        if not isinstance(raw_candidates, list):
-            raise self._unavailable("Reflection candidates are unavailable")
-        candidates: dict[str, BundleSnapshot] = {}
-        for value in raw_candidates:
-            if not isinstance(value, Mapping):
+        baseline = result.baseline
+        candidates = {}
+        for attempt in result.attempts:
+            if attempt.status != "succeeded":
+                continue
+            if attempt.candidate_id is None or attempt.bundle is None:
                 raise self._unavailable("A reflection candidate is invalid")
-            candidate_id = value.get("candidate_id")
-            if not isinstance(candidate_id, str) or not candidate_id or candidate_id in candidates:
-                raise self._unavailable("Reflection candidate identity is invalid")
-            candidate = self._stored_bundle(value.get("bundle"), "Evaluated candidate")
-            if candidate.scope != baseline.scope:
+            if attempt.bundle.scope != baseline.scope:
                 raise self._unavailable("Reflection candidate scope does not match baseline")
-            candidates[candidate_id] = candidate
+            candidates[attempt.candidate_id] = attempt.bundle
         return baseline, candidates
 
     def _decision_candidate(

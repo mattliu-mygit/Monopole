@@ -470,8 +470,6 @@ class RunResponse(ResponseModel):
     effective_config: EffectiveRunConfig | None
     turn_cohort: dict[str, Any] | None
     judging_plan: JudgingPlanResponse | None
-    judging_artifacts: dict[str, Any] | None = None
-    reflection_input: dict[str, Any] | None
     scoring_progress: ScoringProgressResponse | None
     scoring_result: ScoringResultResponse | None
     judging_progress: JudgingProgressResponse | None
@@ -528,6 +526,12 @@ class SignalEvidenceResponse(ResponseModel):
     turn_started_at: str
 
 
+class JudgingTokenEstimateResponse(ResponseModel):
+    total_tokens: int
+    largest_turn_tokens: int
+    turn_tokens: list[int]
+
+
 class SessionSummaryResponse(ResponseModel):
     conversation_id: str
     session_id: str | None
@@ -540,7 +544,6 @@ class SessionSummaryResponse(ResponseModel):
     config_version: str | None
     git_branch: str | None
     total_tokens: int
-    largest_turn_tokens: int
     total_tool_calls: int
     input_preview: str | None
     signal_evidence: list[SignalEvidenceResponse]
@@ -628,6 +631,7 @@ class SessionDetailResponse(ResponseModel):
     git_branch: str | None
     total_tokens: int
     turn_count: int
+    judging_token_estimates: dict[TokenCounterName, JudgingTokenEstimateResponse]
     turns: list[TurnDetailResponse]
     session_feedback: list[FeedbackItemResponse]
     turn_feedback: dict[str, list[FeedbackItemResponse]]

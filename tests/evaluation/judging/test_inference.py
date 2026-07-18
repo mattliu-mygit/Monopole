@@ -94,6 +94,10 @@ def test_http_chat_json_sends_strict_named_schema(client, monkeypatch):
     assert response.schema_name == "judge_verdict"
 
 
+def test_http_transport_allows_long_reasoning_responses(client):
+    assert client._http.timeout.read == 180.0
+
+
 def test_http_chat_json_falls_back_only_for_explicit_schema_rejection(client, monkeypatch):
     calls: list[dict] = []
     rejection = "response_format json_schema is not supported for this model"
@@ -234,6 +238,56 @@ def test_http_transport_request_count_includes_rate_limit_retries(client, monkey
     assert all(call["response_format"]["type"] == "json_schema" for call in calls)
     assert response.output_mode == "json_schema"
     assert response.transport_request_count == 2
+
+
+def test_http_explicit_context_rejection_has_typed_capacity_error(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    response = httpx.Response(
+        400,
+        request=request,
+        json={
+            "error": {
+                "message": "This model's maximum context length is 131072 tokens.",
+                "type": "invalid_request_error",
+                "code": "context_length_exceeded",
+            }
+        },
+    )
+    monkeypatch.setattr(client._http, "post", lambda _path, **_kwargs: response)
+
+    with pytest.raises(inference.InferenceContextExceeded) as raised:
+        client.chat_json(
+            model="gpt-pinned",
+            messages=_messages(),
+            response_schema=_schema(),
+        )
+
+    assert str(raised.value) == "provider context capacity exceeded"
+    assert raised.value._transport_request_count == 1
+
+
+def test_http_wandb_negative_available_max_tokens_is_context_rejection(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.inference.wandb.ai/v1/chat/completions")
+    response = httpx.Response(
+        400,
+        request=request,
+        json={
+            "error": {
+                "message": "max_tokens must be at least 1, got -318993.",
+                "type": "BadRequestError",
+                "param": "max_tokens",
+                "code": 400,
+            }
+        },
+    )
+    monkeypatch.setattr(client._http, "post", lambda _path, **_kwargs: response)
+
+    with pytest.raises(inference.InferenceContextExceeded):
+        client.chat_json(
+            model="gpt-pinned",
+            messages=_messages(),
+            response_schema=_schema(),
+        )
 
 
 def test_http_unrelated_unsupported_capability_does_not_trigger_schema_fallback(

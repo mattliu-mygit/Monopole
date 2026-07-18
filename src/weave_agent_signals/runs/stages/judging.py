@@ -7,11 +7,13 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from weave_agent_signals.client import WeaveClient
 from weave_agent_signals.judges.inference import ChatClient
-from weave_agent_signals.judges.plan import build_judging_plan
+from weave_agent_signals.judges.plan import build_canonical_judging_plan, judging_plan_totals
+from weave_agent_signals.judges.records import JudgeCallRecord
 from weave_agent_signals.judges.runner import (
     JudgeExecutionError,
     JudgeFailure,
@@ -20,7 +22,7 @@ from weave_agent_signals.judges.runner import (
 )
 from weave_agent_signals.models import Score, SessionView, TurnSpan
 from weave_agent_signals.run_config import EffectiveRunConfig, PositionedJudge, RubricDescriptor
-from weave_agent_signals.runs.judging_activity import JudgingActivityLog
+from weave_agent_signals.runs.events import sanitize_event
 from weave_agent_signals.runs.stages import StageCancelled
 from weave_agent_signals.runs.store import (
     Run,
@@ -74,13 +76,15 @@ class _State:
     attempt_summary_count: int = 0
     failure_details: list[dict[str, Any]] = field(default_factory=list)
     failure_detail_count: int = 0
-    completed_artifact_ids: set[str] = field(default_factory=set)
+    completed_call_ids: set[str] = field(default_factory=set)
 
     def payload(
         self,
         plan_id: str,
-        activity: Mapping[str, Any],
         *,
+        phase: str,
+        status_message: str,
+        started_at: str,
         coverage_complete: bool,
     ) -> dict[str, Any]:
         return {
@@ -102,10 +106,9 @@ class _State:
             "failure_count": len(self.failures),
             "write_failure_count": self.write_failure_count,
             "coverage_complete": coverage_complete,
-            "phase": activity["phase"],
-            "status_message": activity["status_message"],
-            "started_at": activity["started_at"],
-            "events": activity["events"],
+            "phase": phase,
+            "status_message": status_message,
+            "started_at": started_at,
             "attempt_summary_count": self.attempt_summary_count,
             "attempt_summaries_truncated": (
                 self.attempt_summary_count > len(self.attempt_summaries)
@@ -264,10 +267,10 @@ def _record_score(
     )
 
 
-def _record_phase_artifact(state: _State, artifact_id: str, phase: object) -> bool:
-    if artifact_id in state.completed_artifact_ids:
+def _record_phase_call(state: _State, request_id: str, phase: object) -> bool:
+    if request_id in state.completed_call_ids:
         return False
-    state.completed_artifact_ids.add(artifact_id)
+    state.completed_call_ids.add(request_id)
     if phase == "digest":
         state.digest_steps_completed += 1
     elif phase == "window":
@@ -275,7 +278,7 @@ def _record_phase_artifact(state: _State, artifact_id: str, phase: object) -> bo
     elif phase == "merge":
         state.merge_steps_completed += 1
     else:
-        state.completed_artifact_ids.remove(artifact_id)
+        state.completed_call_ids.remove(request_id)
         return False
     return True
 
@@ -502,16 +505,6 @@ def _run_unit(
     )
 
 
-def _planned_rubrics(
-    rows: Sequence[Mapping[str, Any]],
-    descriptors: Mapping[str, RubricDescriptor],
-) -> list[RubricDescriptor]:
-    try:
-        return [descriptors[row["id"]] for row in rows]
-    except KeyError as error:
-        raise RuntimeError("Pinned judging plan does not match configured rubrics") from error
-
-
 def _ref(target: _Target, client: WeaveClient) -> str:
     return target.ref_for(client.entity, client.project)
 
@@ -552,7 +545,7 @@ def run_judging_stage(
     turns, sessions = dependencies.hydrate_cohort(current.turn_cohort)
     _active(dependencies.store, run_id, cancel)
 
-    built_plan = build_judging_plan(
+    built_plan = build_canonical_judging_plan(
         list(sessions.values()),
         cohort_id=current.turn_cohort["cohort_id"],
         rubrics=config.rubrics,
@@ -569,8 +562,7 @@ def run_judging_stage(
         raise RuntimeError("Judging plan was not pinned")
     _active(dependencies.store, run_id, cancel)
 
-    descriptors = {descriptor.id: descriptor for descriptor in config.rubrics}
-    totals = plan["totals"]
+    totals = judging_plan_totals(plan)
     state = _State(
         planned_rubrics=totals["planned_rubrics"],
         minimum_reviewer_attempts=totals["minimum_reviewer_attempts"],
@@ -579,16 +571,14 @@ def run_judging_stage(
         maximum_window_steps=totals["maximum_window_calls"],
         maximum_merge_steps=totals["maximum_merge_calls"],
     )
-    artifact_phases = {
-        "chunk_digest": "digest",
-        "window_findings": "window",
-        "merged_verdict": "merge",
-    }
-    for artifact_id, artifact in (current.judging_artifacts or {}).items():
-        if isinstance(artifact, Mapping):
-            _record_phase_artifact(state, artifact_id, artifact_phases.get(artifact.get("kind")))
+    for call in dependencies.store.list_judge_calls(run_id):
+        if call.status == "succeeded":
+            _record_phase_call(state, call.request_id, call.phase)
 
-    activity_log = JudgingActivityLog(initial_snapshot=current.judging_progress)
+    initial_progress = current.judging_progress or {}
+    current_phase = str(initial_progress.get("phase") or "waiting")
+    current_message = str(initial_progress.get("status_message") or "Waiting for judging activity")
+    started_at = str(initial_progress.get("started_at") or datetime.now(timezone.utc).isoformat())
     progress_lock = threading.RLock()
 
     def progress(
@@ -598,15 +588,27 @@ def run_judging_stage(
         coverage_complete: bool = False,
         **details: object,
     ) -> None:
+        nonlocal current_phase, current_message
         with progress_lock:
-            activity_log.record({"phase": phase, "message": message, **details})
+            draft = sanitize_event(
+                "judging",
+                phase,
+                message,
+                details,
+                datetime.now(timezone.utc),
+            )
+            dependencies.store.append_run_event(run_id, draft)
+            current_phase = draft.phase
+            current_message = draft.message
             _persist(
                 dependencies.store,
                 run_id,
                 cancel,
                 state.payload(
-                    plan["plan_id"],
-                    activity_log.snapshot(),
+                    plan.plan_id,
+                    phase=current_phase,
+                    status_message=current_message,
+                    started_at=started_at,
                     coverage_complete=coverage_complete,
                 ),
             )
@@ -615,6 +617,7 @@ def run_judging_stage(
         value = dict(event)
         phase = value.pop("phase", None)
         message = value.pop("message", None)
+        value.pop("raw_output", None)
         progress(str(phase), str(message), **value)
 
     def fail_if_needed() -> None:
@@ -625,8 +628,10 @@ def run_judging_stage(
             f"Judging coverage incomplete with {len(state.failures)} review failure(s)",
         )
         failed = state.payload(
-            plan["plan_id"],
-            activity_log.snapshot(),
+            plan.plan_id,
+            phase=current_phase,
+            status_message=current_message,
+            started_at=started_at,
             coverage_complete=False,
         )
         _persist(dependencies.store, run_id, cancel, failed)
@@ -638,9 +643,9 @@ def run_judging_stage(
         f"Starting {state.planned_rubrics} planned rubric judgment(s)",
     )
     has_applicable_reviewers = any(
-        reviewer["status"] == "planned"
-        for session_plan in plan["sessions"]
-        for reviewer in session_plan["reviewers"]
+        reviewer.status == "planned"
+        for session_plan in plan.sessions
+        for reviewer in session_plan.reviewers
     )
     _active(dependencies.store, run_id, cancel)
     with ExitStack() as stack:
@@ -656,45 +661,37 @@ def run_judging_stage(
             set_activity = getattr(chat_client, "set_activity", None)
             if callable(set_activity):
                 set_activity(record_activity)
-        for session_plan in plan["sessions"]:
-            conversation_id = session_plan["conversation_id"]
+        for session_plan in plan.sessions:
+            conversation_id = session_plan.conversation_id
             session = sessions.get(conversation_id)
             if session is None:
                 raise RuntimeError(f"Pinned judging session is missing: {conversation_id}")
-            expected = _planned_rubrics(session_plan["rubrics"], descriptors)
+            expected = list(plan.rubrics)
             if not expected:
                 continue
             _active(dependencies.store, run_id, cancel)
-            evidence_ids = list(session_plan["raw_coverage_trace_ids"])
+            evidence_ids = [turn.trace_id for turn in session_plan.turns]
             progress(
                 "session_started",
                 f"Reviewing session {conversation_id} with {len(expected)} rubric(s)",
                 conversation_id=conversation_id,
             )
 
-            def load_artifact(artifact_id: str) -> Mapping[str, Any] | None:
-                active = _active(dependencies.store, run_id, cancel)
-                return (active.judging_artifacts or {}).get(artifact_id)
+            def load_call(request_id: str) -> JudgeCallRecord | None:
+                _active(dependencies.store, run_id, cancel)
+                return dependencies.store.get_judge_call(run_id, request_id)
 
-            def record_artifact(artifact_id: str, artifact: Mapping[str, Any]) -> object:
-                result = dependencies.store.record_judging_artifact(run_id, artifact_id, artifact)
+            def record_call(call: JudgeCallRecord) -> object:
+                result = dependencies.store.record_judge_call(run_id, call)
                 with progress_lock:
-                    if _record_phase_artifact(
-                        state, artifact_id, artifact_phases.get(artifact.get("kind"))
+                    if call.status == "succeeded" and _record_phase_call(
+                        state, call.request_id, call.phase
                     ):
-                        phase = artifact_phases.get(artifact.get("kind"))
-                        artifact_payload = artifact.get("payload")
-                        audit = (
-                            artifact_payload.get("audit")
-                            if isinstance(artifact_payload, Mapping)
-                            else None
-                        )
-                        model = audit.get("requested_model") if isinstance(audit, Mapping) else None
                         progress(
-                            f"{phase}_completed",
-                            f"Completed {phase} artifact",
-                            artifact_id=artifact_id,
-                            model=model,
+                            f"{call.phase}_completed",
+                            f"Completed {call.phase} call",
+                            artifact_id=call.request_id,
+                            model=call.requested_model_id,
                             conversation_id=conversation_id,
                         )
                 return result
@@ -709,8 +706,8 @@ def run_judging_stage(
                     judges=config.models.judges,
                     judging_plan=plan,
                     context_policy=config.judging_context,
-                    artifact_loader=load_artifact,
-                    artifact_recorder=record_artifact,
+                    call_loader=load_call,
+                    call_recorder=record_call,
                     cancel_requested=lambda: cancel.is_set(),
                     activity=record_activity,
                 ),
@@ -723,7 +720,7 @@ def run_judging_stage(
                 _stamp(
                     score,
                     session,
-                    plan_id=plan["plan_id"],
+                    plan_id=plan.plan_id,
                     evidence_trace_ids=evidence_ids,
                 )
                 state.pending.append((score, session))
@@ -788,7 +785,13 @@ def run_judging_stage(
         message,
         coverage_complete=True,
     )
-    final = state.payload(plan["plan_id"], activity_log.snapshot(), coverage_complete=True)
+    final = state.payload(
+        plan.plan_id,
+        phase=current_phase,
+        status_message=current_message,
+        started_at=started_at,
+        coverage_complete=True,
+    )
     _persist(dependencies.store, run_id, cancel, final)
     _persist(dependencies.store, run_id, cancel, final, result=True)
     if state.write_failure_count:

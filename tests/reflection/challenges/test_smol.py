@@ -40,12 +40,14 @@ class _FakeMachine:
         *,
         task_error: Exception | None = None,
         setup_exit: int = 0,
+        missing_executables: frozenset[str] = frozenset(),
     ) -> None:
         self.name = name
         self.archive = archive
         self.barrier = barrier
         self.task_error = task_error
         self.setup_exit = setup_exit
+        self.missing_executables = missing_executables
         self.deleted = False
         self.writes: dict[str, bytes] = {}
         self.calls: list[tuple[list[str], object]] = []
@@ -59,6 +61,8 @@ class _FakeMachine:
             return _ExecResult(exit_code=self.setup_exit, stderr="setup failed")
         if command == ["codex", "--version"]:
             return _ExecResult(stdout="codex-cli 0.144.1\n")
+        if command[:4] == ["/bin/sh", "-c", 'command -v "$1" >/dev/null', "sh"]:
+            return _ExecResult(exit_code=int(command[4] in self.missing_executables))
         if command[0] == "codex":
             self.barrier.wait(timeout=2)
             if options is not None and options.cancel_requested():
@@ -127,6 +131,9 @@ def test_agent_task_text_includes_bootstrap_material_and_start_checks() -> None:
         ),
         judging_criteria=("Parser tests pass.",),
         start_checks=("The workspace is writable.",),
+        required_files=("README.md",),
+        required_executables=("git",),
+        requires_git_metadata=True,
         workspace_digest="sha256:source",
         author_model="author",
         author_backend="cli",
@@ -139,6 +146,10 @@ def test_agent_task_text_includes_bootstrap_material_and_start_checks() -> None:
     assert "a" * 40 in rendered
     assert "task" in rendered
     assert "The workspace is writable." in rendered
+    assert "required_files" in rendered
+    assert "README.md" in rendered
+    assert "required_executables" in rendered
+    assert "requires_git_metadata" in rendered
 
 
 def _snapshots() -> tuple[WorkspaceSnapshot, WorkspaceSnapshot]:
@@ -219,6 +230,41 @@ def test_runner_executes_both_arms_concurrently_with_identical_runtime() -> None
     assert len(packed_calls) == 2
     assert all("--exclude=*/.venv" in command for command in packed_calls)
     assert all("--exclude=*/node_modules" in command for command in packed_calls)
+
+
+def test_runner_preflight_rejects_missing_required_executable_before_arms() -> None:
+    snapshot = WorkspaceSnapshot((WorkspaceFile("task/app.py", b"print('ready')\n"),))
+    machines: list[_FakeMachine] = []
+
+    def factory(name: str, _image: str, _network: bool):
+        machine = _FakeMachine(
+            name,
+            snapshot.archive,
+            threading.Barrier(1),
+            missing_executables=frozenset({"node"}),
+        )
+        machines.append(machine)
+        return machine
+
+    task = AuthoredTask(
+        prompt="Update task/app.py.",
+        goal="The update is verified.",
+        required_files=("task/app.py",),
+        required_executables=("node",),
+        workspace_digest="sha256:source",
+        author_model="author",
+        author_backend="cli",
+    )
+
+    with pytest.raises(RuntimeError, match="node"):
+        SmolMachineRunner(machine_factory=factory).preflight(
+            workspace=snapshot,
+            task=task,
+            environment=_environment(),
+        )
+
+    assert len(machines) == 1
+    assert machines[0].deleted is True
 
 
 def test_runner_uses_unique_machine_names_for_repeated_challenges() -> None:

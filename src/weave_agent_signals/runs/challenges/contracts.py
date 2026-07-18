@@ -21,6 +21,10 @@ ArmStatus = Literal["exited", "timed_out", "infrastructure_failed"]
 _PUBLIC_GIT_HOSTS = frozenset({"github.com", "gitlab.com", "bitbucket.org", "codeberg.org"})
 
 
+class TaskPreflightError(RuntimeError):
+    """An authored task requirement is unavailable before paired execution."""
+
+
 def canonical_digest(value: object) -> str:
     encoded = json.dumps(
         value,
@@ -133,8 +137,26 @@ class TaskMaterial(_Contract):
         return self
 
 
+class TaskMaterialPlan(_Contract):
+    schema_version: Literal["1"] = "1"
+    plan_id: StrictStr = "pending"
+    setup_mode: Literal["prepared_workspace", "agent_bootstrap"]
+    materials: Annotated[tuple[TaskMaterial, ...], Field(max_length=3)] = ()
+
+    @model_validator(mode="after")
+    def validate_plan(self) -> TaskMaterialPlan:
+        destinations = tuple(item.destination for item in self.materials)
+        if len(destinations) != len(set(destinations)):
+            raise ValueError("material destinations must be unique")
+        expected = canonical_digest(self.model_dump(mode="json", exclude={"plan_id"}))
+        if self.plan_id not in {"pending", expected}:
+            raise ValueError("material plan identity digest mismatch")
+        object.__setattr__(self, "plan_id", expected)
+        return self
+
+
 class AuthoredTask(_Contract):
-    schema_version: Literal["2"] = "2"
+    schema_version: Literal["3"] = "3"
     task_id: StrictStr = "pending"
     prompt: StrictStr
     goal: StrictStr
@@ -146,6 +168,9 @@ class AuthoredTask(_Contract):
     start_checks: Annotated[tuple[StrictStr, ...], Field(min_length=1, max_length=8)] = (
         "The supplied workspace is available.",
     )
+    required_files: Annotated[tuple[StrictStr, ...], Field(max_length=32)] = ()
+    required_executables: Annotated[tuple[StrictStr, ...], Field(max_length=16)] = ()
+    requires_git_metadata: bool = False
     workspace_digest: StrictStr
     author_model: StrictStr
     author_backend: StrictStr
@@ -158,13 +183,33 @@ class AuthoredTask(_Contract):
             raise ValueError("judging criteria must contain nonblank values")
         if not self.start_checks or any(not item.strip() for item in self.start_checks):
             raise ValueError("start checks must contain nonblank values")
+        normalized_files: list[str] = []
+        for value in self.required_files:
+            path = PurePosixPath(value)
+            if (
+                path.is_absolute()
+                or not path.parts
+                or any(part in {"", ".", ".."} for part in path.parts)
+            ):
+                raise ValueError("required files must use safe relative paths")
+            if ".git" in path.parts:
+                raise ValueError("required files cannot depend on Git metadata")
+            normalized_files.append(path.as_posix())
+        executables = tuple(self.required_executables)
+        if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", item) for item in executables):
+            raise ValueError("required executables must use a bare executable name")
+        if self.setup_mode == "prepared_workspace" and self.requires_git_metadata:
+            raise ValueError("prepared workspaces cannot require Git metadata")
         for name, values in (
             ("material destinations", tuple(item.destination for item in self.materials)),
             ("judging criteria", self.judging_criteria),
             ("start checks", self.start_checks),
+            ("required files", tuple(normalized_files)),
+            ("required executables", executables),
         ):
             if len(values) != len(set(values)):
                 raise ValueError(f"{name} must be unique")
+        object.__setattr__(self, "required_files", tuple(normalized_files))
         expected = canonical_digest(self.model_dump(mode="json", exclude={"task_id"}))
         if self.task_id not in {"pending", expected}:
             raise ValueError("task identity digest mismatch")

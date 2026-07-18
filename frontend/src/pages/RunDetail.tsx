@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useBeforeUnload, useBlocker, useParams } from 'react-router-dom'
 import {
   advanceRun,
@@ -9,6 +9,7 @@ import {
   getModels,
   getRubrics,
   getRun,
+  getSession,
   getSessions,
   promoteRunReflection,
   resetReflectionDraft,
@@ -213,17 +214,29 @@ function CreatedRunSetup({
   const selectedSessionIds = selectedIds
   const selectedSessions = sessions.filter((session) =>
     selectedSessionIds.includes(session.conversation_id))
+  const selectedDetailQueries = useQueries({
+    queries: selectedSessionIds.map((sessionId) => ({
+      queryKey: ['session-capacity', sessionId],
+      queryFn: () => getSession(sessionId),
+    })),
+  })
+  const capacitySessions = selectedDetailQueries.flatMap((query) =>
+    query.data ? [{ judging_token_estimates: query.data.judging_token_estimates }] : [])
+  const capacityLoading = selectedDetailQueries.some((query) => query.isPending)
+  const capacityError = selectedDetailQueries.find((query) => query.error)?.error
   const truncated = Boolean(sessionsQuery.data?.truncated)
-  const assessment = assessRunConfig(config, models, rubrics, selectedSessions)
+  const assessment = assessRunConfig(config, models, rubrics, capacitySessions)
   const selectionError =
     selectedSessionIds.length === 0
       ? 'Select at least one session.'
       : selectedSessions.length !== selectedSessionIds.length
         ? 'Load every selected session before starting.'
-      : null
+        : capacityError instanceof Error
+          ? `Could not load selected session evidence: ${capacityError.message}`
+          : null
   const cannotStart =
     pending || sessionsQuery.isLoading || Boolean(sessionsQuery.error) ||
-    Boolean(selectionError) || assessment.errors.length > 0
+    capacityLoading || Boolean(selectionError) || assessment.errors.length > 0
 
   function changeDate(setter: (value: string) => void, value: string) {
     setter(value)
@@ -235,7 +248,7 @@ function CreatedRunSetup({
       current,
       action,
       models,
-      selectedSessions,
+      capacitySessions,
     ))
   }
 
@@ -248,7 +261,7 @@ function CreatedRunSetup({
         timezone,
         session_ids: selectedSessionIds,
       },
-      toRunConfig(config, models, rubrics, selectedSessions),
+      toRunConfig(config, models, rubrics, capacitySessions),
       autoRun,
     )
   }
@@ -274,7 +287,7 @@ function CreatedRunSetup({
         state={config}
         models={models}
         rubrics={rubrics}
-        sessions={selectedSessions}
+        sessions={capacitySessions}
         disabled={pending}
         onAction={dispatch}
       />
@@ -563,6 +576,7 @@ export default function RunDetail() {
           {run.status === 'created' ? (
             modelsQuery.data && rubricsQuery.data ? (
               <CreatedRunSetup
+                key={run.run_id}
                 run={run}
                 models={modelsQuery.data}
                 rubrics={rubricsQuery.data}

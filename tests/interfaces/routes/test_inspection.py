@@ -6,7 +6,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from weave_agent_signals.models import SessionView, TraceRole, TurnSpan
+from weave_agent_signals.judges.tokens import count_tokens
+from weave_agent_signals.judges.windowing import render_raw_turn
+from weave_agent_signals.models import SessionView, ToolSpan, TraceRole, TurnSpan
 from weave_agent_signals.routes.inspection import create_inspection_router
 
 
@@ -66,6 +68,7 @@ class FakeClient:
         ]
         self.query_calls = []
         self.hydrated = []
+        self.hydrated_tool = None
         self.feedback_batches = []
         self.feedback_by_ref = {}
 
@@ -90,6 +93,8 @@ class FakeClient:
 
     def hydrate_turns_batch(self, turns):
         self.hydrated.append([turn.trace_id for turn in turns])
+        if self.hydrated_tool is not None:
+            turns[0].tool_calls.append(self.hydrated_tool)
 
     def query_all_feedback_batch(self, refs: list[str]):
         self.feedback_batches.append(refs)
@@ -138,7 +143,7 @@ def test_session_listing_filters_synthetic_sessions_and_reports_truncation():
     assert response.json()["total"] == 1
     assert response.json()["truncated"] is False
     assert response.json()["sessions"][0]["conversation_id"] == "session/one"
-    assert response.json()["sessions"][0]["largest_turn_tokens"] == 15
+    assert "judging_token_estimates" not in response.json()["sessions"][0]
     assert backend.query_calls == [
         {
             "page_size": 500,
@@ -150,7 +155,7 @@ def test_session_listing_filters_synthetic_sessions_and_reports_truncation():
     assert backend.feedback_batches == [[backend.turns[0].ref_for(backend.entity, backend.project)]]
 
 
-def test_session_listing_reports_total_and_largest_turn_tokens():
+def test_session_listing_reports_usage_total_without_unhydrated_judging_estimates():
     client, backend = _client()
     backend.turns.append(
         _turn(
@@ -170,7 +175,7 @@ def test_session_listing_reports_total_and_largest_turn_tokens():
 
     summary = response.json()["sessions"][0]
     assert summary["total_tokens"] == 115
-    assert summary["largest_turn_tokens"] == 100
+    assert "judging_token_estimates" not in summary
 
 
 def test_session_listing_excludes_explicit_non_agent_and_mixed_sessions():
@@ -456,6 +461,16 @@ def test_session_listing_rejects_malformed_eligible_signal_feedback(
 
 def test_session_detail_hydrates_children_and_returns_feedback():
     client, backend = _client()
+    started = backend.turns[0].started_at
+    backend.hydrated_tool = ToolSpan(
+        span_id="tool-hydrated",
+        tool_name="Read",
+        arguments="input " * 100,
+        result="output " * 100,
+        status_code="SUCCESS",
+        started_at=started,
+        ended_at=started + timedelta(seconds=1),
+    )
 
     response = client.get("/api/sessions/session%2Fone")
 
@@ -465,6 +480,12 @@ def test_session_detail_hydrates_children_and_returns_feedback():
     assert body["turns"][0]["trace_id"] == "trace-a"
     assert body["session_feedback"][0]["id"] == "feedback-1"
     assert body["turn_feedback"]["trace-a"][0]["id"] == "feedback-1"
+    rendered = render_raw_turn(backend.turns[0], 1)
+    assert body["judging_token_estimates"]["utf8_bytes_div_3"] == {
+        "total_tokens": count_tokens(rendered, "utf8_bytes_div_3"),
+        "largest_turn_tokens": count_tokens(rendered, "utf8_bytes_div_3"),
+        "turn_tokens": [count_tokens(rendered, "utf8_bytes_div_3")],
+    }
     assert backend.hydrated == [["trace-a"]]
     assert len(backend.feedback_batches) == 1
     assert len(backend.feedback_batches[0]) == 2

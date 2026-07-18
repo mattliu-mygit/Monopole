@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
@@ -11,6 +9,7 @@ from datetime import datetime, timezone
 from weave_agent_signals.catalogs import build_rubric_catalog
 from weave_agent_signals.judges.families import model_family
 from weave_agent_signals.judges.inference import ChatClient, InferenceCancelled
+from weave_agent_signals.judges.plan import JudgingPlan, SessionPlan, build_canonical_judging_plan
 from weave_agent_signals.judges.review import (
     PANEL_CONTRACT_VERSION,
     AttemptObservation,
@@ -20,12 +19,10 @@ from weave_agent_signals.judges.review import (
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.judges.sliding import (
     ActivityRecorder,
-    ArtifactLoader,
-    ArtifactRecorder,
+    CallLoader,
+    CallRecorder,
     SlidingReviewer,
-    sliding_protocol_contract_manifest,
 )
-from weave_agent_signals.judges.windowing import WindowPlanInapplicable, build_window_plan
 from weave_agent_signals.models import Score, SessionView
 from weave_agent_signals.run_config import (
     JudgingContextPolicy,
@@ -49,103 +46,35 @@ def _emit_activity(activity: ActivityRecorder | None, event: Mapping[str, object
         )
 
 
-def _plan_digest(value: object) -> str:
-    canonical = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
-    )
-    return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
-
-
 def _authenticate_plan_policy(
-    plan: Mapping[str, object],
+    plan: JudgingPlan,
     *,
     session: SessionView,
     rubrics: Sequence[RubricDescriptor],
     judges: Sequence[PositionedJudge],
     context_policy: JudgingContextPolicy,
-) -> Mapping[str, object]:
-    body = {key: value for key, value in plan.items() if key != "plan_id"}
-    if plan.get("schema_version") != "3" or plan.get("plan_id") != _plan_digest(body):
-        raise ValueError("judging plan schema or content digest is invalid")
-    if plan.get("input_policy") != context_policy.model_dump(mode="json"):
+) -> SessionPlan:
+    if not isinstance(plan, JudgingPlan):
+        raise TypeError("judging_plan must be a JudgingPlan")
+    if plan.context_policy != context_policy:
         raise ValueError("context policy does not match the pinned judging plan")
-    if plan.get("protocol") != sliding_protocol_contract_manifest():
-        raise ValueError("protocol does not match the pinned judging plan")
-    sessions = plan.get("sessions")
-    if not isinstance(sessions, list):
-        raise ValueError("pinned judging sessions are invalid")
-    matches = [
-        value
-        for value in sessions
-        if isinstance(value, Mapping) and value.get("conversation_id") == session.conversation_id
-    ]
-    if len(matches) != 1:
-        raise ValueError("session is not uniquely pinned in the judging plan")
-    session_row = matches[0]
-    if session_row.get("turn_count") != len(session.turns):
-        raise ValueError("session turn count does not match the pinned judging plan")
-    if session_row.get("raw_coverage_trace_ids") != [turn.trace_id for turn in session.turns]:
-        raise ValueError("session raw coverage does not match the pinned judging plan")
-    reviewers = session_row.get("reviewers")
-    if not isinstance(reviewers, list) or [
-        value.get("judge") if isinstance(value, Mapping) else None for value in reviewers
-    ] != [judge.model_dump(mode="json") for judge in judges]:
+    if plan.rubrics != tuple(rubrics):
+        raise ValueError("rubrics do not match the pinned judging plan")
+    if plan.reviewers != tuple(judges):
         raise ValueError("ordered judges do not match the pinned judging plan")
-    for reviewer, judge in zip(reviewers, judges, strict=True):
-        if not isinstance(reviewer, Mapping):  # pragma: no cover - guarded above
-            raise ValueError("reviewer dispositions are invalid")
-        status = reviewer.get("status")
-        skip_reason = reviewer.get("skip_reason")
-        window_plan = reviewer.get("window_plan")
-        work_bounds = reviewer.get("work_bounds")
-        try:
-            expected_window_plan = build_window_plan(
-                session,
-                context_policy,
-                judge.max_input_tokens,
-                judge.token_counter,
-            )
-        except WindowPlanInapplicable as error:
-            if (
-                status != "skipped"
-                or skip_reason != error.reason
-                or str(error) != error.reason
-                or window_plan is not None
-                or work_bounds
-                != {
-                    "digest_calls": 0,
-                    "window_calls_per_rubric": 0,
-                    "merge_calls_per_rubric": 0,
-                }
-            ):
-                raise ValueError("reviewer disposition does not match context capacity") from error
-            continue
-        chunk_count = expected_window_plan["chunk_count"]
-        if (
-            status != "planned"
-            or skip_reason is not None
-            or window_plan != expected_window_plan
-            or work_bounds
-            != {
-                "digest_calls": chunk_count,
-                "window_calls_per_rubric": chunk_count,
-                "merge_calls_per_rubric": 1,
-            }
-        ):
-            raise ValueError("reviewer disposition does not match context capacity")
-    applicable_count = sum(
-        isinstance(value, Mapping) and value.get("status") == "planned" for value in reviewers
-    )
-    expected_rows = [
-        {
-            **descriptor.model_dump(mode="json"),
-            "minimum_reviewer_attempts": applicable_count,
-            "maximum_reviewer_attempts": applicable_count,
-        }
-        for descriptor in rubrics
-    ]
-    if session_row.get("rubrics") != expected_rows:
-        raise ValueError("rubrics or attempt bounds do not match the pinned judging plan")
+    try:
+        session_row = plan.session(session.conversation_id)
+    except KeyError:
+        raise ValueError("session is not uniquely pinned in the judging plan")
+    expected = build_canonical_judging_plan(
+        [session],
+        cohort_id=plan.cohort_id,
+        rubrics=rubrics,
+        judge_models=judges,
+        context_policy=context_policy,
+    ).sessions[0]
+    if session_row != expected:
+        raise ValueError("session evidence or reviewer plans do not match the pinned judging plan")
     return session_row
 
 
@@ -298,10 +227,10 @@ def judge_session(
     *,
     rubrics: Sequence[RubricDescriptor],
     judges: Sequence[PositionedJudge],
-    judging_plan: Mapping[str, object],
+    judging_plan: JudgingPlan,
     context_policy: JudgingContextPolicy,
-    artifact_loader: ArtifactLoader,
-    artifact_recorder: ArtifactRecorder,
+    call_loader: CallLoader,
+    call_recorder: CallRecorder,
     cancel_requested: Callable[[], bool] = lambda: False,
     activity: ActivityRecorder | None = None,
 ) -> list[Score]:
@@ -309,6 +238,7 @@ def judge_session(
 
     if not rubrics:
         return []
+    judging_plan = JudgingPlan.model_validate(judging_plan.model_dump(mode="json"))
     panel = tuple(judges)
     session_row = _authenticate_plan_policy(
         judging_plan,
@@ -319,10 +249,10 @@ def judge_session(
     )
 
     reviewer_cache: dict[str, SlidingReviewer] = {}
-    reviewer_rows = session_row["reviewers"]
+    reviewer_rows = session_row.reviewers
     dispositions = {
-        row["judge"]["id"]: (row["status"], row["skip_reason"])
-        for row in reviewer_rows  # type: ignore[union-attr]
+        judge.id: (row.status, row.skip_reason)
+        for judge, row in zip(judges, reviewer_rows, strict=True)
     }
 
     def reviewer(judge: PositionedJudge) -> SlidingReviewer:
@@ -335,11 +265,14 @@ def judge_session(
             current = SlidingReviewer(
                 session=session,
                 judge=judge,
-                judging_plan=judging_plan,
+                plan_id=judging_plan.plan_id,
+                window_plan=session_row.reviewer(judge.position).window_plan.model_dump(
+                    mode="json"
+                ),
                 context_policy=context_policy,
                 client=client,
-                load_artifact=artifact_loader,
-                record_artifact=artifact_recorder,
+                load_call=call_loader,
+                record_call=call_recorder,
                 is_cancelled=cancel_requested,
                 activity=activity,
             )
@@ -465,13 +398,10 @@ def judge_session(
                     "attempts": list(attempts),
                     "behavioral_feedback": feedback,
                     "evidence_trace_ids": evidence_ids,
-                    "raw_coverage_trace_ids": list(
-                        session_row["raw_coverage_trace_ids"]  # type: ignore[index]
-                    ),
-                    "plan_id": judging_plan["plan_id"],
+                    "raw_coverage_trace_ids": [turn.trace_id for turn in session_row.turns],
+                    "plan_id": judging_plan.plan_id,
                     "reviewer_context": [
-                        value["judge"]
-                        for value in session_row["reviewers"]  # type: ignore[index]
+                        judge.model_dump(mode="json") for judge in judging_plan.reviewers
                     ],
                     "evaluated_models": evaluated_models,
                     "evaluated_families": evaluated_families,

@@ -89,6 +89,13 @@ class MergedVerdict(_ClosedModel):
     feedback: BehavioralFeedback | None
 
 
+def _merged_verdict_json_schema() -> dict:
+    schema = MergedVerdict.model_json_schema()
+    score = schema["properties"]["score"]
+    score["anyOf"] = [{"type": "number"}, {"type": "null"}]
+    return schema
+
+
 CHUNK_DIGEST_SCHEMA = JsonSchemaSpec(
     name="chunk_digest",
     schema=ChunkDigest.model_json_schema(),
@@ -107,7 +114,7 @@ BEHAVIORAL_FEEDBACK_SCHEMA = JsonSchemaSpec(
 )
 MERGED_VERDICT_SCHEMA = JsonSchemaSpec(
     name="merged_verdict",
-    schema=MergedVerdict.model_json_schema(),
+    schema=_merged_verdict_json_schema(),
 )
 
 
@@ -293,12 +300,11 @@ def parse_window_findings(
     ):
         raise ValueError("unexpected window ID")
     findings = tuple(
-        parse_window_finding(finding, allowed_evidence_ids=allowed_evidence_ids)
-        for finding in parsed.findings
+        parse_window_finding(finding, allowed_evidence_ids=allowed_evidence_ids).model_copy(
+            update={"finding_id": f"finding-{index}"}
+        )
+        for index, finding in enumerate(parsed.findings, start=1)
     )
-    finding_ids = [finding.finding_id for finding in findings]
-    if len(finding_ids) != len(set(finding_ids)):
-        raise ValueError("finding IDs must be unique within a window")
     finding_keys = [
         (finding.polarity, finding.observation, tuple(sorted(set(finding.evidence_ids))))
         for finding in findings
@@ -346,18 +352,14 @@ def parse_merged_verdict(
     allowed_ids = _allowed_id_set(allowed_evidence_ids)
 
     if verdict.status == "insufficient_evidence":
-        if verdict.score is not None:
-            raise ValueError("insufficient_evidence requires a null score")
-        evidence_ids = _validated_evidence_ids(
-            verdict.evidence_ids,
-            allowed_ids=allowed_ids,
-            required=False,
+        return verdict.model_copy(
+            update={
+                "score": None,
+                "rationale": rationale,
+                "evidence_ids": (),
+                "feedback": None,
+            }
         )
-        if evidence_ids:
-            raise ValueError("insufficient_evidence requires empty evidence")
-        if verdict.feedback is not None:
-            raise ValueError("insufficient_evidence requires null feedback")
-        return verdict.model_copy(update={"rationale": rationale, "evidence_ids": evidence_ids})
 
     if verdict.score is None:
         raise ValueError("scored verdict requires a score")

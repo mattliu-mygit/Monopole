@@ -19,6 +19,7 @@ from weave_agent_signals.run_config import (
     resolve_run_config,
 )
 from weave_agent_signals.runs.bundles import ScopeDescriptor, bundle_from_content_map
+from weave_agent_signals.runs.reflection_records import ReflectionResultRecord
 from weave_agent_signals.runs.service import RunService, _configuration_error
 from weave_agent_signals.runs.stages import StageCancelled
 from weave_agent_signals.runs.stages.reflection import (
@@ -61,10 +62,23 @@ class StageSpy:
         if self.error is not None:
             raise self.error
         if self.complete:
+            result = {"stage": run.status.value}
+            if run.status is RunStatus.REFLECTING:
+                result = ReflectionResultRecord(
+                    baseline=bundle_from_content_map(
+                        {"AGENTS.md": "baseline"},
+                        scope=ScopeDescriptor("file", "/project", ("AGENTS.md",)),
+                    ),
+                    attempts=(),
+                    evaluations=(),
+                    recommended_candidate_id=None,
+                    baseline_won=False,
+                    reason="No proposal was needed",
+                )
             self.store.record_stage_result(
                 run.run_id,
                 stage=run.status,
-                result={"stage": run.status.value},
+                result=result,
             )
 
 
@@ -295,7 +309,7 @@ def test_auto_run_chains_successful_stages_and_completes(store):
     assert [len(stage.calls) for stage in (scoring, judging, reflection)] == [1, 1, 1]
     assert completed.scoring_result == {"stage": "scoring"}
     assert completed.judging_result == {"stage": "judging"}
-    assert completed.reflecting_result == {"stage": "reflecting"}
+    assert completed.reflecting_result.reason == "No proposal was needed"
     assert completed.scoring_succeeded is True
     assert completed.judging_succeeded is True
     assert completed.reflecting_succeeded is True

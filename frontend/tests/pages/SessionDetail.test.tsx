@@ -33,6 +33,11 @@ beforeEach(() => {
     git_branch: 'main',
     total_tokens: 30,
     turn_count: 1,
+    judging_token_estimates: {
+      utf8_bytes_div_3: { total_tokens: 30, largest_turn_tokens: 30, turn_tokens: [30] },
+      o200k_base: { total_tokens: 25, largest_turn_tokens: 25, turn_tokens: [25] },
+      o200k_harmony: { total_tokens: 25, largest_turn_tokens: 25, turn_tokens: [25] },
+    },
     turns: [{
       trace_id: 'trace-1234567890',
       conversation_id: 'conversation-1',

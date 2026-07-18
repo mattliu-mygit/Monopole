@@ -379,11 +379,26 @@ export interface components {
             /** Prompt */
             prompt: string;
             /**
+             * Required Executables
+             * @default []
+             */
+            required_executables: string[];
+            /**
+             * Required Files
+             * @default []
+             */
+            required_files: string[];
+            /**
+             * Requires Git Metadata
+             * @default false
+             */
+            requires_git_metadata: boolean;
+            /**
              * Schema Version
-             * @default 2
+             * @default 3
              * @constant
              */
-            schema_version: "2";
+            schema_version: "3";
             /**
              * Setup Mode
              * @default agent_bootstrap
@@ -873,7 +888,7 @@ export interface components {
             large_model_raw_target_tokens: number;
             /**
              * Large Model Reserve Tokens
-             * @default 100000
+             * @default 18000
              */
             large_model_reserve_tokens: number;
             /**
@@ -915,7 +930,7 @@ export interface components {
             small_model_raw_target_tokens: number;
             /**
              * Small Model Reserve Tokens
-             * @default 50000
+             * @default 18000
              */
             small_model_reserve_tokens: number;
         };
@@ -1100,6 +1115,15 @@ export interface components {
             status: "planned" | "skipped";
             window_plan: components["schemas"]["JudgingWindowPlanResponse"] | null;
             work_bounds: components["schemas"]["JudgingWorkBoundsResponse"];
+        };
+        /** JudgingTokenEstimateResponse */
+        JudgingTokenEstimateResponse: {
+            /** Largest Turn Tokens */
+            largest_turn_tokens: number;
+            /** Total Tokens */
+            total_tokens: number;
+            /** Turn Tokens */
+            turn_tokens: number[];
         };
         /** JudgingWindowPlanResponse */
         JudgingWindowPlanResponse: {
@@ -1558,19 +1582,11 @@ export interface components {
             effective_config: components["schemas"]["EffectiveRunConfig"] | null;
             /** Error */
             error: string | null;
-            /** Judging Artifacts */
-            judging_artifacts?: {
-                [key: string]: unknown;
-            } | null;
             judging_plan: components["schemas"]["JudgingPlanResponse"] | null;
             judging_progress: components["schemas"]["JudgingProgressResponse"] | null;
             judging_result: components["schemas"]["JudgingProgressResponse"] | null;
             reflecting_progress: components["schemas"]["ReflectingProgressResponse"] | null;
             reflecting_result: components["schemas"]["ReflectionResultResponse"] | null;
-            /** Reflection Input */
-            reflection_input: {
-                [key: string]: unknown;
-            } | null;
             reflection_review: components["schemas"]["ReflectionReviewResponse"] | null;
             /** Reflection Review Revision */
             reflection_review_revision: number;
@@ -1727,6 +1743,10 @@ export interface components {
             conversation_id: string | null;
             /** Git Branch */
             git_branch: string | null;
+            /** Judging Token Estimates */
+            judging_token_estimates: {
+                [key: string]: components["schemas"]["JudgingTokenEstimateResponse"];
+            };
             /** Session Feedback */
             session_feedback: components["schemas"]["FeedbackItemResponse"][];
             /** Signal Evidence */
@@ -1767,8 +1787,6 @@ export interface components {
             git_branch: string | null;
             /** Input Preview */
             input_preview: string | null;
-            /** Largest Turn Tokens */
-            largest_turn_tokens: number;
             /** Last Activity */
             last_activity: string | null;
             /** Model */

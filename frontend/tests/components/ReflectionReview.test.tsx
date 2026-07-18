@@ -134,7 +134,6 @@ function run(overrides: Partial<Run> = {}): Run {
     effective_config: null,
     turn_cohort: null,
     judging_plan: null,
-    reflection_input: null,
     scoring_progress: null,
     scoring_result: null,
     judging_progress: null,
@@ -761,13 +760,16 @@ describe('ReflectionReview', () => {
           winner: 'baseline',
           reason: null,
           task: {
-            schema_version: '2', task_id: 'sha256:task', prompt: 'Repair the parser.',
+            schema_version: '3', task_id: 'sha256:task', prompt: 'Repair the parser.',
             goal: 'The parser tests pass.', setup_mode: 'prepared_workspace', materials: [{
               kind: 'git_repository', url: 'https://github.com/example/parser.git',
               revision: 'a'.repeat(40), destination: 'task',
             }],
             judging_criteria: ['The parser tests pass.', 'The regression is covered.'],
-            start_checks: ['task/ contains the pinned repository.'], workspace_digest: 'sha256:workspace',
+            start_checks: ['task/ contains the pinned repository.'],
+            required_files: ['task/src/parser.py', 'task/tests/test_parser.py'],
+            required_executables: ['python'], requires_git_metadata: false,
+            workspace_digest: 'sha256:workspace',
             author_model: 'author-model', author_backend: 'cli',
           },
           execution: {
@@ -823,6 +825,10 @@ describe('ReflectionReview', () => {
     expect(screen.getByText('https://github.com/example/parser.git')).not.toBeNull()
     expect(screen.getByText('The regression is covered.')).not.toBeNull()
     expect(screen.getByText('task/ contains the pinned repository.')).not.toBeNull()
+    expect(screen.getByText('Preflight requirements')).not.toBeNull()
+    expect(screen.getByText('task/src/parser.py')).not.toBeNull()
+    expect(screen.getByText('python')).not.toBeNull()
+    expect(screen.getByText('Git metadata not required')).not.toBeNull()
     expect(screen.getByText(/gpt-5.6-sol via codex 1.2.3/i)).not.toBeNull()
     expect(screen.getByText(/judge.session_outcome/)).not.toBeNull()
     expect(screen.getByText(/Δ -0.50/)).not.toBeNull()

@@ -6,8 +6,14 @@ from datetime import datetime, timezone
 
 import pytest
 
+from weave_agent_signals.catalogs import build_model_catalog
 from weave_agent_signals.runs.bundles import BundleSnapshot, TargetSnapshot
 from weave_agent_signals.runs.promotion import TargetPromoter
+from weave_agent_signals.runs.reflection_records import (
+    EvaluatorRecord,
+    GenerationAttemptRecord,
+    ReflectionResultRecord,
+)
 from weave_agent_signals.runs.review import (
     ReviewConflictError,
     ReviewRequestError,
@@ -107,13 +113,50 @@ def _context(tmp_path, *, status: RunStatus = RunStatus.COMPLETE):
     baseline = adapter.capture()
     candidate_one = _candidate(baseline, "file:claude", "candidate one\n")
     candidate_two = _candidate(baseline, "file:claude", "candidate two\n")
-    result = {
-        "baseline": baseline.to_dict(),
-        "candidates": [
-            {"candidate_id": "candidate-1", "bundle": candidate_one.to_dict()},
-            {"candidate_id": "candidate-2", "bundle": candidate_two.to_dict()},
-        ],
-    }
+    writer = next(
+        model
+        for model in build_model_catalog().available_models
+        if "proposal_writer" in model.supported_roles
+    )
+    attempts = tuple(
+        GenerationAttemptRecord(
+            attempt_id=f"attempt-{index}",
+            number=index,
+            status="succeeded",
+            requested_writer=writer,
+            resolved_model=writer.provider_model,
+            resolved_family=writer.family,
+            resolved_backend=writer.provider,
+            candidate_id=f"candidate-{index}",
+            bundle=bundle,
+            changed_paths=("file:claude",),
+        )
+        for index, bundle in enumerate((candidate_one, candidate_two), start=1)
+    )
+    evaluations = tuple(
+        EvaluatorRecord(
+            evaluation_id=f"evaluation-{index}",
+            target_id=target_id,
+            requested_model="evaluator",
+            requested_family="evaluator-family",
+            requested_backend="test",
+            resolved_model="evaluator",
+            resolved_family="evaluator-family",
+            resolved_backend="test",
+            score=score,
+            rationale="test",
+        )
+        for index, (target_id, score) in enumerate(
+            (("baseline", 0.1), ("candidate-1", 0.8), ("candidate-2", 0.7)), start=1
+        )
+    )
+    result = ReflectionResultRecord(
+        baseline=baseline,
+        attempts=attempts,
+        evaluations=evaluations,
+        recommended_candidate_id="candidate-1",
+        baseline_won=False,
+    )
     run = Run(
         run_id="run-1",
         status=status,
@@ -363,9 +406,15 @@ def test_d_requires_exact_acknowledgement_then_promotes(tmp_path):
 def test_partial_receipt_is_persisted_as_terminal_review(tmp_path, monkeypatch: pytest.MonkeyPatch):
     service, store, _adapter, baseline, candidate, _other = _context(tmp_path)
     candidate = _candidate(candidate, "skills:skills/audit/SKILL.md", "audit new\n")
-    result = dict(store.run.reflecting_result)
-    result["candidates"] = [{"candidate_id": "candidate-1", "bundle": candidate.to_dict()}]
-    store.run = replace(store.run, reflecting_result=result)
+    result = store.run.reflecting_result
+    attempts = (
+        result.attempts[0].model_copy(update={"bundle": candidate}),
+        *result.attempts[1:],
+    )
+    store.run = replace(
+        store.run,
+        reflecting_result=result.model_copy(update={"attempts": attempts}),
+    )
     real_publish = TargetPromoter._publish
 
     def fail_skill(self, item):

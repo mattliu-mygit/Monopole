@@ -16,7 +16,6 @@ from weave_agent_signals.runs.store import (
     RunStatus,
     RunStore,
     RunSummarySource,
-    judging_artifact_payload_digest,
 )
 
 
@@ -266,8 +265,8 @@ def test_run_routes_accept_exact_setup_contract_and_return_pinned_run(route_cont
     assert client.get(f"/api/runs/{created['run_id']}").json() == body
 
 
-def test_run_detail_exposes_persisted_judging_artifacts(route_context):
-    client, service, models, rubrics = route_context
+def test_run_detail_hides_internal_recovery_state(route_context):
+    client, _service, models, rubrics = route_context
     created = client.post("/api/runs").json()
     client.put(
         f"/api/runs/{created['run_id']}/selection",
@@ -278,21 +277,11 @@ def test_run_detail_exposes_persisted_judging_artifacts(route_context):
         json=_config(models, rubrics),
     )
     client.post(f"/api/runs/{created['run_id']}/advance")
-    client.post(f"/api/runs/{created['run_id']}/advance")
-    payload = {"window_id": "window-1", "findings": []}
-    artifact = {
-        "schema_version": "1",
-        "kind": "window_findings",
-        "content_digest": judging_artifact_payload_digest(payload),
-        "payload": payload,
-    }
-    artifact_id = "judge-1/session-1/findings/window-1"
-    service.store.record_judging_artifact(created["run_id"], artifact_id, artifact)
-
     response = client.get(f"/api/runs/{created['run_id']}")
 
     assert response.status_code == 200
-    assert response.json()["judging_artifacts"] == {artifact_id: artifact}
+    assert "judging_artifacts" not in response.json()
+    assert "reflection_input" not in response.json()
 
 
 def test_run_list_uses_scalar_projection_without_evidence_or_live_review_overlay(

@@ -10,6 +10,7 @@ from weave_agent_signals.judges.review import (
     AttemptObservation,
     PanelOutcome,
     execute_panel,
+    panel_result_from_outcome,
 )
 from weave_agent_signals.run_config import PositionedJudge
 
@@ -117,6 +118,31 @@ def test_panel_runs_every_judge_and_reports_disagreement(scores, expected) -> No
     assert (outcome.rating, outcome.minimum, outcome.maximum, outcome.spread) == expected
     assert outcome.status == "complete"
     assert outcome.successful_count == len(scores)
+
+
+def test_panel_outcome_converts_once_to_canonical_result() -> None:
+    outcome = execute_panel(
+        _judges(2),
+        _ScriptedInvoke((_success(0.25), _success(0.75))),
+        threshold=0.5,
+    )
+
+    result = panel_result_from_outcome(
+        conversation_id="conversation-1",
+        rubric_id="correctness",
+        outcome=outcome,
+        call_ids_by_position={
+            1: ("sha256:" + "a" * 64,),
+            2: ("sha256:" + "b" * 64,),
+        },
+    )
+
+    assert result.rating == 0.5
+    assert tuple(attempt.status for attempt in result.attempts) == (
+        "succeeded",
+        "succeeded",
+    )
+    assert result.attempts[1].call_ids == ("sha256:" + "b" * 64,)
 
 
 def test_failed_member_fails_panel_coverage() -> None:
@@ -243,13 +269,13 @@ def test_eligible_failure_still_fails_when_another_reviewer_is_skipped() -> None
     assert outcome.rating is None
 
 
-def test_skipped_observation_rejects_inference_fields() -> None:
+def test_skipped_observation_rejects_verdict_fields() -> None:
     with pytest.raises(ValueError, match="skipped observations"):
         AttemptObservation(
             status="skipped",
             skip_reason="insufficient_context_capacity",
-            resolved_model="must-not-exist",
-            score=None,
+            resolved_model="resolved-model",
+            score=0.5,
             rationale=None,
             usage={},
             error_type=None,

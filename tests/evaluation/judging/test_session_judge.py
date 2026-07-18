@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import threading
 from datetime import datetime, timezone
 
@@ -8,10 +7,9 @@ import pytest
 
 from weave_agent_signals.catalogs import build_rubric_catalog
 from weave_agent_signals.judges import runner
-from weave_agent_signals.judges.plan import build_judging_plan
+from weave_agent_signals.judges.plan import build_canonical_judging_plan
 from weave_agent_signals.judges.review import AttemptObservation
 from weave_agent_signals.judges.runner import JudgeExecutionError, judge_session
-from weave_agent_signals.judges.sliding import sliding_protocol_contract_manifest
 from weave_agent_signals.models import SessionView, TurnSpan
 from weave_agent_signals.run_config import DEFAULT_JUDGING_CONTEXT_POLICY, PositionedJudge
 
@@ -115,7 +113,7 @@ def _run(
     session = _session()
     judges = judges or (_judge("judge-1", 1),)
     rubrics = rubrics or build_rubric_catalog().rubrics
-    plan = build_judging_plan(
+    plan = build_canonical_judging_plan(
         [session],
         cohort_id="cohort",
         rubrics=rubrics,
@@ -142,16 +140,10 @@ def _run(
         judges=judges,
         judging_plan=plan,
         context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-        artifact_loader=lambda _key: None,
-        artifact_recorder=lambda *_args: None,
+        call_loader=lambda _key: None,
+        call_recorder=lambda *_args: None,
     )
     return scores, created
-
-
-def _rehash(plan: dict) -> dict:
-    body = {key: value for key, value in plan.items() if key != "plan_id"}
-    plan["plan_id"] = runner._plan_digest(body)
-    return plan
 
 
 def test_runner_reuses_one_lazy_reviewer_per_judge_and_preserves_feedback(monkeypatch) -> None:
@@ -300,14 +292,14 @@ def test_runner_rejects_detached_rubric_selection(monkeypatch) -> None:
     session = _session()
     judges = (_judge("judge-1", 1),)
     rubrics = build_rubric_catalog().rubrics
-    plan = build_judging_plan(
+    plan = build_canonical_judging_plan(
         [session],
         cohort_id="cohort",
         rubrics=rubrics,
         judge_models=judges,
         context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
     )
-    with pytest.raises(ValueError, match="rubrics or attempt bounds"):
+    with pytest.raises(ValueError, match="rubrics do not match"):
         judge_session(
             session,
             {judge.id: object() for judge in judges},
@@ -315,8 +307,8 @@ def test_runner_rejects_detached_rubric_selection(monkeypatch) -> None:
             judges=judges,
             judging_plan=plan,
             context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-            artifact_loader=lambda _: None,
-            artifact_recorder=lambda *_: None,
+            call_loader=lambda _: None,
+            call_recorder=lambda *_: None,
         )
 
 
@@ -324,7 +316,7 @@ def test_runner_rejects_alternate_later_judge_before_reviewer_instantiation(monk
     session = _session()
     pinned = (_judge("judge-1", 1), _judge("judge-2", 2))
     rubrics = build_rubric_catalog().rubrics[:1]
-    plan = build_judging_plan(
+    plan = build_canonical_judging_plan(
         [session],
         cohort_id="cohort",
         rubrics=rubrics,
@@ -342,8 +334,8 @@ def test_runner_rejects_alternate_later_judge_before_reviewer_instantiation(monk
             judges=alternate,
             judging_plan=plan,
             context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-            artifact_loader=lambda _: None,
-            artifact_recorder=lambda *_: None,
+            call_loader=lambda _: None,
+            call_recorder=lambda *_: None,
         )
     assert created == []
 
@@ -353,7 +345,7 @@ def test_runner_synthesizes_authenticated_skip_without_creating_reviewer(monkeyp
     judges = (_judge("small", 1), _judge("large", 2))
     judges = (judges[0].model_copy(update={"max_input_tokens": 16_000}), judges[1])
     rubrics = build_rubric_catalog().rubrics[:1]
-    plan = build_judging_plan(
+    plan = build_canonical_judging_plan(
         [session],
         cohort_id="cohort",
         rubrics=rubrics,
@@ -377,8 +369,8 @@ def test_runner_synthesizes_authenticated_skip_without_creating_reviewer(monkeyp
         judges=judges,
         judging_plan=plan,
         context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-        artifact_loader=lambda _: None,
-        artifact_recorder=lambda *_: None,
+        call_loader=lambda _: None,
+        call_recorder=lambda *_: None,
     )
 
     assert created == ["large"]
@@ -388,184 +380,3 @@ def test_runner_synthesizes_authenticated_skip_without_creating_reviewer(monkeyp
         "succeeded",
     ]
     assert scores[0].metadata["attempts"][0]["skip_reason"] == ("insufficient_context_capacity")
-
-
-@pytest.mark.parametrize(
-    ("tamper", "message"),
-    [
-        ("protocol", "protocol"),
-        ("turn_count", "turn count"),
-        ("raw_coverage_trace_ids", "raw coverage"),
-    ],
-)
-def test_runner_rejects_rehashed_all_skipped_session_tampering_before_outcomes(
-    monkeypatch, tamper, message
-) -> None:
-    session = _session()
-    judges = (_judge("incapable", 1).model_copy(update={"max_input_tokens": 16_000}),)
-    rubrics = build_rubric_catalog().rubrics[:1]
-    plan = build_judging_plan(
-        [session],
-        cohort_id="cohort",
-        rubrics=rubrics,
-        judge_models=judges,
-        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-    )
-    assert plan["sessions"][0]["reviewers"][0]["status"] == "skipped"
-    forged = copy.deepcopy(plan)
-    if tamper == "protocol":
-        forged["protocol"] = {
-            **sliding_protocol_contract_manifest(),
-            "protocol_version": "forged",
-        }
-    elif tamper == "turn_count":
-        forged["sessions"][0]["turn_count"] += 1
-    else:
-        forged["sessions"][0]["raw_coverage_trace_ids"] = ["forged-trace"]
-    _rehash(forged)
-    monkeypatch.setattr(
-        runner,
-        "execute_panel",
-        lambda *_args, **_kwargs: pytest.fail("tampering must fail before outcome recording"),
-    )
-    monkeypatch.setattr(
-        runner,
-        "SlidingReviewer",
-        lambda **_kwargs: pytest.fail("tampering must fail before model-client work"),
-    )
-
-    with pytest.raises(ValueError, match=message):
-        judge_session(
-            session,
-            {judge.id: object() for judge in judges},
-            rubrics=rubrics,
-            judges=judges,
-            judging_plan=forged,
-            context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-            artifact_loader=lambda _: pytest.fail("tampering must fail before artifact loading"),
-            artifact_recorder=lambda *_: pytest.fail(
-                "tampering must fail before outcome recording"
-            ),
-        )
-
-
-def test_runner_rejects_forged_skip_for_capable_reviewer(monkeypatch) -> None:
-    session = _session()
-    judges = (_judge("capable", 1),)
-    rubrics = build_rubric_catalog().rubrics[:1]
-    plan = build_judging_plan(
-        [session],
-        cohort_id="cohort",
-        rubrics=rubrics,
-        judge_models=judges,
-        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-    )
-    forged = copy.deepcopy(plan)
-    reviewer = forged["sessions"][0]["reviewers"][0]
-    reviewer.update(
-        status="skipped",
-        skip_reason="insufficient_context_capacity",
-        window_plan=None,
-        work_bounds={
-            "digest_calls": 0,
-            "window_calls_per_rubric": 0,
-            "merge_calls_per_rubric": 0,
-        },
-    )
-    forged["sessions"][0]["rubrics"][0].update(
-        minimum_reviewer_attempts=0,
-        maximum_reviewer_attempts=0,
-    )
-    _rehash(forged)
-    monkeypatch.setattr(
-        runner,
-        "SlidingReviewer",
-        lambda **_kwargs: pytest.fail("forged disposition must fail before reviewer creation"),
-    )
-
-    with pytest.raises(ValueError, match="reviewer disposition"):
-        judge_session(
-            session,
-            {judge.id: object() for judge in judges},
-            rubrics=rubrics,
-            judges=judges,
-            judging_plan=forged,
-            context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-            artifact_loader=lambda _: None,
-            artifact_recorder=lambda *_: None,
-        )
-
-
-def test_runner_rejects_forged_plan_for_incapable_reviewer(monkeypatch) -> None:
-    session = _session()
-    judges = (_judge("incapable", 1).model_copy(update={"max_input_tokens": 64_000}),)
-    rubrics = build_rubric_catalog().rubrics[:1]
-    plan = build_judging_plan(
-        [session],
-        cohort_id="cohort",
-        rubrics=rubrics,
-        judge_models=judges,
-        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-    )
-    forged = copy.deepcopy(plan)
-    reviewer = forged["sessions"][0]["reviewers"][0]
-    reviewer.update(
-        status="planned",
-        skip_reason=None,
-        window_plan={},
-        work_bounds={
-            "digest_calls": 1,
-            "window_calls_per_rubric": 1,
-            "merge_calls_per_rubric": 1,
-        },
-    )
-    forged["sessions"][0]["rubrics"][0].update(
-        minimum_reviewer_attempts=1,
-        maximum_reviewer_attempts=1,
-    )
-    _rehash(forged)
-    monkeypatch.setattr(
-        runner,
-        "SlidingReviewer",
-        lambda **_kwargs: pytest.fail("forged disposition must fail before reviewer creation"),
-    )
-
-    with pytest.raises(ValueError, match="reviewer disposition"):
-        judge_session(
-            session,
-            {judge.id: object() for judge in judges},
-            rubrics=rubrics,
-            judges=judges,
-            judging_plan=forged,
-            context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-            artifact_loader=lambda _: None,
-            artifact_recorder=lambda *_: None,
-        )
-
-
-def test_runner_rejects_tampered_planned_work_bounds() -> None:
-    session = _session()
-    judges = (_judge("capable", 1),)
-    rubrics = build_rubric_catalog().rubrics[:1]
-    plan = build_judging_plan(
-        [session],
-        cohort_id="cohort",
-        rubrics=rubrics,
-        judge_models=judges,
-        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-    )
-    forged = copy.deepcopy(plan)
-    forged["sessions"][0]["reviewers"][0]["work_bounds"]["merge_calls_per_rubric"] = 0
-    _rehash(forged)
-
-    with pytest.raises(ValueError, match="reviewer disposition"):
-        judge_session(
-            session,
-            {judge.id: object() for judge in judges},
-            rubrics=rubrics,
-            judges=judges,
-            judging_plan=forged,
-            context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-            artifact_loader=lambda _: None,
-            artifact_recorder=lambda *_: None,
-        )

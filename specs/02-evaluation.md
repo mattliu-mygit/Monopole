@@ -43,15 +43,14 @@ descriptors including context capacity and token-counter identity, rubric
 descriptors, complete session trace identities, each reviewer's planned-or-
 skipped disposition, reviewer-specific window manifests, and the exact
 digest/window/merge protocol. Changes to any of those inputs produce a different
-plan or artifact identity. Authentication recomputes each reviewer's
+plan or request identity. Authentication recomputes each reviewer's
 applicability and exact window plan from the pinned session, descriptor, and
 policy before external work.
 
 All model rubrics are session-level. Each applicable reviewer gets a window plan
-sized to its pinned context capacity. Models above 200,000 input tokens reserve
-at least 100,000 tokens; models at or below 200,000 reserve at least 50,000.
-Prompt, output, safety, surrounding-digest, and finding overhead may increase
-that reserve. Raw windows have separate soft targets of 128,000 tokens above
+sized to its pinned context capacity. Every model reserves the pinned prompt,
+output, and safety allowance; surrounding-digest and finding overhead increase
+that reserve as the chunk count grows. Raw windows have separate soft targets of 128,000 tokens above
 the same model threshold and 50,000 tokens at or below it. OpenAI catalog
 entries use their explicitly pinned `tiktoken` encoding; other model families
 use the conservative UTF-8 byte estimator.
@@ -112,9 +111,12 @@ Every reviewer's final merge returns the closed versioned verdict contract:
   and
 - an insufficient-evidence verdict has no citations or behavioral feedback.
 
+`insufficient_evidence` is authoritative: transport output is canonicalized to
+the scoreless, citation-free, feedback-free abstention before persistence.
+
 Chunk digests must cite their exact core evidence. Window findings cite only
-evidence visible in that raw window, are capped in count and size, and carry
-finding identities unique within that window. Aggregation scopes each identity
+evidence visible in that raw window, are capped in count and size, and receive
+canonical identities from their response order. Aggregation scopes each identity
 to its authenticated window before deduplicating exact semantic findings in
 session order. An unknown citation, blank required text, duplicate semantic
 finding within one window, or oversized artifact fails closed. The merge prompt
@@ -168,15 +170,19 @@ context capacity and, once sessions are selected, whether the model can support
 the estimated judging requests. A non-fitting option is disabled and a selected
 configuration that becomes non-fitting cannot start.
 
-Selection-time capacity estimation uses existing per-turn token usage. For each
-selected session and model, the largest turn estimates the minimum indivisible
-raw chunk, while total session tokens estimate only the number of chunks and
-therefore the digest and merge buffers. The estimator uses the pinned context
+Selection-time capacity estimation hydrates only the selected sessions, renders
+their compact judging evidence once, and counts it with each catalog token-counter
+identity. For each selected session and model, the largest rendered turn estimates the minimum indivisible
+raw chunk, while the total rendered evidence estimates only the number of chunks
+and therefore the digest and merge buffers. The estimator uses the pinned context
 policy's raw-window target, prompt/output/safety reserve, digest limit, finding
 limit, and maximum chunk count. Its estimated largest request is the greater of
 the largest raw-window request and the final merge request; that value must not
 exceed the descriptor's input context capacity. The runtime still derives and
-authenticates the exact rendered-turn plan before inference.
+authenticates the exact rendered-turn plan before inference. Borderline exact
+requests are attempted. An explicit provider context-limit rejection becomes an
+`insufficient_context_capacity` skip for that reviewer; authentication, rate,
+schema, and other provider errors remain failures.
 
 Only planned reviewers call inference. A capacity skip remains in the judging
 plan and attempt audit, but does not count as a completed reviewer attempt or an
@@ -204,17 +210,16 @@ buffered until every session rubric resolves to a complete or degraded rating,
 or a unanimous not-evaluable outcome. Only the resulting ratings are written
 under the run's cancellation barrier.
 
-## Artifact resume and failure behavior
+## Judge-call resume and failure behavior
 
-Successful digest, window, and merge outputs are persisted as immutable,
-content-authenticated artifacts. Their identities bind the exact window plan,
-reviewer, protocol content, rubric where relevant, phase, and source identity.
-On restart, matching artifacts are validated again and reused; an artifact with
-the wrong envelope, digest, model, phase, schema, or request provenance fails
-closed instead of being treated as compatible work.
+Successful digest, window, and merge outputs are persisted as request-keyed
+judge calls. Each identity hashes the requested and provider models, exact
+messages, response schema, generation options, and protocol version. On
+restart, only a matching reusable success with a phase-valid result is reused;
+failed, audit-only, historical, or malformed calls are never reused.
 
-Progress counts unique persisted artifacts, so reuse cannot inflate completed
-work. Concurrent panel activity and artifact completion are serialized before
+Progress counts unique persisted call identities, so reuse cannot inflate completed
+work. Concurrent panel activity and call completion are serialized before
 persistence. Partial model outputs never become scores, and cancelled or
 unattempted work after a fail-fast stop is not reported as completed. Any
 planned rubric failure prevents all judge feedback writes for that run;

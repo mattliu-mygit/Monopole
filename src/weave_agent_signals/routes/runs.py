@@ -114,9 +114,12 @@ def create_runs_router(
 ) -> APIRouter:
     router = APIRouter(prefix="/api/runs", tags=["runs"])
 
+    def response(run):
+        return RunResponse.model_validate(serialize_run(run, getattr(service, "store", None)))
+
     @router.post("")
     def create_run() -> RunResponse:
-        return RunResponse.model_validate(serialize_run(_call(service.create)))
+        return response(_call(service.create))
 
     @router.get("")
     def list_runs(limit: int = Query(default=50, ge=1, le=200)) -> RunListResponse:
@@ -132,7 +135,7 @@ def create_runs_router(
             if review_service is not None
             else _call(lambda: service.get(run_id))
         )
-        return RunResponse.model_validate(serialize_run(run))
+        return response(run)
 
     @router.put("/{run_id}/selection")
     def save_selection(run_id: str, request: SelectionRequest) -> RunResponse:
@@ -142,28 +145,22 @@ def create_runs_router(
             timezone=request.timezone,
             session_ids=request.session_ids,
         )
-        return RunResponse.model_validate(
-            serialize_run(_call(lambda: service.save_selection(run_id, selection)))
-        )
+        return response(_call(lambda: service.save_selection(run_id, selection)))
 
     @router.put("/{run_id}/config")
     def save_config(run_id: str, config: RunConfig) -> RunResponse:
-        return RunResponse.model_validate(
-            serialize_run(_call(lambda: service.save_config(run_id, config)))
-        )
+        return response(_call(lambda: service.save_config(run_id, config)))
 
     @router.put("/{run_id}/auto_run")
     def set_auto_run(run_id: str, request: AutoRunRequest) -> RunResponse:
-        return RunResponse.model_validate(
-            serialize_run(_call(lambda: service.set_auto_run(run_id, request.auto_run)))
-        )
+        return response(_call(lambda: service.set_auto_run(run_id, request.auto_run)))
 
     @router.post("/{run_id}/advance")
     def advance_run(run_id: str) -> RunResponse:
-        return RunResponse.model_validate(serialize_run(_call(lambda: service.advance(run_id))))
+        return response(_call(lambda: service.advance(run_id)))
 
     @router.post("/{run_id}/cancel")
     def cancel_run(run_id: str) -> RunResponse:
-        return RunResponse.model_validate(serialize_run(_call(lambda: service.cancel(run_id))))
+        return response(_call(lambda: service.cancel(run_id)))
 
     return router

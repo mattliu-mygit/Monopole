@@ -45,9 +45,10 @@ persists success and the next status together.
 
 After restart, compatible digest, window, merge, and reflection work may be
 finalized or resumed from persisted evidence without repeating paid work.
-Judging artifacts are reusable only after their content, phase, model, schema,
-protocol, and exact plan identity are revalidated. Incomplete outcomes may
-resume from valid earlier artifacts; incompatible or tampered artifacts fail
+Judge calls are reusable only when their request identity binds the exact model,
+messages, response schema, options, and protocol, and their validated result is
+still present. Incomplete outcomes may resume from valid earlier calls;
+incompatible or tampered records fail
 visibly instead of being adapted. Cancellation consults durable state,
 terminates active model processes, and cannot interleave with protected
 external write batches or finalized review evidence.
@@ -72,10 +73,10 @@ The evaluator recommendation prefers a different model family from the writer
 when available, but explicit compatible choices remain authoritative and
 produce visible bias warnings rather than silent replacement.
 
-Reflection records semantic activity rather than raw process logs. Its snapshot
-contains phase, status, start time, configured attempt budget, monotonic counts
-for attempted, valid, rejected, and evaluated proposals, and a bounded event
-history. Events may identify role, model, attempt, evaluation, score, changed
+Reflection records semantic activity rather than raw process logs. Its progress
+contains phase, status, start time, configured attempt budget, and monotonic
+counts for attempted, valid, rejected, and evaluated proposals. Shared bounded
+event rows may identify role, model, attempt, evaluation, score, changed
 paths, and safe failure evidence. Rejected writer output keeps a digest and a
 bounded redacted structural excerpt, never proposal bodies, prompts, reasoning,
 credentials, or arbitrary subprocess output.
@@ -85,16 +86,16 @@ judging, candidate generation, evaluation, or selection.
 
 Judging progress separately reports planned sessions, turns, raw windows,
 applicable reviewer attempts, and unique completed digest, window, and merge
-artifacts. Capacity-skipped reviewers remain visible with the sole skip reason
+calls. Capacity-skipped reviewers remain visible with the sole skip reason
 `insufficient_context_capacity`, but perform no inference, do not count as
 failed or completed attempts, and have zero planned model work. If every
 reviewer for a session is skipped, its rubrics are auditable not-evaluable
 outcomes and the run continues without opening a model client for that work.
-Reused artifacts retain ordered inference provenance without incrementing
+Reused calls retain ordered inference provenance without incrementing
 unique completed-work counts.
 
-Judging also persists a bounded chronological activity history and one current
-plain-language status. Semantic events identify session, rubric, reviewer,
+Scoring, judging, and reflection append to one bounded chronological event table
+and retain one current plain-language stage status. Semantic events identify session, rubric, reviewer,
 digest, window, merge, and feedback-write work. Local CLI transport events make
 retries, recovery, and terminal request failures visible with safe diagnostic
 metadata: model, request attempt, elapsed time, categorical reason, exit code,
@@ -171,27 +172,36 @@ evidence and no promotion review is created.
 ## Paired sandbox verification
 
 Before a provisional C becomes reviewable, the proposal evaluator acts as a
-blinded task author. One structured call receives the pinned bounded evaluation
-digest and a compact deterministic summary of the seed workspace, with managed
-instruction contents removed. It sees neither instruction bundle, arm identity,
-nor evaluated agent identity. It emits one complete task package: prompt,
-measurable goal, setup mode, pinned public materials, task-specific judging
-criteria, and starting-state checks.
+blinded material planner and task author. A first structured call receives the
+pinned bounded evaluation digest and a compact deterministic summary of the
+seed workspace, with managed instruction contents removed, and selects a setup
+mode plus pinned public materials for a fresh analogous task. After those
+materials are fetched, a second structured call receives their bounded path
+manifest and authors the prompt, measurable goal, task-specific judging
+criteria, descriptive starting-state checks, and declarative file, executable,
+and Git-metadata prerequisites. Neither call sees an instruction bundle, arm
+identity, or evaluated agent identity. The generated task is grounded in the
+currently fetched revision; it does not claim to replay the historical task or
+source tree exactly.
 
 Public source preparation is deliberately narrow. A material may name an HTTPS
 Git repository on GitHub, GitLab, Bitbucket, or Codeberg, a full commit SHA,
 and a safe relative destination; model-
 authored host shell commands, credentials, private sources, and moving branches
-are rejected. In `prepared_workspace` mode, the service fetches each repository
-once into a temporary checkout, excludes Git metadata, overlays it on the common
-workspace, validates the bounded snapshot, and only then forks B and C. In
-`agent_bootstrap` mode, no fetch occurs before the fork; both agents receive the
-same pinned material specification and must perform the requested clone, pull,
-or other repository setup themselves. Fetch or capability-preflight failure
-invalidates the task before either arm runs. The product does not choose a
-different harness by task category; coding and research tasks use the same
-configured runtime boundary. Author-supplied starting-state checks are task and
-judge context; they are not executed as arbitrary host commands.
+are rejected. The service fetches each repository once into a temporary checkout
+and excludes Git metadata before task authoring. In `prepared_workspace` mode,
+it overlays the fetched files on the common execution workspace before forking
+B and C. In `agent_bootstrap` mode, fetched files are authoring context only;
+both agents receive the same pinned material specification and must perform the
+requested clone or other repository setup themselves. A prepared task cannot
+require Git metadata. Exact required files are checked against the common
+initial snapshot, and one disposable sandbox verifies the pinned harness and
+required executable names before either arm starts. Fetch, file-preflight, or
+capability-preflight failure invalidates the task without running B or C. The
+product does not choose a different harness by task category; coding and
+research tasks use the same configured runtime boundary. Author-supplied
+starting-state checks remain task and judge context; they are not executed as
+arbitrary host commands.
 
 The service creates two concurrent local Smol Machines microVMs from one
 content-addressed OCI image or digest-authenticated local `.smolmachine`
@@ -321,5 +331,7 @@ comparing the current registry scope with B and displays exact per-file receipt
 outcomes.
 This separation keeps list polling cheap without weakening promotion safety.
 
-The local run database is disposable pre-release state. The product supports
-the current schema only; it does not migrate or adapt legacy rows.
+Runtime reads only schema epoch 10. Startup performs the one supported epoch-9
+preservation migration after creating a timestamped SQLite backup; imported
+judge audits remain presentation-only and are never reusable. Other schema
+epochs fail closed instead of being reset or adapted.

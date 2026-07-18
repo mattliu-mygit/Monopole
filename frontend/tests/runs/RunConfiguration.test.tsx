@@ -307,14 +307,22 @@ describe('RunConfiguration', () => {
         state={state}
         models={capacityModels}
         rubrics={rubrics}
-        sessions={[{ total_tokens: 100_000, largest_turn_tokens: 60_000 }]}
+        sessions={[{
+          judging_token_estimates: {
+            utf8_bytes_div_3: { total_tokens: 100_000, largest_turn_tokens: 60_000, turn_tokens: [60_000, 40_000] },
+            o200k_base: { total_tokens: 100_000, largest_turn_tokens: 60_000, turn_tokens: [60_000, 40_000] },
+            o200k_harmony: { total_tokens: 100_000, largest_turn_tokens: 60_000, turn_tokens: [60_000, 40_000] },
+          },
+        }]}
         onAction={() => undefined}
       />,
     )
 
-    const fitOption = screen.getByRole('option', { name: /Writer OpenAI.*128k context.*fits/i })
+    const fitOption = screen.getByRole('option', {
+      name: /Writer OpenAI.*128k model limit.*estimated largest request ~110k.*fits/i,
+    })
     const blockedOption = screen.getByRole('option', {
-      name: /Writer Anthropic.*99k context.*does not fit/i,
+      name: /Writer Anthropic.*99k model limit.*estimated largest request ~110k.*does not fit/i,
     })
     expect(fitOption).toHaveProperty('disabled', false)
     expect(blockedOption).toHaveProperty('disabled', true)

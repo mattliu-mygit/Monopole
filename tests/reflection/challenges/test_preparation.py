@@ -2,8 +2,16 @@ from pathlib import Path
 
 import pytest
 
-from weave_agent_signals.runs.challenges.contracts import AuthoredTask, TaskMaterial
-from weave_agent_signals.runs.challenges.preparation import prepare_task_workspace
+from weave_agent_signals.runs.challenges.contracts import (
+    AuthoredTask,
+    TaskMaterial,
+    TaskPreflightError,
+)
+from weave_agent_signals.runs.challenges.preparation import (
+    prepare_task_context,
+    prepare_task_workspace,
+    validate_task_workspace,
+)
 from weave_agent_signals.runs.challenges.workspace import WorkspaceFile, WorkspaceSnapshot
 
 
@@ -41,6 +49,20 @@ def test_agent_bootstrap_keeps_identical_seed_and_does_not_fetch() -> None:
     assert result is seed
 
 
+def test_agent_bootstrap_fetches_public_material_for_task_authoring_context() -> None:
+    seed = WorkspaceSnapshot((WorkspaceFile("README.md", b"seed\n"),))
+
+    context = prepare_task_context(
+        seed,
+        _task("agent_bootstrap", _material()),
+        fetch_repository=lambda _material: WorkspaceSnapshot(
+            (WorkspaceFile("src/parser.py", b"def parse(): ...\n"),)
+        ),
+    )
+
+    assert context.paths == ("README.md", "task/src/parser.py")
+
+
 def test_prepared_workspace_fetches_each_pinned_repo_once_and_overlays_destination() -> None:
     seed = WorkspaceSnapshot((WorkspaceFile("README.md", b"seed\n"),))
     fetched: list[TaskMaterial] = []
@@ -75,6 +97,33 @@ def test_prepared_workspace_rejects_overlay_collision() -> None:
             _task("prepared_workspace", _material()),
             fetch_repository=lambda _material: fetched,
         )
+
+
+def test_task_workspace_preflight_rejects_missing_required_files() -> None:
+    task = AuthoredTask.model_validate(
+        {
+            **_task("prepared_workspace", _material()).model_dump(mode="json"),
+            "task_id": "pending",
+            "required_files": ["task/src/parser.py", "task/tests/test_parser.py"],
+        }
+    )
+    workspace = WorkspaceSnapshot((WorkspaceFile("task/src/parser.py", b"pass\n"),))
+
+    with pytest.raises(TaskPreflightError, match="task/tests/test_parser.py"):
+        validate_task_workspace(workspace, task)
+
+
+def test_task_workspace_preflight_accepts_exact_required_files() -> None:
+    task = AuthoredTask.model_validate(
+        {
+            **_task("prepared_workspace", _material()).model_dump(mode="json"),
+            "task_id": "pending",
+            "required_files": ["task/src/parser.py"],
+        }
+    )
+    workspace = WorkspaceSnapshot((WorkspaceFile("task/src/parser.py", b"pass\n"),))
+
+    validate_task_workspace(workspace, task)
 
 
 def test_default_git_fetcher_uses_detached_pinned_revision_and_excludes_git_metadata(

@@ -7,11 +7,13 @@ import threading
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from weave_agent_signals.client import WeaveClient
 from weave_agent_signals.models import Score, SessionView, TurnSpan
 from weave_agent_signals.run_config import EffectiveRunConfig
+from weave_agent_signals.runs.events import sanitize_event
 from weave_agent_signals.runs.stages import StageCancelled
 from weave_agent_signals.runs.store import (
     Run,
@@ -96,6 +98,30 @@ def _record_result(
     except RunStoreConflictError as exc:
         _translate_cancellation(store, run_id, cancel, exc)
         raise
+
+
+def _record_event(
+    store: RunStore,
+    run_id: str,
+    phase: str,
+    message: str,
+    **details: object,
+) -> None:
+    """Persist sanitized scoring activity without affecting stage correctness."""
+
+    try:
+        store.append_run_event(
+            run_id,
+            sanitize_event(
+                "scoring",
+                phase,
+                message,
+                details,
+                datetime.now(timezone.utc),
+            ),
+        )
+    except Exception:
+        log.warning("Run %s scoring activity could not be recorded", run_id, exc_info=True)
 
 
 def _progress(
@@ -207,6 +233,13 @@ def run_scoring_stage(
 
     turns, sessions = dependencies.hydrate_cohort(run.turn_cohort)
     _require_active(dependencies.store, run.run_id, cancel)
+    _record_event(
+        dependencies.store,
+        run.run_id,
+        "scoring_started",
+        f"Scoring {len(turns)} turns",
+        total=len(turns),
+    )
     turn_details: list[dict[str, Any]] = []
     _record_progress(
         dependencies.store,
@@ -251,6 +284,36 @@ def run_scoring_stage(
                     run.run_id,
                     turn.trace_id[:12],
                     exc,
+                )
+                _record_event(
+                    dependencies.store,
+                    run.run_id,
+                    "turn_failed",
+                    f"Turn {index + 1} could not be scored",
+                    trace_id=turn.trace_id,
+                    conversation_id=turn.conversation_id,
+                    model=turn.model,
+                    scored=index + 1,
+                    total=len(turns),
+                    errors=errors,
+                )
+            else:
+                detail = turn_details[-1]
+                _record_event(
+                    dependencies.store,
+                    run.run_id,
+                    "turn_scored",
+                    f"Scored turn {index + 1} of {len(turns)}",
+                    trace_id=turn.trace_id,
+                    conversation_id=turn.conversation_id,
+                    model=turn.model,
+                    scored=index + 1,
+                    total=len(turns),
+                    errors=errors,
+                    tokens=detail["tokens"],
+                    tool_count=detail["tool_count"],
+                    steering=detail["steering"],
+                    denials=detail["denials"],
                 )
             _record_progress(
                 dependencies.store,
@@ -356,6 +419,16 @@ def run_scoring_stage(
             "errors": errors,
             "turn_details": turn_details,
         },
+    )
+    _record_event(
+        dependencies.store,
+        run.run_id,
+        "scoring_complete" if not errors else "scoring_failed",
+        status_message,
+        total=len(turns),
+        scored=len(turns),
+        written=written,
+        errors=errors,
     )
     if errors:
         raise RuntimeError(f"Scoring completed with {errors} {error_label}")

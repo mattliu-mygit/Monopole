@@ -10,7 +10,7 @@ import pytest
 from weave_agent_signals.judges.rubrics import VERIFICATION_DISCIPLINE
 from weave_agent_signals.run_config import ModelDescriptor, PositionedJudge, RubricDescriptor
 from weave_agent_signals.runs.bundles import BundleSnapshot, TargetSnapshot
-from weave_agent_signals.runs.challenges.contracts import AuthoredTask, TaskMaterial
+from weave_agent_signals.runs.challenges.contracts import TaskMaterial, TaskMaterialPlan
 from weave_agent_signals.runs.challenges.runtime import (
     create_challenge_runner,
     load_sandbox_runtime,
@@ -139,9 +139,7 @@ def test_challenge_runtime_prepares_public_material_once_before_forking_arms(
     captured = {}
 
     def fake_run_challenge(**kwargs):
-        task = AuthoredTask(
-            prompt="Fix task/app.py.",
-            goal="The fixture works.",
+        plan = TaskMaterialPlan(
             setup_mode="prepared_workspace",
             materials=(
                 TaskMaterial(
@@ -150,13 +148,8 @@ def test_challenge_runtime_prepares_public_material_once_before_forking_arms(
                     destination="task",
                 ),
             ),
-            judging_criteria=("The fixture works.",),
-            start_checks=("task/app.py exists.",),
-            workspace_digest=kwargs["environment"].identity.workspace_digest,
-            author_model="author",
-            author_backend="cli",
         )
-        captured["prepared"] = kwargs["prepare_pair"](task)
+        captured["prepared"] = kwargs["prepare_pair"](plan)
         return "challenge"
 
     monkeypatch.setattr(
@@ -227,7 +220,7 @@ def test_challenge_runtime_prepares_public_material_once_before_forking_arms(
     prepared = captured["prepared"]
     assert result == "challenge"
     assert len(fetched) == 1
-    assert prepared.task.workspace_digest == prepared.environment.identity.workspace_digest
+    assert prepared.authoring.read_text("task/app.py") == "print('fixture')\n"
     assert prepared.arms.baseline.read_text("task/app.py") == "print('fixture')\n"
     assert prepared.arms.baseline.read_text("AGENTS.md") == "baseline\n"
     assert prepared.arms.candidate.read_text("AGENTS.md") == "candidate\n"

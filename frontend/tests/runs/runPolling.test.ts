@@ -14,7 +14,6 @@ function run(status: Run['status']): Run {
     effective_config: null,
     turn_cohort: null,
     judging_plan: null,
-    reflection_input: null,
     scoring_progress: null,
     scoring_result: null,
     judging_progress: null,

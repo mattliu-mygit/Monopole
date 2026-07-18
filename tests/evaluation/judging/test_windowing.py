@@ -78,6 +78,8 @@ def _session_with_text(text: str) -> SessionView:
 
 def _small_policy(**overrides: int) -> JudgingContextPolicy:
     values = {
+        "large_model_reserve_tokens": 100_000,
+        "small_model_reserve_tokens": 50_000,
         "prompt_reserve_tokens": 3_000,
         "output_reserve_tokens": 3_000,
         "safety_reserve_tokens": 3_000,
@@ -153,8 +155,8 @@ def test_window_plan_persists_counter_capacity_and_full_model_cap():
     assert plan["contract_version"] == "3"
     assert plan["input_cap_tokens"] == 200_000
     assert plan["token_counter"] == "o200k_base"
-    assert plan["capacity_reserve_tokens"] == 50_000
-    assert plan["raw_budget_tokens"] == 150_000
+    assert plan["capacity_reserve_tokens"] == 18_000
+    assert plan["raw_budget_tokens"] == 182_000
     assert plan["target_raw_tokens"] == 50_000
 
 
@@ -168,9 +170,9 @@ def test_window_plan_uses_large_capacity_tier_above_threshold():
         token_counter="utf8_bytes_div_3",
     )
 
-    assert plan["capacity_reserve_tokens"] == 100_000
-    assert plan["raw_budget_tokens"] == 100_001
-    assert plan["target_raw_tokens"] == 100_001
+    assert plan["capacity_reserve_tokens"] == 18_000
+    assert plan["raw_budget_tokens"] == 182_001
+    assert plan["target_raw_tokens"] == 128_000
 
 
 def test_window_plan_rounds_soft_target_to_nearest_whole_turn():
@@ -200,7 +202,7 @@ def test_large_model_uses_128k_soft_target_instead_of_filling_context():
         token_counter="utf8_bytes_div_3",
     )
 
-    assert plan["raw_budget_tokens"] == 300_000
+    assert plan["raw_budget_tokens"] == 381_000
     assert plan["target_raw_tokens"] == 128_000
     assert [window["core_trace_ids"] for window in plan["windows"]] == [
         ["t1", "t2"],
@@ -220,6 +222,21 @@ def test_capacity_failures_use_stable_inapplicable_reason():
         )
 
     assert raised.value.reason == "insufficient_context_capacity"
+
+
+def test_small_model_uses_only_protocol_headroom_for_borderline_turn():
+    session = _session_with_rendered_turn_sizes([110_000])
+
+    plan = build_window_plan(
+        session,
+        JudgingContextPolicy(),
+        model_limit=131_072,
+        token_counter="o200k_harmony",
+    )
+
+    assert plan["capacity_reserve_tokens"] == 18_000
+    assert plan["raw_budget_tokens"] == 113_072
+    assert plan["chunk_count"] == 1
 
 
 def test_raw_turn_renders_complete_parent_visible_evidence_without_model_identity():

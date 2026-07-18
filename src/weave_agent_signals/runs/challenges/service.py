@@ -16,25 +16,37 @@ from weave_agent_signals.runs.challenges.contracts import (
     ArmResult,
     AuthoredTask,
     ChallengeResult,
+    TaskMaterialPlan,
+    TaskPreflightError,
     Winner,
 )
 from weave_agent_signals.runs.challenges.environment import CapturedEnvironment, RuntimeFile
-from weave_agent_signals.runs.challenges.inference import author_task, judge_pair
+from weave_agent_signals.runs.challenges.inference import (
+    author_task,
+    judge_pair,
+    plan_task_materials,
+)
+from weave_agent_signals.runs.challenges.preparation import validate_task_workspace
 from weave_agent_signals.runs.challenges.workspace import ArmSnapshots, WorkspaceSnapshot
 
 
 @dataclass(frozen=True)
 class PreparedPair:
-    task: AuthoredTask
+    authoring: WorkspaceSnapshot
     arms: ArmSnapshots
     environment: CapturedEnvironment
 
-    def __post_init__(self) -> None:
-        if self.task.workspace_digest != self.environment.identity.workspace_digest:
-            raise ValueError("prepared task and execution workspace digests must match")
-
 
 class PairRunner(Protocol):
+    def preflight(
+        self,
+        *,
+        workspace: WorkspaceSnapshot,
+        task: AuthoredTask,
+        environment: CapturedEnvironment,
+        cancel_requested: Callable[[], bool],
+    ) -> None: ...
+
     def run_pair(
         self,
         *,
@@ -119,7 +131,7 @@ def run_challenge(
     runner: PairRunner,
     baseline_runtime_files: tuple[RuntimeFile, ...] = (),
     candidate_runtime_files: tuple[RuntimeFile, ...] = (),
-    prepare_pair: Callable[[AuthoredTask], PreparedPair] | None = None,
+    prepare_pair: Callable[[TaskMaterialPlan], PreparedPair] | None = None,
     cancel_requested: Callable[[], bool] = lambda: False,
 ) -> ChallengeResult:
     """Run one full comparison; every non-clear-C outcome conservatively keeps B."""
@@ -129,7 +141,7 @@ def run_challenge(
         raise ValueError("paired challenge judges must be ordered one through three")
     _require_active(cancel_requested)
     try:
-        task = author_task(
+        material_plan = plan_task_materials(
             author_client,
             author=author,
             coaching_digest=coaching_digest,
@@ -143,7 +155,7 @@ def run_challenge(
             candidate_id=candidate_id,
             status="invalid_task",
             winner="tie",
-            reason=f"Task authoring failed: {_safe_error(exc)}",
+            reason=f"Task material planning failed: {_safe_error(exc)}",
             task=None,
             execution=environment.identity,
             baseline=None,
@@ -151,10 +163,11 @@ def run_challenge(
             judges=(),
         )
 
-    _require_active(cancel_requested)
+    prepared_authoring_snapshot = authoring_snapshot
+    initial_workspace = authoring_snapshot
     if prepare_pair is not None:
         try:
-            prepared = prepare_pair(task)
+            prepared = prepare_pair(material_plan)
         except InferenceCancelled:
             raise
         except Exception as exc:
@@ -163,19 +176,108 @@ def run_challenge(
                 status="invalid_task",
                 winner="tie",
                 reason=f"Task preparation failed: {_safe_error(exc)}",
-                task=task,
+                task=None,
                 execution=environment.identity,
                 baseline=None,
                 candidate=None,
                 judges=(),
             )
-        task = prepared.task
+        prepared_authoring_snapshot = prepared.authoring
+        initial_workspace = prepared.arms.authoring
         baseline_snapshot = prepared.arms.baseline
         candidate_snapshot = prepared.arms.candidate
         baseline_runtime_files = prepared.arms.baseline_runtime_files
         candidate_runtime_files = prepared.arms.candidate_runtime_files
         environment = prepared.environment
         _require_active(cancel_requested)
+    elif material_plan.materials:
+        return ChallengeResult(
+            candidate_id=candidate_id,
+            status="invalid_task",
+            winner="tie",
+            reason="Task preparation failed: public materials require a preparation boundary.",
+            task=None,
+            execution=environment.identity,
+            baseline=None,
+            candidate=None,
+            judges=(),
+        )
+
+    task: AuthoredTask | None = None
+    try:
+        task = author_task(
+            author_client,
+            author=author,
+            coaching_digest=coaching_digest,
+            material_plan=material_plan,
+            workspace_digest=environment.identity.workspace_digest,
+            workspace=prepared_authoring_snapshot,
+            initial_workspace=initial_workspace,
+        )
+        validate_task_workspace(initial_workspace, task)
+    except InferenceCancelled:
+        raise
+    except TaskPreflightError as exc:
+        return ChallengeResult(
+            candidate_id=candidate_id,
+            status="invalid_task",
+            winner="tie",
+            reason=f"Task authoring or workspace preflight failed: {_safe_error(exc)}",
+            task=task,
+            execution=environment.identity,
+            baseline=None,
+            candidate=None,
+            judges=(),
+        )
+    except Exception as exc:
+        return ChallengeResult(
+            candidate_id=candidate_id,
+            status="invalid_task",
+            winner="tie",
+            reason=f"Task authoring failed: {_safe_error(exc)}",
+            task=task,
+            execution=environment.identity,
+            baseline=None,
+            candidate=None,
+            judges=(),
+        )
+
+    if task is None:
+        raise AssertionError("successful task authoring did not return a task")
+    _require_active(cancel_requested)
+    try:
+        runner.preflight(
+            workspace=initial_workspace,
+            task=task,
+            environment=environment,
+            cancel_requested=cancel_requested,
+        )
+    except InferenceCancelled:
+        raise
+    except TaskPreflightError as exc:
+        return ChallengeResult(
+            candidate_id=candidate_id,
+            status="invalid_task",
+            winner="tie",
+            reason=f"Task capability preflight failed: {_safe_error(exc)}",
+            task=task,
+            execution=environment.identity,
+            baseline=None,
+            candidate=None,
+            judges=(),
+        )
+    except Exception as exc:
+        return ChallengeResult(
+            candidate_id=candidate_id,
+            status="incomplete",
+            winner="tie",
+            reason=f"Sandbox preflight infrastructure failed: {_safe_error(exc)}",
+            task=task,
+            execution=environment.identity,
+            baseline=None,
+            candidate=None,
+            judges=(),
+        )
 
     baseline_result, candidate_result = runner.run_pair(
         baseline=baseline_snapshot,

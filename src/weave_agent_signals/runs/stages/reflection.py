@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import threading
 from collections.abc import Callable, Mapping
@@ -18,13 +19,17 @@ from weave_agent_signals.run_config import EffectiveRunConfig, ModelDescriptor
 from weave_agent_signals.runs.bundles import BundleSnapshot
 from weave_agent_signals.runs.challenges.contracts import ChallengeResult
 from weave_agent_signals.runs.challenges.smol import ChallengeCancelled
-from weave_agent_signals.runs.progress import ReflectionProgressRecorder
+from weave_agent_signals.runs.events import sanitize_event
 from weave_agent_signals.runs.reflection import (
     NO_IMPROVEMENT_PATIENCE,
     ReflectionCancelled,
     ReflectionEvaluationError,
     ReflectionResult,
     run_reflection,
+)
+from weave_agent_signals.runs.reflection_records import (
+    ReflectionInputRecord,
+    ReflectionResultRecord,
 )
 from weave_agent_signals.runs.stages import StageCancelled
 from weave_agent_signals.runs.store import (
@@ -33,6 +38,8 @@ from weave_agent_signals.runs.store import (
     RunStore,
     RunStoreConflictError,
 )
+
+log = logging.getLogger(__name__)
 
 
 class ReflectionTargetAdapter(Protocol):
@@ -65,6 +72,69 @@ class ReflectionDependencies:
     reflect: ReflectionRunner = run_reflection
     challenge_runner: ChallengeRunner | None = None
     clock: Clock = lambda: datetime.now(timezone.utc)
+
+
+class _ReflectionProgress:
+    """Persist current counters and append bounded activity rows."""
+
+    _COUNTERS = ("attempted", "valid", "rejected", "scored")
+
+    def __init__(
+        self,
+        store: RunStore,
+        run_id: str,
+        cancel: threading.Event,
+        *,
+        total_attempts: int,
+        context: Mapping[str, Any],
+        initial: Mapping[str, Any] | None,
+        clock: Clock,
+    ) -> None:
+        self.store = store
+        self.run_id = run_id
+        self.cancel = cancel
+        self.clock = clock
+        self.context = dict(context)
+        prior = dict(initial or {})
+        self.started_at = str(prior.get("started_at") or clock().isoformat())
+        self.counts = {name: int(prior.get(name, 0)) for name in self._COUNTERS}
+        self.total_attempts = max(total_attempts, int(prior.get("total_attempts", 0)))
+
+    def record(self, phase: str, message: str, **details: Any) -> None:
+        counters = {
+            key: details.pop(key) for key in (*self._COUNTERS, "total_attempts") if key in details
+        }
+        for key in self._COUNTERS:
+            value = counters.get(key)
+            if type(value) is int and value >= 0:
+                self.counts[key] = max(self.counts[key], value)
+        value = counters.get("total_attempts")
+        if type(value) is int and value >= 0:
+            self.total_attempts = max(self.total_attempts, value)
+        try:
+            draft = sanitize_event("reflecting", phase, message, details, self.clock())
+            self.store.append_run_event(self.run_id, draft)
+            _record_progress(
+                self.store,
+                self.run_id,
+                self.cancel,
+                {
+                    **self.context,
+                    "phase": draft.phase,
+                    "status_message": draft.message,
+                    "started_at": self.started_at,
+                    **self.counts,
+                    "total_attempts": self.total_attempts,
+                },
+            )
+        except StageCancelled:
+            raise
+        except Exception:
+            log.warning("Could not persist reflection progress", exc_info=True)
+
+    def handle(self, event: Mapping[str, Any]) -> None:
+        value = dict(event)
+        self.record(str(value.pop("phase")), str(value.pop("message")), **value)
 
 
 class ReflectionStageError(RuntimeError):
@@ -152,7 +222,7 @@ def _record_result(
     store: RunStore,
     run_id: str,
     cancel: threading.Event,
-    result: Mapping[str, Any],
+    result: ReflectionResultRecord,
 ) -> Run:
     try:
         return store.record_stage_result(
@@ -246,13 +316,10 @@ def _target_registry(adapter: ReflectionTargetAdapter) -> dict[str, Any]:
 
 
 def _require_pinned_registry(
-    reflection_input: Mapping[str, Any],
+    reflection_input: ReflectionInputRecord,
     target_registry: Mapping[str, Any],
 ) -> None:
-    if (
-        reflection_input.get("schema_version") != "3"
-        or reflection_input.get("target_registry") != target_registry
-    ):
+    if reflection_input.target_registry != target_registry:
         raise ReflectionInputMismatchError(
             "Pinned reflection target registry does not match the current registry"
         )
@@ -264,58 +331,32 @@ def _new_reflection_input(
     baseline: BundleSnapshot,
     target_registry: Mapping[str, Any],
     captured_at: str,
-) -> dict[str, Any]:
-    return {
-        "schema_version": "3",
-        "cohort_id": cohort.get("cohort_id"),
-        "captured_at": captured_at,
-        "turn_count": cohort.get("turn_count"),
-        "session_count": cohort.get("session_count"),
-        "feedback_count": len(identities),
-        "feedback": identities,
-        "target_registry": dict(target_registry),
-        "baseline": baseline.to_dict(),
-    }
+) -> ReflectionInputRecord:
+    return ReflectionInputRecord.model_validate(
+        {
+            "cohort_id": cohort.get("cohort_id"),
+            "captured_at": captured_at,
+            "feedback": identities,
+            "target_registry": dict(target_registry),
+            "baseline": baseline,
+        }
+    )
 
 
 def _pinned_baseline(
-    reflection_input: Mapping[str, Any],
+    reflection_input: ReflectionInputRecord,
     cohort: Mapping[str, Any],
     identities: list[dict[str, Any]],
     target_registry: Mapping[str, Any],
 ) -> BundleSnapshot:
-    expected_keys = {
-        "schema_version",
-        "cohort_id",
-        "captured_at",
-        "turn_count",
-        "session_count",
-        "feedback_count",
-        "feedback",
-        "target_registry",
-        "baseline",
-    }
-    if set(reflection_input) != expected_keys:
-        raise ReflectionInputMismatchError("Pinned reflection input has an invalid shape")
-    if reflection_input.get("schema_version") != "3" or any(
-        reflection_input.get(key) != cohort.get(key)
-        for key in ("cohort_id", "turn_count", "session_count")
-    ):
+    if reflection_input.cohort_id != cohort.get("cohort_id"):
         raise ReflectionInputMismatchError("Pinned reflection input does not match the run cohort")
-    if reflection_input.get("feedback_count") != len(identities) or (
-        reflection_input.get("feedback") != identities
-    ):
+    if [item.model_dump(mode="json") for item in reflection_input.feedback] != identities:
         raise ReflectionInputMismatchError(
             "Evaluation feedback changed after the reflection input was pinned"
         )
     _require_pinned_registry(reflection_input, target_registry)
-    raw_baseline = reflection_input.get("baseline")
-    if not isinstance(raw_baseline, Mapping):
-        raise ReflectionInputMismatchError("Pinned reflection baseline is invalid")
-    try:
-        return BundleSnapshot.from_dict(raw_baseline)
-    except ValueError as exc:
-        raise ReflectionInputMismatchError("Pinned reflection baseline is invalid") from exc
+    return reflection_input.baseline
 
 
 def _set_cancel(client: ChatClient, cancel: threading.Event) -> None:
@@ -328,7 +369,8 @@ def _finish_without_inference(
     dependencies: ReflectionDependencies,
     run_id: str,
     cancel: threading.Event,
-    recorder: ReflectionProgressRecorder,
+    recorder: _ReflectionProgress,
+    baseline: BundleSnapshot,
     *,
     phase: str,
     reason: str,
@@ -339,7 +381,14 @@ def _finish_without_inference(
         dependencies.store,
         run_id,
         cancel,
-        {"candidates": [], "reason": reason},
+        ReflectionResultRecord(
+            baseline=baseline,
+            attempts=(),
+            evaluations=(),
+            recommended_candidate_id=None,
+            baseline_won=False,
+            reason=reason,
+        ),
     )
 
 
@@ -351,13 +400,9 @@ def _finalize_persisted_result(current: Run, store: RunStore) -> bool:
         return False
     if current.reflection_review is not None:
         return True
-    if set(evidence) == {"candidates", "reason"}:
-        if evidence.get("candidates") != [] or not isinstance(evidence.get("reason"), str):
-            raise ValueError("Persisted empty reflection result has an invalid shape")
+    if not evidence.attempts and evidence.reason is not None:
         return True
-
-    result = ReflectionResult.from_dict(evidence)
-    selected = result.recommended_candidate_id
+    selected = evidence.recommended_candidate_id
     if selected is not None:
         store.initialize_reflection_review(
             current.run_id,
@@ -375,7 +420,7 @@ def _execute_reflection_stage(
     run: Run,
     config: EffectiveRunConfig,
     cancel: threading.Event,
-    recorder: ReflectionProgressRecorder,
+    recorder: _ReflectionProgress,
     *,
     dependencies: ReflectionDependencies,
 ) -> None:
@@ -449,6 +494,7 @@ def _execute_reflection_stage(
             run.run_id,
             cancel,
             recorder,
+            baseline,
             phase="no_feedback",
             reason="No evaluation feedback was found for the pinned cohort.",
         )
@@ -459,6 +505,7 @@ def _execute_reflection_stage(
             run.run_id,
             cancel,
             recorder,
+            baseline,
             phase="no_targets",
             reason="No managed instruction targets were found.",
         )
@@ -553,7 +600,7 @@ def _execute_reflection_stage(
         dependencies.store,
         run.run_id,
         cancel,
-        result.to_dict(),
+        ReflectionResultRecord.from_epoch9(result.to_dict()),
     )
 
     if result.recommended_candidate_id is not None:
@@ -585,7 +632,7 @@ def _execute_reflection_stage(
 
 
 def _record_terminal_failure(
-    recorder: ReflectionProgressRecorder | None,
+    recorder: _ReflectionProgress | None,
     error: BaseException,
     message: str,
 ) -> None:
@@ -615,23 +662,20 @@ def run_reflection_stage(
 ) -> None:
     """Pin exact inputs and expose only safe terminal failures."""
 
-    recorder: ReflectionProgressRecorder | None = None
+    recorder: _ReflectionProgress | None = None
     try:
         current = _require_active(dependencies.store, run.run_id, cancel)
-        recorder = ReflectionProgressRecorder(
-            lambda snapshot: _record_progress(
-                dependencies.store,
-                run.run_id,
-                cancel,
-                snapshot,
-            ),
+        recorder = _ReflectionProgress(
+            dependencies.store,
+            run.run_id,
+            cancel,
             total_attempts=config.candidate_budget,
             context={
                 "proposal_writer": config.models.proposal_writer.id,
                 "proposal_evaluator": config.models.proposal_evaluator.id,
                 "no_improvement_patience": NO_IMPROVEMENT_PATIENCE,
             },
-            initial_snapshot=current.reflecting_progress,
+            initial=current.reflecting_progress,
             clock=dependencies.clock,
         )
         _execute_reflection_stage(

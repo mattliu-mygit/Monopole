@@ -260,9 +260,32 @@
             "title": "Prompt",
             "type": "string"
           },
+          "required_executables": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 16,
+            "title": "Required Executables",
+            "type": "array"
+          },
+          "required_files": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Required Files",
+            "type": "array"
+          },
+          "requires_git_metadata": {
+            "default": false,
+            "title": "Requires Git Metadata",
+            "type": "boolean"
+          },
           "schema_version": {
-            "const": "2",
-            "default": "2",
+            "const": "3",
+            "default": "3",
             "title": "Schema Version",
             "type": "string"
           },
@@ -1786,8 +1809,8 @@
             "type": "integer"
           },
           "large_model_reserve_tokens": {
-            "default": 100000,
-            "minimum": 100000.0,
+            "default": 18000,
+            "minimum": 1.0,
             "title": "Large Model Reserve Tokens",
             "type": "integer"
           },
@@ -1834,8 +1857,8 @@
             "type": "integer"
           },
           "small_model_reserve_tokens": {
-            "default": 50000,
-            "minimum": 50000.0,
+            "default": 18000,
+            "minimum": 1.0,
             "title": "Small Model Reserve Tokens",
             "type": "integer"
           }
@@ -2346,6 +2369,33 @@
           "work_bounds"
         ],
         "title": "JudgingReviewerPlanResponse",
+        "type": "object"
+      },
+      "JudgingTokenEstimateResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "largest_turn_tokens": {
+            "title": "Largest Turn Tokens",
+            "type": "integer"
+          },
+          "total_tokens": {
+            "title": "Total Tokens",
+            "type": "integer"
+          },
+          "turn_tokens": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Turn Tokens",
+            "type": "array"
+          }
+        },
+        "required": [
+          "total_tokens",
+          "largest_turn_tokens",
+          "turn_tokens"
+        ],
+        "title": "JudgingTokenEstimateResponse",
         "type": "object"
       },
       "JudgingWindowPlanResponse": {
@@ -3828,18 +3878,6 @@
             ],
             "title": "Error"
           },
-          "judging_artifacts": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Judging Artifacts"
-          },
           "judging_plan": {
             "anyOf": [
               {
@@ -3889,18 +3927,6 @@
                 "type": "null"
               }
             ]
-          },
-          "reflection_input": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reflection Input"
           },
           "reflection_review": {
             "anyOf": [
@@ -3987,7 +4013,6 @@
           "effective_config",
           "turn_cohort",
           "judging_plan",
-          "reflection_input",
           "scoring_progress",
           "scoring_result",
           "judging_progress",
@@ -4440,6 +4465,20 @@
             ],
             "title": "Git Branch"
           },
+          "judging_token_estimates": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JudgingTokenEstimateResponse"
+            },
+            "propertyNames": {
+              "enum": [
+                "utf8_bytes_div_3",
+                "o200k_base",
+                "o200k_harmony"
+              ]
+            },
+            "title": "Judging Token Estimates",
+            "type": "object"
+          },
           "session_feedback": {
             "items": {
               "$ref": "#/components/schemas/FeedbackItemResponse"
@@ -4486,6 +4525,7 @@
           "git_branch",
           "total_tokens",
           "turn_count",
+          "judging_token_estimates",
           "turns",
           "session_feedback",
           "turn_feedback",
@@ -4588,10 +4628,6 @@
             ],
             "title": "Input Preview"
           },
-          "largest_turn_tokens": {
-            "title": "Largest Turn Tokens",
-            "type": "integer"
-          },
           "last_activity": {
             "anyOf": [
               {
@@ -4668,7 +4704,6 @@
           "config_version",
           "git_branch",
           "total_tokens",
-          "largest_turn_tokens",
           "total_tool_calls",
           "input_preview",
           "signal_evidence"

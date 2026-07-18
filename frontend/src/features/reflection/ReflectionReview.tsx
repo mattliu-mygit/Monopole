@@ -338,6 +338,22 @@ function PairedChallengeEvidence({ challenge }: { challenge: Challenge }) {
               </ul>
             </div>
           </div>
+          <div>
+            <p className="font-medium text-sky-950">Preflight requirements</p>
+            <ul className="list-disc pl-5 font-mono text-xs">
+              {challenge.task.required_files.map((path) => (
+                <li key={`file:${path}`}>{path}</li>
+              ))}
+              {challenge.task.required_executables.map((executable) => (
+                <li key={`executable:${executable}`}>{executable}</li>
+              ))}
+              <li>
+                {challenge.task.requires_git_metadata
+                  ? 'Git metadata required'
+                  : 'Git metadata not required'}
+              </li>
+            </ul>
+          </div>
         </div>
       )}
       <p className="text-xs text-sky-900">

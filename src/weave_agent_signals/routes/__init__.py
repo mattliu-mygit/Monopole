@@ -2,11 +2,18 @@
 
 from dataclasses import asdict
 
+from weave_agent_signals.routes.run_views import (
+    judging_plan_view,
+    progress_with_events,
+    reflection_result_view,
+)
 from weave_agent_signals.runs.reflection import NO_VALID_PROPOSAL_REASON
-from weave_agent_signals.runs.store import Run, RunSummarySource
+from weave_agent_signals.runs.store import Run, RunStore, RunSummarySource
 
 
-def serialize_run(run: Run) -> dict:
+def serialize_run(run: Run, store: RunStore | None = None) -> dict:
+    judging_events = store.list_run_events(run.run_id, stage="judging") if store else []
+    reflection_events = store.list_run_events(run.run_id, stage="reflecting") if store else []
     return {
         "run_id": run.run_id,
         "status": run.status.value,
@@ -23,15 +30,13 @@ def serialize_run(run: Run) -> dict:
             else None
         ),
         "turn_cohort": run.turn_cohort,
-        "judging_plan": run.judging_plan,
-        "judging_artifacts": run.judging_artifacts,
-        "reflection_input": run.reflection_input,
+        "judging_plan": judging_plan_view(run.judging_plan),
         "scoring_progress": run.scoring_progress,
         "scoring_result": run.scoring_result,
-        "judging_progress": run.judging_progress,
-        "judging_result": run.judging_result,
-        "reflecting_progress": run.reflecting_progress,
-        "reflecting_result": run.reflecting_result,
+        "judging_progress": progress_with_events(run.judging_progress, judging_events),
+        "judging_result": progress_with_events(run.judging_result, judging_events),
+        "reflecting_progress": progress_with_events(run.reflecting_progress, reflection_events),
+        "reflecting_result": reflection_result_view(run.reflecting_result),
         "reflection_review": run.reflection_review,
         "reflection_review_revision": run.reflection_review_revision,
         "error": run.error,

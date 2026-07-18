@@ -47,8 +47,8 @@ class StrictFrozenModel(BaseModel):
 class JudgingContextPolicy(StrictFrozenModel):
     contract_version: Literal["3"] = "3"
     large_model_threshold_tokens: Literal[200_000] = 200_000
-    large_model_reserve_tokens: Annotated[int, Field(strict=True, ge=100_000)] = 100_000
-    small_model_reserve_tokens: Annotated[int, Field(strict=True, ge=50_000)] = 50_000
+    large_model_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 18_000
+    small_model_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 18_000
     large_model_raw_target_tokens: Annotated[int, Field(strict=True, ge=1)] = 128_000
     small_model_raw_target_tokens: Annotated[int, Field(strict=True, ge=1)] = 50_000
     prompt_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 6_000

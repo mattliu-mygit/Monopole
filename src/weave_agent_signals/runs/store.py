@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 import threading
@@ -15,10 +14,18 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from weave_agent_signals.judges.plan import JudgingPlan
+from weave_agent_signals.judges.records import JudgeCallAudit, JudgeCallRecord
 from weave_agent_signals.run_config import EffectiveRunConfig, RunConfig
+from weave_agent_signals.runs.events import RunEvent, RunEventDraft, RunEventStage
+from weave_agent_signals.runs.migrations import RunMigrationError, migrate_v9_to_v10
+from weave_agent_signals.runs.reflection_records import (
+    ReflectionInputRecord,
+    ReflectionResultRecord,
+)
 
 _DEFAULT_DB_DIR = Path.home() / ".weave-agent-signals"
-RUN_DB_SCHEMA_VERSION = 9
+RUN_DB_SCHEMA_VERSION = 10
 
 
 def _default_db_path() -> Path:
@@ -198,9 +205,8 @@ class Run:
     run_config: RunConfig | None = None
     effective_config: EffectiveRunConfig | None = None
     turn_cohort: dict[str, Any] | None = None
-    judging_plan: dict[str, Any] | None = None
-    judging_artifacts: dict[str, Any] | None = None
-    reflection_input: dict[str, Any] | None = None
+    judging_plan: JudgingPlan | None = None
+    reflection_input: ReflectionInputRecord | None = None
     scoring_progress: dict[str, Any] | None = None
     scoring_result: dict[str, Any] | None = None
     scoring_succeeded: bool = False
@@ -208,7 +214,7 @@ class Run:
     judging_result: dict[str, Any] | None = None
     judging_succeeded: bool = False
     reflecting_progress: dict[str, Any] | None = None
-    reflecting_result: dict[str, Any] | None = None
+    reflecting_result: ReflectionResultRecord | None = None
     reflecting_succeeded: bool = False
     reflection_review: dict[str, Any] | None = None
     reflection_review_revision: int = 0
@@ -303,601 +309,22 @@ def _encode_turn_cohort(turn_cohort: Mapping[str, Any]) -> str:
     return _encode_json_object(cohort, "turn cohort")
 
 
-def _encode_reflection_input(reflection_input: Mapping[str, Any]) -> str:
-    if not isinstance(reflection_input, Mapping):
-        raise ValueError("reflection input must be a JSON object")
-    value = dict(reflection_input)
-    feedback = value.get("feedback")
-    if not isinstance(feedback, list):
-        raise ValueError("reflection input feedback must be a list")
-    if value.get("feedback_count") != len(feedback):
-        raise ValueError("reflection input feedback_count does not match feedback")
-    return _encode_json_object(value, "reflection input")
+def _encode_reflection_input(reflection_input: ReflectionInputRecord) -> str:
+    if not isinstance(reflection_input, ReflectionInputRecord):
+        raise TypeError("reflection_input must be a ReflectionInputRecord")
+    return ReflectionInputRecord.model_validate(
+        reflection_input.model_dump(mode="json")
+    ).model_dump_json()
 
 
-def _encode_judging_plan(judging_plan: Mapping[str, Any]) -> str:
-    if not isinstance(judging_plan, Mapping):
-        raise ValueError("judging plan must be a JSON object")
-    value = dict(judging_plan)
-    required = {
-        "plan_id",
-        "schema_version",
-        "cohort_id",
-        "panel_size",
-        "requested_rubrics",
-        "input_policy",
-        "protocol",
-        "sessions",
-        "totals",
-    }
-    if set(value) != required:
-        raise ValueError("judging plan fields do not match schema version 3")
-    if value["schema_version"] != "3":
-        raise ValueError("judging plan schema_version must be '3'")
-    if not isinstance(value["plan_id"], str) or not value["plan_id"]:
-        raise ValueError("judging plan must have a plan_id")
-    if not isinstance(value["cohort_id"], str) or not value["cohort_id"]:
-        raise ValueError("judging plan must have a cohort_id")
-    sessions = value["sessions"]
-    totals = value["totals"]
-    if not isinstance(sessions, list):
-        raise ValueError("judging plan sessions must be a list")
-    if not isinstance(totals, dict):
-        raise ValueError("judging plan totals must be an object")
-    _validate_judging_plan_structure(value)
-
-    body = {key: item for key, item in value.items() if key != "plan_id"}
-    try:
-        canonical = json.dumps(
-            body, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
-        )
-    except (TypeError, ValueError) as exc:
-        raise ValueError("judging plan must be JSON serializable") from exc
-    expected_plan_id = f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
-    if value["plan_id"] != expected_plan_id:
-        raise ValueError("judging plan ID does not match its content")
-    return _encode_json_object(value, "judging plan")
-
-
-def _exact_keys(value: object, keys: set[str], label: str) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != keys:
-        raise ValueError(f"judging plan {label} fields are invalid")
-    return value
-
-
-def _nonnegative_int(value: object, label: str, *, positive: bool = False) -> int:
-    if type(value) is not int or value < (1 if positive else 0):
-        qualifier = "positive" if positive else "non-negative"
-        raise ValueError(f"judging plan {label} must be a {qualifier} integer")
-    return value
-
-
-def _canonical_digest(value: object) -> str:
-    canonical = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
-    )
-    return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
-
-
-def _is_sha256_digest(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and value.startswith("sha256:")
-        and len(value) == 71
-        and all(character in "0123456789abcdef" for character in value[7:])
-    )
-
-
-def _validate_judging_plan_structure(value: dict[str, Any]) -> None:
-    rubric_keys = {"id", "label", "evaluation_unit", "version", "content_digest", "pass_threshold"}
-    requested = value.get("requested_rubrics")
-    if not isinstance(requested, list) or not requested:
-        raise ValueError("judging plan requested_rubrics must be a non-empty list")
-    for rubric in requested:
-        row = _exact_keys(rubric, rubric_keys, "requested rubric")
-        if row["evaluation_unit"] != "session" or any(
-            not isinstance(row[key], str) or not row[key].strip()
-            for key in ("id", "label", "version", "content_digest")
-        ):
-            raise ValueError("judging plan requested rubric values are invalid")
-        threshold = row["pass_threshold"]
-        if (
-            isinstance(threshold, bool)
-            or not isinstance(threshold, (int, float))
-            or not 0 <= threshold <= 1
-        ):
-            raise ValueError("judging plan rubric threshold is invalid")
-    if len({row["id"] for row in requested}) != len(requested):
-        raise ValueError("judging plan requested rubric IDs must be unique")
-
-    panel_size = _nonnegative_int(value.get("panel_size"), "panel_size", positive=True)
-    if panel_size > 3:
-        raise ValueError("judging plan panel_size must be between one and three")
-    input_policy = _exact_keys(
-        value.get("input_policy"),
-        {
-            "contract_version",
-            "large_model_threshold_tokens",
-            "large_model_reserve_tokens",
-            "small_model_reserve_tokens",
-            "large_model_raw_target_tokens",
-            "small_model_raw_target_tokens",
-            "prompt_reserve_tokens",
-            "output_reserve_tokens",
-            "safety_reserve_tokens",
-            "digest_max_tokens",
-            "finding_max_tokens",
-            "overlap_turns",
-            "max_chunks",
-        },
-        "input policy",
-    )
-    if input_policy["contract_version"] != "3" or input_policy["overlap_turns"] != 1:
-        raise ValueError("judging plan input policy contract is invalid")
-    for key in (
-        "large_model_threshold_tokens",
-        "large_model_reserve_tokens",
-        "small_model_reserve_tokens",
-        "large_model_raw_target_tokens",
-        "small_model_raw_target_tokens",
-        "prompt_reserve_tokens",
-        "output_reserve_tokens",
-        "safety_reserve_tokens",
-        "digest_max_tokens",
-        "finding_max_tokens",
-        "max_chunks",
-    ):
-        _nonnegative_int(input_policy[key], f"input policy {key}", positive=True)
-    if (
-        input_policy["large_model_threshold_tokens"] != 200_000
-        or input_policy["large_model_reserve_tokens"] < 100_000
-        or input_policy["small_model_reserve_tokens"] < 50_000
-        or input_policy["large_model_raw_target_tokens"] != 128_000
-        or input_policy["small_model_raw_target_tokens"] != 50_000
-    ):
-        raise ValueError("judging plan input policy capacity tiers are invalid")
-    protocol = _exact_keys(
-        value.get("protocol"), {"protocol_version", "prompt_templates", "schemas"}, "protocol"
-    )
-    if protocol["protocol_version"] != "3":
-        raise ValueError("judging plan protocol version is invalid")
-    prompts = _exact_keys(
-        protocol["prompt_templates"],
-        {
-            "digest_system",
-            "digest_user",
-            "window_system",
-            "window_user",
-            "merge_system",
-            "merge_user",
-        },
-        "protocol prompts",
-    )
-    if any(not isinstance(prompt, str) or not prompt for prompt in prompts.values()):
-        raise ValueError("judging plan protocol prompt values are invalid")
-    schemas = _exact_keys(protocol["schemas"], {"digest", "window", "merge"}, "protocol schemas")
-    for phase, schema in schemas.items():
-        schema_row = _exact_keys(schema, {"name", "schema"}, f"{phase} schema")
-        if not isinstance(schema_row["name"], str) or not isinstance(schema_row["schema"], dict):
-            raise ValueError(f"judging plan {phase} schema values are invalid")
-    if {phase: schema["name"] for phase, schema in schemas.items()} != {
-        "digest": "chunk_digest",
-        "window": "window_findings",
-        "merge": "merged_verdict",
-    }:
-        raise ValueError("judging plan protocol schema names are invalid")
-
-    sessions = value["sessions"]
-    totals_expected = {
-        "sessions_planned": len(sessions),
-        "turns_considered": 0,
-        "windows_planned": 0,
-        "planned_rubrics": len(sessions) * len(requested),
-        "minimum_reviewer_attempts": 0,
-        "maximum_reviewer_attempts": 0,
-        "maximum_digest_calls": 0,
-        "maximum_window_calls": 0,
-        "maximum_merge_calls": 0,
-    }
-    session_ids: set[str] = set()
-    for session in sessions:
-        row = _exact_keys(
-            session,
-            {"conversation_id", "turn_count", "raw_coverage_trace_ids", "rubrics", "reviewers"},
-            "session",
-        )
-        conversation_id = row["conversation_id"]
-        if (
-            not isinstance(conversation_id, str)
-            or not conversation_id
-            or conversation_id in session_ids
-        ):
-            raise ValueError("judging plan session conversation_id is invalid")
-        session_ids.add(conversation_id)
-        turn_count = _nonnegative_int(row["turn_count"], "session turn_count")
-        coverage = row["raw_coverage_trace_ids"]
-        if (
-            not isinstance(coverage, list)
-            or len(coverage) != turn_count
-            or len(set(coverage)) != len(coverage)
-            or any(not isinstance(item, str) or not item for item in coverage)
-        ):
-            raise ValueError("judging plan session raw coverage is invalid")
-        reviewers = row["reviewers"]
-        if not isinstance(reviewers, list) or len(reviewers) != panel_size:
-            raise ValueError("judging plan reviewers must match panel_size")
-        applicable_count = sum(
-            isinstance(reviewer, dict) and reviewer.get("status") == "planned"
-            for reviewer in reviewers
-        )
-        expected_rubrics = [
-            {
-                **rubric,
-                "minimum_reviewer_attempts": applicable_count,
-                "maximum_reviewer_attempts": applicable_count,
-            }
-            for rubric in requested
-        ]
-        if row["rubrics"] != expected_rubrics:
-            raise ValueError("judging plan session rubrics or attempt bounds are invalid")
-        totals_expected["turns_considered"] += turn_count
-        totals_expected["minimum_reviewer_attempts"] += len(requested) * applicable_count
-        totals_expected["maximum_reviewer_attempts"] += len(requested) * applicable_count
-        for ordinal, reviewer in enumerate(reviewers, start=1):
-            reviewer_row = _exact_keys(
-                reviewer,
-                {"ordinal", "judge", "status", "skip_reason", "window_plan", "work_bounds"},
-                "reviewer",
-            )
-            judge = _exact_keys(
-                reviewer_row["judge"],
-                {
-                    "id",
-                    "label",
-                    "provider",
-                    "provider_model",
-                    "family",
-                    "supported_roles",
-                    "max_input_tokens",
-                    "token_counter",
-                    "role",
-                    "position",
-                },
-                "reviewer judge",
-            )
-            if (
-                type(reviewer_row["ordinal"]) is not int
-                or reviewer_row["ordinal"] != ordinal
-                or type(judge["position"]) is not int
-                or judge["position"] != ordinal
-                or judge["role"] != "judge"
-            ):
-                raise ValueError("judging plan reviewer ordinals are invalid")
-            roles = judge["supported_roles"]
-            if (
-                any(
-                    not isinstance(judge[key], str) or not judge[key].strip()
-                    for key in ("id", "label", "provider", "provider_model", "family")
-                )
-                or not isinstance(roles, list)
-                or "judge" not in roles
-                or any(not isinstance(role, str) or not role for role in roles)
-                or len(roles) != len(set(roles))
-            ):
-                raise ValueError("judging plan reviewer judge values are invalid")
-            _nonnegative_int(judge["max_input_tokens"], "judge max_input_tokens", positive=True)
-            if judge["token_counter"] not in {
-                "utf8_bytes_div_3",
-                "o200k_base",
-                "o200k_harmony",
-            }:
-                raise ValueError("judging plan reviewer token counter is invalid")
-            bounds = _exact_keys(
-                reviewer_row["work_bounds"],
-                {"digest_calls", "window_calls_per_rubric", "merge_calls_per_rubric"},
-                "reviewer work bounds",
-            )
-            for key in bounds:
-                _nonnegative_int(bounds[key], f"reviewer work bound {key}")
-            if reviewer_row["status"] == "skipped":
-                if (
-                    reviewer_row["skip_reason"] != "insufficient_context_capacity"
-                    or reviewer_row["window_plan"] is not None
-                    or any(bounds.values())
-                ):
-                    raise ValueError("judging plan skipped reviewer disposition is invalid")
-                continue
-            if reviewer_row["status"] != "planned" or reviewer_row["skip_reason"] is not None:
-                raise ValueError("judging plan reviewer disposition is invalid")
-            window_plan = _validate_window_plan(
-                reviewer_row["window_plan"],
-                conversation_id,
-                coverage,
-                input_policy,
-                judge["max_input_tokens"],
-                judge["token_counter"],
-            )
-            chunk_count = window_plan["chunk_count"]
-            if bounds != {
-                "digest_calls": chunk_count,
-                "window_calls_per_rubric": chunk_count,
-                "merge_calls_per_rubric": 1,
-            }:
-                raise ValueError("judging plan reviewer work bounds are invalid")
-            totals_expected["windows_planned"] += chunk_count
-            totals_expected["maximum_digest_calls"] += chunk_count
-            totals_expected["maximum_window_calls"] += chunk_count * len(requested)
-            totals_expected["maximum_merge_calls"] += len(requested)
-    if any(type(value["totals"].get(key)) is not int for key in totals_expected):
-        raise ValueError("judging plan totals types are invalid")
-    if value["totals"] != totals_expected:
-        raise ValueError("judging plan totals are inconsistent")
-
-
-def _validate_window_plan(
-    value: object,
-    conversation_id: str,
-    coverage: list[str],
-    input_policy: dict[str, Any],
-    model_limit: int,
-    token_counter: str,
-) -> dict[str, Any]:
-    keys = {
-        "plan_id",
-        "contract_version",
-        "conversation_id",
-        "input_cap_tokens",
-        "raw_budget_tokens",
-        "target_raw_tokens",
-        "chunk_count",
-        "overlap_turns",
-        "token_counter",
-        "capacity_reserve_tokens",
-        "merge_input_tokens",
-        "raw_turns",
-        "raw_coverage_trace_ids",
-        "windows",
-    }
-    row = _exact_keys(value, keys, "window plan")
-    if (
-        row["contract_version"] != "3"
-        or row["conversation_id"] != conversation_id
-        or row["raw_coverage_trace_ids"] != coverage
-    ):
-        raise ValueError("judging plan window identity is invalid")
-    for key in (
-        "input_cap_tokens",
-        "raw_budget_tokens",
-        "target_raw_tokens",
-        "capacity_reserve_tokens",
-        "merge_input_tokens",
-    ):
-        _nonnegative_int(row[key], f"window {key}")
-    if row["overlap_turns"] != 1 or row["token_counter"] != token_counter:
-        raise ValueError("judging plan window policy is invalid")
-    body = {key: item for key, item in row.items() if key != "plan_id"}
-    if row["plan_id"] != _canonical_digest(body):
-        raise ValueError("judging plan window plan ID is invalid")
-    windows = row["windows"]
-    raw_turns = row["raw_turns"]
-    if not isinstance(windows, list) or not isinstance(raw_turns, list):
-        raise ValueError("judging plan window collections are invalid")
-    chunk_count = _nonnegative_int(row["chunk_count"], "window chunk_count")
-    if chunk_count > input_policy["max_chunks"]:
-        raise ValueError("judging plan window exceeds the maximum chunk count")
-    input_cap = model_limit
-    base_reserve = (
-        input_policy["prompt_reserve_tokens"]
-        + input_policy["output_reserve_tokens"]
-        + input_policy["safety_reserve_tokens"]
-    )
-    tier_reserve = (
-        input_policy["large_model_reserve_tokens"]
-        if model_limit > input_policy["large_model_threshold_tokens"]
-        else input_policy["small_model_reserve_tokens"]
-    )
-    expected_capacity_reserve = max(
-        tier_reserve,
-        base_reserve + max(0, chunk_count - 1) * input_policy["digest_max_tokens"],
-    )
-    expected_raw_budget = input_cap - expected_capacity_reserve
-    expected_raw_target = min(
-        input_policy["large_model_raw_target_tokens"]
-        if model_limit > input_policy["large_model_threshold_tokens"]
-        else input_policy["small_model_raw_target_tokens"],
-        expected_raw_budget,
-    )
-    expected_merge = base_reserve + chunk_count * (
-        input_policy["digest_max_tokens"] + input_policy["finding_max_tokens"]
-    )
-    if (
-        row["input_cap_tokens"] != input_cap
-        or row["capacity_reserve_tokens"] != expected_capacity_reserve
-        or row["raw_budget_tokens"] != expected_raw_budget
-        or row["target_raw_tokens"] != expected_raw_target
-        or row["merge_input_tokens"] != expected_merge
-    ):
-        raise ValueError("judging plan window token bounds are inconsistent")
-    if row["merge_input_tokens"] > row["input_cap_tokens"]:
-        raise ValueError("judging plan merge input exceeds the input cap")
-    if (
-        len(windows) != chunk_count
-        or [item.get("trace_id") if isinstance(item, dict) else None for item in raw_turns]
-        != coverage
-    ):
-        raise ValueError("judging plan window coverage is invalid")
-    for position, raw_turn in enumerate(raw_turns, start=1):
-        raw = _exact_keys(
-            raw_turn,
-            {"trace_id", "position", "estimated_tokens", "raw_digest"},
-            "raw turn",
-        )
-        if (
-            raw["trace_id"] != coverage[position - 1]
-            or raw["position"] != position
-            or not _is_sha256_digest(raw["raw_digest"])
-        ):
-            raise ValueError("judging plan raw turn digest or identity is invalid")
-        _nonnegative_int(raw["estimated_tokens"], "raw turn estimated_tokens", positive=True)
-    covered: list[str] = []
-    raw_digests = {raw["trace_id"]: raw["raw_digest"] for raw in raw_turns}
-    for index, window in enumerate(windows, start=1):
-        item = _exact_keys(
-            window,
-            {
-                "window_id",
-                "index",
-                "core_trace_ids",
-                "raw_trace_ids",
-                "raw_turn_digests",
-                "raw_tokens",
-            },
-            "window",
-        )
-        if (
-            item["index"] != index
-            or not isinstance(item["core_trace_ids"], list)
-            or not isinstance(item["raw_trace_ids"], list)
-            or not isinstance(item["raw_turn_digests"], list)
-        ):
-            raise ValueError("judging plan window values are invalid")
-        if any(trace_id not in coverage for trace_id in item["raw_trace_ids"]):
-            raise ValueError("judging plan raw window coverage is invalid")
-        if len(item["raw_trace_ids"]) != len(item["raw_turn_digests"]):
-            raise ValueError("judging plan raw window digests are invalid")
-        _nonnegative_int(item["raw_tokens"], "window raw_tokens")
-        if item["raw_tokens"] > row["raw_budget_tokens"]:
-            raise ValueError("judging plan window raw_tokens exceed the raw budget")
-        core_positions = [coverage.index(trace_id) for trace_id in item["core_trace_ids"]]
-        if not core_positions or core_positions != list(
-            range(core_positions[0], core_positions[-1] + 1)
-        ):
-            raise ValueError("judging plan core window geometry is invalid")
-        raw_positions = [coverage.index(trace_id) for trace_id in item["raw_trace_ids"]]
-        allowed_raw_starts = {core_positions[0], max(0, core_positions[0] - 1)}
-        allowed_raw_ends = {
-            core_positions[-1],
-            min(len(coverage) - 1, core_positions[-1] + 1),
-        }
-        raw_geometry_valid = (
-            raw_positions
-            and raw_positions == list(range(raw_positions[0], raw_positions[-1] + 1))
-            and raw_positions[0] in allowed_raw_starts
-            and raw_positions[-1] in allowed_raw_ends
-        )
-        if not raw_geometry_valid or item["raw_turn_digests"] != [
-            raw_digests[trace_id] for trace_id in item["raw_trace_ids"]
-        ]:
-            raise ValueError("judging plan raw window geometry is invalid")
-        window_body = {key: part for key, part in item.items() if key != "window_id"}
-        if item["window_id"] != _canonical_digest(window_body):
-            raise ValueError("judging plan window ID is invalid")
-        covered.extend(item["core_trace_ids"])
-    if covered != coverage:
-        raise ValueError("judging plan core window coverage is invalid")
-    return row
-
-
-_JUDGING_ARTIFACT_FIELDS = frozenset({"schema_version", "kind", "content_digest", "payload"})
-_JUDGING_ARTIFACT_KINDS = frozenset({"chunk_digest", "window_findings", "merged_verdict"})
-
-
-def _validate_artifact_id(artifact_id: str) -> None:
-    if not isinstance(artifact_id, str):
-        raise ValueError("judging artifact ID must be a string")
-    parts = artifact_id.split("/")
-    if (
-        len(parts) < 2
-        or artifact_id != artifact_id.strip()
-        or any(not part.strip() or part != part.strip() for part in parts)
-    ):
-        raise ValueError("judging artifact ID must be a nonblank slash-delimited string")
-
-
-def _canonical_json_object(
-    value: Mapping[str, Any],
-    *,
-    label: str,
-) -> tuple[dict[str, Any], str]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{label} must be a JSON object")
-    try:
-        encoded = json.dumps(
-            dict(value),
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        )
-        normalized = json.loads(encoded)
-        canonical = json.dumps(
-            normalized,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        )
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{label} must be JSON serializable") from exc
-    return normalized, canonical
-
-
-def _canonical_judging_artifact_payload(
-    payload: Mapping[str, Any],
-) -> tuple[dict[str, Any], str]:
-    normalized, canonical = _canonical_json_object(payload, label="judging artifact payload")
-    digest = f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
-    return normalized, digest
-
-
-def judging_artifact_payload_digest(payload: Mapping[str, Any]) -> str:
-    """Return the canonical content digest for one JSON-object artifact payload."""
-
-    return _canonical_judging_artifact_payload(payload)[1]
-
-
-def _canonical_judging_artifact(artifact: Mapping[str, Any]) -> dict[str, Any]:
-    if not isinstance(artifact, Mapping):
-        raise ValueError("judging artifact must be a JSON object")
-    value = dict(artifact)
-    if set(value) != _JUDGING_ARTIFACT_FIELDS:
-        raise ValueError(
-            "judging artifact body must contain exactly schema_version, kind, "
-            "content_digest, and payload"
-        )
-    if value["schema_version"] != "1":
-        raise ValueError("judging artifact schema_version must be '1'")
-    if not isinstance(value["kind"], str) or value["kind"] not in _JUDGING_ARTIFACT_KINDS:
-        raise ValueError(
-            "judging artifact kind must be chunk_digest, window_findings, or merged_verdict"
-        )
-    if not isinstance(value["content_digest"], str):
-        raise ValueError("judging artifact content_digest must be a string")
-    normalized_payload, expected_digest = _canonical_judging_artifact_payload(value["payload"])
-    if value["content_digest"] != expected_digest:
-        raise ValueError("judging artifact content digest does not match its payload")
-    value["payload"] = normalized_payload
-    return value
-
-
-def _decode_judging_artifacts(encoded: str | None) -> dict[str, Any] | None:
-    if encoded is None:
-        return None
-    try:
-        stored = json.loads(encoded)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("stored judging artifacts must be a valid JSON object") from exc
-    if not isinstance(stored, dict):
-        raise ValueError("stored judging artifacts must be a JSON object map")
-    canonical: dict[str, Any] = {}
-    for artifact_id, artifact in stored.items():
-        _validate_artifact_id(artifact_id)
-        canonical[artifact_id] = _canonical_judging_artifact(artifact)
-    return canonical
+def _encode_judging_plan(judging_plan: JudgingPlan) -> str:
+    if not isinstance(judging_plan, JudgingPlan):
+        raise TypeError("judging_plan must be a JudgingPlan")
+    return JudgingPlan.model_validate(judging_plan.model_dump(mode="json")).model_dump_json()
 
 
 def _judging_plan_matches_cohort(
-    judging_plan: Mapping[str, Any],
+    judging_plan: JudgingPlan,
     turn_cohort: Mapping[str, Any],
 ) -> bool:
     cohort_sessions = turn_cohort.get("sessions")
@@ -933,58 +360,32 @@ def _judging_plan_matches_cohort(
             return False
         turn_sessions[trace_id] = conversation_id
 
-    totals = judging_plan.get("totals")
-    sessions = judging_plan.get("sessions")
-    if not isinstance(totals, dict) or not isinstance(sessions, list):
-        return False
-    if totals.get("turns_considered") != len(cohort_turns):
+    if sum(len(session.turns) for session in judging_plan.sessions) != len(cohort_turns):
         return False
 
     planned_session_ids: set[str] = set()
-    for session in sessions:
-        if not isinstance(session, dict):
-            return False
-        conversation_id = session.get("conversation_id")
-        if (
-            not isinstance(conversation_id, str)
-            or conversation_id in planned_session_ids
-            or session.get("turn_count") != session_turn_counts.get(conversation_id)
+    for session in judging_plan.sessions:
+        conversation_id = session.conversation_id
+        if conversation_id in planned_session_ids or len(session.turns) != session_turn_counts.get(
+            conversation_id
         ):
             return False
         planned_session_ids.add(conversation_id)
-        coverage = session.get("raw_coverage_trace_ids")
-        reviewers = session.get("reviewers")
-        if not isinstance(coverage, list) or not isinstance(reviewers, list):
-            return False
+        coverage = [turn.trace_id for turn in session.turns]
         expected_coverage = [
             trace_id for trace_id, owner in turn_sessions.items() if owner == conversation_id
         ]
-        if coverage != expected_coverage or len(coverage) != session["turn_count"]:
+        if coverage != expected_coverage:
             return False
-        ordinals: list[int] = []
-        for reviewer in reviewers:
-            if not isinstance(reviewer, dict):
-                return False
-            ordinal = reviewer.get("ordinal")
-            judge = reviewer.get("judge")
-            status = reviewer.get("status")
-            window_plan = reviewer.get("window_plan")
-            if type(ordinal) is not int or not isinstance(judge, dict):
-                return False
-            if judge.get("position") != ordinal:
-                return False
-            if status == "skipped":
-                if window_plan is not None:
+        for reviewer in session.reviewers:
+            if reviewer.status == "skipped":
+                if reviewer.window_plan is not None:
                     return False
-            elif status != "planned" or not isinstance(window_plan, dict):
+            elif reviewer.status != "planned" or reviewer.window_plan is None:
                 return False
-            elif (
-                window_plan.get("conversation_id") != conversation_id
-                or window_plan.get("raw_coverage_trace_ids") != coverage
-            ):
-                return False
-            ordinals.append(ordinal)
-        if ordinals != list(range(1, len(reviewers) + 1)):
+        if [reviewer.position for reviewer in session.reviewers] != list(
+            range(1, len(session.reviewers) + 1)
+        ):
             return False
     return planned_session_ids == set(session_turn_counts)
 
@@ -1000,7 +401,6 @@ CREATE TABLE IF NOT EXISTS runs (
     effective_config TEXT,
     turn_cohort TEXT,
     judging_plan TEXT,
-    judging_artifacts TEXT,
     reflection_input TEXT,
     scoring_progress TEXT,
     scoring_result TEXT,
@@ -1017,16 +417,52 @@ CREATE TABLE IF NOT EXISTS runs (
 )
 """
 
+_JUDGE_CALLS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS judge_calls (
+    run_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    reviewer_position INTEGER NOT NULL,
+    requested_model_id TEXT NOT NULL,
+    rubric_id TEXT,
+    status TEXT NOT NULL,
+    reusable INTEGER NOT NULL,
+    result_json TEXT,
+    audit_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, request_id),
+    FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+)
+"""
+
+_RUN_EVENTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS run_events (
+    run_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    stage TEXT NOT NULL,
+    at TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    message TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    PRIMARY KEY (run_id, sequence),
+    FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+)
+"""
+
+_EVENT_LIMITS: dict[RunEventStage, int] = {
+    "scoring": 100,
+    "judging": 1_000,
+    "reflecting": 100,
+}
+
 _JSON_FIELDS = {
     "turn_cohort",
-    "judging_plan",
-    "reflection_input",
     "scoring_progress",
     "scoring_result",
     "judging_progress",
     "judging_result",
     "reflecting_progress",
-    "reflecting_result",
     "reflection_review",
 }
 
@@ -1035,20 +471,34 @@ class RunStore:
     """SQLite store whose writes enforce the evaluation-run lifecycle."""
 
     def __init__(self, db_path: str | Path | None = None):
+        path = Path(db_path or _default_db_path())
         self._conn = sqlite3.connect(
-            str(db_path or _default_db_path()),
+            str(path),
             check_same_thread=False,
         )
         self._lock = threading.Lock()
         try:
             self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA busy_timeout=5000")
-            self._conn.execute("BEGIN IMMEDIATE")
             stored_version = self._conn.execute("PRAGMA user_version").fetchone()[0]
-            if stored_version != RUN_DB_SCHEMA_VERSION:
-                self._conn.execute("DROP TABLE IF EXISTS runs")
+            has_runs = self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runs'"
+            ).fetchone()
+            if stored_version == 9:
+                migrate_v9_to_v10(
+                    self._conn,
+                    path,
+                    lambda: datetime.now(timezone.utc),
+                )
+            elif stored_version == 0 and has_runs is None:
+                pass
+            elif stored_version != RUN_DB_SCHEMA_VERSION:
+                raise RunMigrationError(f"unsupported run database schema: {stored_version}")
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("BEGIN IMMEDIATE")
             self._conn.execute(_SCHEMA)
+            self._conn.execute(_JUDGE_CALLS_SCHEMA)
+            self._conn.execute(_RUN_EVENTS_SCHEMA)
             self._conn.execute(f"PRAGMA user_version = {RUN_DB_SCHEMA_VERSION}")
             self._conn.commit()
         except BaseException:
@@ -1250,7 +700,7 @@ class RunStore:
         run_id: str,
         *,
         stage: RunStatus,
-        result: Mapping[str, Any],
+        result: Mapping[str, Any] | ReflectionResultRecord,
     ) -> Run:
         return self._record_stage_value(
             run_id,
@@ -1382,10 +832,9 @@ class RunStore:
     def pin_reflection_input(
         self,
         run_id: str,
-        reflection_input: Mapping[str, Any],
+        reflection_input: ReflectionInputRecord,
     ) -> Run:
         encoded = _encode_reflection_input(reflection_input)
-        value = json.loads(encoded)
         with self._lock:
             row = self._get_row_locked(run_id)
             if RunStatus(row["status"]) is not RunStatus.REFLECTING:
@@ -1393,9 +842,13 @@ class RunStore:
                     f"Run {run_id} can only pin reflection input while reflecting; "
                     f"current status is {row['status']}"
                 )
-            current = json.loads(row["reflection_input"]) if row["reflection_input"] else None
+            current = (
+                ReflectionInputRecord.model_validate_json(row["reflection_input"])
+                if row["reflection_input"]
+                else None
+            )
             if current is not None:
-                if current == value:
+                if current == reflection_input:
                     return self._row_to_run(row)
                 raise RunStoreConflictError(f"Run {run_id} reflection input is already pinned")
             cursor = self._conn.execute(
@@ -1413,10 +866,9 @@ class RunStore:
     def pin_judging_plan(
         self,
         run_id: str,
-        judging_plan: Mapping[str, Any],
+        judging_plan: JudgingPlan,
     ) -> Run:
         encoded = _encode_judging_plan(judging_plan)
-        value = json.loads(encoded)
         with self._lock:
             row = self._get_row_locked(run_id)
             if RunStatus(row["status"]) is not RunStatus.JUDGING:
@@ -1425,17 +877,21 @@ class RunStore:
                     f"current status is {row['status']}"
                 )
             cohort = json.loads(row["turn_cohort"]) if row["turn_cohort"] else None
-            if not isinstance(cohort, dict) or cohort.get("cohort_id") != value["cohort_id"]:
+            if not isinstance(cohort, dict) or cohort.get("cohort_id") != judging_plan.cohort_id:
                 raise RunStoreConflictError(
                     f"Run {run_id} judging plan cohort does not match its pinned cohort"
                 )
-            if not _judging_plan_matches_cohort(value, cohort):
+            if not _judging_plan_matches_cohort(judging_plan, cohort):
                 raise RunStoreConflictError(
                     f"Run {run_id} judging plan contents do not match its pinned cohort"
                 )
-            current = json.loads(row["judging_plan"]) if row["judging_plan"] else None
+            current = (
+                JudgingPlan.model_validate_json(row["judging_plan"])
+                if row["judging_plan"]
+                else None
+            )
             if current is not None:
-                if current == value:
+                if current == judging_plan:
                     return self._row_to_run(row)
                 raise RunStoreConflictError(f"Run {run_id} judging plan is already pinned")
             cursor = self._conn.execute(
@@ -1450,53 +906,164 @@ class RunStore:
             updated = self._get_row_locked(run_id)
         return self._row_to_run(updated)
 
-    def record_judging_artifact(
-        self,
-        run_id: str,
-        artifact_id: str,
-        artifact: Mapping[str, Any],
-    ) -> Run:
-        """Persist one immutable, content-addressed artifact during judging."""
+    @staticmethod
+    def _judge_call_from_row(row: sqlite3.Row) -> JudgeCallRecord:
+        return JudgeCallRecord(
+            request_id=row["request_id"],
+            phase=row["phase"],
+            conversation_id=row["conversation_id"],
+            reviewer_position=row["reviewer_position"],
+            requested_model_id=row["requested_model_id"],
+            rubric_id=row["rubric_id"],
+            status=row["status"],
+            reusable=bool(row["reusable"]),
+            result=json.loads(row["result_json"]) if row["result_json"] is not None else None,
+            audit=JudgeCallAudit.model_validate_json(row["audit_json"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
 
-        _validate_artifact_id(artifact_id)
-        value = _canonical_judging_artifact(artifact)
+    def record_judge_call(self, run_id: str, record: JudgeCallRecord) -> JudgeCallRecord:
+        """Insert one immutable inference call or return identical existing content."""
+
+        if not isinstance(record, JudgeCallRecord):
+            raise TypeError("record must be a JudgeCallRecord")
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                row = self._get_row_locked(run_id)
-                current_status = RunStatus(row["status"])
-                if current_status is not RunStatus.JUDGING:
+                run = self._get_row_locked(run_id)
+                if RunStatus(run["status"]) is not RunStatus.JUDGING:
                     raise RunStoreConflictError(
-                        f"Run {run_id} can only record judging artifacts while judging; "
-                        f"current status is {current_status.value}"
+                        f"Run {run_id} can only record judge calls while judging"
                     )
-                artifacts = _decode_judging_artifacts(row["judging_artifacts"]) or {}
-                existing = artifacts.get(artifact_id)
+                existing = self._conn.execute(
+                    "SELECT * FROM judge_calls WHERE run_id = ? AND request_id = ?",
+                    (run_id, record.request_id),
+                ).fetchone()
                 if existing is not None:
-                    if existing != value:
+                    stored = self._judge_call_from_row(existing)
+                    if stored != record:
                         raise RunStoreConflictError(
-                            f"Run {run_id} judging artifact already exists with different content: "
-                            f"{artifact_id}"
+                            f"Run {run_id} judge call already exists with different content: "
+                            f"{record.request_id}"
                         )
                     self._conn.commit()
-                    return self._row_to_run(row)
-
-                artifacts[artifact_id] = value
-                encoded = _encode_json_object(artifacts, "judging artifacts")
-                cursor = self._conn.execute(
-                    "UPDATE runs SET judging_artifacts = ? WHERE run_id = ? AND status = ?",
-                    (encoded, run_id, RunStatus.JUDGING.value),
+                    return stored
+                self._conn.execute(
+                    """
+                    INSERT INTO judge_calls (
+                        run_id, request_id, phase, conversation_id, reviewer_position,
+                        requested_model_id, rubric_id, status, reusable, result_json,
+                        audit_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        record.request_id,
+                        record.phase,
+                        record.conversation_id,
+                        record.reviewer_position,
+                        record.requested_model_id,
+                        record.rubric_id,
+                        record.status,
+                        int(record.reusable),
+                        (
+                            json.dumps(record.result, sort_keys=True)
+                            if record.result is not None
+                            else None
+                        ),
+                        record.audit.model_dump_json(),
+                        record.created_at.isoformat(),
+                    ),
                 )
-                if cursor.rowcount != 1:
-                    raise RunStoreConflictError(
-                        f"Run {run_id} changed while recording judging artifact {artifact_id}"
-                    )
-                updated = self._get_row_locked(run_id)
                 self._conn.commit()
             except BaseException:
                 self._conn.rollback()
                 raise
-        return self._row_to_run(updated)
+        return record
+
+    def get_judge_call(self, run_id: str, request_id: str) -> JudgeCallRecord | None:
+        """Return an exact reusable success, never a historical audit-only call."""
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM judge_calls WHERE run_id = ? AND request_id = ? AND reusable = 1",
+                (run_id, request_id),
+            ).fetchone()
+        return self._judge_call_from_row(row) if row is not None else None
+
+    def list_judge_calls(self, run_id: str) -> list[JudgeCallRecord]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM judge_calls WHERE run_id = ? ORDER BY created_at, rowid",
+                (run_id,),
+            ).fetchall()
+        return [self._judge_call_from_row(row) for row in rows]
+
+    def append_run_event(self, run_id: str, draft: RunEventDraft) -> RunEvent:
+        """Append one bounded event with a store-assigned monotonic sequence."""
+
+        if not isinstance(draft, RunEventDraft):
+            raise TypeError("draft must be a RunEventDraft")
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._get_row_locked(run_id)
+                sequence = self._conn.execute(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM run_events WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()[0]
+                self._conn.execute(
+                    "INSERT INTO run_events "
+                    "(run_id, sequence, stage, at, phase, message, details_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        run_id,
+                        sequence,
+                        draft.stage,
+                        draft.at.isoformat(),
+                        draft.phase,
+                        draft.message,
+                        json.dumps(draft.details, sort_keys=True),
+                    ),
+                )
+                limit = _EVENT_LIMITS[draft.stage]
+                self._conn.execute(
+                    "DELETE FROM run_events WHERE run_id = ? AND stage = ? AND sequence NOT IN "
+                    "(SELECT sequence FROM run_events WHERE run_id = ? AND stage = ? "
+                    "ORDER BY sequence DESC LIMIT ?)",
+                    (run_id, draft.stage, run_id, draft.stage, limit),
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        return RunEvent(sequence=sequence, **draft.model_dump())
+
+    def list_run_events(
+        self,
+        run_id: str,
+        *,
+        stage: RunEventStage | None = None,
+    ) -> list[RunEvent]:
+        query = "SELECT * FROM run_events WHERE run_id = ?"
+        parameters: tuple[object, ...] = (run_id,)
+        if stage is not None:
+            query += " AND stage = ?"
+            parameters += (stage,)
+        query += " ORDER BY sequence"
+        with self._lock:
+            rows = self._conn.execute(query, parameters).fetchall()
+        return [
+            RunEvent(
+                sequence=row["sequence"],
+                stage=row["stage"],
+                at=datetime.fromisoformat(row["at"]),
+                phase=row["phase"],
+                message=row["message"],
+                details=json.loads(row["details_json"]),
+            )
+            for row in rows
+        ]
 
     @contextmanager
     def external_write_barrier(
@@ -1577,13 +1144,22 @@ class RunStore:
         run_id: str,
         *,
         stage: RunStatus,
-        value: Mapping[str, Any],
+        value: Mapping[str, Any] | ReflectionResultRecord,
         result: bool,
     ) -> Run:
         if stage not in _ACTIVE_STAGES:
             raise ValueError("stage must be scoring, judging, or reflecting")
         field_name = _STAGE_FIELDS[stage][1 if result else 0]
-        encoded = _encode_json_object(value, field_name)
+        if field_name == "reflecting_result":
+            if not isinstance(value, ReflectionResultRecord):
+                raise TypeError("reflecting result must be a ReflectionResultRecord")
+            encoded = ReflectionResultRecord.model_validate(
+                value.model_dump(mode="json")
+            ).model_dump_json()
+        else:
+            if not isinstance(value, Mapping):
+                raise TypeError(f"{field_name} must be a mapping")
+            encoded = _encode_json_object(value, field_name)
         with self._lock:
             row = self._get_row_locked(run_id)
             current = RunStatus(row["status"])
@@ -1745,16 +1321,14 @@ class RunStore:
                         current_review_status=review_status,
                         current_revision=revision,
                     )
-                evidence = json.loads(expected_evidence)
-                candidates = evidence.get("candidates") if isinstance(evidence, dict) else None
+                evidence = ReflectionResultRecord.model_validate_json(expected_evidence)
                 selected_id = value.get("selected_candidate_id")
                 if not (
                     isinstance(selected_id, str)
                     and selected_id
-                    and isinstance(candidates, list)
                     and any(
-                        isinstance(candidate, dict) and candidate.get("candidate_id") == selected_id
-                        for candidate in candidates
+                        attempt.status == "succeeded" and attempt.candidate_id == selected_id
+                        for attempt in evidence.attempts
                     )
                 ):
                     raise ReflectionReviewLifecycleConflictError(
@@ -1826,7 +1400,9 @@ class RunStore:
         raw_selection = data.pop("data_selection")
         raw_config = data.pop("run_config")
         raw_effective = data.pop("effective_config")
-        raw_judging_artifacts = data.pop("judging_artifacts")
+        raw_judging_plan = data.pop("judging_plan")
+        raw_reflection_input = data.pop("reflection_input")
+        raw_reflecting_result = data.pop("reflecting_result")
         for field_name in _JSON_FIELDS:
             if data.get(field_name) is not None:
                 data[field_name] = json.loads(data[field_name])
@@ -1841,7 +1417,21 @@ class RunStore:
             if raw_effective is not None
             else None
         )
-        data["judging_artifacts"] = _decode_judging_artifacts(raw_judging_artifacts)
+        data["judging_plan"] = (
+            JudgingPlan.model_validate_json(raw_judging_plan)
+            if raw_judging_plan is not None
+            else None
+        )
+        data["reflection_input"] = (
+            ReflectionInputRecord.model_validate_json(raw_reflection_input)
+            if raw_reflection_input is not None
+            else None
+        )
+        data["reflecting_result"] = (
+            ReflectionResultRecord.model_validate_json(raw_reflecting_result)
+            if raw_reflecting_result is not None
+            else None
+        )
         return Run(**data)
 
     def close(self) -> None:
