@@ -64,16 +64,15 @@ log = logging.getLogger("weave_agent_signals.judges")
 ValidatedOutput = TypeVar("ValidatedOutput", bound=BaseModel)
 
 _ERROR_TEXT_LIMIT = 500
-SLIDING_PROTOCOL_VERSION = "12"
+SLIDING_PROTOCOL_VERSION = "13"
 
 _DIGEST_SYSTEM_TEMPLATE = (
     "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. "
     "Preserve important actions, results, omissions, corrections, and constraints. Every digest "
     "must cite at least one ID from ALLOWED_EVIDENCE_IDS. Do not cite any other ID; the response "
-    "schema enforces the exact chunk and evidence scope. Return the requested JSON."
+    "schema enforces the evidence scope. Return the requested JSON."
 )
 _DIGEST_USER_TEMPLATE = (
-    "EXPECTED_CHUNK_ID: {chunk_id}\n"
     "EXAMPLE_EVIDENCE_ID: {example_evidence_id}\n"
     "ALLOWED_EVIDENCE_IDS: {allowed_evidence_ids}\n"
     "RAW_CHUNK:\n{raw_text}"
@@ -83,11 +82,10 @@ _WINDOW_SYSTEM_TEMPLATE = (
     "Return bounded findings, not a score. Every finding must "
     "cite at least one ID from ALLOWED_FINDING_EVIDENCE_IDS. If no supported finding exists, "
     'return "findings": [] instead of an uncited finding. Do not cite any other ID; the response '
-    "schema enforces the active raw window's exact evidence scope. Finding IDs need only be "
-    "unique within this response; aggregation scopes them to EXPECTED_WINDOW_ID."
+    "schema enforces the active raw window's evidence scope. Finding IDs need only be "
+    "unique within this response; the host scopes them to the active window."
 )
 _WINDOW_USER_TEMPLATE = (
-    "EXPECTED_WINDOW_ID: {window_id}\n"
     "EXAMPLE_EVIDENCE_ID: {example_evidence_id}\n"
     "ALLOWED_FINDING_EVIDENCE_IDS: {allowed_evidence_ids}\n"
     "RUBRIC_CRITERIA:\n{rubric_criteria}\n{sections}"
@@ -733,7 +731,6 @@ class SlidingReviewer:
     def _digest_messages(
         self,
         *,
-        chunk_id: str,
         raw_text: str,
         evidence_ids: Sequence[str],
     ) -> list[dict[str, str]]:
@@ -745,7 +742,6 @@ class SlidingReviewer:
             {
                 "role": "user",
                 "content": _DIGEST_USER_TEMPLATE.format(
-                    chunk_id=chunk_id,
                     example_evidence_id=evidence_ids[0],
                     allowed_evidence_ids=_canonical_json(list(evidence_ids)),
                     raw_text=raw_text,
@@ -762,11 +758,10 @@ class SlidingReviewer:
     ) -> ChunkDigest:
         chunk_id = self._chunk_id(window)
         raw_text, evidence_ids = self._core_evidence(window)
-        response_schema = bind_chunk_digest_schema(chunk_id, evidence_ids)
+        response_schema = bind_chunk_digest_schema(evidence_ids)
         return self._infer_validated(
             phase="digest",
             messages=self._digest_messages(
-                chunk_id=chunk_id,
                 raw_text=raw_text,
                 evidence_ids=evidence_ids,
             ),
@@ -841,7 +836,6 @@ class SlidingReviewer:
                 {
                     "role": "user",
                     "content": _WINDOW_USER_TEMPLATE.format(
-                        window_id=window["window_id"],
                         example_evidence_id=raw.evidence_ids[0],
                         allowed_evidence_ids=_canonical_json(list(raw.evidence_ids)),
                         rubric_criteria=rubric.criteria_text,
@@ -869,10 +863,7 @@ class SlidingReviewer:
             window=window,
             digests=digests,
         )
-        response_schema = bind_window_findings_schema(
-            str(window["window_id"]),
-            allowed_evidence_ids,
-        )
+        response_schema = bind_window_findings_schema(allowed_evidence_ids)
         return self._infer_validated(
             phase="window",
             messages=messages,

@@ -96,9 +96,11 @@ judge-facing content. Parent-session judging retains each subagent's identity
 and internal tool-call count but omits its internal tool payloads; the parent's
 delegation call still carries the input and returned output that influenced the
 parent. The complete hydrated trace remains available outside this judge view.
-Digests, findings, verdicts, and behavioral feedback are schema-bounded. Each
-inference schema binds the expected chunk or window identity and enumerates the
-exact evidence identities authorized for that phase; the same constraints are
+Digests, findings, verdicts, and behavioral feedback are schema-bounded. Models
+author only the semantic fields and evidence citations. The host adds the
+protocol version and authenticated chunk or window identity before validating
+and persisting the complete artifact. Each inference schema enumerates the exact
+evidence identities authorized for that phase; the same constraints are
 validated again after inference. Complete
 window-finding artifacts receive a 4,000-token budget, and each final behavioral
 feedback field is limited to 10,000 characters.
@@ -132,7 +134,9 @@ canonical identities from their response order. Aggregation scopes each identity
 to its authenticated window after deduplicating exact semantic findings in
 response order, then deduplicates again across windows in session order. An
 unknown citation, blank required text, or oversized artifact fails closed. The
-merge prompt asks for feedback about what the agent did or should do, while
+unknown-citation diagnostic reports at most three escaped, bounded identifiers
+without retaining the invalid response. The merge prompt asks for feedback
+about what the agent did or should do, while
 reflection separately decides whether and how to edit managed instructions.
 Imperfect semantic wording is not itself a validation failure.
 
@@ -145,8 +149,8 @@ finite value in `[0, 1]`.
 Structured output is requested when the backend supports it. A recorded JSON
 object fallback is allowed when the provider explicitly rejects structured
 schema capability or on a W&B recovery attempt. Invalid model content does not
-weaken canonical runtime validation. W&B retries preserve identity and evidence
-constraints while using JSON-object mode with optional thinking disabled;
+weaken canonical runtime validation. W&B retries preserve evidence constraints
+while using JSON-object mode with optional thinking disabled;
 other backends retry the same strict request. Invalid JSON that consumes the
 exact generation allowance retries once under the same budget. A second
 exhaustion fails closed as explicit

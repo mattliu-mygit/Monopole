@@ -53,7 +53,7 @@ def _valid_finding(**changes: object) -> dict[str, object]:
     return finding
 
 
-def test_sliding_contract_schemas_are_closed_and_versioned():
+def test_sliding_contract_schemas_are_closed():
     roots = (
         (CHUNK_DIGEST_SCHEMA, "chunk_digest"),
         (WINDOW_FINDING_SCHEMA, "window_finding"),
@@ -65,9 +65,42 @@ def test_sliding_contract_schemas_are_closed_and_versioned():
         assert schema_spec.name == name
         assert schema_spec.schema["additionalProperties"] is False
 
-    assert CHUNK_DIGEST_SCHEMA.schema["properties"]["schema_version"]["const"] == 1
-    assert WINDOW_FINDINGS_SCHEMA.schema["properties"]["schema_version"]["const"] == 1
-    assert MERGED_VERDICT_SCHEMA.schema["properties"]["schema_version"]["const"] == 1
+
+def test_model_output_schemas_omit_host_owned_envelope_fields():
+    assert "schema_version" not in CHUNK_DIGEST_SCHEMA.schema["properties"]
+    assert "chunk_id" not in CHUNK_DIGEST_SCHEMA.schema["properties"]
+    assert "schema_version" not in WINDOW_FINDINGS_SCHEMA.schema["properties"]
+    assert "window_id" not in WINDOW_FINDINGS_SCHEMA.schema["properties"]
+    assert "schema_version" not in MERGED_VERDICT_SCHEMA.schema["properties"]
+
+
+def test_parsers_attach_host_owned_envelope_fields():
+    digest = parse_chunk_digest(
+        {"text": "Observed behavior.", "evidence_ids": ["trace-1"]},
+        allowed_evidence_ids=("trace-1",),
+        max_tokens=100,
+        expected_chunk_id="chunk-1",
+    )
+    findings = parse_window_findings(
+        {"findings": []},
+        allowed_evidence_ids=("trace-1",),
+        max_tokens=100,
+        expected_window_id="window-1",
+    )
+    verdict = parse_merged_verdict(
+        {
+            "status": "insufficient_evidence",
+            "score": None,
+            "rationale": "Insufficient evidence.",
+            "evidence_ids": [],
+            "feedback": None,
+        },
+        allowed_evidence_ids=("trace-1",),
+    )
+
+    assert (digest.schema_version, digest.chunk_id) == (1, "chunk-1")
+    assert (findings.schema_version, findings.window_id) == (1, "window-1")
+    assert verdict.schema_version == 1
 
 
 def test_structured_schemas_advertise_parser_bounds_to_models():
@@ -90,23 +123,20 @@ def test_structured_schemas_advertise_parser_bounds_to_models():
     assert verdict["score"]["anyOf"] == [{"type": "number"}, {"type": "null"}]
 
 
-def test_digest_schema_binds_exact_chunk_and_evidence_ids():
-    schema = bind_chunk_digest_schema("chunk-7", ("trace-1", "span-2"))
+def test_digest_schema_binds_exact_evidence_ids():
+    schema = bind_chunk_digest_schema(("trace-1", "span-2"))
 
     assert schema.name == "chunk_digest"
-    assert schema.schema["properties"]["chunk_id"]["const"] == "chunk-7"
     assert schema.schema["properties"]["evidence_ids"]["items"]["enum"] == [
         "trace-1",
         "span-2",
     ]
-    assert "const" not in CHUNK_DIGEST_SCHEMA.schema["properties"]["chunk_id"]
 
 
-def test_window_schema_binds_exact_window_and_evidence_ids():
-    schema = bind_window_findings_schema("window-3", ("trace-2", "tool-4"))
+def test_window_schema_binds_exact_evidence_ids():
+    schema = bind_window_findings_schema(("trace-2", "tool-4"))
 
     assert schema.name == "window_findings"
-    assert schema.schema["properties"]["window_id"]["const"] == "window-3"
     finding = schema.schema["$defs"]["WindowFinding"]["properties"]
     assert finding["evidence_ids"]["items"]["enum"] == ["trace-2", "tool-4"]
     assert (
@@ -130,8 +160,8 @@ def test_merge_schema_binds_exact_session_evidence_ids():
 @pytest.mark.parametrize(
     "factory,args",
     [
-        (bind_chunk_digest_schema, ("chunk-1", ())),
-        (bind_window_findings_schema, ("window-1", ("trace-1", "trace-1"))),
+        (bind_chunk_digest_schema, ((),)),
+        (bind_window_findings_schema, (("trace-1", "trace-1"),)),
         (bind_merged_verdict_schema, ((" ",),)),
     ],
 )
@@ -178,6 +208,33 @@ def test_chunk_digest_rejects_open_or_uncited_content(changes: dict[str, object]
             allowed_evidence_ids=("trace-1",),
             max_tokens=50,
         )
+
+
+def test_unknown_evidence_diagnostic_is_bounded_and_escaped():
+    unknown_ids = [
+        'first\n"unknown"',
+        "x" * 100,
+        "third",
+        "not-reported",
+    ]
+
+    with pytest.raises(ValueError) as raised:
+        parse_chunk_digest(
+            {
+                "schema_version": 1,
+                "chunk_id": "chunk-1",
+                "text": "Observed behavior.",
+                "evidence_ids": unknown_ids,
+            },
+            allowed_evidence_ids=("trace-1",),
+            max_tokens=50,
+        )
+
+    assert str(raised.value) == (
+        'unknown evidence IDs: ["first\\n\\"unknown\\"", '
+        '"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...", '
+        '"third"] (+1 more)'
+    )
 
 
 def test_chunk_digest_rejects_text_over_token_limit():
@@ -347,7 +404,7 @@ def test_window_findings_canonical_render_is_normalized_and_deterministic():
     )
 
 
-def test_window_findings_requires_expected_window_and_rejects_extra_fields():
+def test_window_findings_uses_expected_window_and_rejects_extra_fields():
     payload = {"schema_version": 1, "window_id": "window-1", "findings": []}
     parsed = parse_window_findings(
         payload,
@@ -357,13 +414,13 @@ def test_window_findings_requires_expected_window_and_rejects_extra_fields():
     )
     assert isinstance(parsed, WindowFindings)
 
-    with pytest.raises(ValueError, match="unexpected window ID"):
-        parse_window_findings(
-            payload,
-            allowed_evidence_ids=("trace-1",),
-            max_tokens=750,
-            expected_window_id="window-2",
-        )
+    replaced = parse_window_findings(
+        payload,
+        allowed_evidence_ids=("trace-1",),
+        max_tokens=750,
+        expected_window_id="window-2",
+    )
+    assert replaced.window_id == "window-2"
     with pytest.raises(ValueError, match="Extra inputs"):
         parse_window_findings(
             {**payload, "extra": True},

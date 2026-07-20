@@ -121,8 +121,6 @@ class _ScriptedClient:
         fail_merge: bool = False,
         invalid_window_citation: bool = False,
         invalid_window_citation_once: bool = False,
-        invalid_chunk_id: bool = False,
-        invalid_window_id: bool = False,
         invalid_window_length_once: bool = False,
         large_digest: bool = False,
         invocation_error: Exception | None = None,
@@ -134,8 +132,6 @@ class _ScriptedClient:
         self.fail_merge = fail_merge
         self.invalid_window_citation = invalid_window_citation
         self.invalid_window_citation_once = invalid_window_citation_once
-        self.invalid_chunk_id = invalid_chunk_id
-        self.invalid_window_id = invalid_window_id
         self.invalid_window_length_once = invalid_window_length_once
         self.large_digest = large_digest
         self.invocation_error = invocation_error
@@ -177,12 +173,6 @@ class _ScriptedClient:
             raise self.invocation_error
         if phase == "digest":
             payload = {
-                "schema_version": 1,
-                "chunk_id": (
-                    "SENTINEL_PRIVATE_CHUNK_ID"
-                    if self.invalid_chunk_id
-                    else _marker(messages, "EXPECTED_CHUNK_ID")
-                ),
                 "text": (
                     "x" * 7_000
                     if self.large_digest
@@ -205,12 +195,6 @@ class _ScriptedClient:
                 self._invalid_window_length_returned or invalid_length
             )
             payload = {
-                "schema_version": 1,
-                "window_id": (
-                    "SENTINEL_PRIVATE_WINDOW_ID"
-                    if self.invalid_window_id
-                    else _marker(messages, "EXPECTED_WINDOW_ID")
-                ),
                 "findings": [
                     {
                         "finding_id": "shared-finding",
@@ -227,7 +211,6 @@ class _ScriptedClient:
                 {"not": "a verdict"}
                 if self.fail_merge
                 else {
-                    "schema_version": 1,
                     "status": "scored",
                     "score": 0.75,
                     "rationale": "The session was mostly effective.",
@@ -461,7 +444,8 @@ def test_reviewer_binds_each_inference_schema_to_its_exact_evidence_scope() -> N
     digest_calls = [call for call in client.calls if call["phase"] == "digest"]
     for call, window in zip(digest_calls, plan["windows"], strict=True):
         properties = call["schema"]["properties"]
-        assert properties["chunk_id"]["const"] == reviewer._chunk_id(window)
+        assert "chunk_id" not in properties
+        assert "schema_version" not in properties
         expected = reviewer._core_evidence(window)[1]
         assert properties["evidence_ids"]["items"]["enum"] == list(expected)
 
@@ -471,7 +455,8 @@ def test_reviewer_binds_each_inference_schema_to_its_exact_evidence_scope() -> N
             "Reason carefully internally, then return only concise JSON"
             in call["messages"][0]["content"]
         )
-        assert call["schema"]["properties"]["window_id"]["const"] == window["window_id"]
+        assert "window_id" not in call["schema"]["properties"]
+        assert "schema_version" not in call["schema"]["properties"]
         evidence = call["schema"]["$defs"]["WindowFinding"]["properties"]["evidence_ids"]
         assert evidence["items"]["enum"] == list(
             reviewer._window_messages(
@@ -626,8 +611,7 @@ def test_window_replaces_own_digest_and_keeps_surrounding_digests_chronological(
         assert text.count("CONTEXT_KIND: raw_window") == 1
         assert text.count("CONTEXT_KIND: chunk_digest") == 1
         assert text.index("CHUNK_INDEX: 1") < text.index("CHUNK_INDEX: 2")
-        own_window_id = plan["windows"][index]["window_id"]
-        assert f"EXPECTED_WINDOW_ID: {own_window_id}" in text
+        assert "EXPECTED_WINDOW_ID:" not in text
 
     merge_text = [call for call in client.calls if call["phase"] == "merge"][0]["messages"][-1][
         "content"
@@ -796,8 +780,7 @@ def test_invalid_window_citation_fails_closed() -> None:
     assert result.evidence_ids == ()
     assert result.behavioral_feedback is None
     assert result.error_type == "ValueError"
-    assert result.message == "unknown evidence ID"
-    assert "unknown-evidence" not in result.message
+    assert result.message == 'unknown evidence IDs: ["unknown-evidence"]'
     assert activity[-1] == {
         "phase": "validation_failed",
         "message": "Judge One returned invalid window output for Session Outcome Quality",
@@ -806,7 +789,7 @@ def test_invalid_window_citation_fails_closed() -> None:
         "rubric": "judge.session_outcome",
         "artifact_id": result.steps[-1].artifact_id,
         "error_category": "ValueError",
-        "provider_error_message": "unknown evidence ID",
+        "provider_error_message": 'unknown evidence IDs: ["unknown-evidence"]',
         "output_mode": "json_schema",
         "output_sha256": result.raw_output_digest,
     }
@@ -873,42 +856,13 @@ def test_fallback_contract_failure_stops_after_three_outputs() -> None:
     result = reviewer.review(_rubric("judge.session_outcome"))
 
     assert result.status == "failed"
-    assert result.message == "unknown evidence ID"
+    assert result.message == 'unknown evidence IDs: ["unknown-evidence"]'
     assert [call["phase"] for call in client.calls].count("window") == 3
     assert [
         (event["request_attempt"], event["max_attempts"])
         for event in activity
         if event["phase"] == "validation_retry"
     ] == [(2, 3), (3, 3)]
-
-
-@pytest.mark.parametrize(
-    ("client", "expected_message", "secret"),
-    [
-        (
-            _ScriptedClient(invalid_chunk_id=True),
-            "unexpected chunk ID",
-            "SENTINEL_PRIVATE_CHUNK_ID",
-        ),
-        (
-            _ScriptedClient(invalid_window_id=True),
-            "unexpected window ID",
-            "SENTINEL_PRIVATE_WINDOW_ID",
-        ),
-    ],
-)
-def test_rejected_model_identifiers_are_not_persisted(
-    client: _ScriptedClient,
-    expected_message: str,
-    secret: str,
-) -> None:
-    reviewer, _, _, _ = _reviewer(client=client)
-
-    result = reviewer.review(_rubric("judge.session_outcome"))
-
-    assert result.status == "failed"
-    assert result.message == expected_message
-    assert secret not in result.message
 
 
 def test_custom_client_schema_fallback_detail_is_rejected_before_persistence() -> None:
@@ -939,7 +893,7 @@ def test_failed_merge_returns_failed_observation() -> None:
     assert result.transport_request_count == 5
     assert result.output_mode == "json_schema"
     assert result.schema_name == "merged_verdict"
-    assert "schema_version" in (result.message or "")
+    assert "status" in (result.message or "")
 
 
 def test_inference_exception_message_is_sanitized_before_observation() -> None:

@@ -18,6 +18,8 @@ MAX_WINDOW_FINDINGS = 4
 MAX_CHUNK_DIGEST_CHARACTERS = 2_400
 MAX_FINDING_OBSERVATION_CHARACTERS = 350
 MAX_BEHAVIORAL_FEEDBACK_CHARACTERS = 10_000
+MAX_REPORTED_UNKNOWN_EVIDENCE_IDS = 3
+MAX_REPORTED_EVIDENCE_ID_CHARACTERS = 64
 SCORE_ANCHORS = (0.0, 0.25, 0.5, 0.75, 1.0)
 
 
@@ -97,8 +99,19 @@ class MergedVerdict(_ClosedModel):
     feedback: BehavioralFeedback | None
 
 
+def _model_output_json_schema(
+    model: type[BaseModel],
+    *host_fields: str,
+) -> dict:
+    schema = model.model_json_schema()
+    for field in host_fields:
+        schema["properties"].pop(field)
+        schema["required"].remove(field)
+    return schema
+
+
 def _merged_verdict_json_schema() -> dict:
-    schema = MergedVerdict.model_json_schema()
+    schema = _model_output_json_schema(MergedVerdict, "schema_version")
     score = schema["properties"]["score"]
     score["anyOf"] = [{"type": "number"}, {"type": "null"}]
     return schema
@@ -106,7 +119,7 @@ def _merged_verdict_json_schema() -> dict:
 
 CHUNK_DIGEST_SCHEMA = JsonSchemaSpec(
     name="chunk_digest",
-    schema=ChunkDigest.model_json_schema(),
+    schema=_model_output_json_schema(ChunkDigest, "schema_version", "chunk_id"),
 )
 WINDOW_FINDING_SCHEMA = JsonSchemaSpec(
     name="window_finding",
@@ -114,7 +127,7 @@ WINDOW_FINDING_SCHEMA = JsonSchemaSpec(
 )
 WINDOW_FINDINGS_SCHEMA = JsonSchemaSpec(
     name="window_findings",
-    schema=WindowFindings.model_json_schema(),
+    schema=_model_output_json_schema(WindowFindings, "schema_version", "window_id"),
 )
 BEHAVIORAL_FEEDBACK_SCHEMA = JsonSchemaSpec(
     name="behavioral_feedback",
@@ -135,32 +148,22 @@ def _bound_evidence_ids(allowed_evidence_ids: Sequence[str]) -> list[str]:
 
 
 def bind_chunk_digest_schema(
-    expected_chunk_id: str,
     allowed_evidence_ids: Sequence[str],
 ) -> JsonSchemaSpec:
-    """Bind one digest response to its exact chunk and source evidence."""
+    """Bind one digest response to its source evidence."""
 
     schema = deepcopy(dict(CHUNK_DIGEST_SCHEMA.schema))
     properties = schema["properties"]
-    properties["chunk_id"]["const"] = _nonblank_id(
-        expected_chunk_id,
-        field="expected chunk ID",
-    )
     properties["evidence_ids"]["items"]["enum"] = _bound_evidence_ids(allowed_evidence_ids)
     return JsonSchemaSpec(name=CHUNK_DIGEST_SCHEMA.name, schema=schema)
 
 
 def bind_window_findings_schema(
-    expected_window_id: str,
     allowed_evidence_ids: Sequence[str],
 ) -> JsonSchemaSpec:
-    """Bind one window response to its exact raw window evidence."""
+    """Bind one window response to its raw-window evidence."""
 
     schema = deepcopy(dict(WINDOW_FINDINGS_SCHEMA.schema))
-    schema["properties"]["window_id"]["const"] = _nonblank_id(
-        expected_window_id,
-        field="expected window ID",
-    )
     finding = schema["$defs"]["WindowFinding"]["properties"]
     finding["evidence_ids"]["items"]["enum"] = _bound_evidence_ids(allowed_evidence_ids)
     return JsonSchemaSpec(name=WINDOW_FINDINGS_SCHEMA.name, schema=schema)
@@ -229,9 +232,17 @@ def _validated_evidence_ids(
     )
     if required and not normalized:
         raise ValueError("at least one evidence citation is required")
-    for evidence_id in normalized:
-        if evidence_id not in allowed_ids:
-            raise ValueError("unknown evidence ID")
+    unknown = [evidence_id for evidence_id in normalized if evidence_id not in allowed_ids]
+    if unknown:
+        reported = [
+            evidence_id
+            if len(evidence_id) <= MAX_REPORTED_EVIDENCE_ID_CHARACTERS
+            else evidence_id[: MAX_REPORTED_EVIDENCE_ID_CHARACTERS - 3] + "..."
+            for evidence_id in unknown[:MAX_REPORTED_UNKNOWN_EVIDENCE_IDS]
+        ]
+        remainder = len(unknown) - len(reported)
+        suffix = f" (+{remainder} more)" if remainder else ""
+        raise ValueError(f"unknown evidence IDs: {json.dumps(reported)}{suffix}")
     return normalized
 
 
@@ -246,12 +257,15 @@ def parse_chunk_digest(
 
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
         raise ValueError("max_tokens must be a positive integer")
-    digest = ChunkDigest.model_validate(_validation_data(value))
+    data = _validation_data(value)
+    if expected_chunk_id is not None and isinstance(data, Mapping):
+        data = {
+            **data,
+            "schema_version": SLIDING_CONTRACT_SCHEMA_VERSION,
+            "chunk_id": _nonblank_id(expected_chunk_id, field="expected chunk ID"),
+        }
+    digest = ChunkDigest.model_validate(data)
     chunk_id = _nonblank_id(digest.chunk_id, field="chunk ID")
-    if expected_chunk_id is not None and chunk_id != _nonblank_id(
-        expected_chunk_id, field="expected chunk ID"
-    ):
-        raise ValueError("unexpected chunk ID")
     text = _normalized_text(digest.text, field="digest text")
     if count_tokens(text, "utf8_bytes_div_3") > max_tokens:
         raise ValueError("digest text exceeds the configured token limit")
@@ -301,12 +315,15 @@ def parse_window_findings(
 
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
         raise ValueError("max_tokens must be a positive integer")
-    parsed = WindowFindings.model_validate(_validation_data(value))
+    data = _validation_data(value)
+    if expected_window_id is not None and isinstance(data, Mapping):
+        data = {
+            **data,
+            "schema_version": SLIDING_CONTRACT_SCHEMA_VERSION,
+            "window_id": _nonblank_id(expected_window_id, field="expected window ID"),
+        }
+    parsed = WindowFindings.model_validate(data)
     window_id = _nonblank_id(parsed.window_id, field="window ID")
-    if expected_window_id is not None and window_id != _nonblank_id(
-        expected_window_id, field="expected window ID"
-    ):
-        raise ValueError("unexpected window ID")
     findings: list[WindowFinding] = []
     seen: set[tuple[object, ...]] = set()
     for value in parsed.findings:
@@ -352,7 +369,10 @@ def parse_merged_verdict(
 ) -> MergedVerdict:
     """Validate the final anchored verdict and behavioral-feedback combination."""
 
-    verdict = MergedVerdict.model_validate(_validation_data(value))
+    data = _validation_data(value)
+    if isinstance(data, Mapping):
+        data = {**data, "schema_version": SLIDING_CONTRACT_SCHEMA_VERSION}
+    verdict = MergedVerdict.model_validate(data)
     rationale = _normalized_text(verdict.rationale, field="rationale")
     allowed_ids = _allowed_id_set(allowed_evidence_ids)
 
