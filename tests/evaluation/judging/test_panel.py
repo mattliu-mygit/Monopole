@@ -8,6 +8,7 @@ import pytest
 
 from weave_agent_signals.judges.review import (
     AttemptObservation,
+    InferenceStepAudit,
     PanelOutcome,
     execute_panel,
     panel_result_from_outcome,
@@ -46,6 +47,23 @@ def _success(score: float) -> AttemptObservation:
             "desired_behavior": None,
         },
     )
+
+
+def test_retry_recovery_is_valid_fallback_audit_metadata():
+    audit = InferenceStepAudit(
+        phase="window",
+        artifact_id="window-1",
+        requested_model="wandb:gemma",
+        resolved_model="google/gemma-3-27b-it",
+        usage={"total_tokens": 10},
+        output_mode="json_object_fallback",
+        schema_name="window_findings",
+        schema_fallback_reason="retry_recovery",
+        transport_request_count=2,
+        raw_output_digest="0" * 64,
+    )
+
+    assert audit.schema_fallback_reason == "retry_recovery"
 
 
 def _failure() -> AttemptObservation:

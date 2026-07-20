@@ -35,8 +35,13 @@ function durationLabel(start: string, endMs: number): string | null {
 }
 
 function eventTimeLabel(start: string, at: string): string {
-  const label = durationLabel(start, Date.parse(at))
-  return label ? `+${label}` : ''
+  if (!Number.isFinite(Date.parse(start)) || !Number.isFinite(Date.parse(at))) return ''
+  return new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZoneName: 'short',
+  }).format(new Date(at))
 }
 
 function JudgingActivity({
@@ -59,6 +64,18 @@ function JudgingActivity({
   }, [active])
 
   const events = state?.events ?? []
+  const timingTotals = new Map<string, { attempts: number; seconds: number }>()
+  for (const event of events) {
+    if (event.phase !== 'transport_attempt_completed' || !event.model || event.elapsed_seconds == null) continue
+    const current = timingTotals.get(event.model) ?? { attempts: 0, seconds: 0 }
+    current.attempts += 1
+    current.seconds += event.elapsed_seconds
+    timingTotals.set(event.model, current)
+  }
+  const timingSummaries = [...timingTotals].map(([model, timing]) => {
+    const average = (timing.seconds / timing.attempts).toFixed(1).replace(/\.0$/, '')
+    return `${model} · ${timing.attempts} ${timing.attempts === 1 ? 'attempt' : 'attempts'} · ${average}s average`
+  })
   const visibleEvents = showAll ? events : events.slice(-5)
   const lastEvent = events.at(-1)
   const elapsedEnd = active ? nowMs : Date.parse(lastEvent?.at ?? '')
@@ -85,6 +102,12 @@ function JudgingActivity({
 
       {events.length > 0 && (
         <>
+          {timingSummaries.length > 0 && (
+            <div className="rounded border border-purple-100 bg-white/70 p-2 text-xs text-gray-600">
+              <div className="font-medium text-gray-700">Judge request timing</div>
+              {timingSummaries.map((summary) => <div key={summary} className="mt-1 tabular-nums">{summary}</div>)}
+            </div>
+          )}
           <ol id="judging-activity-events" aria-label="Judging activity" className="space-y-2">
             {visibleEvents.map((event) => {
               const isCurrent = active && event.id === lastEvent?.id
@@ -105,6 +128,13 @@ function JudgingActivity({
                 event.retry_reason ? `reason ${words(event.retry_reason)}` : null,
                 event.provider_status != null ? `provider ${event.provider_status}` : null,
                 event.provider_error_code ? words(event.provider_error_code) : null,
+                event.finish_reason ? `finish ${words(event.finish_reason)}` : null,
+                event.completion_tokens != null
+                  ? `${event.completion_tokens.toLocaleString()} completion tokens`
+                  : null,
+                event.reasoning_tokens != null
+                  ? `${event.reasoning_tokens.toLocaleString()} reasoning tokens`
+                  : null,
                 event.estimated_input_tokens != null
                   ? `${event.estimated_input_tokens.toLocaleString()} estimated input tokens`
                   : null,
@@ -188,6 +218,7 @@ function JudgingActivity({
 }
 
 function Step({ step }: { step: InferenceStepAudit }) {
+  const responses = step.response_diagnostics ?? []
   return (
     <li className="rounded border border-gray-200 bg-white p-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -203,6 +234,21 @@ function Step({ step }: { step: InferenceStepAudit }) {
         {step.schema_fallback_reason && <div className="sm:col-span-2"><dt className="inline text-gray-400">Schema fallback: </dt><dd className="inline">{step.schema_fallback_reason}</dd></div>}
         {step.raw_output_digest && <div className="sm:col-span-2"><dt className="inline text-gray-400">Output digest: </dt><dd className="inline break-all font-mono">{step.raw_output_digest}</dd></div>}
       </dl>
+      {responses.length > 0 && (
+        <ol className="mt-2 space-y-1 border-t border-gray-100 pt-2">
+          {responses.map((response, index) => (
+            <li key={index} className="rounded bg-gray-50 p-2">
+              <div className="font-medium text-gray-700">Response {index + 1}</div>
+              <dl className="mt-1 grid gap-1 sm:grid-cols-2">
+                <div><dt className="inline text-gray-400">Finish: </dt><dd className="inline">{response.finish_reason ? words(response.finish_reason) : '—'}</dd></div>
+                <div><dt className="inline text-gray-400">Content: </dt><dd className="inline">{response.content_characters.toLocaleString()} characters</dd></div>
+                <div><dt className="inline text-gray-400">Usage: </dt><dd className="inline">{usageText(response.usage)}</dd></div>
+                <div><dt className="inline text-gray-400">Completion details: </dt><dd className="inline">{usageText(response.completion_details)}</dd></div>
+              </dl>
+            </li>
+          ))}
+        </ol>
+      )}
     </li>
   )
 }

@@ -62,6 +62,7 @@ class FakeClient:
         self.hydrate_model = hydrate_model
         self.paginated_calls: list[dict] = []
         self.trace_id_calls: list[list[str]] = []
+        self.session_calls: list[str] = []
         self.hydration_calls: list[list[str]] = []
         self.closed = False
 
@@ -78,6 +79,11 @@ class FakeClient:
     def query_turns_by_trace_ids(self, trace_ids):
         self.trace_id_calls.append(list(trace_ids))
         return list(self.hydrated)
+
+    def query_session(self, conversation_id):
+        self.session_calls.append(conversation_id)
+        turns = [turn for turn in self.discovered if turn.conversation_id == conversation_id]
+        return SessionView(conversation_id, turns, "config-v1", "main")
 
     def hydrate_turns_batch(self, turns):
         self.hydration_calls.append([turn.trace_id for turn in turns])
@@ -234,6 +240,35 @@ def test_discover_turn_cohort_rejects_non_agent_or_mixed_sessions_before_hydrati
             project="agent-sessions",
         )
 
+    assert client.hydration_calls == []
+
+
+def test_discover_turn_cohort_checks_roles_outside_selected_date_range():
+    client = FakeClient(
+        discovered=[
+            _turn(
+                "judge-before-range",
+                "selected",
+                datetime(2026, 7, 13, 11, tzinfo=timezone.utc),
+                trace_role=TraceRole.JUDGE_EVALUATION,
+            ),
+            _turn(
+                "agent-in-range",
+                "selected",
+                datetime(2026, 7, 13, 12, tzinfo=timezone.utc),
+            ),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="selected sessions are not evaluable: selected"):
+        discover_turn_cohort(
+            _selection("selected", since="2026-07-13T12:00:00+00:00"),
+            client_factory=lambda: client,
+            entity="weave-team",
+            project="agent-sessions",
+        )
+
+    assert client.session_calls == ["selected"]
     assert client.hydration_calls == []
 
 

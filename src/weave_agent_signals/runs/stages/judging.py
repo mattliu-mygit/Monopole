@@ -623,9 +623,48 @@ def run_judging_stage(
     def fail_if_needed() -> None:
         if not state.failures:
             return
+        failure = state.failure_details[0]
+        rubric_id = str(failure.get("rubric") or "Rubric")
+        rubric_label = next(
+            (rubric.label for rubric in config.rubrics if rubric.id == rubric_id),
+            rubric_id,
+        )
+        model_labels = {judge.id: judge.label for judge in config.models.judges}
+        outcomes: list[str] = []
+        for attempt in failure.get("attempts", []):
+            if not isinstance(attempt, Mapping):
+                continue
+            model_id = str(attempt.get("requested_model") or "reviewer")
+            label = model_labels.get(model_id, model_id)
+            status = attempt.get("status")
+            if status == "succeeded":
+                score = attempt.get("score")
+                outcomes.append(
+                    f"{label} scored {score:g}"
+                    if isinstance(score, float)
+                    else f"{label} succeeded"
+                )
+            elif status == "abstained":
+                outcomes.append(f"{label} abstained")
+            elif status == "skipped":
+                outcomes.append(f"{label} skipped")
+            else:
+                error_type = str(attempt.get("error_type") or "provider error")
+                requests = attempt.get("transport_request_count")
+                request_note = (
+                    f" after {requests} provider requests"
+                    if type(requests) is int and requests > 0
+                    else ""
+                )
+                outcomes.append(f"{label} failed {error_type}{request_note}")
+        message = f"{rubric_label} failed"
+        if outcomes:
+            message += ": " + "; ".join(outcomes)
+        if len(state.failures) > 1:
+            message += f"; {len(state.failures) - 1} additional rubric failures"
         progress(
             "judging_failed",
-            f"Judging coverage incomplete with {len(state.failures)} review failure(s)",
+            message,
         )
         failed = state.payload(
             plan.plan_id,

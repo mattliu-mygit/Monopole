@@ -63,6 +63,62 @@ def test_route_attempt_model_exposes_skipped_disposition() -> None:
     assert attempt.skip_reason == "insufficient_context_capacity"
 
 
+def test_route_attempt_exposes_ordered_response_diagnostics() -> None:
+    attempt = ReviewAttemptResponse.model_validate(
+        {
+            "position": 1,
+            "role": "judge",
+            "trigger": "panel",
+            "requested_model": "wandb:qwen",
+            "requested_family": "qwen",
+            "requested_backend": "wandb",
+            "status": "failed",
+            "resolved_model": "Qwen/test",
+            "resolved_family": "qwen",
+            "score": None,
+            "rationale": None,
+            "evidence_ids": [],
+            "usage": {"completion_tokens": 20_000},
+            "output_mode": "json_schema",
+            "schema_name": "window_findings",
+            "schema_fallback_reason": None,
+            "transport_request_count": 2,
+            "verdict_schema_version": None,
+            "raw_output_digest": "a" * 64,
+            "error_type": "InferenceOutputExceeded",
+            "message": "provider output limit exhausted",
+            "behavioral_feedback": None,
+            "steps": [
+                {
+                    "phase": "window",
+                    "artifact_id": "sha256:" + "b" * 64,
+                    "requested_model": "wandb:qwen",
+                    "resolved_model": "Qwen/test",
+                    "usage": {"completion_tokens": 20_000},
+                    "output_mode": "json_schema",
+                    "schema_name": "window_findings",
+                    "transport_request_count": 2,
+                    "raw_output_digest": "a" * 64,
+                    "response_diagnostics": [
+                        {
+                            "finish_reason": "length",
+                            "usage": {"completion_tokens": 10_000},
+                            "completion_details": {"reasoning_tokens": 9_500},
+                            "content_characters": 0,
+                        }
+                    ],
+                    "reused": False,
+                }
+            ],
+        }
+    )
+
+    assert attempt.steps[0].response_diagnostics[0].finish_reason == "length"
+    assert attempt.steps[0].response_diagnostics[0].completion_details == {
+        "reasoning_tokens": 9_500
+    }
+
+
 def test_reflecting_progress_exposes_pinned_model_context() -> None:
     progress = ReflectingProgressResponse.model_validate(
         {

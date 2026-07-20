@@ -45,8 +45,11 @@ function estimateSession(
   const tierReserve = large
     ? policy.large_model_reserve_tokens
     : policy.small_model_reserve_tokens
+  const outputReserve = large
+    ? policy.large_model_output_reserve_tokens
+    : policy.output_reserve_tokens
   const baseReserve = policy.prompt_reserve_tokens
-    + policy.output_reserve_tokens
+    + outputReserve
     + policy.safety_reserve_tokens
   let chunks = 1
   let coreTokens: number[] | null = null

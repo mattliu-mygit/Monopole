@@ -86,10 +86,12 @@ const progress: Progress = {
     { id: 1, at: '2026-07-16T07:00:00+00:00', phase: 'judging_started', message: 'Starting 1 planned rubric judgment' },
     { id: 2, at: '2026-07-16T07:00:01+00:00', phase: 'session_started', message: 'Reviewing session session-1', conversation_id: 'session-1' },
     { id: 3, at: '2026-07-16T07:00:02+00:00', phase: 'digest_started', message: 'Judge A is digesting chunk 1 of 2', model: 'judge-a', item_index: 1, item_total: 2 },
+    { id: 31, at: '2026-07-16T07:03:13+00:00', phase: 'transport_attempt_completed', message: 'Judge A provider request attempt 1 failed after 191.8s', model: 'judge-a', request_attempt: 1, max_attempts: 3, elapsed_seconds: 191.8, status: 'failed' },
     { id: 4, at: '2026-07-16T07:03:14+00:00', phase: 'transport_retry', message: 'Judge A request failed after 191.8s; retrying attempt 2 of 3', model: 'judge-a', request_attempt: 2, max_attempts: 3, elapsed_seconds: 191.8, error_category: 'retryable_process_error', provider_status: 429, provider_error_code: 'rate_limit_exceeded', provider_error_message: 'Too many requests for this model.', output_sha256: 'e'.repeat(64) },
     { id: 5, at: '2026-07-16T07:03:25+00:00', phase: 'transport_recovered', message: 'Judge A recovered on request attempt 2 of 3', model: 'judge-a', request_attempt: 2, max_attempts: 3, elapsed_seconds: 202, output_sha256: 'f'.repeat(64) },
     { id: 6, at: '2026-07-16T07:03:26+00:00', phase: 'window_started', message: 'Judge A is reviewing window 1 of 2', model: 'judge-a', rubric: 'judge.session_outcome', item_index: 1, item_total: 2 },
     { id: 7, at: '2026-07-16T07:04:00+00:00', phase: 'merge_started', message: 'Judge A is merging Session Outcome Quality', model: 'judge-a', rubric: 'judge.session_outcome' },
+    { id: 8, at: '2026-07-16T07:04:10+00:00', phase: 'transport_attempt_completed', message: 'Judge A provider request attempt 2 completed in 10.2s', model: 'judge-a', request_attempt: 2, max_attempts: 3, elapsed_seconds: 10.2, status: 'succeeded' },
   ],
   attempt_summaries: [{
     scope: 'session',
@@ -122,6 +124,15 @@ describe('JudgingProgress', () => {
     expect(screen.getByText('provider 429')).not.toBeNull()
     expect(screen.getByText('rate limit exceeded')).not.toBeNull()
     expect(screen.getByText('Too many requests for this model.')).not.toBeNull()
+    expect(screen.getByText('Judge request timing')).not.toBeNull()
+    expect(screen.getByText('judge-a · 2 attempts · 101s average')).not.toBeNull()
+    const expectedTimestamp = new Intl.DateTimeFormat(undefined, {
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+      timeZoneName: 'short',
+    }).format(new Date('2026-07-16T07:04:10+00:00'))
+    expect(screen.getByText(expectedTimestamp)).not.toBeNull()
     expect(screen.queryByText('Starting 1 planned rubric judgment')).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Show all activity' }))
@@ -234,5 +245,69 @@ describe('JudgingProgress', () => {
 
     rerender(<JudgingProgress plan={null} progress={null} result={null} />)
     expect(screen.getByRole('status').textContent).toBe('Waiting for judging to start.')
+  })
+
+  it('shows completion diagnostics for an exhausted response retry', () => {
+    const failedAttempt = {
+      ...attempt,
+      status: 'failed',
+      score: null,
+      rationale: null,
+      evidence_ids: [],
+      error_type: 'InferenceOutputExceeded',
+      message: 'provider output limit exhausted',
+      behavioral_feedback: null,
+      steps: [{
+        ...attempt.steps[1],
+        transport_request_count: 2,
+        response_diagnostics: [
+          {
+            finish_reason: 'length',
+            usage: { completion_tokens: 10_000 },
+            completion_details: { reasoning_tokens: 9_700 },
+            content_characters: 0,
+          },
+          {
+            finish_reason: 'length',
+            usage: { completion_tokens: 10_000 },
+            completion_details: { reasoning_tokens: 9_500 },
+            content_characters: 0,
+          },
+        ],
+      }],
+    } as unknown as ReviewAttempt
+    const diagnosticEvent = {
+      id: 8,
+      at: '2026-07-16T07:04:10+00:00',
+      phase: 'validation_failed',
+      message: 'Qwen returned invalid window output',
+      model: 'wandb:qwen',
+      error_category: 'InferenceOutputExceeded',
+      finish_reason: 'length',
+      completion_tokens: 10_000,
+      reasoning_tokens: 9_500,
+    } as unknown as Progress['events'][number]
+    const failed: Progress = {
+      ...progress,
+      events: [...progress.events, diagnosticEvent],
+      failure_count: 1,
+      failure_details: [{
+        scope: 'session',
+        rubric: 'judge.error_recovery',
+        error_type: 'JudgeExecutionError',
+        message: 'One reviewer failed',
+        attempt_count: 1,
+        attempts: [failedAttempt],
+        conversation_id: 'session-2',
+      }],
+    }
+
+    render(<JudgingProgress plan={plan} progress={null} result={failed} />)
+
+    expect(screen.getByText('finish length')).not.toBeNull()
+    expect(screen.getByText('10,000 completion tokens')).not.toBeNull()
+    expect(screen.getByText('9,500 reasoning tokens')).not.toBeNull()
+    expect(screen.getByText('Response 1')).not.toBeNull()
+    expect(screen.getByText('Response 2')).not.toBeNull()
   })
 })

@@ -212,6 +212,35 @@ def test_session_listing_excludes_explicit_non_agent_and_mixed_sessions():
     ]
 
 
+def test_session_listing_checks_roles_outside_requested_date_range():
+    client, backend = _client()
+    backend.turns.extend(
+        [
+            _turn(
+                "trace-hidden-judge",
+                "mixed-across-range",
+                hour=11,
+                user_input="Earlier evaluation",
+                trace_role=TraceRole.JUDGE_EVALUATION,
+            ),
+            _turn(
+                "trace-visible-agent",
+                "mixed-across-range",
+                hour=12,
+                user_input="Visible user work",
+            ),
+        ]
+    )
+
+    response = client.get(
+        "/api/sessions",
+        params={"since": "2026-07-14T12:00:00Z", "until": "2026-07-14T13:00:00Z"},
+    )
+
+    assert response.status_code == 200
+    assert [item["conversation_id"] for item in response.json()["sessions"]] == ["session/one"]
+
+
 @pytest.mark.parametrize("conversation_id", ["signal-session", "mixed-session"])
 def test_session_detail_rejects_non_agent_and_mixed_sessions(conversation_id):
     client, backend = _client()

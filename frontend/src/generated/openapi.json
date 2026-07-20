@@ -1225,6 +1225,43 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "InferenceResponseDiagnosticResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "completion_details": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Completion Details",
+            "type": "object"
+          },
+          "content_characters": {
+            "default": 0,
+            "title": "Content Characters",
+            "type": "integer"
+          },
+          "finish_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finish Reason"
+          },
+          "usage": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Usage",
+            "type": "object"
+          }
+        },
+        "title": "InferenceResponseDiagnosticResponse",
+        "type": "object"
+      },
       "InferenceStepAuditResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1277,6 +1314,13 @@
               }
             ],
             "title": "Resolved Model"
+          },
+          "response_diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/InferenceResponseDiagnosticResponse"
+            },
+            "title": "Response Diagnostics",
+            "type": "array"
           },
           "reused": {
             "title": "Reused",
@@ -1433,6 +1477,17 @@
             "title": "At",
             "type": "string"
           },
+          "completion_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Tokens"
+          },
           "conversation_id": {
             "anyOf": [
               {
@@ -1487,6 +1542,17 @@
               }
             ],
             "title": "Exit Code"
+          },
+          "finish_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finish Reason"
           },
           "id": {
             "title": "Id",
@@ -1631,6 +1697,17 @@
               }
             ],
             "title": "Provider Status"
+          },
+          "reasoning_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Tokens"
           },
           "request_attempt": {
             "anyOf": [
@@ -1800,6 +1877,12 @@
             "default": 4000,
             "minimum": 1.0,
             "title": "Finding Max Tokens",
+            "type": "integer"
+          },
+          "large_model_output_reserve_tokens": {
+            "default": 10000,
+            "minimum": 1.0,
+            "title": "Large Model Output Reserve Tokens",
             "type": "integer"
           },
           "large_model_raw_target_tokens": {

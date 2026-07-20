@@ -53,6 +53,7 @@ class JudgingContextPolicy(StrictFrozenModel):
     small_model_raw_target_tokens: Annotated[int, Field(strict=True, ge=1)] = 50_000
     prompt_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 6_000
     output_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 4_000
+    large_model_output_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 10_000
     safety_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 8_000
     digest_max_tokens: Annotated[int, Field(strict=True, ge=1)] = 1_000
     finding_max_tokens: Annotated[int, Field(strict=True, ge=1)] = 4_000
@@ -75,6 +76,14 @@ class JudgingContextPolicy(StrictFrozenModel):
         if model_limit > self.large_model_threshold_tokens:
             return self.large_model_raw_target_tokens
         return self.small_model_raw_target_tokens
+
+    def generation_budget(self, model_limit: int) -> int:
+        """Return the structured-generation allowance for a model capacity."""
+
+        self.capacity_reserve(model_limit)
+        if model_limit > self.large_model_threshold_tokens:
+            return self.large_model_output_reserve_tokens
+        return self.output_reserve_tokens
 
 
 DEFAULT_JUDGING_CONTEXT_POLICY = JudgingContextPolicy()

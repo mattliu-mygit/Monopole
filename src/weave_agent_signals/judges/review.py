@@ -10,14 +10,18 @@ from math import isfinite
 from types import MappingProxyType
 from typing import Literal
 
-from weave_agent_signals.judges.inference import InferenceCancelled
+from weave_agent_signals.judges.inference import (
+    SCHEMA_FALLBACK_RETRY,
+    SCHEMA_FALLBACK_UNSUPPORTED,
+    InferenceCancelled,
+    InferenceResponseDiagnostic,
+)
 from weave_agent_signals.judges.records import PanelResult, ReviewerOutcome
 from weave_agent_signals.run_config import PositionedJudge
 
 ObservationStatus = Literal["succeeded", "abstained", "failed", "skipped"]
 ReviewStatus = Literal["complete", "degraded", "not_evaluable", "failed"]
 InferencePhase = Literal["digest", "window", "merge"]
-_SCHEMA_FALLBACK_REASON = "schema_output_unsupported"
 PANEL_CONTRACT_VERSION = "1"
 log = logging.getLogger("weave_agent_signals.judges")
 
@@ -41,8 +45,12 @@ def _validate_schema_fallback_metadata(
     output_mode: str | None,
     schema_fallback_reason: str | None,
 ) -> None:
-    expected_reason = _SCHEMA_FALLBACK_REASON if output_mode == "json_object_fallback" else None
-    if schema_fallback_reason != expected_reason:
+    valid_reasons = (
+        {SCHEMA_FALLBACK_UNSUPPORTED, SCHEMA_FALLBACK_RETRY}
+        if output_mode == "json_object_fallback"
+        else {None}
+    )
+    if schema_fallback_reason not in valid_reasons:
         raise ValueError("schema fallback metadata is invalid")
 
 
@@ -58,6 +66,7 @@ class InferenceStepAudit:
     schema_fallback_reason: str | None
     transport_request_count: int
     raw_output_digest: str | None
+    response_diagnostics: tuple[InferenceResponseDiagnostic, ...] = ()
     reused: bool = False
 
     def __post_init__(self) -> None:
@@ -84,6 +93,12 @@ class InferenceStepAudit:
             raise ValueError("transport_request_count must be a nonnegative integer")
         if type(self.reused) is not bool:
             raise ValueError("reused must be a boolean")
+        if not isinstance(self.response_diagnostics, tuple) or any(
+            not isinstance(item, InferenceResponseDiagnostic) for item in self.response_diagnostics
+        ):
+            raise ValueError(
+                "response_diagnostics must be a tuple of InferenceResponseDiagnostic values"
+            )
         if self.raw_output_digest is not None and (
             not isinstance(self.raw_output_digest, str)
             or len(self.raw_output_digest) != 64

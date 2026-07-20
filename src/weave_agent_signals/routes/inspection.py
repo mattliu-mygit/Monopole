@@ -278,10 +278,14 @@ def create_inspection_router(
                 since=query_since,
                 include_details=True,
             )
-        filtered = [turn for turn in turns if turn.started_at >= since_value]
-        if until_value is not None:
-            filtered = [turn for turn in filtered if turn.started_at <= until_value]
-        grouped = _group_sessions(filtered)
+            filtered = [turn for turn in turns if turn.started_at >= since_value]
+            if until_value is not None:
+                filtered = [turn for turn in filtered if turn.started_at <= until_value]
+            grouped = {
+                conversation_id: session_turns
+                for conversation_id, session_turns in _group_sessions(filtered).items()
+                if session_is_evaluable(client.query_session(conversation_id).turns)
+            }
         sessions = [
             (_session_summary(conversation_id, session_turns), session_turns)
             for conversation_id, session_turns in grouped.items()

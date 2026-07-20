@@ -53,6 +53,7 @@ Run frontend gates from `frontend/`:
 
 ```bash
 npm test
+npm run check:api
 npm run lint
 npm run build
 ```
@@ -134,9 +135,10 @@ product behavior; standalone reflection does not mutate managed files.
   Claude is tool-disabled. Codex uses a deny-by-default filesystem profile with
   an isolated `HOME`; only its empty workspace and minimal runtime paths are
   readable, and network, web search, apps, login shells, customizations, and
-  persistence are disabled. Antigravity runs from the same empty workspace in
-  plan mode with `--sandbox`, a minimal child environment, and the existing
-  home needed for its stored Gemini credentials and state.
+  persistence are disabled. Antigravity runs from an empty workspace in
+  confined `accept-edits` mode with permission auto-approval, a minimal child
+  environment, an isolated temporary home, and a one-use FIFO carrying only
+  its stored OAuth token. Persistent Gemini histories and state are not exposed.
 
 ## Weave correctness checklist
 

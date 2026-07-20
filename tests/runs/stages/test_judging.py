@@ -288,6 +288,9 @@ def test_stage_persists_safe_semantic_and_transport_activity(store, monkeypatch)
                 "provider_status": 429,
                 "provider_error_code": "rate_limit_exceeded",
                 "provider_error_message": f"Too many requests; token={secret}",
+                "finish_reason": "length",
+                "completion_tokens": 10_000,
+                "reasoning_tokens": 9_500,
                 "output_sha256": "a" * 64,
                 "raw_output": secret,
             }
@@ -335,6 +338,9 @@ def test_stage_persists_safe_semantic_and_transport_activity(store, monkeypatch)
     assert retry.details["provider_status"] == 429
     assert retry.details["provider_error_code"] == "rate_limit_exceeded"
     assert retry.details["provider_error_message"] == "Too many requests; token=[REDACTED]"
+    assert retry.details["finish_reason"] == "length"
+    assert retry.details["completion_tokens"] == 10_000
+    assert retry.details["reasoning_tokens"] == 9_500
     assert retry.details["output_sha256"] == "a" * 64
     assert "raw_output" not in retry.details
     assert secret not in str(events)
@@ -368,12 +374,14 @@ def test_stage_does_not_write_partial_scores_when_any_session_rubric_fails(store
 def test_stage_preserves_successful_reviewer_count_for_failed_panel(store, monkeypatch):
     run, effective, turn, session = _setup(store)
     attempts = (
-        {"status": "succeeded", "requested_model": "judge-1"},
+        {"status": "succeeded", "requested_model": "judge-1", "score": 0.75},
+        {"status": "abstained", "requested_model": "judge-2"},
         {
             "status": "failed",
-            "requested_model": "judge-2",
-            "error_type": "ValueError",
-            "message": "unknown evidence ID",
+            "requested_model": "judge-3",
+            "error_type": "ReadTimeout",
+            "message": "judge invocation failed",
+            "transport_request_count": 6,
         },
     )
     failure = runner.JudgeFailure(
@@ -399,6 +407,12 @@ def test_stage_preserves_successful_reviewer_count_for_failed_panel(store, monke
 
     summary = store.get(run.run_id).judging_result["attempt_summaries"][0]
     assert summary["successful_reviewer_count"] == 1
+    failed_event = store.list_run_events(run.run_id, stage="judging")[-1]
+    assert failed_event.phase == "judging_failed"
+    assert failed_event.message == (
+        "Session Outcome Quality failed: judge-1 scored 0.75; "
+        "judge-2 abstained; judge-3 failed ReadTimeout after 6 provider requests"
+    )
 
 
 def test_stage_stops_remaining_sessions_after_first_review_failure(store, monkeypatch):

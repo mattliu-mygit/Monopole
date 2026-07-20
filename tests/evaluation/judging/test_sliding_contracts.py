@@ -251,26 +251,27 @@ def test_window_findings_canonicalizes_local_ids_and_rejects_excess_findings():
         )
 
 
-def test_duplicate_evidence_count_does_not_hide_duplicate_window_findings():
+def test_window_findings_deduplicates_repeated_evidence_semantics():
     first = _valid_finding(finding_id="finding-1", evidence_ids=["trace-1"])
     second = _valid_finding(
         finding_id="finding-2",
         evidence_ids=["trace-1", "trace-1"],
     )
 
-    with pytest.raises(ValueError, match="duplicate findings"):
-        parse_window_findings(
-            {
-                "schema_version": 1,
-                "window_id": "window-1",
-                "findings": [first, second],
-            },
-            allowed_evidence_ids=("trace-1",),
-            max_tokens=100,
-        )
+    parsed = parse_window_findings(
+        {
+            "schema_version": 1,
+            "window_id": "window-1",
+            "findings": [first, second],
+        },
+        allowed_evidence_ids=("trace-1",),
+        max_tokens=100,
+    )
+
+    assert [finding.finding_id for finding in parsed.findings] == ["finding-1"]
 
 
-def test_window_findings_rejects_duplicates_with_reversed_citation_order():
+def test_window_findings_deduplicates_reversed_citation_order():
     payload = {
         "schema_version": 1,
         "window_id": "window-1",
@@ -286,12 +287,13 @@ def test_window_findings_rejects_duplicates_with_reversed_citation_order():
         ],
     }
 
-    with pytest.raises(ValueError, match="duplicate findings"):
-        parse_window_findings(
-            payload,
-            allowed_evidence_ids=("trace-1", "trace-2"),
-            max_tokens=750,
-        )
+    parsed = parse_window_findings(
+        payload,
+        allowed_evidence_ids=("trace-1", "trace-2"),
+        max_tokens=750,
+    )
+
+    assert [finding.finding_id for finding in parsed.findings] == ["finding-1"]
 
 
 def test_window_findings_rejects_complete_canonical_artifact_over_token_limit():

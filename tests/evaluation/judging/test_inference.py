@@ -26,11 +26,19 @@ def _schema():
     )
 
 
-def _completion(content: str = '{"score":0.75}') -> dict:
+def _completion(
+    content: str = '{"score":0.75}',
+    *,
+    finish_reason: str = "stop",
+    completion_details: dict[str, int] | None = None,
+) -> dict:
+    usage: dict[str, object] = {"total_tokens": 7}
+    if completion_details is not None:
+        usage["completion_tokens_details"] = completion_details
     return {
-        "choices": [{"message": {"content": content}}],
+        "choices": [{"message": {"content": content}, "finish_reason": finish_reason}],
         "model": "gpt-test-resolved",
-        "usage": {"total_tokens": 7},
+        "usage": usage,
     }
 
 
@@ -94,8 +102,57 @@ def test_http_chat_json_sends_strict_named_schema(client, monkeypatch):
     assert response.schema_name == "judge_verdict"
 
 
+def test_wandb_can_disable_reasoning_for_one_request(client, monkeypatch):
+    calls: list[dict] = []
+    client.backend = "wandb"
+    monkeypatch.setattr(
+        client,
+        "_post_with_retry",
+        lambda _path, body: (calls.append(body) or _completion(), 1),
+    )
+
+    client.chat_json(
+        model="Qwen/Qwen3.6-35B-A3B",
+        messages=_messages(),
+        response_schema=_schema(),
+        reasoning="disabled",
+    )
+    client.chat_json(
+        model="Qwen/Qwen3.6-35B-A3B",
+        messages=_messages(),
+        response_schema=_schema(),
+    )
+
+    assert calls[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "chat_template_kwargs" not in calls[1]
+
+
+def test_http_chat_captures_response_diagnostics(client, monkeypatch):
+    payload = _completion(completion_details={"reasoning_tokens": 2})
+    payload["usage"].update(
+        prompt_tokens=8,
+        completion_tokens=3,
+        total_tokens=11,
+    )
+    monkeypatch.setattr(client, "_post_with_retry", lambda _path, _body: (payload, 1))
+
+    response = client.chat(model="gpt-test", messages=_messages())
+
+    assert [item.model_dump() for item in response.response_diagnostics] == [
+        {
+            "finish_reason": "stop",
+            "usage": {"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11},
+            "completion_details": {"reasoning_tokens": 2},
+            "content_characters": len('{"score":0.75}'),
+        }
+    ]
+
+
 def test_http_transport_allows_long_reasoning_responses(client):
-    assert client._http.timeout.read == 180.0
+    assert client._http.timeout.read == 240.0
+    assert client._http.timeout.connect == 10.0
+    assert client._http.timeout.write == 60.0
+    assert client._http.timeout.pool == 10.0
 
 
 def test_http_chat_json_falls_back_only_for_explicit_schema_rejection(client, monkeypatch):
@@ -120,6 +177,8 @@ def test_http_chat_json_falls_back_only_for_explicit_schema_rejection(client, mo
     assert [call["model"] for call in calls] == ["gpt-pinned", "gpt-pinned"]
     assert calls[0]["response_format"]["type"] == "json_schema"
     assert calls[1]["response_format"] == {"type": "json_object"}
+    assert "REQUIRED_JSON_SCHEMA:" in calls[1]["messages"][0]["content"]
+    assert '"required":["score"]' in calls[1]["messages"][0]["content"]
 
 
 @pytest.mark.parametrize(
@@ -238,6 +297,186 @@ def test_http_transport_request_count_includes_rate_limit_retries(client, monkey
     assert all(call["response_format"]["type"] == "json_schema" for call in calls)
     assert response.output_mode == "json_schema"
     assert response.transport_request_count == 2
+
+
+def test_http_transport_retries_one_read_timeout(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    responses = iter(
+        [
+            httpx.ReadTimeout("provider stalled", request=request),
+            httpx.Response(200, request=request, json=_completion()),
+        ]
+    )
+    calls = 0
+    now = 0.0
+
+    def fake_post(_path, **_kwargs):
+        nonlocal calls, now
+        calls += 1
+        now += 5.0 if calls == 1 else 2.0
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    events: list[dict[str, object]] = []
+    client.set_activity(events.append)
+    monkeypatch.setattr(client._http, "post", fake_post)
+    monkeypatch.setattr(inference.time, "monotonic", lambda: now)
+
+    def verify_live_retry(_delay):
+        assert events[-1]["phase"] == "transport_retry"
+
+    monkeypatch.setattr(inference.time, "sleep", verify_live_retry)
+
+    _, response = client.chat_json(
+        model="gpt-pinned",
+        messages=_messages(),
+        response_schema=_schema(),
+    )
+
+    assert calls == 2
+    assert response.transport_request_count == 2
+    assert [event["phase"] for event in events] == [
+        "transport_attempt_started",
+        "transport_attempt_completed",
+        "transport_retry",
+        "transport_attempt_started",
+        "transport_attempt_completed",
+        "transport_recovered",
+    ]
+    assert events[0]["request_attempt"] == 1
+    assert events[1]["elapsed_seconds"] == 5.0
+    assert events[1]["status"] == "failed"
+    assert events[2]["request_attempt"] == 2
+    assert events[2]["max_attempts"] == 3
+    assert events[2]["error_category"] == "ReadTimeout"
+    assert events[2]["retry_reason"] == "transport_error"
+    assert events[3]["request_attempt"] == 2
+    assert events[4]["elapsed_seconds"] == 2.0
+    assert events[4]["status"] == "succeeded"
+    assert events[5]["request_attempt"] == 2
+
+
+def test_wandb_transport_retry_uses_concise_json_mode(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.inference.wandb.ai/v1/chat/completions")
+    responses = iter(
+        [
+            httpx.ReadTimeout("provider stalled", request=request),
+            httpx.ReadTimeout("provider still stalled", request=request),
+            httpx.Response(200, request=request, json=_completion()),
+        ]
+    )
+    calls: list[dict] = []
+    events: list[dict[str, object]] = []
+    client.backend = "wandb"
+    client.set_activity(events.append)
+
+    def fake_post(_path, *, json):
+        calls.append(json)
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(client._http, "post", fake_post)
+    monkeypatch.setattr(inference.time, "sleep", lambda _delay: None)
+
+    parsed, response = client.chat_json(
+        model="google/gemma-3-27b-it",
+        messages=_messages(),
+        response_schema=_schema(),
+    )
+
+    assert parsed == {"score": 0.75}
+    assert calls[0]["response_format"]["type"] == "json_schema"
+    assert "chat_template_kwargs" not in calls[0]
+    assert [call["response_format"] for call in calls[1:]] == [
+        {"type": "json_object"},
+        {"type": "json_object"},
+    ]
+    assert [call["chat_template_kwargs"] for call in calls[1:]] == [
+        {"enable_thinking": False},
+        {"enable_thinking": False},
+    ]
+    assert "REQUIRED_JSON_SCHEMA:" not in calls[0]["messages"][0]["content"]
+    assert all('"required":["score"]' in call["messages"][0]["content"] for call in calls[1:])
+    assert response.output_mode == "json_object_fallback"
+    assert events[2]["output_mode"] == "json_object_fallback"
+    assert "concise JSON recovery mode" in str(events[2]["message"])
+    assert events[3]["output_mode"] == "json_object_fallback"
+    assert events[5]["output_mode"] == "json_object_fallback"
+    assert events[6]["output_mode"] == "json_object_fallback"
+
+
+def test_wandb_reuses_recovery_mode_for_same_model_and_schema(client, monkeypatch):
+    calls: list[dict] = []
+    events: list[dict[str, object]] = []
+    client.backend = "wandb"
+    client.set_activity(events.append)
+
+    def fake_post(_path, body):
+        calls.append(body)
+        return _completion(), 2 if len(calls) == 1 else 1
+
+    monkeypatch.setattr(client, "_post_with_retry", fake_post)
+
+    client.chat_json(
+        model="google/gemma-4-31B-it",
+        messages=_messages(),
+        response_schema=_schema(),
+    )
+    _, response = client.chat_json(
+        model="google/gemma-4-31B-it",
+        messages=_messages(),
+        response_schema=_schema(),
+    )
+
+    assert calls[0]["response_format"]["type"] == "json_schema"
+    assert calls[1]["response_format"] == {"type": "json_object"}
+    assert calls[1]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert '"required":["score"]' in calls[1]["messages"][0]["content"]
+    assert response.output_mode == "json_object_fallback"
+    assert response.schema_fallback_reason == "retry_recovery"
+    assert events[-1]["phase"] == "schema_recovery_reused"
+
+
+def test_http_transport_stops_after_three_read_timeout_attempts(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    calls = 0
+
+    def fail(_path, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadTimeout("provider stalled", request=request)
+
+    events: list[dict[str, object]] = []
+    client.set_activity(events.append)
+    monkeypatch.setattr(client._http, "post", fail)
+    monkeypatch.setattr(inference.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(httpx.ReadTimeout) as captured:
+        client.chat_json(
+            model="gpt-pinned",
+            messages=_messages(),
+            response_schema=_schema(),
+        )
+
+    assert calls == 3
+    assert captured.value._transport_request_count == 3
+    assert [event["phase"] for event in events] == [
+        "transport_attempt_started",
+        "transport_attempt_completed",
+        "transport_retry",
+        "transport_attempt_started",
+        "transport_attempt_completed",
+        "transport_retry",
+        "transport_attempt_started",
+        "transport_attempt_completed",
+        "transport_failed",
+    ]
+    assert events[-1]["error_category"] == "ReadTimeout"
+    assert events[-1]["request_attempt"] == 3
 
 
 def test_http_explicit_context_rejection_has_typed_capacity_error(client, monkeypatch):
@@ -404,6 +643,7 @@ def test_http_failed_fallback_preserves_all_transport_attempts(client, monkeypat
             ),
             httpx.Response(429, request=request),
             httpx.Response(500, request=request),
+            httpx.Response(500, request=request),
         ]
     )
     calls = 0
@@ -423,8 +663,8 @@ def test_http_failed_fallback_preserves_all_transport_attempts(client, monkeypat
             response_schema=_schema(),
         )
 
-    assert calls == 3
-    assert getattr(captured.value, "_transport_request_count", None) == 3
+    assert calls == 4
+    assert getattr(captured.value, "_transport_request_count", None) == 4
 
 
 def test_http_malformed_json_preserves_rate_limit_attempts(client, monkeypatch):
@@ -537,3 +777,182 @@ def test_http_invalid_output_log_contains_metadata_not_model_output(client, monk
     assert "output_mode=json_schema" in caplog.text
     assert "request_count=1" in caplog.text
     assert response.raw_output_digest == hashlib.sha256(output.encode()).hexdigest()
+
+
+def test_http_output_exhaustion_retries_once_and_combines_audit(client, monkeypatch):
+    calls: list[dict] = []
+    client.backend = "wandb"
+    responses = iter(
+        [
+            (
+                _completion("unfinished reasoning"),
+                {"prompt_tokens": 100, "completion_tokens": 4, "total_tokens": 104},
+            ),
+            (
+                _completion('{"score":0.75}'),
+                {"prompt_tokens": 100, "completion_tokens": 2, "total_tokens": 102},
+            ),
+            (
+                _completion('{"score":0.5}'),
+                {"prompt_tokens": 100, "completion_tokens": 2, "total_tokens": 102},
+            ),
+        ]
+    )
+
+    def fake_post(_path, body):
+        calls.append(body)
+        payload, usage = next(responses)
+        payload["usage"] = usage
+        return payload, 1
+
+    monkeypatch.setattr(client, "_post_with_retry", fake_post)
+
+    parsed, response = client.chat_json(
+        model="gpt-pinned",
+        messages=_messages(),
+        max_tokens=4,
+        response_schema=_schema(),
+    )
+
+    assert parsed == {"score": 0.75}
+    assert len(calls) == 2
+    assert "chat_template_kwargs" not in calls[0]
+    assert calls[0]["response_format"]["type"] == "json_schema"
+    assert calls[1]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert calls[1]["response_format"] == {"type": "json_object"}
+    assert '"required":["score"]' in calls[1]["messages"][0]["content"]
+    assert response.output_mode == "json_object_fallback"
+    assert response.usage == {
+        "prompt_tokens": 200,
+        "completion_tokens": 6,
+        "total_tokens": 206,
+    }
+    assert response.transport_request_count == 2
+
+    learned, learned_response = client.chat_json(
+        model="gpt-pinned",
+        messages=_messages(),
+        max_tokens=4,
+        response_schema=_schema(),
+    )
+
+    assert learned == {"score": 0.5}
+    assert calls[2]["response_format"] == {"type": "json_object"}
+    assert calls[2]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert learned_response.output_mode == "json_object_fallback"
+
+
+def test_http_repeated_output_exhaustion_raises_with_combined_audit(client, monkeypatch):
+    calls = 0
+    events: list[dict[str, object]] = []
+    client.set_activity(events.append)
+
+    def fake_post(_path, _body):
+        nonlocal calls
+        calls += 1
+        payload = _completion(
+            "unfinished reasoning",
+            finish_reason="length",
+            completion_details={"reasoning_tokens": 4 if calls == 1 else 3},
+        )
+        payload["usage"] = {
+            "prompt_tokens": 100,
+            "completion_tokens": 4,
+            "total_tokens": 104,
+            "completion_tokens_details": {"reasoning_tokens": 4 if calls == 1 else 3},
+        }
+        return payload, 1
+
+    monkeypatch.setattr(client, "_post_with_retry", fake_post)
+
+    with pytest.raises(inference.InferenceOutputExceeded) as captured:
+        client.chat_json(
+            model="gpt-pinned",
+            messages=_messages(),
+            max_tokens=4,
+            response_schema=_schema(),
+        )
+
+    assert calls == 2
+    assert str(captured.value) == "provider output limit exhausted"
+    assert captured.value.response.usage == {
+        "prompt_tokens": 200,
+        "completion_tokens": 8,
+        "total_tokens": 208,
+    }
+    assert captured.value.response.transport_request_count == 2
+    assert [
+        diagnostic.finish_reason for diagnostic in captured.value.response.response_diagnostics
+    ] == ["length", "length"]
+    assert [
+        diagnostic.completion_details for diagnostic in captured.value.response.response_diagnostics
+    ] == [{"reasoning_tokens": 4}, {"reasoning_tokens": 3}]
+    assert [event["phase"] for event in events] == ["transport_retry", "transport_failed"]
+    assert events[0]["error_category"] == "output_limit"
+    assert events[0]["finish_reason"] == "length"
+    assert events[0]["completion_tokens"] == 4
+    assert events[0]["reasoning_tokens"] == 4
+
+
+def test_http_malformed_output_below_limit_does_not_retry(client, monkeypatch):
+    calls = 0
+
+    def fake_post(_path, _body):
+        nonlocal calls
+        calls += 1
+        payload = _completion("malformed")
+        payload["usage"] = {
+            "prompt_tokens": 100,
+            "completion_tokens": 3,
+            "total_tokens": 103,
+        }
+        return payload, 1
+
+    monkeypatch.setattr(client, "_post_with_retry", fake_post)
+
+    parsed, _ = client.chat_json(
+        model="gpt-pinned",
+        messages=_messages(),
+        max_tokens=4,
+        response_schema=_schema(),
+    )
+
+    assert parsed == {}
+    assert calls == 1
+
+
+def test_http_exhaustion_retry_failure_preserves_first_response_audit(client, monkeypatch):
+    calls = 0
+    retry_error = RuntimeError("retry failed")
+    retry_error._transport_request_count = 1  # type: ignore[attr-defined]
+
+    def fake_post(_path, _body):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise retry_error
+        payload = _completion("unfinished reasoning")
+        payload["usage"] = {
+            "prompt_tokens": 100,
+            "completion_tokens": 4,
+            "total_tokens": 104,
+        }
+        return payload, 1
+
+    monkeypatch.setattr(client, "_post_with_retry", fake_post)
+
+    with pytest.raises(RuntimeError, match="retry failed") as captured:
+        client.chat_json(
+            model="gpt-pinned",
+            messages=_messages(),
+            max_tokens=4,
+            response_schema=_schema(),
+        )
+
+    assert calls == 2
+    assert captured.value._transport_request_count == 2
+    assert captured.value._inference_response.usage == {
+        "prompt_tokens": 100,
+        "completion_tokens": 4,
+        "total_tokens": 104,
+    }

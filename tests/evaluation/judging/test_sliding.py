@@ -11,9 +11,11 @@ from typing import Any
 import pytest
 
 from weave_agent_signals.catalogs import build_rubric_catalog
+from weave_agent_signals.judges import inference
 from weave_agent_signals.judges.inference import (
     InferenceCancelled,
     InferenceContextExceeded,
+    InferenceResponseDiagnostic,
     JsonSchemaSpec,
     JudgeResponse,
 )
@@ -28,6 +30,7 @@ from weave_agent_signals.judges.sliding_contracts import WindowFinding, WindowFi
 from weave_agent_signals.judges.windowing import build_window_plan, render_raw_turn
 from weave_agent_signals.models import SessionView, TurnSpan
 from weave_agent_signals.run_config import JudgingContextPolicy, PositionedJudge, RubricDescriptor
+from weave_agent_signals.runs.events import normalize_judging_details
 
 
 def _turn(trace_id: str, position: int, size: int = 9_000) -> TurnSpan:
@@ -103,7 +106,10 @@ def _phase(messages: list[dict[str, str]]) -> str:
 
 def _marker(messages: list[dict[str, str]], name: str) -> str:
     marker = f"{name}:"
-    return messages[-1]["content"].split(marker, 1)[1].splitlines()[0].strip()
+    content = next(
+        message["content"] for message in reversed(messages) if marker in message["content"]
+    )
+    return content.split(marker, 1)[1].splitlines()[0].strip()
 
 
 class _ScriptedClient:
@@ -114,23 +120,31 @@ class _ScriptedClient:
         *,
         fail_merge: bool = False,
         invalid_window_citation: bool = False,
+        invalid_window_citation_once: bool = False,
         invalid_chunk_id: bool = False,
         invalid_window_id: bool = False,
+        invalid_window_length_once: bool = False,
         large_digest: bool = False,
         invocation_error: Exception | None = None,
         invocation_error_phase: str | None = None,
         schema_fallback_reason: str | None = None,
+        transport_request_count: int = 1,
     ):
         self.calls: list[dict[str, Any]] = []
         self.fail_merge = fail_merge
         self.invalid_window_citation = invalid_window_citation
+        self.invalid_window_citation_once = invalid_window_citation_once
         self.invalid_chunk_id = invalid_chunk_id
         self.invalid_window_id = invalid_window_id
+        self.invalid_window_length_once = invalid_window_length_once
         self.large_digest = large_digest
         self.invocation_error = invocation_error
         self.invocation_error_phase = invocation_error_phase
         self.schema_fallback_reason = schema_fallback_reason
+        self.transport_request_count = transport_request_count
         self._lock = threading.Lock()
+        self._invalid_window_length_returned = False
+        self._invalid_window_citation_returned = False
 
     def chat_json(
         self,
@@ -140,6 +154,7 @@ class _ScriptedClient:
         temperature: float = 0.0,
         max_tokens: int = 1024,
         response_schema: object | None = None,
+        reasoning: str = "default",
     ) -> tuple[dict[str, Any], JudgeResponse]:
         phase = _phase(messages)
         with self._lock:
@@ -153,6 +168,7 @@ class _ScriptedClient:
                     "max_tokens": max_tokens,
                     "schema_name": getattr(response_schema, "name", None),
                     "schema": getattr(response_schema, "schema", None),
+                    "reasoning": reasoning,
                 }
             )
         if self.invocation_error is not None and (
@@ -175,7 +191,19 @@ class _ScriptedClient:
                 "evidence_ids": [_marker(messages, "EXAMPLE_EVIDENCE_ID")],
             }
         elif phase == "window":
-            evidence_id = "unknown-evidence" if self.invalid_window_citation else "trace-3"
+            invalid_citation = self.invalid_window_citation or (
+                self.invalid_window_citation_once and not self._invalid_window_citation_returned
+            )
+            self._invalid_window_citation_returned = (
+                self._invalid_window_citation_returned or invalid_citation
+            )
+            evidence_id = "unknown-evidence" if invalid_citation else "trace-3"
+            invalid_length = (
+                self.invalid_window_length_once and not self._invalid_window_length_returned
+            )
+            self._invalid_window_length_returned = (
+                self._invalid_window_length_returned or invalid_length
+            )
             payload = {
                 "schema_version": 1,
                 "window_id": (
@@ -187,7 +215,9 @@ class _ScriptedClient:
                     {
                         "finding_id": "shared-finding",
                         "polarity": "positive",
-                        "observation": "The agent used relevant checks.",
+                        "observation": (
+                            "x" * 351 if invalid_length else "The agent used relevant checks."
+                        ),
                         "evidence_ids": [evidence_id],
                     }
                 ],
@@ -219,9 +249,31 @@ class _ScriptedClient:
             ),
             schema_name=getattr(response_schema, "name", None),
             schema_fallback_reason=self.schema_fallback_reason,
-            transport_request_count=1,
+            transport_request_count=self.transport_request_count,
             raw_output_digest=hashlib.sha256(raw.encode()).hexdigest(),
         )
+
+
+class _TransportActivityClient(_ScriptedClient):
+    def __init__(self):
+        super().__init__()
+        self.activity = None
+
+    def set_activity(self, callback):
+        self.activity = callback
+
+    def chat_json(self, **kwargs):
+        assert self.activity is not None
+        self.activity(
+            {
+                "phase": "transport_retry",
+                "message": "retrying provider request",
+                "request_attempt": 2,
+                "max_attempts": 2,
+                "retry_reason": "transport_error",
+            }
+        )
+        return super().chat_json(**kwargs)
 
 
 def _reviewer(
@@ -232,6 +284,7 @@ def _reviewer(
     cancelled=lambda: False,
     judge: PositionedJudge | None = None,
     activity=None,
+    expected_windows: int = 2,
 ) -> tuple[SlidingReviewer, _ScriptedClient, dict[str, JudgeCallRecord], dict[str, object]]:
     session = SessionView(
         "session-1",
@@ -254,7 +307,7 @@ def _reviewer(
         judge_models=(active_judge,),
         context_policy=active_policy,
     )
-    assert len(plan["windows"]) == 2
+    assert len(plan["windows"]) == expected_windows
     stored = {} if calls is None else calls
     scripted = client or _ScriptedClient()
 
@@ -311,9 +364,9 @@ def test_reviewer_digests_once_then_reads_every_window_and_merges() -> None:
     assert all(step.requested_model == "judge-1" for step in first.steps)
     assert all(call["temperature"] == 0.0 for call in client.calls)
     assert all(
-        call["max_tokens"] == reviewer.context_policy.output_reserve_tokens
+        call["max_tokens"]
+        == reviewer.context_policy.generation_budget(reviewer.judge.max_input_tokens)
         for call in client.calls
-        if call["phase"] == "digest"
     )
     assert [call["schema_name"] for call in client.calls[:5]] == [
         "chunk_digest",
@@ -322,6 +375,82 @@ def test_reviewer_digests_once_then_reads_every_window_and_merges() -> None:
         "window_findings",
         "merged_verdict",
     ]
+
+
+def test_large_reviewer_uses_10k_generation_budget_for_every_phase() -> None:
+    reviewer, client, _, _ = _reviewer(
+        policy=_policy(large_model_raw_target_tokens=20_000),
+        judge=_judge(max_input_tokens=262_000),
+        expected_windows=1,
+    )
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "succeeded"
+    assert {call["phase"] for call in client.calls} == {"digest", "window", "merge"}
+    assert all(call["max_tokens"] == 10_000 for call in client.calls)
+
+
+def test_wandb_reviewer_disables_reasoning_for_digest_and_merge() -> None:
+    reviewer, client, _, _ = _reviewer(
+        judge=_judge(provider="wandb"),
+    )
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "succeeded"
+    assert [call["reasoning"] for call in client.calls] == [
+        "disabled",
+        "disabled",
+        "default",
+        "default",
+        "disabled",
+    ]
+
+
+def test_inference_failure_emits_contextual_provider_failure_activity() -> None:
+    error = RuntimeError("private provider detail")
+    error._transport_request_count = 2  # type: ignore[attr-defined]
+    activity: list[dict[str, object]] = []
+    reviewer, _, _, _ = _reviewer(
+        client=_ScriptedClient(invocation_error=error),
+        activity=activity.append,
+    )
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    failed = [event for event in activity if event["phase"] == "provider_failed"]
+    assert len(failed) == 1
+    event = failed[0]
+    assert event["request_attempt"] == 2
+    assert event["max_attempts"] == 2
+    assert event["retry_reason"] == "digest"
+    assert event["error_category"] == "RuntimeError"
+    assert event["item_index"] == 1
+    assert event["item_total"] == 2
+    assert "private provider detail" not in str(event)
+    normalize_judging_details(
+        {key: value for key, value in event.items() if key not in {"phase", "message"}}
+    )
+
+
+def test_transport_activity_includes_active_inference_context() -> None:
+    activity: list[dict[str, object]] = []
+    reviewer, _, _, _ = _reviewer(
+        client=_TransportActivityClient(),
+        activity=activity.append,
+    )
+
+    reviewer.review(_rubric("judge.session_outcome"))
+
+    retry = next(event for event in activity if event["phase"] == "transport_retry")
+    assert retry["conversation_id"] == "session-1"
+    assert retry["model"] == "judge-1"
+    assert retry["artifact_id"]
+    assert retry["item_index"] == 1
+    assert retry["item_total"] == 2
+    assert retry["estimated_input_tokens"] > 0
 
 
 def test_reviewer_binds_each_inference_schema_to_its_exact_evidence_scope() -> None:
@@ -338,6 +467,10 @@ def test_reviewer_binds_each_inference_schema_to_its_exact_evidence_scope() -> N
 
     window_calls = [call for call in client.calls if call["phase"] == "window"]
     for call, window in zip(window_calls, plan["windows"], strict=True):
+        assert (
+            "Reason carefully internally, then return only concise JSON"
+            in call["messages"][0]["content"]
+        )
         assert call["schema"]["properties"]["window_id"]["const"] == window["window_id"]
         evidence = call["schema"]["$defs"]["WindowFinding"]["properties"]["evidence_ids"]
         assert evidence["items"]["enum"] == list(
@@ -680,6 +813,76 @@ def test_invalid_window_citation_fails_closed() -> None:
 
 
 @pytest.mark.parametrize(
+    ("client", "expected_error"),
+    [
+        (
+            _ScriptedClient(
+                invalid_window_length_once=True,
+                schema_fallback_reason="retry_recovery",
+            ),
+            "at most 350 characters",
+        ),
+        (
+            _ScriptedClient(
+                invalid_window_citation_once=True,
+                schema_fallback_reason="retry_recovery",
+            ),
+            "unknown evidence ID",
+        ),
+    ],
+)
+def test_fallback_contract_failure_gets_one_correction_attempt(
+    client: _ScriptedClient,
+    expected_error: str,
+) -> None:
+    activity = []
+    reviewer, client, calls, _ = _reviewer(
+        client=client,
+        judge=_judge(provider="wandb"),
+        activity=activity.append,
+    )
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "succeeded"
+    window_calls = [call for call in client.calls if call["phase"] == "window"]
+    assert len(window_calls) == 3
+    assert "failed validation" in window_calls[1]["messages"][-1]["content"]
+    assert expected_error in window_calls[1]["messages"][-1]["content"]
+    assert window_calls[1]["reasoning"] == "disabled"
+    assert [call.status for call in calls.values()].count("failed") == 1
+    assert any(
+        event["phase"] == "validation_retry"
+        and event["request_attempt"] == 2
+        and event["max_attempts"] == 3
+        for event in activity
+    )
+
+
+def test_fallback_contract_failure_stops_after_three_outputs() -> None:
+    activity = []
+    reviewer, client, _, _ = _reviewer(
+        client=_ScriptedClient(
+            invalid_window_citation=True,
+            schema_fallback_reason="retry_recovery",
+        ),
+        judge=_judge(provider="wandb"),
+        activity=activity.append,
+    )
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    assert result.message == "unknown evidence ID"
+    assert [call["phase"] for call in client.calls].count("window") == 3
+    assert [
+        (event["request_attempt"], event["max_attempts"])
+        for event in activity
+        if event["phase"] == "validation_retry"
+    ] == [(2, 3), (3, 3)]
+
+
+@pytest.mark.parametrize(
     ("client", "expected_message", "secret"),
     [
         (
@@ -752,6 +955,91 @@ def test_inference_exception_message_is_sanitized_before_observation() -> None:
     assert result.transport_request_count == 3
     assert len(result.steps) == 1
     assert result.steps[0].phase == "digest"
+
+
+def test_output_exhaustion_preserves_combined_failure_audit() -> None:
+    diagnostics = (
+        InferenceResponseDiagnostic(
+            finish_reason="length",
+            usage={"completion_tokens": 10_000},
+            completion_details={"reasoning_tokens": 9_700},
+            content_characters=0,
+        ),
+        InferenceResponseDiagnostic(
+            finish_reason="length",
+            usage={"completion_tokens": 10_000},
+            completion_details={"reasoning_tokens": 9_500},
+            content_characters=0,
+        ),
+    )
+    response = JudgeResponse(
+        content="unfinished reasoning",
+        model="resolved-judge-1",
+        usage={"prompt_tokens": 200, "completion_tokens": 20_000, "total_tokens": 20_200},
+        output_mode="json_schema",
+        schema_name="chunk_digest",
+        transport_request_count=2,
+        raw_output_digest="a" * 64,
+        response_diagnostics=diagnostics,
+    )
+    error = inference.InferenceOutputExceeded(response)
+    activity: list[dict[str, object]] = []
+    reviewer, _, artifacts, _ = _reviewer(
+        client=_ScriptedClient(invocation_error=error),
+        activity=activity.append,
+    )
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    assert result.error_type == "InferenceOutputExceeded"
+    assert result.message == "provider output limit exhausted"
+    assert result.usage == response.usage
+    assert result.transport_request_count == 2
+    assert result.resolved_model == "resolved-judge-1"
+    assert result.output_mode == "json_schema"
+    assert result.schema_name == "chunk_digest"
+    assert result.raw_output_digest == "a" * 64
+    assert result.steps[0].response_diagnostics == diagnostics
+    assert len(artifacts) == 1
+    stored = next(iter(artifacts.values()))
+    assert stored.status == "failed"
+    assert stored.audit.usage == response.usage
+    assert stored.audit.error_type == "InferenceOutputExceeded"
+    assert stored.audit.response_diagnostics == diagnostics
+    assert activity[-1]["finish_reason"] == "length"
+    assert activity[-1]["completion_tokens"] == 10_000
+    assert activity[-1]["reasoning_tokens"] == 9_500
+    assert activity[-2]["phase"] == "provider_failed"
+    assert activity[-2]["request_attempt"] == 2
+
+
+def test_exhaustion_retry_failure_preserves_first_response_audit() -> None:
+    response = JudgeResponse(
+        content="unfinished reasoning",
+        model="resolved-judge-1",
+        usage={"prompt_tokens": 100, "completion_tokens": 10_000, "total_tokens": 10_100},
+        output_mode="json_schema",
+        schema_name="chunk_digest",
+        transport_request_count=1,
+        raw_output_digest="b" * 64,
+    )
+    error = RuntimeError("retry failed")
+    error._transport_request_count = 2  # type: ignore[attr-defined]
+    error._inference_response = response  # type: ignore[attr-defined]
+    reviewer, _, artifacts, _ = _reviewer(client=_ScriptedClient(invocation_error=error))
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    assert result.error_type == "RuntimeError"
+    assert result.usage == response.usage
+    assert result.transport_request_count == 2
+    assert result.resolved_model == "resolved-judge-1"
+    assert result.raw_output_digest == "b" * 64
+    stored = next(iter(artifacts.values()))
+    assert stored.audit.usage == response.usage
+    assert stored.audit.transport_request_count == 2
 
 
 def test_provider_context_rejection_skips_reviewer_instead_of_failing() -> None:

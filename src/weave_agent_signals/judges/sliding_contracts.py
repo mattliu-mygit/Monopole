@@ -69,6 +69,14 @@ class WindowFindings(_ClosedModel):
     findings: tuple[WindowFinding, ...] = Field(max_length=MAX_WINDOW_FINDINGS)
 
 
+def window_finding_semantic_key(finding: WindowFinding) -> tuple[object, ...]:
+    return (
+        finding.polarity,
+        finding.observation,
+        tuple(sorted(set(finding.evidence_ids))),
+    )
+
+
 class BehavioralFeedback(_ClosedModel):
     success: Annotated[StrictStr, Field(max_length=MAX_BEHAVIORAL_FEEDBACK_CHARACTERS)] | None
     problem: Annotated[StrictStr, Field(max_length=MAX_BEHAVIORAL_FEEDBACK_CHARACTERS)] | None
@@ -299,19 +307,16 @@ def parse_window_findings(
         expected_window_id, field="expected window ID"
     ):
         raise ValueError("unexpected window ID")
-    findings = tuple(
-        parse_window_finding(finding, allowed_evidence_ids=allowed_evidence_ids).model_copy(
-            update={"finding_id": f"finding-{index}"}
-        )
-        for index, finding in enumerate(parsed.findings, start=1)
-    )
-    finding_keys = [
-        (finding.polarity, finding.observation, tuple(sorted(set(finding.evidence_ids))))
-        for finding in findings
-    ]
-    if len(finding_keys) != len(set(finding_keys)):
-        raise ValueError("duplicate findings are not allowed within a window")
-    normalized = parsed.model_copy(update={"window_id": window_id, "findings": findings})
+    findings: list[WindowFinding] = []
+    seen: set[tuple[object, ...]] = set()
+    for value in parsed.findings:
+        finding = parse_window_finding(value, allowed_evidence_ids=allowed_evidence_ids)
+        key = window_finding_semantic_key(finding)
+        if key in seen:
+            continue
+        seen.add(key)
+        findings.append(finding.model_copy(update={"finding_id": f"finding-{len(findings) + 1}"}))
+    normalized = parsed.model_copy(update={"window_id": window_id, "findings": tuple(findings)})
     if count_tokens(render_window_findings(normalized), "utf8_bytes_div_3") > max_tokens:
         raise ValueError("complete window findings artifact exceeds the configured token limit")
     return normalized

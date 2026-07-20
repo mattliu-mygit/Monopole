@@ -16,7 +16,7 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 from weave_agent_signals.judges.agy_transport import agy_prompt_invocation
 from weave_agent_signals.judges.families import model_family
@@ -359,6 +359,7 @@ class CliJudgeClient:
         temperature: float = 0.0,
         max_tokens: int = 1024,
         response_schema: JsonSchemaSpec | None = None,
+        reasoning: Literal["default", "disabled"] = "default",
     ) -> tuple[dict[str, Any], JudgeResponse]:
         system = "\n\n".join(m["content"] for m in messages if m.get("role") == "system")
         user = "\n\n".join(m["content"] for m in messages if m.get("role") == "user")

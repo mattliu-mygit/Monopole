@@ -50,7 +50,10 @@ policy before external work.
 All model rubrics are session-level. Each applicable reviewer gets a window plan
 sized to its pinned context capacity. Every model reserves the pinned prompt,
 output, and safety allowance; surrounding-digest and finding overhead increase
-that reserve as the chunk count grows. Raw windows have separate soft targets of 128,000 tokens above
+that reserve as the chunk count grows. At the 200,000-token context threshold,
+the generation allowance is 4,000 tokens at or below the threshold and 10,000
+tokens above it. This API allowance is independent of the smaller validated
+artifact limits. Raw windows have separate soft targets of 128,000 tokens above
 the same model threshold and 50,000 tokens at or below it. OpenAI catalog
 entries use their explicitly pinned `tiktoken` encoding; other model families
 use the conservative UTF-8 byte estimator.
@@ -77,6 +80,15 @@ set of positive or negative findings, not a score. Findings are deduplicated in
 session order, then one final merge sees the coverage manifest, ordered digests,
 and findings and returns the reviewer's anchored session verdict and behavioral
 feedback.
+
+W&B digest and verdict-merge requests disable optional model reasoning through
+the provider's documented request setting. Those phases compress or consolidate
+the substantive rubric analysis already performed in the raw-evidence window
+reviews, so spending their output budget on hidden reasoning reduces reliability.
+Window review retains each model's default reasoning behavior on its first
+attempt and asks for careful internal reasoning followed by concise JSON. W&B
+retries use JSON-object mode with optional thinking disabled and receive the
+same bound schema in the prompt; canonical runtime validation remains unchanged.
 
 Raw rendering includes captured user, assistant, tool, event, status, token, and
 trace-identity evidence while omitting the generating model's identity from the
@@ -117,12 +129,12 @@ the scoreless, citation-free, feedback-free abstention before persistence.
 Chunk digests must cite their exact core evidence. Window findings cite only
 evidence visible in that raw window, are capped in count and size, and receive
 canonical identities from their response order. Aggregation scopes each identity
-to its authenticated window before deduplicating exact semantic findings in
-session order. An unknown citation, blank required text, duplicate semantic
-finding within one window, or oversized artifact fails closed. The merge prompt
-asks for feedback about what the agent did or should do, while reflection
-separately decides whether and how to edit managed instructions. Imperfect
-semantic wording is not itself a validation failure.
+to its authenticated window after deduplicating exact semantic findings in
+response order, then deduplicates again across windows in session order. An
+unknown citation, blank required text, or oversized artifact fails closed. The
+merge prompt asks for feedback about what the agent did or should do, while
+reflection separately decides whether and how to edit managed instructions.
+Imperfect semantic wording is not itself a validation failure.
 
 Boolean, missing, nonnumeric, non-finite, out-of-range, non-anchor, malformed,
 or improperly cited output is rejected. Scores are never clamped or coerced.
@@ -131,11 +143,22 @@ reviewer anchors are mean-pooled, so a final multi-reviewer rating may be any
 finite value in `[0, 1]`.
 
 Structured output is requested when the backend supports it. A recorded JSON
-object fallback is allowed only when the provider explicitly rejects structured
-schema capability. Invalid model content does not trigger a looser parsing
-mode. Transient transport failures and provider exhaustion while producing
-schema-valid output may retry the same strict request; retries never remove its
-identity or evidence constraints. Backend-specific schema emission may omit a keyword that the backend
+object fallback is allowed when the provider explicitly rejects structured
+schema capability or on a W&B recovery attempt. Invalid model content does not
+weaken canonical runtime validation. W&B retries preserve identity and evidence
+constraints while using JSON-object mode with optional thinking disabled;
+other backends retry the same strict request. Invalid JSON that consumes the
+exact generation allowance retries once under the same budget. A second
+exhaustion fails closed as explicit
+output-limit exhaustion while retaining both attempts' usage and request counts.
+After a W&B model and schema pair requires recovery, later calls for that pair
+within the same run start in concise JSON recovery mode instead of repeating the
+known-expensive failing path. Exact schema prompting and runtime validation are
+unchanged.
+If fallback JSON parses but violates the canonical output contract, one
+or two correction calls receive the bounded validation error and prior object.
+Each corrected object is validated normally; a third violation fails closed.
+Backend-specific schema emission may omit a keyword that the backend
 rejects when the same invariant remains enforced by the canonical runtime
 validator; the canonical schema and artifact contract are not weakened.
 Antigravity's prompt-only CLI has no protocol-level schema channel, so its
@@ -209,6 +232,16 @@ transport retries for that attempt are exhausted, the runtime cancels
 outstanding panel work when the transport supports active cancellation, waits
 for started work to settle safely, and stops the remaining rubrics and sessions.
 An already-started request may complete before cancellation takes effect.
+The HTTP transport makes at most three attempts for retryable timeouts, rate
+limits, and transient server failures, with backoff, and permits a 240-second
+response wait per attempt. Every provider request start and completion plus
+retry, recovery, and terminal transport events are emitted as they happen. They
+identify the phase or chunk, attempt count, per-attempt duration, safe error
+category, HTTP status when available, and bounded token or finish diagnostics
+for output exhaustion. The run UI derives each model's average request time from
+those completion events. Output is represented only by its digest. The terminal
+panel event summarizes each reviewer's score, abstention, skip, or safe failure
+and provider-request count.
 
 Every attempt retains its requested and resolved model, outcome, rationale or
 safe error, evidence citations, structured-output mode, usage, bounded

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from weave_agent_signals.judges.inference import JsonSchemaSpec
+from weave_agent_signals.judges.inference import InferenceResponseDiagnostic, JsonSchemaSpec
 from weave_agent_signals.judges.records import (
     JudgeCallAudit,
     JudgeCallRecord,
@@ -50,6 +50,7 @@ def test_request_id_binds_messages_schema_model_and_options() -> None:
         "response_schema": JsonSchemaSpec("digest", {"type": "object"}),
         "temperature": 0.0,
         "max_tokens": 1000,
+        "reasoning": "default",
         "protocol_version": "3",
     }
 
@@ -61,6 +62,7 @@ def test_request_id_binds_messages_schema_model_and_options() -> None:
     assert identity != judge_request_id(
         **{**base, "messages": [{"role": "user", "content": "evidence B"}]}
     )
+    assert identity != judge_request_id(**{**base, "reasoning": "disabled"})
 
 
 def test_audit_only_success_is_not_reusable() -> None:
@@ -69,6 +71,22 @@ def test_audit_only_success_is_not_reusable() -> None:
     assert record.result is None
     with pytest.raises(ValidationError, match="reusable success"):
         _call(reusable=True, result=None)
+
+
+def test_audit_response_diagnostics_are_optional_and_round_trip() -> None:
+    assert _audit().response_diagnostics == ()
+
+    diagnostic = InferenceResponseDiagnostic(
+        finish_reason="length",
+        usage={"completion_tokens": 10_000},
+        completion_details={"reasoning_tokens": 9_500},
+        content_characters=0,
+    )
+    audit = JudgeCallAudit.model_validate_json(
+        _audit(response_diagnostics=(diagnostic,)).model_dump_json()
+    )
+
+    assert audit.response_diagnostics == (diagnostic,)
 
 
 def test_failed_call_cannot_be_reused_or_contain_a_result() -> None:

@@ -9,16 +9,18 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from weave_agent_signals.catalogs import build_rubric_catalog
 from weave_agent_signals.judges.inference import (
     ChatClient,
     InferenceCancelled,
     InferenceContextExceeded,
+    InferenceOutputExceeded,
     JsonSchemaSpec,
+    JudgeResponse,
 )
 from weave_agent_signals.judges.records import (
     JudgeCallAudit,
@@ -41,6 +43,7 @@ from weave_agent_signals.judges.sliding_contracts import (
     parse_chunk_digest,
     parse_merged_verdict,
     parse_window_findings,
+    window_finding_semantic_key,
 )
 from weave_agent_signals.judges.tokens import count_tokens
 from weave_agent_signals.judges.windowing import (
@@ -58,8 +61,10 @@ ActivityRecorder = Callable[[Mapping[str, object]], None]
 
 log = logging.getLogger("weave_agent_signals.judges")
 
+ValidatedOutput = TypeVar("ValidatedOutput", bound=BaseModel)
+
 _ERROR_TEXT_LIMIT = 500
-SLIDING_PROTOCOL_VERSION = "3"
+SLIDING_PROTOCOL_VERSION = "12"
 
 _DIGEST_SYSTEM_TEMPLATE = (
     "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. "
@@ -74,7 +79,8 @@ _DIGEST_USER_TEMPLATE = (
     "RAW_CHUNK:\n{raw_text}"
 )
 _WINDOW_SYSTEM_TEMPLATE = (
-    "PHASE: window\n{rubric_system}\nReturn bounded findings, not a score. Every finding must "
+    "PHASE: window\n{rubric_system}\nReason carefully internally, then return only concise JSON. "
+    "Return bounded findings, not a score. Every finding must "
     "cite at least one ID from ALLOWED_FINDING_EVIDENCE_IDS. If no supported finding exists, "
     'return "findings": [] instead of an uncited finding. Do not cite any other ID; the response '
     "schema enforces the active raw window's exact evidence scope. Finding IDs need only be "
@@ -163,6 +169,12 @@ def sliding_protocol_contract_manifest() -> dict[str, object]:
                 "schema": dict(MERGED_VERDICT_SCHEMA.schema),
             },
         },
+        "inference": {
+            "wandb_digest_and_merge_reasoning": "disabled",
+            "wandb_validation_correction_reasoning": "disabled",
+            "wandb_schema_recovery_scope": "run_model_schema",
+            "otherwise_reasoning": "default",
+        },
     }
 
 
@@ -180,7 +192,15 @@ def _bounded_error(error: Exception) -> str:
             message = " ".join(str(issue.get("msg", "validation failed")).split())
             parts.append(f"{location}: {message}" if location else message)
         return "; ".join(parts)[:_ERROR_TEXT_LIMIT] or "structured output validation failed"
-    if isinstance(error, (_JudgeInvocationFailure, _ReviewInfrastructureFailure, ValueError)):
+    if isinstance(
+        error,
+        (
+            InferenceOutputExceeded,
+            _JudgeInvocationFailure,
+            _ReviewInfrastructureFailure,
+            ValueError,
+        ),
+    ):
         return " ".join(str(error).split())[:_ERROR_TEXT_LIMIT] or type(error).__name__
     return "sliding review failed"
 
@@ -361,8 +381,14 @@ class SlidingReviewer:
         rubric_label: str | None = None,
         item_index: int | None = None,
         item_total: int | None = None,
+        reasoning_override: Literal["default", "disabled"] | None = None,
     ) -> tuple[Mapping[str, Any], _PendingCall | None]:
         estimated_input_tokens = self._messages_fit(messages, max_tokens, schema)
+        reasoning: Literal["default", "disabled"] = reasoning_override or (
+            "disabled"
+            if phase in {"digest", "merge"} and self.judge.provider == "wandb"
+            else "default"
+        )
         request_id = judge_request_id(
             requested_model_id=self.judge.id,
             provider_model=self.judge.provider_model,
@@ -370,6 +396,7 @@ class SlidingReviewer:
             response_schema=schema,
             temperature=0.0,
             max_tokens=max_tokens,
+            reasoning=reasoning,
             protocol_version=SLIDING_PROTOCOL_VERSION,
         )
         stored = _review_callback(self._load_call, request_id)
@@ -388,6 +415,7 @@ class SlidingReviewer:
                     schema_fallback_reason=stored.audit.schema_fallback_reason,
                     transport_request_count=stored.audit.transport_request_count,
                     raw_output_digest=stored.audit.raw_output_digest,
+                    response_diagnostics=stored.audit.response_diagnostics,
                     reused=True,
                 )
             )
@@ -419,6 +447,16 @@ class SlidingReviewer:
         if item_total is not None:
             event["item_total"] = item_total
         self._emit_activity(event)
+        set_activity = getattr(self.client, "set_activity", None)
+        if callable(set_activity):
+            request_context = {
+                key: value for key, value in event.items() if key not in {"phase", "message"}
+            }
+
+            def contextual_activity(transport_event: Mapping[str, object]) -> None:
+                self._emit_activity({**transport_event, **request_context})
+
+            set_activity(contextual_activity)
         try:
             parsed, response = self.client.chat_json(
                 model=self.judge.provider_model,
@@ -426,15 +464,59 @@ class SlidingReviewer:
                 temperature=0.0,
                 max_tokens=max_tokens,
                 response_schema=schema,
+                reasoning=reasoning,
             )
         except InferenceCancelled:
             raise
         except Exception as error:
             request_count = getattr(error, "_transport_request_count", 1)
             count = request_count if type(request_count) is int and request_count > 0 else 1
+            if phase == "digest":
+                target = f"digest chunk {item_index} of {item_total}"
+            elif phase == "window":
+                target = f"window {item_index} of {item_total}"
+            else:
+                target = "verdict merge"
+            self._emit_activity(
+                {
+                    **event,
+                    "phase": "provider_failed",
+                    "message": (
+                        f"{self.judge.label} failed {target} after {count} provider "
+                        f"attempt{'s' if count != 1 else ''}: {type(error).__name__}"
+                    ),
+                    "request_attempt": count,
+                    "max_attempts": count,
+                    "retry_reason": phase,
+                    "error_category": type(error).__name__,
+                    "provider_error_message": _bounded_error(error),
+                }
+            )
+            if isinstance(error, InferenceOutputExceeded):
+                failed_response = error.response
+            else:
+                candidate = getattr(error, "_inference_response", None)
+                failed_response = candidate if isinstance(candidate, JudgeResponse) else None
+            failed_usage = _normalized_usage(failed_response.usage) if failed_response else {}
+            _add_usage(usage, failed_usage)
             audit = JudgeCallAudit(
-                schema_name=schema.name,
-                transport_request_count=count,
+                resolved_model=failed_response.model if failed_response else None,
+                usage=failed_usage,
+                output_mode=failed_response.output_mode if failed_response else None,
+                schema_name=(failed_response.schema_name if failed_response else None)
+                or schema.name,
+                schema_fallback_reason=(
+                    failed_response.schema_fallback_reason if failed_response else None
+                ),
+                transport_request_count=(
+                    failed_response.transport_request_count
+                    if isinstance(error, InferenceOutputExceeded)
+                    else count
+                ),
+                raw_output_digest=(failed_response.raw_output_digest if failed_response else None),
+                response_diagnostics=(
+                    failed_response.response_diagnostics if failed_response else ()
+                ),
                 error_type=type(error).__name__,
                 message=_bounded_error(error),
             )
@@ -443,13 +525,14 @@ class SlidingReviewer:
                     phase=phase,
                     artifact_id=request_id,
                     requested_model=self.judge.id,
-                    resolved_model=None,
-                    usage={},
-                    output_mode=None,
-                    schema_name=schema.name,
-                    schema_fallback_reason=None,
-                    transport_request_count=count,
-                    raw_output_digest=None,
+                    resolved_model=audit.resolved_model,
+                    usage=audit.usage,
+                    output_mode=audit.output_mode,
+                    schema_name=audit.schema_name,
+                    schema_fallback_reason=audit.schema_fallback_reason,
+                    transport_request_count=audit.transport_request_count,
+                    raw_output_digest=audit.raw_output_digest,
+                    response_diagnostics=audit.response_diagnostics,
                 )
             )
             _review_callback(
@@ -468,7 +551,7 @@ class SlidingReviewer:
                     created_at=datetime.now(timezone.utc),
                 ),
             )
-            if isinstance(error, InferenceContextExceeded):
+            if isinstance(error, (InferenceContextExceeded, InferenceOutputExceeded)):
                 raise
             raise _JudgeInvocationFailure(type(error).__name__) from None
 
@@ -482,6 +565,7 @@ class SlidingReviewer:
             schema_fallback_reason=response.schema_fallback_reason,
             transport_request_count=response.transport_request_count,
             raw_output_digest=response.raw_output_digest,
+            response_diagnostics=response.response_diagnostics,
         )
         steps.append(
             InferenceStepAudit(
@@ -495,6 +579,7 @@ class SlidingReviewer:
                 schema_fallback_reason=audit.schema_fallback_reason,
                 transport_request_count=audit.transport_request_count,
                 raw_output_digest=audit.raw_output_digest,
+                response_diagnostics=audit.response_diagnostics,
             )
         )
         return parsed, _PendingCall(request_id, phase, rubric_id, audit)
@@ -546,6 +631,92 @@ class SlidingReviewer:
             ),
         )
 
+    def _infer_validated(
+        self,
+        *,
+        phase: Literal["digest", "window", "merge"],
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        schema: JsonSchemaSpec,
+        parser: Callable[[Mapping[str, Any]], ValidatedOutput],
+        steps: list[InferenceStepAudit],
+        usage: dict[str, int],
+        rubric_id: str | None = None,
+        rubric_label: str | None = None,
+        item_index: int | None = None,
+        item_total: int | None = None,
+    ) -> ValidatedOutput:
+        active_messages = messages
+        max_validation_attempts = 3
+        for validation_attempt in range(1, max_validation_attempts + 1):
+            payload, pending = self._infer(
+                phase=phase,
+                messages=active_messages,
+                max_tokens=max_tokens,
+                schema=schema,
+                steps=steps,
+                usage=usage,
+                rubric_id=rubric_id,
+                rubric_label=rubric_label,
+                item_index=item_index,
+                item_total=item_total,
+                reasoning_override=(
+                    "disabled"
+                    if validation_attempt > 1 and self.judge.provider == "wandb"
+                    else None
+                ),
+            )
+            try:
+                result = parser(payload)
+            except Exception as error:
+                self._record_validation_failure(pending, error)
+                recoverable = (
+                    validation_attempt < max_validation_attempts
+                    and isinstance(error, ValueError)
+                    and pending is not None
+                    and pending.audit.output_mode == "json_object_fallback"
+                )
+                if not recoverable:
+                    raise
+                message = _bounded_error(error)
+                self._emit_activity(
+                    {
+                        "phase": "validation_retry",
+                        "message": (
+                            f"{self.judge.label} returned JSON that failed schema validation; "
+                            f"retrying correction attempt {validation_attempt + 1} of "
+                            f"{max_validation_attempts}"
+                        ),
+                        "model": self.judge.id,
+                        "conversation_id": self.session.conversation_id,
+                        "rubric": rubric_id,
+                        "artifact_id": pending.request_id,
+                        "request_attempt": validation_attempt + 1,
+                        "max_attempts": max_validation_attempts,
+                        "error_category": type(error).__name__,
+                        "provider_error_message": message,
+                        "retry_reason": "schema_validation",
+                        "output_mode": pending.audit.output_mode,
+                    }
+                )
+                active_messages = [
+                    *messages,
+                    {"role": "assistant", "content": _canonical_json(payload)},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Correction attempt {validation_attempt + 1} of "
+                            f"{max_validation_attempts}. The prior JSON failed validation: "
+                            f"{message}. Correct only the invalid fields and return the complete "
+                            "JSON object."
+                        ),
+                    },
+                ]
+                continue
+            self._record_success(pending, result.model_dump(mode="json"))
+            return result
+        raise AssertionError("validation retry loop exhausted")
+
     def _core_evidence(self, window: Mapping[str, object]) -> tuple[str, tuple[str, ...]]:
         trace_ids = window["core_trace_ids"]
         if not isinstance(trace_ids, list):
@@ -592,32 +763,26 @@ class SlidingReviewer:
         chunk_id = self._chunk_id(window)
         raw_text, evidence_ids = self._core_evidence(window)
         response_schema = bind_chunk_digest_schema(chunk_id, evidence_ids)
-        payload, pending = self._infer(
+        return self._infer_validated(
             phase="digest",
             messages=self._digest_messages(
                 chunk_id=chunk_id,
                 raw_text=raw_text,
                 evidence_ids=evidence_ids,
             ),
-            max_tokens=self.context_policy.output_reserve_tokens,
+            max_tokens=self.context_policy.generation_budget(self.judge.max_input_tokens),
             schema=response_schema,
             steps=steps,
             usage=usage,
             item_index=int(window["index"]),
             item_total=len(self._windows),
-        )
-        try:
-            digest = parse_chunk_digest(
+            parser=lambda payload: parse_chunk_digest(
                 payload,
                 allowed_evidence_ids=evidence_ids,
                 max_tokens=self.context_policy.digest_max_tokens,
                 expected_chunk_id=chunk_id,
-            )
-        except Exception as error:
-            self._record_validation_failure(pending, error)
-            raise
-        self._record_success(pending, digest.model_dump(mode="json"))
-        return digest
+            ),
+        )
 
     def _ensure_digests(
         self,
@@ -708,10 +873,10 @@ class SlidingReviewer:
             str(window["window_id"]),
             allowed_evidence_ids,
         )
-        payload, pending = self._infer(
+        return self._infer_validated(
             phase="window",
             messages=messages,
-            max_tokens=self.context_policy.finding_max_tokens,
+            max_tokens=self.context_policy.generation_budget(self.judge.max_input_tokens),
             schema=response_schema,
             steps=steps,
             usage=usage,
@@ -719,19 +884,13 @@ class SlidingReviewer:
             rubric_label=descriptor.label,
             item_index=window_index + 1,
             item_total=len(self._windows),
-        )
-        try:
-            findings = parse_window_findings(
+            parser=lambda payload: parse_window_findings(
                 payload,
                 allowed_evidence_ids=allowed_evidence_ids,
                 max_tokens=self.context_policy.finding_max_tokens,
                 expected_window_id=str(window["window_id"]),
-            )
-        except Exception as error:
-            self._record_validation_failure(pending, error)
-            raise
-        self._record_success(pending, findings.model_dump(mode="json"))
-        return findings
+            ),
+        )
 
     def _deduplicated_findings(
         self,
@@ -741,11 +900,7 @@ class SlidingReviewer:
         semantic_seen: set[tuple[object, ...]] = set()
         for window in values:
             for finding in window.findings:
-                semantic = (
-                    finding.polarity,
-                    finding.observation,
-                    tuple(sorted(set(finding.evidence_ids))),
-                )
+                semantic = window_finding_semantic_key(finding)
                 if semantic in semantic_seen:
                     continue
                 semantic_seen.add(semantic)
@@ -798,23 +953,20 @@ class SlidingReviewer:
         usage: dict[str, int],
     ) -> MergedVerdict:
         response_schema = bind_merged_verdict_schema(self._all_evidence_ids)
-        payload, pending = self._infer(
+        return self._infer_validated(
             phase="merge",
             messages=self._merge_messages(rubric=rubric, digests=digests, findings=findings),
-            max_tokens=self.context_policy.output_reserve_tokens,
+            max_tokens=self.context_policy.generation_budget(self.judge.max_input_tokens),
             schema=response_schema,
             steps=steps,
             usage=usage,
             rubric_id=descriptor.id,
             rubric_label=descriptor.label,
+            parser=lambda payload: parse_merged_verdict(
+                payload,
+                allowed_evidence_ids=self._all_evidence_ids,
+            ),
         )
-        try:
-            verdict = parse_merged_verdict(payload, allowed_evidence_ids=self._all_evidence_ids)
-        except Exception as error:
-            self._record_validation_failure(pending, error)
-            raise
-        self._record_success(pending, verdict.model_dump(mode="json"))
-        return verdict
 
     def review(self, rubric: RubricDescriptor) -> AttemptObservation:
         """Review one pinned rubric, returning a fail-closed final observation."""
@@ -890,23 +1042,29 @@ class SlidingReviewer:
                 error,
                 (_JudgeInvocationFailure, _ReviewInfrastructureFailure),
             ):
-                self._emit_activity(
-                    {
-                        "phase": "validation_failed",
-                        "message": (
-                            f"{self.judge.label} returned invalid {last_step.phase} output for "
-                            f"{rubric.label}"
-                        ),
-                        "model": self.judge.id,
-                        "conversation_id": self.session.conversation_id,
-                        "rubric": rubric.id,
-                        "artifact_id": last_step.artifact_id,
-                        "error_category": error_type,
-                        "provider_error_message": message,
-                        "output_mode": last_step.output_mode,
-                        "output_sha256": last_step.raw_output_digest,
-                    }
-                )
+                event: dict[str, object] = {
+                    "phase": "validation_failed",
+                    "message": (
+                        f"{self.judge.label} returned invalid {last_step.phase} output for "
+                        f"{rubric.label}"
+                    ),
+                    "model": self.judge.id,
+                    "conversation_id": self.session.conversation_id,
+                    "rubric": rubric.id,
+                    "artifact_id": last_step.artifact_id,
+                    "error_category": error_type,
+                    "provider_error_message": message,
+                    "output_mode": last_step.output_mode,
+                    "output_sha256": last_step.raw_output_digest,
+                }
+                if last_step.response_diagnostics:
+                    final_response = last_step.response_diagnostics[-1]
+                    event.update(
+                        finish_reason=final_response.finish_reason,
+                        completion_tokens=final_response.usage.get("completion_tokens"),
+                        reasoning_tokens=final_response.completion_details.get("reasoning_tokens"),
+                    )
+                self._emit_activity(event)
             return AttemptObservation(
                 status="failed",
                 resolved_model=last_step.resolved_model if last_step is not None else None,

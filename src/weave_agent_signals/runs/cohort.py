@@ -186,13 +186,11 @@ def discover_turn_cohort(
         missing_sessions = sorted(selected_sessions - discovered_sessions)
         if missing_sessions:
             raise ValueError("missing selected sessions: " + ", ".join(missing_sessions))
-        ineligible = sorted(
+        ineligible = [
             conversation_id
-            for conversation_id in selected_sessions
-            if not session_is_evaluable(
-                [turn for turn in filtered if turn.conversation_id == conversation_id]
-            )
-        )
+            for conversation_id in sorted(selected_sessions)
+            if not session_is_evaluable(client.query_session(conversation_id).turns)
+        ]
         if ineligible:
             raise ValueError("selected sessions are not evaluable: " + ", ".join(ineligible))
         client.hydrate_turns_batch(filtered)

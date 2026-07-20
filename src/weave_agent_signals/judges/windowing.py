@@ -282,7 +282,9 @@ def build_window_plan(
 
     input_cap = model_limit
     base_reserve = (
-        policy.prompt_reserve_tokens + policy.output_reserve_tokens + policy.safety_reserve_tokens
+        policy.prompt_reserve_tokens
+        + policy.generation_budget(model_limit)
+        + policy.safety_reserve_tokens
     )
     rendered_turns = [
         render_raw_turn(turn, position) for position, turn in enumerate(session.turns, start=1)

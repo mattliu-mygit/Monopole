@@ -12,7 +12,7 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from weave_agent_signals.judges.inference import JsonSchemaSpec
+from weave_agent_signals.judges.inference import InferenceResponseDiagnostic, JsonSchemaSpec
 
 _REQUEST_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _HEX_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
@@ -27,6 +27,7 @@ def judge_request_id(
     response_schema: JsonSchemaSpec,
     temperature: float,
     max_tokens: int,
+    reasoning: Literal["default", "disabled"],
     protocol_version: str,
 ) -> str:
     """Return the exact identity of a model request that may be safely reused."""
@@ -41,6 +42,7 @@ def judge_request_id(
         },
         "temperature": temperature,
         "max_tokens": max_tokens,
+        "reasoning": reasoning,
         "protocol_version": protocol_version,
     }
     encoded = json.dumps(
@@ -65,6 +67,7 @@ class JudgeCallAudit(_Record):
     schema_fallback_reason: str | None = None
     transport_request_count: int = Field(ge=0)
     raw_output_digest: str | None = None
+    response_diagnostics: tuple[InferenceResponseDiagnostic, ...] = ()
     error_type: str | None = None
     message: str | None = Field(default=None, max_length=_MAX_ERROR_MESSAGE)
 

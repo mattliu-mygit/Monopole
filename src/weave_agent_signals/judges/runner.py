@@ -119,7 +119,7 @@ class JudgeExecutionError(RuntimeError):
 
 
 def _step_record(step: object) -> dict[str, object]:
-    return {
+    record = {
         name: (dict(value) if name == "usage" else value)
         for name in (
             "phase",
@@ -136,6 +136,9 @@ def _step_record(step: object) -> dict[str, object]:
         )
         if (value := getattr(step, name, None)) is not None
     }
+    diagnostics = getattr(step, "response_diagnostics", ())
+    record["response_diagnostics"] = [item.model_dump(mode="json") for item in diagnostics]
+    return record
 
 
 def _attempt_record(attempt: ReviewAttempt) -> dict[str, object]:

@@ -11,6 +11,7 @@ const policy = {
   small_model_raw_target_tokens: 50_000,
   prompt_reserve_tokens: 6_000,
   output_reserve_tokens: 4_000,
+  large_model_output_reserve_tokens: 10_000,
   safety_reserve_tokens: 8_000,
   digest_max_tokens: 1_000,
   finding_max_tokens: 4_000,
@@ -133,6 +134,24 @@ describe('estimateModelCapacity', () => {
       fits: true,
       estimatedRequestTokens: 228_000,
       estimatedChunks: 21,
+    })
+  })
+
+  it('reserves the larger generation allowance for large-model requests', () => {
+    const protocolReserve = {
+      ...policy,
+      large_model_reserve_tokens: 18_000,
+      small_model_reserve_tokens: 18_000,
+    }
+
+    expect(estimateModelCapacity(
+      model(262_000),
+      [session(128_000, 128_000)],
+      protocolReserve,
+    )).toEqual({
+      fits: true,
+      estimatedRequestTokens: 152_000,
+      estimatedChunks: 1,
     })
   })
 

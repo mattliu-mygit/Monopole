@@ -712,6 +712,24 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** InferenceResponseDiagnosticResponse */
+        InferenceResponseDiagnosticResponse: {
+            /** Completion Details */
+            completion_details?: {
+                [key: string]: number;
+            };
+            /**
+             * Content Characters
+             * @default 0
+             */
+            content_characters: number;
+            /** Finish Reason */
+            finish_reason?: string | null;
+            /** Usage */
+            usage?: {
+                [key: string]: number;
+            };
+        };
         /** InferenceStepAuditResponse */
         InferenceStepAuditResponse: {
             /** Artifact Id */
@@ -729,6 +747,8 @@ export interface components {
             requested_model: string;
             /** Resolved Model */
             resolved_model?: string | null;
+            /** Response Diagnostics */
+            response_diagnostics?: components["schemas"]["InferenceResponseDiagnosticResponse"][];
             /** Reused */
             reused: boolean;
             /** Schema Fallback Reason */
@@ -785,6 +805,8 @@ export interface components {
             artifact_id?: string | null;
             /** At */
             at: string;
+            /** Completion Tokens */
+            completion_tokens?: number | null;
             /** Conversation Id */
             conversation_id?: string | null;
             /** Elapsed Seconds */
@@ -795,6 +817,8 @@ export interface components {
             estimated_input_tokens?: number | null;
             /** Exit Code */
             exit_code?: number | null;
+            /** Finish Reason */
+            finish_reason?: string | null;
             /** Id */
             id: number;
             /** Item Index */
@@ -825,6 +849,8 @@ export interface components {
             provider_error_message?: string | null;
             /** Provider Status */
             provider_status?: number | null;
+            /** Reasoning Tokens */
+            reasoning_tokens?: number | null;
             /** Request Attempt */
             request_attempt?: number | null;
             /** Retry Reason */
@@ -881,6 +907,11 @@ export interface components {
              * @default 4000
              */
             finding_max_tokens: number;
+            /**
+             * Large Model Output Reserve Tokens
+             * @default 10000
+             */
+            large_model_output_reserve_tokens: number;
             /**
              * Large Model Raw Target Tokens
              * @default 128000

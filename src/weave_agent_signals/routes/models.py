@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, RootModel
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from weave_agent_signals.judges.tokens import TokenCounterName
 from weave_agent_signals.run_config import (
@@ -283,6 +283,13 @@ class BehavioralFeedbackResponse(ResponseModel):
     desired_behavior: str | None
 
 
+class InferenceResponseDiagnosticResponse(ResponseModel):
+    finish_reason: str | None = None
+    usage: dict[str, int] = Field(default_factory=dict)
+    completion_details: dict[str, int] = Field(default_factory=dict)
+    content_characters: int = 0
+
+
 class InferenceStepAuditResponse(ResponseModel):
     phase: Literal["digest", "window", "merge"]
     artifact_id: str
@@ -294,6 +301,7 @@ class InferenceStepAuditResponse(ResponseModel):
     schema_fallback_reason: str | None = None
     transport_request_count: int
     raw_output_digest: str | None = None
+    response_diagnostics: list[InferenceResponseDiagnosticResponse] = Field(default_factory=list)
     reused: bool
 
 
@@ -364,6 +372,9 @@ class JudgingActivityEventResponse(ResponseModel):
     provider_status: int | None = None
     provider_error_code: str | None = None
     provider_error_message: str | None = None
+    finish_reason: str | None = None
+    completion_tokens: int | None = None
+    reasoning_tokens: int | None = None
     output_sha256: str | None = None
     exit_code: int | None = None
     stdout_chars: int | None = None

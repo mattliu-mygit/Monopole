@@ -25,6 +25,10 @@ def test_judging_context_policy_uses_capacity_tiers_at_exact_threshold():
     assert policy.raw_window_target(200_000) == 50_000
     assert policy.raw_window_target(200_001) == 128_000
     assert policy.raw_window_target(1_050_000) == 128_000
+    assert policy.output_reserve_tokens == 4_000
+    assert policy.large_model_output_reserve_tokens == 10_000
+    assert policy.generation_budget(200_000) == 4_000
+    assert policy.generation_budget(200_001) == 10_000
     assert policy.small_model_raw_target_tokens == 50_000
     assert policy.large_model_raw_target_tokens == 128_000
     assert policy.finding_max_tokens == 4_000
@@ -38,6 +42,8 @@ def test_judging_context_policy_rejects_invalid_capacity(model_limit):
         JudgingContextPolicy().capacity_reserve(model_limit)
     with pytest.raises(ValueError, match="model_limit must be a positive integer"):
         JudgingContextPolicy().raw_window_target(model_limit)
+    with pytest.raises(ValueError, match="model_limit must be a positive integer"):
+        JudgingContextPolicy().generation_budget(model_limit)
 
 
 def valid_request(**changes):

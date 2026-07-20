@@ -20,6 +20,7 @@
     "small_model_raw_target_tokens": 50000,
     "prompt_reserve_tokens": 6000,
     "output_reserve_tokens": 4000,
+    "large_model_output_reserve_tokens": 10000,
     "safety_reserve_tokens": 8000,
     "digest_max_tokens": 1000,
     "finding_max_tokens": 4000,
