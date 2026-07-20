@@ -4,6 +4,7 @@ import hashlib
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -267,6 +268,7 @@ def _reviewer(
     cancelled=lambda: False,
     judge: PositionedJudge | None = None,
     activity=None,
+    call_gate: threading.Semaphore | None = None,
     expected_windows: int = 2,
 ) -> tuple[SlidingReviewer, _ScriptedClient, dict[str, JudgeCallRecord], dict[str, object]]:
     session = SessionView(
@@ -311,11 +313,103 @@ def _reviewer(
             record_call=record,
             is_cancelled=cancelled,
             activity=activity,
+            call_gate=call_gate,
         ),
         scripted,
         stored,
         plan,
     )
+
+
+def test_live_provider_calls_wait_for_the_call_gate() -> None:
+    class ObservedSemaphore(threading.Semaphore):
+        def __init__(self) -> None:
+            super().__init__(0)
+            self.entered = threading.Event()
+
+        def acquire(self, *args, **kwargs):
+            self.entered.set()
+            return super().acquire(*args, **kwargs)
+
+    gate = ObservedSemaphore()
+    reviewer, client, _, _ = _reviewer(call_gate=gate)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(reviewer.review, _rubric("judge.session_outcome"))
+        assert gate.entered.wait(timeout=1)
+        assert client.calls == []
+        gate.release()
+        result = future.result(timeout=2)
+
+    assert result.status == "succeeded"
+
+
+def test_cancellation_interrupts_waiting_for_the_call_gate() -> None:
+    class ObservedSemaphore(threading.Semaphore):
+        def __init__(self) -> None:
+            super().__init__(0)
+            self.entered = threading.Event()
+
+        def acquire(self, *args, **kwargs):
+            self.entered.set()
+            return super().acquire(*args, **kwargs)
+
+    cancelled = threading.Event()
+    gate = ObservedSemaphore()
+    reviewer, client, _, _ = _reviewer(call_gate=gate, cancelled=cancelled.is_set)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(reviewer.review, _rubric("judge.session_outcome"))
+        assert gate.entered.wait(timeout=1)
+        cancelled.set()
+        try:
+            with pytest.raises(InferenceCancelled):
+                future.result(timeout=1)
+        finally:
+            gate.release()
+
+    assert client.calls == []
+
+
+def test_cancellation_after_acquiring_call_gate_releases_it() -> None:
+    class CancellingSemaphore(threading.Semaphore):
+        def __init__(self, cancelled: threading.Event) -> None:
+            super().__init__(1)
+            self.cancelled = cancelled
+
+        def acquire(self, *args, **kwargs):
+            acquired = super().acquire(*args, **kwargs)
+            if acquired:
+                self.cancelled.set()
+            return acquired
+
+    cancelled = threading.Event()
+    gate = CancellingSemaphore(cancelled)
+    reviewer, client, _, _ = _reviewer(call_gate=gate, cancelled=cancelled.is_set)
+
+    with pytest.raises(InferenceCancelled):
+        reviewer.review(_rubric("judge.session_outcome"))
+
+    assert client.calls == []
+    assert gate.acquire(blocking=False)
+
+
+def test_cached_digests_wait_for_digest_publication_lock() -> None:
+    reviewer, _, _, _ = _reviewer()
+    reviewer._digests = ()
+    reviewer._digest_steps = ()
+
+    reviewer._digest_lock.acquire()
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(reviewer._ensure_digests, steps=[], usage={})
+            with pytest.raises(FutureTimeoutError):
+                future.result(timeout=0.05)
+            reviewer._digest_lock.release()
+            assert future.result(timeout=1) == ()
+    finally:
+        if reviewer._digest_lock.locked():
+            reviewer._digest_lock.release()
 
 
 def test_reviewer_digests_once_then_reads_every_window_and_merges() -> None:

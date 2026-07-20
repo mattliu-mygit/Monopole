@@ -243,6 +243,7 @@ class SlidingReviewer:
         record_call: CallRecorder,
         is_cancelled: Callable[[], bool] = lambda: False,
         activity: ActivityRecorder | None = None,
+        call_gate: threading.Semaphore | None = None,
     ) -> None:
         if not isinstance(session, SessionView):
             raise TypeError("session must be a SessionView")
@@ -288,6 +289,7 @@ class SlidingReviewer:
         self._record_call = record_call
         self._is_cancelled = is_cancelled
         self._activity = activity
+        self._call_gate = call_gate
         self._digest_lock = threading.Lock()
         self._digests: tuple[ChunkDigest, ...] | None = None
         self._digest_steps: tuple[InferenceStepAudit, ...] | None = None
@@ -456,14 +458,25 @@ class SlidingReviewer:
 
             set_activity(contextual_activity)
         try:
-            parsed, response = self.client.chat_json(
-                model=self.judge.provider_model,
-                messages=messages,
-                temperature=0.0,
-                max_tokens=max_tokens,
-                response_schema=schema,
-                reasoning=reasoning,
-            )
+            gate_acquired = False
+            if self._call_gate is not None:
+                while not self._call_gate.acquire(timeout=0.1):
+                    self._check_cancelled()
+                gate_acquired = True
+            try:
+                if gate_acquired:
+                    self._check_cancelled()
+                parsed, response = self.client.chat_json(
+                    model=self.judge.provider_model,
+                    messages=messages,
+                    temperature=0.0,
+                    max_tokens=max_tokens,
+                    response_schema=schema,
+                    reasoning=reasoning,
+                )
+            finally:
+                if gate_acquired:
+                    self._call_gate.release()
         except InferenceCancelled:
             raise
         except Exception as error:
@@ -785,19 +798,15 @@ class SlidingReviewer:
         steps: list[InferenceStepAudit],
         usage: dict[str, int],
     ) -> tuple[ChunkDigest, ...]:
-        if self._digests is not None:
-            if self._digest_steps is None:
-                raise AssertionError("digest provenance must accompany cached digests")
-            steps.extend(replace(audit, reused=True) for audit in self._digest_steps)
-            return self._digests
         with self._digest_lock:
             if self._digests is None:
                 first_digest_step = len(steps)
-                self._digests = tuple(
+                digests = tuple(
                     self._load_or_create_digest(window, steps=steps, usage=usage)
                     for window in self._windows
                 )
                 self._digest_steps = tuple(steps[first_digest_step:])
+                self._digests = digests
             else:
                 if self._digest_steps is None:
                     raise AssertionError("digest provenance must accompany cached digests")

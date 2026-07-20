@@ -316,7 +316,7 @@ class CliJudgeClient:
         self._provider = provider
         self._timeout = timeout
         self._runner = runner
-        self._activity: Callable[[dict[str, object]], None] | None = None
+        self._activity = threading.local()
         self._procs: set[subprocess.Popen] = set()
         self._procs_lock = threading.Lock()
         self._cancel: threading.Event | None = None
@@ -326,13 +326,14 @@ class CliJudgeClient:
         self._cancel = cancel
 
     def set_activity(self, callback: Callable[[dict[str, object]], None]) -> None:
-        self._activity = callback
+        self._activity.callback = callback
 
     def _emit_activity(self, event: dict[str, object]) -> None:
-        if self._activity is None:
+        callback = getattr(self._activity, "callback", None)
+        if callback is None:
             return
         try:
-            self._activity(dict(event))
+            callback(dict(event))
         except Exception as error:
             log.warning(
                 "CLI judge activity callback failed: error_type=%s",

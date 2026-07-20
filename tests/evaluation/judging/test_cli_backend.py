@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import textwrap
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -66,6 +67,25 @@ def test_http_and_cli_clients_satisfy_chat_client_protocol(monkeypatch):
         assert isinstance(http_client, ChatClient)
     finally:
         http_client.close()
+
+
+def test_cli_activity_callbacks_are_isolated_by_calling_thread():
+    client = CliJudgeClient(runner=lambda *_args, **_kwargs: _FakeProc())
+    barrier = threading.Barrier(2)
+    received: dict[str, list[dict[str, object]]] = {"first": [], "second": []}
+
+    def emit(label: str) -> None:
+        client.set_activity(received[label].append)
+        barrier.wait()
+        client._emit_activity({"label": label})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        tuple(executor.map(emit, received))
+
+    assert received == {
+        "first": [{"label": "first"}],
+        "second": [{"label": "second"}],
+    }
 
 
 def test_http_client_rejects_unknown_backend(monkeypatch):

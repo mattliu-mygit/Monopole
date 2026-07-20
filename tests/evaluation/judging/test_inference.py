@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
@@ -62,6 +64,24 @@ def _http_error(
         },
     )
     return httpx.HTTPStatusError(message, request=request, response=response)
+
+
+def test_http_activity_callbacks_are_isolated_by_calling_thread(client):
+    barrier = threading.Barrier(2)
+    received: dict[str, list[dict[str, object]]] = {"first": [], "second": []}
+
+    def emit(label: str) -> None:
+        client.set_activity(received[label].append)
+        barrier.wait()
+        client._emit_activity({"label": label})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        tuple(executor.map(emit, received))
+
+    assert received == {
+        "first": [{"label": "first"}],
+        "second": [{"label": "second"}],
+    }
 
 
 @pytest.fixture

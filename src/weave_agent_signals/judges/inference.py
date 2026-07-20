@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -388,17 +389,18 @@ class InferenceClient:
             headers=headers,
             timeout=httpx.Timeout(connect=10.0, read=240.0, write=60.0, pool=10.0),
         )
-        self._activity: Callable[[dict[str, object]], None] | None = None
+        self._activity = threading.local()
         self._schema_recovery: set[tuple[str, str]] = set()
 
     def set_activity(self, callback: Callable[[dict[str, object]], None]) -> None:
-        self._activity = callback
+        self._activity.callback = callback
 
     def _emit_activity(self, event: dict[str, object]) -> None:
-        if self._activity is None:
+        callback = getattr(self._activity, "callback", None)
+        if callback is None:
             return
         try:
-            self._activity(dict(event))
+            callback(dict(event))
         except Exception as error:
             log.warning(
                 "HTTP judge activity callback failed: error_type=%s",

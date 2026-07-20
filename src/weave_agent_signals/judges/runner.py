@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from weave_agent_signals.catalogs import build_rubric_catalog
 from weave_agent_signals.judges.families import model_family
-from weave_agent_signals.judges.inference import ChatClient, InferenceCancelled
+from weave_agent_signals.judges.inference import ChatClient
 from weave_agent_signals.judges.plan import JudgingPlan, SessionPlan, build_canonical_judging_plan
 from weave_agent_signals.judges.review import (
     PANEL_CONTRACT_VERSION,
     AttemptObservation,
+    PanelOutcome,
     ReviewAttempt,
     execute_panel,
 )
@@ -31,6 +34,7 @@ from weave_agent_signals.run_config import (
 )
 
 _REASON_LIMIT = 1200
+_PROVIDER_CONCURRENCY = {"wandb": 4, "codex": 2}
 log = logging.getLogger("weave_agent_signals.judges")
 
 
@@ -251,55 +255,49 @@ def judge_session(
         context_policy=context_policy,
     )
 
-    reviewer_cache: dict[str, SlidingReviewer] = {}
     reviewer_rows = session_row.reviewers
     dispositions = {
         judge.id: (row.status, row.skip_reason)
         for judge, row in zip(judges, reviewer_rows, strict=True)
     }
 
+    provider_gates = {
+        provider: threading.BoundedSemaphore(limit)
+        for provider, limit in _PROVIDER_CONCURRENCY.items()
+    }
+    reviewer_cache: dict[str, SlidingReviewer] = {}
+    for judge in judges:
+        if dispositions[judge.id][0] == "skipped":
+            continue
+        try:
+            client = clients[judge.id]
+        except KeyError as exc:
+            raise ValueError(f"missing chat client for judge {judge.id}") from exc
+        reviewer_cache[judge.id] = SlidingReviewer(
+            session=session,
+            judge=judge,
+            plan_id=judging_plan.plan_id,
+            window_plan=session_row.reviewer(judge.position).window_plan.model_dump(mode="json"),
+            context_policy=context_policy,
+            client=client,
+            load_call=call_loader,
+            record_call=call_recorder,
+            is_cancelled=cancel_requested,
+            activity=activity,
+            call_gate=provider_gates.get(judge.provider),
+        )
+
     def reviewer(judge: PositionedJudge) -> SlidingReviewer:
-        current = reviewer_cache.get(judge.id)
-        if current is None:
-            try:
-                client = clients[judge.id]
-            except KeyError as exc:
-                raise ValueError(f"missing chat client for judge {judge.id}") from exc
-            current = SlidingReviewer(
-                session=session,
-                judge=judge,
-                plan_id=judging_plan.plan_id,
-                window_plan=session_row.reviewer(judge.position).window_plan.model_dump(
-                    mode="json"
-                ),
-                context_policy=context_policy,
-                client=client,
-                load_call=call_loader,
-                record_call=call_recorder,
-                is_cancelled=cancel_requested,
-                activity=activity,
-            )
-            reviewer_cache[judge.id] = current
-        return current
+        return reviewer_cache[judge.id]
 
     scores: list[Score] = []
+    failures: list[JudgeFailure] = []
     not_evaluable: list[JudgeNotEvaluable] = []
-
-    def cancel_pending() -> None:
-        seen: set[int] = set()
-        for client in clients.values():
-            identity = id(client)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            abort = getattr(client, "abort", None)
-            if callable(abort):
-                abort()
 
     evaluated_models = sorted({turn.model for turn in session.turns if turn.model})
     evaluated_families = sorted({model_family(turn.model or "") for turn in session.turns})
-    for descriptor in rubrics:
-        rubric = _resolve(descriptor)
+
+    def evaluate(descriptor: RubricDescriptor) -> PanelOutcome:
         _emit_activity(
             activity,
             {
@@ -309,28 +307,24 @@ def judge_session(
                 "rubric": descriptor.id,
             },
         )
-        try:
-            outcome = execute_panel(
-                panel,
-                invoke=lambda judge: (
-                    AttemptObservation(
-                        status="skipped",
-                        skip_reason="insufficient_context_capacity",
-                        resolved_model=None,
-                        score=None,
-                        rationale=None,
-                        usage={},
-                        error_type=None,
-                        message=None,
-                    )
-                    if dispositions[judge.id][0] == "skipped"
-                    else reviewer(judge).review(descriptor)
-                ),
-                threshold=descriptor.pass_threshold,
-                cancel_pending=cancel_pending,
-            )
-        except InferenceCancelled:
-            raise
+        outcome = execute_panel(
+            panel,
+            invoke=lambda judge: (
+                AttemptObservation(
+                    status="skipped",
+                    skip_reason="insufficient_context_capacity",
+                    resolved_model=None,
+                    score=None,
+                    rationale=None,
+                    usage={},
+                    error_type=None,
+                    message=None,
+                )
+                if dispositions[judge.id][0] == "skipped"
+                else reviewer(judge).review(descriptor)
+            ),
+            threshold=descriptor.pass_threshold,
+        )
         _emit_activity(
             activity,
             {
@@ -341,27 +335,34 @@ def judge_session(
                 "status": outcome.status,
             },
         )
+        return outcome
+
+    with ThreadPoolExecutor(
+        max_workers=len(rubrics),
+        thread_name_prefix="judge-rubric",
+    ) as executor:
+        outcomes = tuple(executor.map(evaluate, rubrics))
+
+    for descriptor, outcome in zip(rubrics, outcomes, strict=True):
+        rubric = _resolve(descriptor)
         attempts = tuple(_attempt_record(value) for value in outcome.attempts)
         if outcome.rating is None:
             if outcome.status == "not_evaluable":
                 not_evaluable.append(JudgeNotEvaluable(descriptor.id, attempts))
                 continue
-            raise JudgeExecutionError(
-                scores,
-                [
-                    JudgeFailure(
+            failures.append(
+                JudgeFailure(
+                    descriptor.id,
+                    _review_failure_message(
                         descriptor.id,
-                        _review_failure_message(
-                            descriptor.id,
-                            outcome.attempts,
-                            outcome.successful_count,
-                        ),
-                        "ReviewFailed",
-                        attempts,
-                    )
-                ],
-                not_evaluable,
+                        outcome.attempts,
+                        outcome.successful_count,
+                    ),
+                    "ReviewFailed",
+                    attempts,
+                )
             )
+            continue
         if outcome.rating < descriptor.pass_threshold:
             tags = list(rubric.tags_on_low)
         else:
@@ -412,6 +413,6 @@ def judge_session(
                 },
             )
         )
-    if not_evaluable:
-        raise JudgeExecutionError(scores, (), not_evaluable)
+    if failures or not_evaluable:
+        raise JudgeExecutionError(scores, failures, not_evaluable)
     return scores

@@ -220,9 +220,13 @@ schema, and other provider errors remain failures.
 
 Only planned reviewers call inference. A capacity skip remains in the judging
 plan and attempt audit, but does not count as a completed reviewer attempt or an
-inference failure. The one through three selected panel positions run
-concurrently for each rubric, so concurrency is bounded by the pinned panel
-size; rubrics and sessions remain sequential. A scored rubric is complete when
+inference failure. Within one session, rubric panels and their one through three
+selected reviewers are eligible to run concurrently. Each reviewer still
+creates one rubric-neutral digest set and shares it across that reviewer's
+rubrics. Live provider calls are bounded independently of cached work: W&B
+Inference permits four active calls and Codex permits two. Sessions remain
+sequential, and outcomes are aggregated in pinned rubric and reviewer order so
+scheduling cannot change persisted results. A scored rubric is complete when
 every selected reviewer returns a valid score. It is `degraded` when at least
 one reviewer scores and the rest either validly abstain or were skipped; its
 rating is the arithmetic mean of available scores, with minimum, maximum,
@@ -232,10 +236,12 @@ evaluable and writes no feedback.
 
 A failed invocation or invalid attempt by an applicable reviewer still fails
 coverage even when another reviewer returned a valid score. After the bounded
-transport retries for that attempt are exhausted, the runtime cancels
-outstanding panel work when the transport supports active cancellation, waits
-for started work to settle safely, and stops the remaining rubrics and sessions.
-An already-started request may complete before cancellation takes effect.
+transport retries for that attempt are exhausted, the runtime cancels pending
+work in that panel and waits for started work to settle safely. It does not
+abort the shared provider transport, because other rubric panels may be using
+the same client. Concurrent rubric outcomes are collected in pinned order and
+any coverage failure then fails the session and stops remaining sessions.
+Explicit run cancellation remains global and interrupts provider-gate waits.
 The HTTP transport makes at most three attempts for retryable timeouts, rate
 limits, and transient server failures, with backoff, and permits a 240-second
 response wait per attempt. Every provider request start and completion plus

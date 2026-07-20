@@ -176,6 +176,55 @@ def test_runner_invokes_every_selected_judge(monkeypatch) -> None:
     assert scores[0].value == pytest.approx(0.625)
 
 
+def test_runner_evaluates_rubric_panels_concurrently_and_returns_pinned_order(
+    monkeypatch,
+) -> None:
+    rubrics = build_rubric_catalog().rubrics[:2]
+    started = threading.Barrier(2, timeout=1)
+
+    scores, _ = _run(
+        monkeypatch,
+        {"judge-1": [_observation(0.75), _observation(0.75)]},
+        rubrics=rubrics,
+        before_review=started.wait,
+    )
+
+    assert [score.scorer for score in scores] == [rubric.id for rubric in rubrics]
+
+
+def test_runner_assigns_shared_provider_gates(monkeypatch) -> None:
+    judges = (
+        _judge("wandb-judge-1", 1).model_copy(update={"provider": "wandb"}),
+        _judge("wandb-judge-2", 2).model_copy(update={"provider": "wandb"}),
+        _judge("codex-judge", 3).model_copy(update={"provider": "codex"}),
+    )
+    _, created = _run(
+        monkeypatch,
+        {
+            "wandb-judge-1": [_observation(0.75)],
+            "wandb-judge-2": [_observation(0.75)],
+            "codex-judge": [_observation(0.75)],
+        },
+        judges=judges,
+        rubrics=build_rubric_catalog().rubrics[:1],
+    )
+    gates = {item["judge"].provider: item["call_gate"] for item in created}
+
+    assert created[0]["call_gate"] is created[1]["call_gate"]
+    assert [gates["wandb"].acquire(blocking=False) for _ in range(5)] == [
+        True,
+        True,
+        True,
+        True,
+        False,
+    ]
+    assert [gates["codex"].acquire(blocking=False) for _ in range(3)] == [
+        True,
+        True,
+        False,
+    ]
+
+
 def test_runner_retains_duplicate_evidence_ids(monkeypatch) -> None:
     scores, _ = _run(
         monkeypatch,
@@ -186,10 +235,7 @@ def test_runner_retains_duplicate_evidence_ids(monkeypatch) -> None:
     assert scores[0].metadata["evidence_trace_ids"] == ["turn-1", "turn-1"]
 
 
-def test_runner_wires_transport_abort_to_panel_cancellation(monkeypatch) -> None:
-    callbacks = []
-    original_execute_panel = runner.execute_panel
-
+def test_panel_failure_does_not_abort_shared_transport(monkeypatch) -> None:
     class Client:
         aborted = 0
 
@@ -197,22 +243,15 @@ def test_runner_wires_transport_abort_to_panel_cancellation(monkeypatch) -> None
             self.aborted += 1
 
     client = Client()
+    with pytest.raises(JudgeExecutionError):
+        _run(
+            monkeypatch,
+            {"judge-1": [_observation(None, failed=True)]},
+            rubrics=build_rubric_catalog().rubrics[:1],
+            client=client,
+        )
 
-    def capture(*args, cancel_pending, **kwargs):
-        callbacks.append(cancel_pending)
-        return original_execute_panel(*args, cancel_pending=cancel_pending, **kwargs)
-
-    monkeypatch.setattr(runner, "execute_panel", capture)
-    _run(
-        monkeypatch,
-        {"judge-1": [_observation(0.75)]},
-        rubrics=build_rubric_catalog().rubrics[:1],
-        client=client,
-    )
-
-    assert len(callbacks) == 1
-    callbacks[0]()
-    assert client.aborted == 1
+    assert client.aborted == 0
 
 
 def test_zero_success_raises_with_attempt_audit(monkeypatch) -> None:
@@ -261,15 +300,24 @@ def test_failed_panel_reports_actual_reviewer_error_after_another_reviewer_succe
     )
 
 
-def test_failed_rubric_stops_remaining_rubrics(monkeypatch) -> None:
+def test_failed_rubrics_are_reported_in_pinned_order_after_parallel_execution(
+    monkeypatch,
+) -> None:
     rubrics = build_rubric_catalog().rubrics[:2]
-    outcomes = {"judge-1": [_observation(None, failed=True), _observation(0.75)]}
+    outcomes = {
+        "judge-1": [
+            _observation(None, failed=True),
+            _observation(None, failed=True),
+        ]
+    }
 
     with pytest.raises(JudgeExecutionError) as caught:
         _run(monkeypatch, outcomes, rubrics=rubrics)
 
-    assert caught.value.failures[0].rubric == rubrics[0].id
-    assert len(outcomes["judge-1"]) == 1
+    assert [failure.rubric for failure in caught.value.failures] == [
+        rubric.id for rubric in rubrics
+    ]
+    assert outcomes["judge-1"] == []
 
 
 def test_unanimous_abstention_is_audited_without_becoming_a_failure(monkeypatch) -> None:
