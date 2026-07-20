@@ -16,6 +16,13 @@ created -> scoring -> judging -> reflecting -> complete
 automatic chaining are mutable only while a run is created. Starting requires
 an explicit nonempty session selection.
 
+New-run setup remains an unpersisted browser draft until the user starts
+scoring. Starting creates the run, saves its requested inputs, and advances it;
+opening the setup form alone does not add a run. Users may permanently delete
+created, complete, failed, or cancelled runs and their owned audit records after
+explicit confirmation. Active scoring, judging, or reflecting runs must be
+cancelled before deletion so workers cannot write to a removed run.
+
 Start atomically pins:
 
 - the ordered turn cohort and its session identities;

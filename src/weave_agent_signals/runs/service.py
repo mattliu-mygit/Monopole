@@ -155,6 +155,10 @@ class RunService:
     def list_summaries(self, limit: int = 50) -> list[RunSummarySource]:
         return self.store.list_summaries(limit)
 
+    def delete(self, run_id: str) -> None:
+        self.get(run_id)
+        self.store.delete(run_id)
+
     def recover_interrupted_runs(self) -> None:
         """Resolve active rows left by a stopped server without repeating paid work."""
 

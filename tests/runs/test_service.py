@@ -20,7 +20,7 @@ from weave_agent_signals.run_config import (
 )
 from weave_agent_signals.runs.bundles import ScopeDescriptor, bundle_from_content_map
 from weave_agent_signals.runs.reflection_records import ReflectionResultRecord
-from weave_agent_signals.runs.service import RunService, _configuration_error
+from weave_agent_signals.runs.service import RunNotFoundError, RunService, _configuration_error
 from weave_agent_signals.runs.stages import StageCancelled
 from weave_agent_signals.runs.stages.reflection import (
     ReflectionDependencies,
@@ -203,6 +203,19 @@ def test_list_summaries_delegates_to_store_projection(store):
     assert len(summaries) == 1
     assert summaries[0].run_id == run.run_id
     assert summaries[0].session_count == 1
+
+
+def test_delete_removes_inactive_run_and_rejects_active_run(store):
+    service, _, _, _ = _service(store)
+    inactive = service.create()
+    active = _start_directly(store, service)
+
+    service.delete(inactive.run_id)
+
+    with pytest.raises(RunNotFoundError, match=f"Run {inactive.run_id} not found"):
+        service.get(inactive.run_id)
+    with pytest.raises(RunStoreConflictError, match="cancel it before deleting"):
+        service.delete(active.run_id)
 
 
 def test_advance_discovers_then_pins_and_executes_with_effective_config(store):

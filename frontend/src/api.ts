@@ -51,6 +51,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new ApiError(res.status, body, detail)
   }
+  if (res.status === 204) return undefined as T
   return res.json()
 }
 
@@ -111,6 +112,12 @@ export function getRun(runId: string): Promise<Run> {
 export function createRun(): Promise<Run> {
   return apiFetch<RunTransport>('/api/runs', {
     method: 'POST',
+  })
+}
+
+export function deleteRun(runId: string): Promise<void> {
+  return apiFetch<void>(`/api/runs/${encodeURIComponent(runId)}`, {
+    method: 'DELETE',
   })
 }
 

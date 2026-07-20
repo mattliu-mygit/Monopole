@@ -1,8 +1,8 @@
-import { useQuery, useMutation } from '@tanstack/react-query'
-import { Link, useNavigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import RunStatusBadge from '../features/runs/RunStatusBadge'
-import { getRuns, createRun } from '../api'
+import { getRuns } from '../api'
 import type { RunReviewState, RunSummary } from '../types'
 import { shouldPollRuns } from '../features/runs/runPolling'
 import {
@@ -53,8 +53,6 @@ function ReviewBadge({ run }: { run: RunSummary }) {
 }
 
 export default function Runs() {
-  const navigate = useNavigate()
-
   const runsQuery = useQuery({
     queryKey: ['runs'],
     queryFn: getRuns,
@@ -64,33 +62,18 @@ export default function Runs() {
     },
   })
 
-  const createMutation = useMutation({
-    mutationFn: createRun,
-    onSuccess: (run) => {
-      navigate(`/runs/${run.run_id}`)
-    },
-  })
-
   const runs = runsQuery.data?.runs ?? []
 
   return (
     <div>
       <PageHeader title="Runs">
-        <button
-          type="button"
-          onClick={() => createMutation.mutate()}
-          disabled={createMutation.isPending}
+        <Link
+          to="/runs/new"
           className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium disabled:opacity-50"
         >
-          {createMutation.isPending ? 'Creating...' : 'New Run'}
-        </button>
+          New Run
+        </Link>
       </PageHeader>
-
-      {createMutation.error && (
-        <p role="alert" className="text-red-600 text-sm mb-4">
-          {(createMutation.error as Error).message}
-        </p>
-      )}
 
       {runsQuery.isLoading && <p className="text-gray-500 text-sm">Loading...</p>}
       {runsQuery.error && (

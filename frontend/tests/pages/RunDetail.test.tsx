@@ -29,6 +29,7 @@ const api = vi.hoisted(() => ({
   setAutoRun: vi.fn(),
   advanceRun: vi.fn(),
   cancelRun: vi.fn(),
+  deleteRun: vi.fn(),
   setReflectionSelection: vi.fn(),
   saveReflectionDraft: vi.fn(),
   resetReflectionDraft: vi.fn(),
@@ -367,6 +368,7 @@ beforeEach(() => {
   api.setAutoRun.mockResolvedValue(created)
   api.advanceRun.mockResolvedValue({ ...created, status: 'scoring' })
   api.cancelRun.mockResolvedValue({ ...created, status: 'cancelled' })
+  api.deleteRun.mockResolvedValue(undefined)
 })
 
 describe('RunDetail wiring', () => {
@@ -581,11 +583,26 @@ describe('RunDetail wiring', () => {
     api.cancelRun.mockResolvedValue({ ...scoring, status: 'cancelled' })
     renderPage()
 
+    expect(screen.queryByRole('button', { name: 'Delete run' })).toBeNull()
     fireEvent.click(await screen.findByRole('button', { name: 'Continue to judging' }))
     await waitFor(() => expect(api.advanceRun).toHaveBeenCalledWith('run-ui'))
     fireEvent.click(screen.getByRole('button', { name: 'Cancel Run' }))
     fireEvent.click(screen.getByRole('button', { name: 'Cancel run' }))
     await waitFor(() => expect(api.cancelRun).toHaveBeenCalledWith('run-ui'))
+  })
+
+  it('deletes an inactive run only after confirmation', async () => {
+    api.getRun.mockResolvedValue(baseRun({ status: 'failed', error: 'Judge failed' }))
+    const { router } = renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete run' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Keep run' }))
+    expect(api.deleteRun).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete run' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete run permanently' }))
+
+    await waitFor(() => expect(api.deleteRun).toHaveBeenCalledWith('run-ui'))
+    expect(router.state.location.pathname).toBe('/runs')
   })
 
   it('composes pinned audit and active judging progress', async () => {

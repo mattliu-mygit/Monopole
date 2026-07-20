@@ -41,6 +41,17 @@ beforeEach(() => {
 })
 
 describe('Runs review state', () => {
+  it('opens an unpersisted new-run draft without creating a run', async () => {
+    api.getRuns.mockResolvedValue({ runs: [] })
+    renderPage()
+
+    const link = await screen.findByRole('link', { name: 'New Run' })
+    expect(link.getAttribute('href')).toBe('/runs/new')
+    fireEvent.click(link)
+
+    expect(api.createRun).not.toHaveBeenCalled()
+  })
+
   it('announces a fetch error and retries in place', async () => {
     api.getRuns
       .mockRejectedValueOnce(new Error('Runs API unavailable'))

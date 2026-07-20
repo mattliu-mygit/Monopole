@@ -137,6 +137,10 @@ def create_runs_router(
         )
         return response(run)
 
+    @router.delete("/{run_id}", status_code=204)
+    def delete_run(run_id: str) -> None:
+        _call(lambda: service.delete(run_id))
+
     @router.put("/{run_id}/selection")
     def save_selection(run_id: str, request: SelectionRequest) -> RunResponse:
         selection = DataSelection(

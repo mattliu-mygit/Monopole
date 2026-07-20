@@ -5,7 +5,7 @@ from pathlib import Path
 from weave_agent_signals.api import create_app
 
 
-def test_every_api_operation_declares_a_success_response_schema() -> None:
+def test_every_api_operation_declares_a_typed_success_response() -> None:
     schema = create_app().openapi()
 
     for path, operations in schema["paths"].items():
@@ -14,7 +14,12 @@ def test_every_api_operation_declares_a_success_response_schema() -> None:
         for method, operation in operations.items():
             if method not in {"get", "post", "put", "delete", "patch"}:
                 continue
-            success = operation["responses"]["200"]["content"]["application/json"]
+            responses = operation["responses"]
+            success_code = next(code for code in responses if code.startswith("2"))
+            if success_code == "204":
+                assert "content" not in responses[success_code]
+                continue
+            success = responses[success_code]["content"]["application/json"]
             assert "$ref" in success["schema"], f"{method.upper()} {path} has no response model"
 
 

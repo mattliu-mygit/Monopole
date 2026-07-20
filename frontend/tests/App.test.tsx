@@ -9,6 +9,7 @@ vi.mock('../src/pages/Dashboard', () => ({ default: () => <div>Dashboard page</d
 vi.mock('../src/pages/Sessions', () => ({ default: () => <div>Sessions page</div> }))
 vi.mock('../src/pages/SessionDetail', () => ({ default: () => <div>Session detail page</div> }))
 vi.mock('../src/pages/Runs', () => ({ default: () => <div>Runs page</div> }))
+vi.mock('../src/pages/NewRun', () => ({ default: () => <div>New run page</div> }))
 vi.mock('../src/pages/RunDetail', () => ({ default: () => <div>Run detail page</div> }))
 vi.mock('../src/pages/Analyze', () => ({ default: () => <div>Analysis page</div> }))
 
@@ -27,5 +28,16 @@ describe('application shell', () => {
     expect(screen.getByRole('link', { name: 'Runs' }).getAttribute('href')).toBe('/runs')
     expect(screen.getByRole('link', { name: 'Analysis' }).getAttribute('href')).toBe('/analyze')
     expect(screen.getByRole('main').textContent).toContain('Runs page')
+  })
+
+  it('routes new-run setup separately from persisted run detail', () => {
+    const router = createMemoryRouter(
+      [{ path: '*', element: <App /> }],
+      { initialEntries: ['/runs/new'] },
+    )
+    render(<RouterProvider router={router} />)
+
+    expect(screen.getByRole('main').textContent).toContain('New run page')
+    expect(screen.getByRole('main').textContent).not.toContain('Run detail page')
   })
 })

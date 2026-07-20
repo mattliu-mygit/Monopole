@@ -589,6 +589,26 @@ class RunStore:
             ).fetchall()
         return [self._row_to_run(row) for row in rows]
 
+    def delete(self, run_id: str) -> None:
+        """Delete an inactive run and its owned records atomically."""
+
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._get_row_locked(run_id)
+                status = RunStatus(row["status"])
+                if status in _ACTIVE_STAGES:
+                    raise RunStoreConflictError(
+                        f"Run {run_id} is {status.value}; cancel it before deleting"
+                    )
+                self._conn.execute("DELETE FROM judge_calls WHERE run_id = ?", (run_id,))
+                self._conn.execute("DELETE FROM run_events WHERE run_id = ?", (run_id,))
+                self._conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+
     def save_selection(self, run_id: str, selection: DataSelection) -> Run:
         encoded = _encode_data_selection(selection)
         with self._lock:

@@ -1,16 +1,15 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useBeforeUnload, useBlocker, useParams } from 'react-router-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useBeforeUnload, useBlocker, useNavigate, useParams } from 'react-router-dom'
 import {
   advanceRun,
   ApiError,
   cancelRun,
+  deleteRun,
   dismissRunReflection,
   getModels,
   getRubrics,
   getRun,
-  getSession,
-  getSessions,
   promoteRunReflection,
   resetReflectionDraft,
   saveReflectionDraft,
@@ -26,22 +25,12 @@ import ReflectionReview from '../features/reflection/ReflectionReview'
 import RunStatusBadge from '../features/runs/RunStatusBadge'
 import JudgingProgress from '../features/runs/JudgingProgress'
 import RunConfigAudit from '../features/runs/RunConfigAudit'
-import RunConfiguration from '../features/runs/RunConfiguration'
 import PinnedSelectionAudit from '../features/runs/PinnedSelectionAudit'
-import RunSelection from '../features/runs/RunSelection'
+import RunSetup from '../features/runs/RunSetup'
 import ScoringProgress from '../features/runs/ScoringProgress'
-import {
-  assessRunConfig,
-  initializeRunConfigState,
-  toRunConfig,
-  transitionRunConfig,
-  type RunConfigAction,
-} from '../features/runs/runConfigState'
 import type {
   DataSelection,
-  ModelCatalog,
   ReflectionBundleSnapshot,
-  RubricCatalog,
   Run,
   RunConfig,
 } from '../types'
@@ -55,79 +44,6 @@ const dangerButton =
 function formatDateTime(value: string): string {
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
-}
-
-function dateInputValue(value: string | null | undefined, timezone?: string | null): string {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: timezone || undefined,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).formatToParts(date)
-    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
-    return `${values.year}-${values.month}-${values.day}`
-  } catch {
-    return value.slice(0, 10)
-  }
-}
-
-function defaultSince(): string {
-  const date = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-  date.setMinutes(date.getMinutes() - date.getTimezoneOffset())
-  return date.toISOString().slice(0, 10)
-}
-
-function dayBoundary(value: string, end: boolean, timezone?: string): string | null {
-  if (!value) return null
-  const [year, month, day] = value.split('-').map(Number)
-  if (![year, month, day].every(Number.isFinite)) return null
-  const hour = end ? 23 : 0
-  const minute = end ? 59 : 0
-  const second = end ? 59 : 0
-  const millisecond = end ? 999 : 0
-  const serialize = (date: Date) =>
-    end
-      ? date.toISOString().replace(/\.999Z$/, '.999999Z')
-      : date.toISOString()
-
-  if (!timezone) {
-    return serialize(new Date(year, month - 1, day, hour, minute, second, millisecond))
-  }
-  try {
-    const formatter = new Intl.DateTimeFormat('en-US', {
-      timeZone: timezone,
-      hourCycle: 'h23',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    })
-    const desired = Date.UTC(year, month - 1, day, hour, minute, second)
-    let instant = desired
-    for (let iteration = 0; iteration < 2; iteration += 1) {
-      const parts = Object.fromEntries(
-        formatter.formatToParts(new Date(instant)).map((part) => [part.type, part.value]),
-      )
-      const represented = Date.UTC(
-        Number(parts.year),
-        Number(parts.month) - 1,
-        Number(parts.day),
-        Number(parts.hour),
-        Number(parts.minute),
-        Number(parts.second),
-      )
-      instant += desired - represented
-    }
-    return serialize(new Date(instant + millisecond))
-  } catch {
-    return serialize(new Date(year, month - 1, day, hour, minute, second, millisecond))
-  }
 }
 
 function StageCard({
@@ -178,138 +94,6 @@ function ErrorNotice({ message }: { message: string }) {
   )
 }
 
-function CreatedRunSetup({
-  run,
-  models,
-  rubrics,
-  pending,
-  onStart,
-}: {
-  run: Run
-  models: ModelCatalog
-  rubrics: RubricCatalog
-  pending: boolean
-  onStart: (selection: DataSelection, config: RunConfig, autoRun: boolean) => void
-}) {
-  const timezone = run.data_selection?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
-  const [since, setSince] = useState(
-    () => dateInputValue(run.data_selection?.since, timezone) || defaultSince(),
-  )
-  const [until, setUntil] = useState(() => dateInputValue(run.data_selection?.until, timezone))
-  const [selectedIds, setSelectedIds] = useState<string[]>(
-    () => run.data_selection?.session_ids ?? [],
-  )
-  const [autoRun, setAutoRunChoice] = useState(run.auto_run)
-  const [config, setConfig] = useState(() =>
-    initializeRunConfigState(models, rubrics, run.run_config),
-  )
-  const sinceInstant = dayBoundary(since, false, timezone) ?? undefined
-  const untilInstant = dayBoundary(until, true, timezone) ?? undefined
-  const sessionsQuery = useQuery({
-    queryKey: ['sessions-for-run', sinceInstant, untilInstant, timezone],
-    queryFn: () =>
-      getSessions({ since: sinceInstant, until: untilInstant, timezone }),
-  })
-  const sessions = sessionsQuery.data?.sessions ?? []
-  const selectedSessionIds = selectedIds
-  const selectedSessions = sessions.filter((session) =>
-    selectedSessionIds.includes(session.conversation_id))
-  const selectedDetailQueries = useQueries({
-    queries: selectedSessionIds.map((sessionId) => ({
-      queryKey: ['session-capacity', sessionId],
-      queryFn: () => getSession(sessionId),
-    })),
-  })
-  const capacitySessions = selectedDetailQueries.flatMap((query) =>
-    query.data ? [{ judging_token_estimates: query.data.judging_token_estimates }] : [])
-  const capacityLoading = selectedDetailQueries.some((query) => query.isPending)
-  const capacityError = selectedDetailQueries.find((query) => query.error)?.error
-  const truncated = Boolean(sessionsQuery.data?.truncated)
-  const assessment = assessRunConfig(config, models, rubrics, capacitySessions)
-  const selectionError =
-    selectedSessionIds.length === 0
-      ? 'Select at least one session.'
-      : selectedSessions.length !== selectedSessionIds.length
-        ? 'Load every selected session before starting.'
-        : capacityError instanceof Error
-          ? `Could not load selected session evidence: ${capacityError.message}`
-          : null
-  const cannotStart =
-    pending || sessionsQuery.isLoading || Boolean(sessionsQuery.error) ||
-    capacityLoading || Boolean(selectionError) || assessment.errors.length > 0
-
-  function changeDate(setter: (value: string) => void, value: string) {
-    setter(value)
-    setSelectedIds([])
-  }
-
-  function dispatch(action: RunConfigAction) {
-    setConfig((current) => transitionRunConfig(
-      current,
-      action,
-      models,
-      capacitySessions,
-    ))
-  }
-
-  function start() {
-    if (cannotStart) return
-    onStart(
-      {
-        since: sinceInstant ?? null,
-        until: untilInstant ?? null,
-        timezone,
-        session_ids: selectedSessionIds,
-      },
-      toRunConfig(config, models, rubrics, capacitySessions),
-      autoRun,
-    )
-  }
-
-  return (
-    <div className="space-y-6">
-      <RunSelection
-        since={since}
-        until={until}
-        sessions={sessions}
-        selectedSessionIds={selectedSessionIds}
-        totalSessions={sessionsQuery.data?.total ?? sessions.length}
-        truncated={truncated}
-        loading={sessionsQuery.isLoading}
-        error={sessionsQuery.error instanceof Error ? sessionsQuery.error.message : null}
-        disabled={pending}
-        onSinceChange={(value) => changeDate(setSince, value)}
-        onUntilChange={(value) => changeDate(setUntil, value)}
-        onSessionIdsChange={setSelectedIds}
-        onRetry={() => void sessionsQuery.refetch()}
-      />
-      <RunConfiguration
-        state={config}
-        models={models}
-        rubrics={rubrics}
-        sessions={capacitySessions}
-        disabled={pending}
-        onAction={dispatch}
-      />
-      {selectionError && <ErrorNotice message={selectionError} />}
-      <div className="flex flex-wrap items-center gap-4 border-t border-gray-200 pt-4">
-        <label className="flex items-center gap-2 text-sm text-gray-700">
-          <input
-            type="checkbox"
-            checked={autoRun}
-            disabled={pending}
-            onChange={(event) => setAutoRunChoice(event.target.checked)}
-          />
-          Continue automatically
-        </label>
-        <button type="button" className={primaryButton} disabled={cannotStart} onClick={start}>
-          {pending ? 'Starting…' : 'Start Scoring'}
-        </button>
-      </div>
-    </div>
-  )
-}
-
 function isCancellable(run: Run): boolean {
   if (!['created', 'scoring', 'judging', 'reflecting'].includes(run.status)) return false
   return !(
@@ -320,8 +104,10 @@ function isCancellable(run: Run): boolean {
 
 export default function RunDetail() {
   const { runId } = useParams<{ runId: string }>()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [reviewDirty, setReviewDirty] = useState(false)
   const blocker = useBlocker(useCallback(
@@ -433,6 +219,16 @@ export default function RunDetail() {
     },
     onError: reconcileError,
   })
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteRun(runId!),
+    onMutate: () => setActionError(null),
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ['run', runId], exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['runs'] })
+      navigate('/runs')
+    },
+    onError: reconcileError,
+  })
 
   if (!runId) return null
   if (runQuery.isLoading) {
@@ -519,6 +315,16 @@ export default function RunDetail() {
             Cancel Run
           </button>
         )}
+        {!['scoring', 'judging', 'reflecting'].includes(run.status) && (
+          <button
+            type="button"
+            className={dangerButton}
+            disabled={deleteMutation.isPending}
+            onClick={() => setDeleteDialogOpen(true)}
+          >
+            Delete run
+          </button>
+        )}
       </PageHeader>
 
       {cancelDialogOpen && (
@@ -526,6 +332,27 @@ export default function RunDetail() {
           <p className="mt-2 text-sm text-gray-600">Completed evidence remains available.</p>
           <button type="button" className={`${dangerButton} mt-4`} disabled={cancelMutation.isPending} onClick={() => cancelMutation.mutate()}>
             {cancelMutation.isPending ? 'Cancelling…' : 'Cancel run'}
+          </button>
+        </Dialog>
+      )}
+
+      {deleteDialogOpen && (
+        <Dialog
+          title="Delete this run?"
+          closeLabel="Keep run"
+          busy={deleteMutation.isPending}
+          onClose={() => setDeleteDialogOpen(false)}
+        >
+          <p className="mt-2 text-sm text-gray-600">
+            This permanently removes the run and its saved evaluation details.
+          </p>
+          <button
+            type="button"
+            className={`${dangerButton} mt-4`}
+            disabled={deleteMutation.isPending}
+            onClick={() => deleteMutation.mutate()}
+          >
+            {deleteMutation.isPending ? 'Deleting…' : 'Delete run permanently'}
           </button>
         </Dialog>
       )}
@@ -575,9 +402,11 @@ export default function RunDetail() {
         >
           {run.status === 'created' ? (
             modelsQuery.data && rubricsQuery.data ? (
-              <CreatedRunSetup
+              <RunSetup
                 key={run.run_id}
-                run={run}
+                initialSelection={run.data_selection}
+                initialConfig={run.run_config}
+                initialAutoRun={run.auto_run}
                 models={modelsQuery.data}
                 rubrics={rubricsQuery.data}
                 pending={startMutation.isPending}

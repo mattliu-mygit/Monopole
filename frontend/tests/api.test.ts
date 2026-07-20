@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   advanceRun,
   createRun,
+  deleteRun,
   getModels,
   getRuns,
   getRubrics,
@@ -225,6 +226,17 @@ describe('run API request contracts', () => {
     expect(fetch).toHaveBeenCalledWith('/api/runs', {
       method: 'POST',
     })
+  })
+
+  it('deletes a run without parsing the empty response', async () => {
+    const json = vi.fn()
+    const fetch = vi.fn().mockResolvedValue({ ok: true, status: 204, json })
+    vi.stubGlobal('fetch', fetch)
+
+    await deleteRun('run-failed')
+
+    expect(fetch).toHaveBeenCalledWith('/api/runs/run-failed', { method: 'DELETE' })
+    expect(json).not.toHaveBeenCalled()
   })
 
   it('omits the advance body so the backend uses the persisted run configuration', async () => {

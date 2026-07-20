@@ -672,6 +672,39 @@ def test_judge_calls_are_immutable_and_only_reusable_successes_are_loaded(store)
         store.record_judge_call(started.run_id, changed)
 
 
+def test_delete_removes_terminal_run_and_owned_rows(store):
+    started, _, _ = _start(store)
+    store.record_stage_result(started.run_id, stage=RunStatus.SCORING, result={"written": 1})
+    store.finalize_stage_success(started.run_id, stage=RunStatus.SCORING, advance=True)
+    store.record_judge_call(started.run_id, _judge_call())
+    store.append_run_event(
+        started.run_id,
+        sanitize_event(
+            "judging",
+            "working",
+            "Reviewing",
+            {},
+            datetime(2026, 7, 17, tzinfo=timezone.utc),
+        ),
+    )
+    store.fail(started.run_id, expected_status=RunStatus.JUDGING, error="test failure")
+
+    store.delete(started.run_id)
+
+    assert store.get(started.run_id) is None
+    assert store.list_judge_calls(started.run_id) == []
+    assert store.list_run_events(started.run_id) == []
+
+
+def test_delete_rejects_active_and_missing_runs(store):
+    started, _, _ = _start(store)
+
+    with pytest.raises(RunStoreConflictError, match="cancel it before deleting"):
+        store.delete(started.run_id)
+    with pytest.raises(ValueError, match="Run missing not found"):
+        store.delete("missing")
+
+
 def test_run_events_receive_monotonic_sequences_and_prune_oldest_rows(store):
     run = store.create()
     for index in range(105):

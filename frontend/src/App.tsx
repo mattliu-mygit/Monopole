@@ -3,6 +3,7 @@ import Dashboard from './pages/Dashboard'
 import Sessions from './pages/Sessions'
 import SessionDetailPage from './pages/SessionDetail'
 import Runs from './pages/Runs'
+import NewRun from './pages/NewRun'
 import RunDetail from './pages/RunDetail'
 import Analyze from './pages/Analyze'
 
@@ -50,6 +51,7 @@ export default function App() {
         <Route path="sessions" element={<Sessions />} />
         <Route path="sessions/:id" element={<SessionDetailPage />} />
         <Route path="runs" element={<Runs />} />
+        <Route path="runs/new" element={<NewRun />} />
         <Route path="runs/:runId" element={<RunDetail />} />
         <Route path="analyze" element={<Analyze />} />
       </Route>

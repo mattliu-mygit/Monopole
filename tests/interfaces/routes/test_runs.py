@@ -520,6 +520,7 @@ def test_run_actions_are_bodyless_and_cancel_is_service_owned(route_context):
     client, _service, _models, _rubrics = route_context
     paths = client.get("/openapi.json").json()["paths"]
     assert "requestBody" not in paths["/api/runs"]["post"]
+    assert "requestBody" not in paths["/api/runs/{run_id}"]["delete"]
     assert "requestBody" not in paths["/api/runs/{run_id}/advance"]["post"]
     assert "requestBody" not in paths["/api/runs/{run_id}/cancel"]["post"]
 
@@ -531,3 +532,27 @@ def test_run_actions_are_bodyless_and_cancel_is_service_owned(route_context):
     repeated = client.post(f"/api/runs/{created['run_id']}/cancel")
     assert repeated.status_code == 409
     assert repeated.json()["detail"]["code"] == "run_cancellation_conflict"
+
+
+def test_run_delete_removes_inactive_runs_and_rejects_active_runs(route_context):
+    client, _service, models, rubrics = route_context
+    inactive = client.post("/api/runs").json()
+
+    deleted = client.delete(f"/api/runs/{inactive['run_id']}")
+
+    assert deleted.status_code == 204
+    assert deleted.content == b""
+    assert client.get(f"/api/runs/{inactive['run_id']}").status_code == 404
+    assert client.delete("/api/runs/missing").status_code == 404
+
+    active = client.post("/api/runs").json()
+    client.put(
+        f"/api/runs/{active['run_id']}/selection",
+        json={"session_ids": ["session-1"]},
+    )
+    client.put(f"/api/runs/{active['run_id']}/config", json=_config(models, rubrics))
+    client.post(f"/api/runs/{active['run_id']}/advance")
+
+    conflict = client.delete(f"/api/runs/{active['run_id']}")
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "run_conflict"
