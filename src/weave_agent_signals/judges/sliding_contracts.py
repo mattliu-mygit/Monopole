@@ -16,7 +16,6 @@ from weave_agent_signals.judges.tokens import count_tokens
 SLIDING_CONTRACT_SCHEMA_VERSION = 1
 MAX_WINDOW_FINDINGS = 4
 MAX_CHUNK_DIGEST_CHARACTERS = 2_400
-MAX_FINDING_OBSERVATION_CHARACTERS = 350
 MAX_BEHAVIORAL_FEEDBACK_CHARACTERS = 10_000
 MAX_REPORTED_UNKNOWN_EVIDENCE_IDS = 3
 MAX_REPORTED_EVIDENCE_ID_CHARACTERS = 64
@@ -55,14 +54,14 @@ class ChunkDigest(_ClosedModel):
     schema_version: Literal[1]
     chunk_id: StrictStr
     text: StrictStr = Field(max_length=MAX_CHUNK_DIGEST_CHARACTERS)
-    evidence_ids: tuple[StrictStr, ...] = Field(min_length=1)
 
 
 class WindowFinding(_ClosedModel):
     finding_id: StrictStr
     polarity: Literal["positive", "negative"]
-    observation: StrictStr = Field(max_length=MAX_FINDING_OBSERVATION_CHARACTERS)
+    observation: StrictStr
     evidence_ids: tuple[StrictStr, ...] = Field(min_length=1)
+    quote: StrictStr | None = None
 
 
 class WindowFindings(_ClosedModel):
@@ -99,6 +98,18 @@ class MergedVerdict(_ClosedModel):
     feedback: BehavioralFeedback | None
 
 
+class _MergedVerdictOutput(_ClosedModel):
+    schema_version: Literal[1]
+    status: Literal["scored", "insufficient_evidence"]
+    score: Annotated[
+        StrictFloat | StrictInt | None,
+        Field(json_schema_extra={"enum": [*SCORE_ANCHORS, None]}),
+    ]
+    rationale: StrictStr
+    finding_ids: tuple[StrictStr, ...]
+    feedback: BehavioralFeedback | None
+
+
 def _model_output_json_schema(
     model: type[BaseModel],
     *host_fields: str,
@@ -111,7 +122,7 @@ def _model_output_json_schema(
 
 
 def _merged_verdict_json_schema() -> dict:
-    schema = _model_output_json_schema(MergedVerdict, "schema_version")
+    schema = _model_output_json_schema(_MergedVerdictOutput, "schema_version")
     score = schema["properties"]["score"]
     score["anyOf"] = [{"type": "number"}, {"type": "null"}]
     return schema
@@ -147,17 +158,6 @@ def _bound_evidence_ids(allowed_evidence_ids: Sequence[str]) -> list[str]:
     return values
 
 
-def bind_chunk_digest_schema(
-    allowed_evidence_ids: Sequence[str],
-) -> JsonSchemaSpec:
-    """Bind one digest response to its source evidence."""
-
-    schema = deepcopy(dict(CHUNK_DIGEST_SCHEMA.schema))
-    properties = schema["properties"]
-    properties["evidence_ids"]["items"]["enum"] = _bound_evidence_ids(allowed_evidence_ids)
-    return JsonSchemaSpec(name=CHUNK_DIGEST_SCHEMA.name, schema=schema)
-
-
 def bind_window_findings_schema(
     allowed_evidence_ids: Sequence[str],
 ) -> JsonSchemaSpec:
@@ -170,14 +170,15 @@ def bind_window_findings_schema(
 
 
 def bind_merged_verdict_schema(
-    allowed_evidence_ids: Sequence[str],
+    allowed_finding_ids: Sequence[str],
 ) -> JsonSchemaSpec:
-    """Bind one merged verdict to evidence from the authenticated session."""
+    """Bind one merged verdict to the findings supplied for this rubric."""
 
     schema = deepcopy(dict(MERGED_VERDICT_SCHEMA.schema))
-    schema["properties"]["evidence_ids"]["items"]["enum"] = _bound_evidence_ids(
-        allowed_evidence_ids
-    )
+    values = list(allowed_finding_ids)
+    _allowed_id_set(values)
+    if values:
+        schema["properties"]["finding_ids"]["items"]["enum"] = values
     return JsonSchemaSpec(name=MERGED_VERDICT_SCHEMA.name, schema=schema)
 
 
@@ -185,7 +186,7 @@ def render_window_findings(value: WindowFindings) -> str:
     """Render normalized window findings as deterministic merge-input JSON."""
 
     return json.dumps(
-        value.model_dump(mode="json"),
+        value.model_dump(mode="json", exclude_none=True),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -221,17 +222,52 @@ def _allowed_id_set(allowed_evidence_ids: Sequence[str]) -> set[str]:
     return set(normalized)
 
 
+def _validated_aliases(evidence_aliases: Mapping[str, str]) -> dict[str, str]:
+    aliases = dict(evidence_aliases)
+    _allowed_id_set(tuple(aliases))
+    canonical_ids = tuple(aliases.values())
+    _allowed_id_set(canonical_ids)
+    if not aliases:
+        raise ValueError("evidence aliases must not be empty")
+    return aliases
+
+
+def _verified_quote(quote: str | None, *, raw_text: str) -> str | None:
+    if quote is None:
+        return None
+    normalized = " ".join(quote.split())
+    if not normalized:
+        return None
+    return normalized if normalized in " ".join(raw_text.split()) else None
+
+
+def _validated_finding_evidence(
+    finding_evidence: Mapping[str, Sequence[str]],
+) -> dict[str, tuple[str, ...]]:
+    validated: dict[str, tuple[str, ...]] = {}
+    for finding_id, evidence_ids in finding_evidence.items():
+        key = _nonblank_id(finding_id, field="finding ID")
+        canonical = tuple(
+            _nonblank_id(evidence_id, field="evidence ID") for evidence_id in evidence_ids
+        )
+        if not canonical:
+            raise ValueError("finding evidence must not be empty")
+        validated[key] = canonical
+    return validated
+
+
 def _validated_evidence_ids(
     evidence_ids: Sequence[str],
     *,
     allowed_ids: set[str],
     required: bool,
+    citation_kind: str = "evidence",
 ) -> tuple[str, ...]:
     normalized = tuple(
-        _nonblank_id(evidence_id, field="evidence ID") for evidence_id in evidence_ids
+        _nonblank_id(evidence_id, field=f"{citation_kind} ID") for evidence_id in evidence_ids
     )
     if required and not normalized:
-        raise ValueError("at least one evidence citation is required")
+        raise ValueError(f"at least one {citation_kind} citation is required")
     unknown = [evidence_id for evidence_id in normalized if evidence_id not in allowed_ids]
     if unknown:
         reported = [
@@ -242,14 +278,13 @@ def _validated_evidence_ids(
         ]
         remainder = len(unknown) - len(reported)
         suffix = f" (+{remainder} more)" if remainder else ""
-        raise ValueError(f"unknown evidence IDs: {json.dumps(reported)}{suffix}")
+        raise ValueError(f"unknown {citation_kind} IDs: {json.dumps(reported)}{suffix}")
     return normalized
 
 
 def parse_chunk_digest(
     value: Mapping[str, object] | ChunkDigest,
     *,
-    allowed_evidence_ids: Sequence[str],
     max_tokens: int,
     expected_chunk_id: str | None = None,
 ) -> ChunkDigest:
@@ -269,37 +304,31 @@ def parse_chunk_digest(
     text = _normalized_text(digest.text, field="digest text")
     if count_tokens(text, "utf8_bytes_div_3") > max_tokens:
         raise ValueError("digest text exceeds the configured token limit")
-    evidence_ids = _validated_evidence_ids(
-        digest.evidence_ids,
-        allowed_ids=_allowed_id_set(allowed_evidence_ids),
-        required=True,
-    )
-    return digest.model_copy(
-        update={"chunk_id": chunk_id, "text": text, "evidence_ids": evidence_ids}
-    )
+    return digest.model_copy(update={"chunk_id": chunk_id, "text": text})
 
 
 def parse_window_finding(
     value: Mapping[str, object] | WindowFinding,
     *,
-    allowed_evidence_ids: Sequence[str],
+    evidence_aliases: Mapping[str, str],
+    raw_text: str,
 ) -> WindowFinding:
     """Validate one bounded, evidence-cited positive or negative finding."""
 
     finding = WindowFinding.model_validate(_validation_data(value))
+    aliases = _validated_aliases(evidence_aliases)
+    alias_ids = _validated_evidence_ids(
+        finding.evidence_ids,
+        allowed_ids=set(aliases),
+        required=True,
+    )
+    quote = _verified_quote(finding.quote, raw_text=raw_text)
     return finding.model_copy(
         update={
             "finding_id": _nonblank_id(finding.finding_id, field="finding ID"),
-            "observation": _normalized_text(
-                finding.observation,
-                field="finding observation",
-                max_characters=MAX_FINDING_OBSERVATION_CHARACTERS,
-            ),
-            "evidence_ids": _validated_evidence_ids(
-                finding.evidence_ids,
-                allowed_ids=_allowed_id_set(allowed_evidence_ids),
-                required=True,
-            ),
+            "observation": _normalized_text(finding.observation, field="finding observation"),
+            "evidence_ids": tuple(aliases[alias] for alias in alias_ids),
+            "quote": quote,
         }
     )
 
@@ -307,7 +336,8 @@ def parse_window_finding(
 def parse_window_findings(
     value: Mapping[str, object] | WindowFindings,
     *,
-    allowed_evidence_ids: Sequence[str],
+    evidence_aliases: Mapping[str, str],
+    raw_text: str,
     max_tokens: int,
     expected_window_id: str | None = None,
 ) -> WindowFindings:
@@ -327,7 +357,11 @@ def parse_window_findings(
     findings: list[WindowFinding] = []
     seen: set[tuple[object, ...]] = set()
     for value in parsed.findings:
-        finding = parse_window_finding(value, allowed_evidence_ids=allowed_evidence_ids)
+        finding = parse_window_finding(
+            value,
+            evidence_aliases=evidence_aliases,
+            raw_text=raw_text,
+        )
         key = window_finding_semantic_key(finding)
         if key in seen:
             continue
@@ -363,40 +397,49 @@ def parse_behavioral_feedback(
 
 
 def parse_merged_verdict(
-    value: Mapping[str, object] | MergedVerdict,
+    value: Mapping[str, object],
     *,
-    allowed_evidence_ids: Sequence[str],
+    finding_evidence: Mapping[str, Sequence[str]],
 ) -> MergedVerdict:
     """Validate the final anchored verdict and behavioral-feedback combination."""
 
     data = _validation_data(value)
     if isinstance(data, Mapping):
         data = {**data, "schema_version": SLIDING_CONTRACT_SCHEMA_VERSION}
-    verdict = MergedVerdict.model_validate(data)
-    rationale = _normalized_text(verdict.rationale, field="rationale")
-    allowed_ids = _allowed_id_set(allowed_evidence_ids)
+    evidence_by_finding = _validated_finding_evidence(finding_evidence)
+    output = _MergedVerdictOutput.model_validate(data)
+    rationale = _normalized_text(output.rationale, field="rationale")
 
-    if verdict.status == "insufficient_evidence":
-        return verdict.model_copy(
-            update={
-                "score": None,
-                "rationale": rationale,
-                "evidence_ids": (),
-                "feedback": None,
-            }
+    if output.status == "insufficient_evidence":
+        return MergedVerdict(
+            schema_version=SLIDING_CONTRACT_SCHEMA_VERSION,
+            status=output.status,
+            score=None,
+            rationale=rationale,
+            evidence_ids=(),
+            feedback=None,
         )
 
-    if verdict.score is None:
+    if output.score is None:
         raise ValueError("scored verdict requires a score")
-    _validate_score_anchor(verdict.score, field="scored verdict score")
-    evidence_ids = _validated_evidence_ids(
-        verdict.evidence_ids,
-        allowed_ids=allowed_ids,
+    _validate_score_anchor(output.score, field="scored verdict score")
+    findings = _validated_evidence_ids(
+        output.finding_ids,
+        allowed_ids=set(evidence_by_finding),
         required=True,
+        citation_kind="finding",
     )
-    if verdict.feedback is None:
+    evidence_ids = tuple(
+        evidence_id for finding_id in findings for evidence_id in evidence_by_finding[finding_id]
+    )
+    if output.feedback is None:
         raise ValueError("scored verdict requires behavioral feedback")
-    feedback = parse_behavioral_feedback(verdict.feedback)
-    return verdict.model_copy(
-        update={"rationale": rationale, "evidence_ids": evidence_ids, "feedback": feedback}
+    feedback = parse_behavioral_feedback(output.feedback)
+    return MergedVerdict(
+        schema_version=SLIDING_CONTRACT_SCHEMA_VERSION,
+        status=output.status,
+        score=output.score,
+        rationale=rationale,
+        evidence_ids=evidence_ids,
+        feedback=feedback,
     )

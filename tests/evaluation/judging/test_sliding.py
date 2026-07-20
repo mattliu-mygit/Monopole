@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from weave_agent_signals.catalogs import build_rubric_catalog
-from weave_agent_signals.judges import inference
+from weave_agent_signals.judges import inference, sliding
 from weave_agent_signals.judges.inference import (
     InferenceCancelled,
     InferenceContextExceeded,
@@ -28,7 +28,11 @@ from weave_agent_signals.judges.sliding import (
     sliding_protocol_contract_digest,
 )
 from weave_agent_signals.judges.sliding_contracts import WindowFinding, WindowFindings
-from weave_agent_signals.judges.windowing import build_window_plan, render_raw_turn
+from weave_agent_signals.judges.windowing import (
+    build_window_plan,
+    render_raw_turn,
+    render_raw_window,
+)
 from weave_agent_signals.models import SessionView, TurnSpan
 from weave_agent_signals.run_config import JudgingContextPolicy, PositionedJudge, RubricDescriptor
 from weave_agent_signals.runs.events import normalize_judging_details
@@ -113,6 +117,10 @@ def _marker(messages: list[dict[str, str]], name: str) -> str:
     return content.split(marker, 1)[1].splitlines()[0].strip()
 
 
+def _json_marker(messages: list[dict[str, str]], name: str) -> object:
+    return json.loads(_marker(messages, name))
+
+
 class _ScriptedClient:
     backend = "openai"
 
@@ -122,7 +130,6 @@ class _ScriptedClient:
         fail_merge: bool = False,
         invalid_window_citation: bool = False,
         invalid_window_citation_once: bool = False,
-        invalid_window_length_once: bool = False,
         large_digest: bool = False,
         invocation_error: Exception | None = None,
         invocation_error_phase: str | None = None,
@@ -133,14 +140,12 @@ class _ScriptedClient:
         self.fail_merge = fail_merge
         self.invalid_window_citation = invalid_window_citation
         self.invalid_window_citation_once = invalid_window_citation_once
-        self.invalid_window_length_once = invalid_window_length_once
         self.large_digest = large_digest
         self.invocation_error = invocation_error
         self.invocation_error_phase = invocation_error_phase
         self.schema_fallback_reason = schema_fallback_reason
         self.transport_request_count = transport_request_count
         self._lock = threading.Lock()
-        self._invalid_window_length_returned = False
         self._invalid_window_citation_returned = False
 
     def chat_json(
@@ -179,7 +184,6 @@ class _ScriptedClient:
                     if self.large_digest
                     else "The agent handled the cited turn evidence."
                 ),
-                "evidence_ids": [_marker(messages, "EXAMPLE_EVIDENCE_ID")],
             }
         elif phase == "window":
             invalid_citation = self.invalid_window_citation or (
@@ -188,21 +192,15 @@ class _ScriptedClient:
             self._invalid_window_citation_returned = (
                 self._invalid_window_citation_returned or invalid_citation
             )
-            evidence_id = "unknown-evidence" if invalid_citation else "trace-3"
-            invalid_length = (
-                self.invalid_window_length_once and not self._invalid_window_length_returned
-            )
-            self._invalid_window_length_returned = (
-                self._invalid_window_length_returned or invalid_length
+            evidence_id = (
+                "unknown-evidence" if invalid_citation else _marker(messages, "EXAMPLE_EVIDENCE_ID")
             )
             payload = {
                 "findings": [
                     {
                         "finding_id": "shared-finding",
                         "polarity": "positive",
-                        "observation": (
-                            "x" * 351 if invalid_length else "The agent used relevant checks."
-                        ),
+                        "observation": "The agent used relevant checks.",
                         "evidence_ids": [evidence_id],
                     }
                 ],
@@ -215,7 +213,7 @@ class _ScriptedClient:
                     "status": "scored",
                     "score": 0.75,
                     "rationale": "The session was mostly effective.",
-                    "evidence_ids": ["trace-1", "trace-2"],
+                    "finding_ids": _json_marker(messages, "ALLOWED_FINDING_IDS")[:1],
                     "feedback": {
                         "success": "The agent used relevant checks.",
                         "problem": "One check was not repeated after the final change.",
@@ -430,7 +428,7 @@ def test_reviewer_digests_once_then_reads_every_window_and_merges() -> None:
     ]
     assert first.status == "succeeded"
     assert second.status == "succeeded"
-    assert first.evidence_ids == ("trace-1", "trace-2")
+    assert first.evidence_ids == ("trace-1",)
     assert first.behavioral_feedback is not None
     assert first.usage == {"input_tokens": 15, "total_tokens": 20}
     assert len(first.steps) == 5
@@ -540,8 +538,7 @@ def test_reviewer_binds_each_inference_schema_to_its_exact_evidence_scope() -> N
         properties = call["schema"]["properties"]
         assert "chunk_id" not in properties
         assert "schema_version" not in properties
-        expected = reviewer._core_evidence(window)[1]
-        assert properties["evidence_ids"]["items"]["enum"] == list(expected)
+        assert "evidence_ids" not in properties
 
     window_calls = [call for call in client.calls if call["phase"] == "window"]
     for call, window in zip(window_calls, plan["windows"], strict=True):
@@ -562,14 +559,85 @@ def test_reviewer_binds_each_inference_schema_to_its_exact_evidence_scope() -> N
         )
 
     merge_call = next(call for call in client.calls if call["phase"] == "merge")
-    assert merge_call["schema"]["properties"]["evidence_ids"]["items"]["enum"] == list(
-        reviewer._all_evidence_ids
-    )
+    assert "evidence_ids" not in merge_call["schema"]["properties"]
+    assert merge_call["schema"]["properties"]["finding_ids"]["items"]["enum"]
     assert (
         "Behavioral feedback describes what the agent did or should do; reflection separately "
         "decides whether and how to edit managed instructions."
         in merge_call["messages"][0]["content"]
     )
+
+
+def test_window_prompt_exposes_only_active_raw_evidence_ids() -> None:
+    reviewer, _, _, plan = _reviewer()
+
+    reviewer.review(_rubric("judge.session_outcome"))
+
+    digests = reviewer._digests or ()
+    surrounding_evidence = render_raw_window(
+        reviewer.session,
+        plan["windows"][0],
+        reviewer.judge.token_counter,
+    ).evidence_ids
+    cited_surrounding_id = surrounding_evidence[0]
+    uncited_surrounding_id = next(
+        evidence_id for evidence_id in surrounding_evidence if evidence_id != cited_surrounding_id
+    )
+    reviewer._all_evidence_ids = (*reviewer._all_evidence_ids, "prefix-1", "prefix-10")
+    digest_sentinel = "surrounding digest content remains visible"
+    tainted_digests = (
+        digests[0].model_copy(
+            update={
+                "text": (
+                    f"{digest_sentinel}: {cited_surrounding_id} {uncited_surrounding_id}; "
+                    "overlap prefix-10 prefix-1"
+                )
+            }
+        ),
+        digests[1],
+    )
+    messages, active_aliases, _raw_text = reviewer._window_messages(
+        rubric=SESSION_RUBRICS["judge.session_outcome"],
+        window_index=1,
+        window=plan["windows"][1],
+        digests=tainted_digests,
+    )
+    prompt = messages[1]["content"]
+    surrounding_ids = {cited_surrounding_id, uncited_surrounding_id}
+
+    assert all(alias in prompt for alias in active_aliases)
+    assert all(
+        f"[evidence_id={evidence_id}]" not in prompt and f"trace_id: {evidence_id}\n" not in prompt
+        for evidence_id in active_aliases.values()
+    )
+    assert digest_sentinel in prompt
+    assert "overlap [citation omitted] [citation omitted]" in prompt
+    assert surrounding_ids
+    assert all(evidence_id not in prompt for evidence_id in surrounding_ids)
+
+
+def test_evidence_id_redaction_is_longest_first() -> None:
+    assert (
+        sliding._redact_evidence_ids(
+            "overlap prefix-10 prefix-1",
+            ("prefix-1", "prefix-10"),
+        )
+        == "overlap [citation omitted] [citation omitted]"
+    )
+
+
+def test_evidence_aliasing_changes_labels_without_mutating_captured_content() -> None:
+    rendered, aliases = sliding._alias_evidence(
+        "## Turn 1 [evidence_id=trace-1]\n"
+        "trace_id: trace-1\n"
+        "user_input: preserve incidental trace-1 text",
+        ("trace-1",),
+    )
+
+    assert aliases == {"e1": "trace-1"}
+    assert "[evidence_id=e1]" in rendered
+    assert "trace_id: e1\n" in rendered
+    assert "preserve incidental trace-1 text" in rendered
 
 
 def test_reviewer_prompts_distinguish_cited_findings_from_no_findings() -> None:
@@ -582,7 +650,7 @@ def test_reviewer_prompts_distinguish_cited_findings_from_no_findings() -> None:
     merge_call = next(call for call in client.calls if call["phase"] == "merge")
 
     assert (
-        "Every digest must cite at least one ID from ALLOWED_EVIDENCE_IDS."
+        "The host records which chunk this digest summarizes."
         in digest_call["messages"][0]["content"]
     )
     assert (
@@ -594,7 +662,7 @@ def test_reviewer_prompts_distinguish_cited_findings_from_no_findings() -> None:
         in window_call["messages"][0]["content"]
     )
     assert (
-        "A scored verdict must cite at least one ID from ALLOWED_EVIDENCE_IDS; an "
+        "A scored verdict must cite at least one ID from ALLOWED_FINDING_IDS; an "
         "insufficient_evidence verdict must cite none." in merge_call["messages"][0]["content"]
     )
 
@@ -710,7 +778,7 @@ def test_window_replaces_own_digest_and_keeps_surrounding_digests_chronological(
     merge_text = [call for call in client.calls if call["phase"] == "merge"][0]["messages"][-1][
         "content"
     ]
-    assert merge_text.count('"finding_id":') == 1
+    assert merge_text.count('"finding_id":') == 2
     assert '"raw_coverage_trace_ids":["trace-1","trace-2","trace-3","trace-4"]' in merge_text
 
 
@@ -890,27 +958,24 @@ def test_invalid_window_citation_fails_closed() -> None:
 
 
 @pytest.mark.parametrize(
-    ("client", "expected_error"),
+    ("client", "expected_output_mode"),
     [
-        (
-            _ScriptedClient(
-                invalid_window_length_once=True,
-                schema_fallback_reason="retry_recovery",
-            ),
-            "at most 350 characters",
-        ),
         (
             _ScriptedClient(
                 invalid_window_citation_once=True,
                 schema_fallback_reason="retry_recovery",
             ),
-            "unknown evidence ID",
+            "json_object_fallback",
+        ),
+        (
+            _ScriptedClient(invalid_window_citation_once=True),
+            "json_schema",
         ),
     ],
 )
-def test_fallback_contract_failure_gets_one_correction_attempt(
+def test_contract_failure_gets_one_correction_attempt_regardless_of_output_mode(
     client: _ScriptedClient,
-    expected_error: str,
+    expected_output_mode: str,
 ) -> None:
     activity = []
     reviewer, client, calls, _ = _reviewer(
@@ -925,13 +990,14 @@ def test_fallback_contract_failure_gets_one_correction_attempt(
     window_calls = [call for call in client.calls if call["phase"] == "window"]
     assert len(window_calls) == 3
     assert "failed validation" in window_calls[1]["messages"][-1]["content"]
-    assert expected_error in window_calls[1]["messages"][-1]["content"]
+    assert "unknown evidence ID" in window_calls[1]["messages"][-1]["content"]
     assert window_calls[1]["reasoning"] == "disabled"
     assert [call.status for call in calls.values()].count("failed") == 1
     assert any(
         event["phase"] == "validation_retry"
         and event["request_attempt"] == 2
         and event["max_attempts"] == 3
+        and event["output_mode"] == expected_output_mode
         for event in activity
     )
 
@@ -983,8 +1049,8 @@ def test_failed_merge_returns_failed_observation() -> None:
     assert result.evidence_ids == ()
     assert result.behavioral_feedback is None
     assert result.steps[-1].phase == "merge"
-    assert result.usage == {"input_tokens": 15, "total_tokens": 20}
-    assert result.transport_request_count == 5
+    assert result.usage == {"input_tokens": 28, "total_tokens": 35}
+    assert result.transport_request_count == 7
     assert result.output_mode == "json_schema"
     assert result.schema_name == "merged_verdict"
     assert "status" in (result.message or "")

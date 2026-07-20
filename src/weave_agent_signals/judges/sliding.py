@@ -37,7 +37,6 @@ from weave_agent_signals.judges.sliding_contracts import (
     MergedVerdict,
     WindowFinding,
     WindowFindings,
-    bind_chunk_digest_schema,
     bind_merged_verdict_schema,
     bind_window_findings_schema,
     parse_chunk_digest,
@@ -64,26 +63,23 @@ log = logging.getLogger("weave_agent_signals.judges")
 ValidatedOutput = TypeVar("ValidatedOutput", bound=BaseModel)
 
 _ERROR_TEXT_LIMIT = 500
-SLIDING_PROTOCOL_VERSION = "13"
+SLIDING_PROTOCOL_VERSION = "16"
 
 _DIGEST_SYSTEM_TEMPLATE = (
     "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. "
-    "Preserve important actions, results, omissions, corrections, and constraints. Every digest "
-    "must cite at least one ID from ALLOWED_EVIDENCE_IDS. Do not cite any other ID; the response "
-    "schema enforces the evidence scope. Return the requested JSON."
+    "Preserve important actions, results, omissions, corrections, and constraints. "
+    "The host records which chunk this digest summarizes. Return the requested JSON."
 )
-_DIGEST_USER_TEMPLATE = (
-    "EXAMPLE_EVIDENCE_ID: {example_evidence_id}\n"
-    "ALLOWED_EVIDENCE_IDS: {allowed_evidence_ids}\n"
-    "RAW_CHUNK:\n{raw_text}"
-)
+_DIGEST_USER_TEMPLATE = "RAW_CHUNK:\n{raw_text}"
 _WINDOW_SYSTEM_TEMPLATE = (
     "PHASE: window\n{rubric_system}\nReason carefully internally, then return only concise JSON. "
     "Return bounded findings, not a score. Every finding must "
     "cite at least one ID from ALLOWED_FINDING_EVIDENCE_IDS. If no supported finding exists, "
     'return "findings": [] instead of an uncited finding. Do not cite any other ID; the response '
-    "schema enforces the active raw window's evidence scope. Finding IDs need only be "
-    "unique within this response; the host scopes them to the active window."
+    "schema enforces the active raw window's evidence scope. Use the short e1, e2, ... aliases "
+    "shown in the raw window; the host resolves them to canonical source IDs. Include a short "
+    "exact quote when useful. Finding IDs need only be unique within this response; the host "
+    "scopes them to the active window."
 )
 _WINDOW_USER_TEMPLATE = (
     "EXAMPLE_EVIDENCE_ID: {example_evidence_id}\n"
@@ -91,17 +87,18 @@ _WINDOW_USER_TEMPLATE = (
     "RUBRIC_CRITERIA:\n{rubric_criteria}\n{sections}"
 )
 _MERGE_SYSTEM_TEMPLATE = (
-    "PHASE: merge\n{rubric_system}\nReturn one anchored session verdict with evidence-cited "
-    "behavioral feedback. Behavioral feedback describes what the agent did or should do; "
+    "PHASE: merge\n{rubric_system}\nReturn one anchored session verdict with behavioral "
+    "feedback, citing supplied findings. Behavioral feedback describes what the agent did or "
+    "should do; "
     "reflection separately decides whether and how to edit managed instructions. The response "
-    "schema limits citations to this session. A scored verdict must cite at least one ID from "
-    "ALLOWED_EVIDENCE_IDS; an insufficient_evidence verdict must cite none."
+    "schema limits citations to the supplied findings. A scored verdict must cite at least one "
+    "ID from ALLOWED_FINDING_IDS; an insufficient_evidence verdict must cite none."
 )
 _MERGE_USER_TEMPLATE = (
     "COVERAGE_MANIFEST: {coverage_manifest}\n"
     "ORDERED_CHUNK_DIGESTS: {digest_context}\n"
     "ORDERED_DEDUPLICATED_FINDINGS: {finding_context}\n"
-    "ALLOWED_EVIDENCE_IDS: {allowed_evidence_ids}\n"
+    "ALLOWED_FINDING_IDS: {allowed_finding_ids}\n"
     "RUBRIC_CRITERIA:\n{rubric_criteria}"
 )
 
@@ -134,6 +131,21 @@ def _canonical_json(value: object) -> str:
         separators=(",", ":"),
         allow_nan=False,
     )
+
+
+def _redact_evidence_ids(text: str, evidence_ids: Sequence[str]) -> str:
+    for evidence_id in sorted(set(evidence_ids), key=lambda value: (-len(value), value)):
+        text = text.replace(evidence_id, "[citation omitted]")
+    return text
+
+
+def _alias_evidence(text: str, evidence_ids: Sequence[str]) -> tuple[str, dict[str, str]]:
+    aliases = {f"e{index}": evidence_id for index, evidence_id in enumerate(evidence_ids, 1)}
+    rendered = text
+    for alias, evidence_id in aliases.items():
+        rendered = rendered.replace(f"[evidence_id={evidence_id}]", f"[evidence_id={alias}]")
+        rendered = rendered.replace(f"trace_id: {evidence_id}\n", f"trace_id: {alias}\n")
+    return rendered, aliases
 
 
 def _sha256(value: object) -> str:
@@ -685,7 +697,6 @@ class SlidingReviewer:
                     validation_attempt < max_validation_attempts
                     and isinstance(error, ValueError)
                     and pending is not None
-                    and pending.audit.output_mode == "json_object_fallback"
                 )
                 if not recoverable:
                     raise
@@ -724,11 +735,11 @@ class SlidingReviewer:
                     },
                 ]
                 continue
-            self._record_success(pending, result.model_dump(mode="json"))
+            self._record_success(pending, payload)
             return result
         raise AssertionError("validation retry loop exhausted")
 
-    def _core_evidence(self, window: Mapping[str, object]) -> tuple[str, tuple[str, ...]]:
+    def _core_text(self, window: Mapping[str, object]) -> str:
         trace_ids = window["core_trace_ids"]
         if not isinstance(trace_ids, list):
             raise ValueError("pinned window core_trace_ids are invalid")
@@ -736,16 +747,12 @@ class SlidingReviewer:
         text = "\n\n".join(
             render_raw_turn(turn, self._positions[turn.trace_id]) for turn in selected
         )
-        evidence_ids = tuple(
-            evidence_id for turn in selected for evidence_id in _turn_evidence_ids(turn)
-        )
-        return text, evidence_ids
+        return text
 
     def _digest_messages(
         self,
         *,
         raw_text: str,
-        evidence_ids: Sequence[str],
     ) -> list[dict[str, str]]:
         return [
             {
@@ -754,11 +761,7 @@ class SlidingReviewer:
             },
             {
                 "role": "user",
-                "content": _DIGEST_USER_TEMPLATE.format(
-                    example_evidence_id=evidence_ids[0],
-                    allowed_evidence_ids=_canonical_json(list(evidence_ids)),
-                    raw_text=raw_text,
-                ),
+                "content": _DIGEST_USER_TEMPLATE.format(raw_text=raw_text),
             },
         ]
 
@@ -770,23 +773,18 @@ class SlidingReviewer:
         usage: dict[str, int],
     ) -> ChunkDigest:
         chunk_id = self._chunk_id(window)
-        raw_text, evidence_ids = self._core_evidence(window)
-        response_schema = bind_chunk_digest_schema(evidence_ids)
+        raw_text = self._core_text(window)
         return self._infer_validated(
             phase="digest",
-            messages=self._digest_messages(
-                raw_text=raw_text,
-                evidence_ids=evidence_ids,
-            ),
+            messages=self._digest_messages(raw_text=raw_text),
             max_tokens=self.context_policy.generation_budget(self.judge.max_input_tokens),
-            schema=response_schema,
+            schema=CHUNK_DIGEST_SCHEMA,
             steps=steps,
             usage=usage,
             item_index=int(window["index"]),
             item_total=len(self._windows),
             parser=lambda payload: parse_chunk_digest(
                 payload,
-                allowed_evidence_ids=evidence_ids,
                 max_tokens=self.context_policy.digest_max_tokens,
                 expected_chunk_id=chunk_id,
             ),
@@ -820,20 +818,21 @@ class SlidingReviewer:
         window_index: int,
         window: Mapping[str, object],
         digests: Sequence[ChunkDigest],
-    ) -> tuple[list[dict[str, str]], tuple[str, ...]]:
+    ) -> tuple[list[dict[str, str]], dict[str, str], str]:
         raw = render_raw_window(self.session, window, self.judge.token_counter)
+        aliased_raw_text, evidence_aliases = _alias_evidence(raw.text, raw.evidence_ids)
+        hidden_evidence_ids = set(self._all_evidence_ids).difference(raw.evidence_ids)
         sections: list[str] = []
         for index, digest in enumerate(digests):
             sections.append(f"CHUNK_INDEX: {index + 1}")
             if index == window_index:
-                sections.extend(("CONTEXT_KIND: raw_window", raw.text))
+                sections.extend(("CONTEXT_KIND: raw_window", aliased_raw_text))
             else:
                 sections.extend(
                     (
                         "CONTEXT_KIND: chunk_digest",
                         f"CHUNK_ID: {digest.chunk_id}",
-                        f"DIGEST_EVIDENCE_IDS: {_canonical_json(list(digest.evidence_ids))}",
-                        digest.text,
+                        _redact_evidence_ids(digest.text, hidden_evidence_ids),
                     )
                 )
         return (
@@ -845,14 +844,15 @@ class SlidingReviewer:
                 {
                     "role": "user",
                     "content": _WINDOW_USER_TEMPLATE.format(
-                        example_evidence_id=raw.evidence_ids[0],
-                        allowed_evidence_ids=_canonical_json(list(raw.evidence_ids)),
+                        example_evidence_id=next(iter(evidence_aliases)),
+                        allowed_evidence_ids=_canonical_json(list(evidence_aliases)),
                         rubric_criteria=rubric.criteria_text,
                         sections="\n\n".join(sections),
                     ),
                 },
             ],
-            raw.evidence_ids,
+            evidence_aliases,
+            aliased_raw_text,
         )
 
     def _load_or_create_window_findings(
@@ -866,13 +866,13 @@ class SlidingReviewer:
         steps: list[InferenceStepAudit],
         usage: dict[str, int],
     ) -> WindowFindings:
-        messages, allowed_evidence_ids = self._window_messages(
+        messages, evidence_aliases, raw_text = self._window_messages(
             rubric=rubric,
             window_index=window_index,
             window=window,
             digests=digests,
         )
-        response_schema = bind_window_findings_schema(allowed_evidence_ids)
+        response_schema = bind_window_findings_schema(tuple(evidence_aliases))
         return self._infer_validated(
             phase="window",
             messages=messages,
@@ -886,7 +886,8 @@ class SlidingReviewer:
             item_total=len(self._windows),
             parser=lambda payload: parse_window_findings(
                 payload,
-                allowed_evidence_ids=allowed_evidence_ids,
+                evidence_aliases=evidence_aliases,
+                raw_text=raw_text,
                 max_tokens=self.context_policy.finding_max_tokens,
                 expected_window_id=str(window["window_id"]),
             ),
@@ -919,7 +920,10 @@ class SlidingReviewer:
         findings: Sequence[WindowFinding],
     ) -> list[dict[str, str]]:
         digest_context = [digest.model_dump(mode="json") for digest in digests]
-        finding_context = [finding.model_dump(mode="json") for finding in findings]
+        finding_context = [
+            finding.model_dump(mode="json", exclude={"evidence_ids"}, exclude_none=True)
+            for finding in findings
+        ]
         manifest = {
             "plan_id": self.plan_id,
             "window_ids": [window["window_id"] for window in self._windows],
@@ -936,7 +940,9 @@ class SlidingReviewer:
                     coverage_manifest=_canonical_json(manifest),
                     digest_context=_canonical_json(digest_context),
                     finding_context=_canonical_json(finding_context),
-                    allowed_evidence_ids=_canonical_json(list(self._all_evidence_ids)),
+                    allowed_finding_ids=_canonical_json(
+                        [finding.finding_id for finding in findings]
+                    ),
                     rubric_criteria=rubric.criteria_text,
                 ),
             },
@@ -952,7 +958,8 @@ class SlidingReviewer:
         steps: list[InferenceStepAudit],
         usage: dict[str, int],
     ) -> MergedVerdict:
-        response_schema = bind_merged_verdict_schema(self._all_evidence_ids)
+        finding_evidence = {finding.finding_id: finding.evidence_ids for finding in findings}
+        response_schema = bind_merged_verdict_schema(tuple(finding_evidence))
         return self._infer_validated(
             phase="merge",
             messages=self._merge_messages(rubric=rubric, digests=digests, findings=findings),
@@ -964,7 +971,7 @@ class SlidingReviewer:
             rubric_label=descriptor.label,
             parser=lambda payload: parse_merged_verdict(
                 payload,
-                allowed_evidence_ids=self._all_evidence_ids,
+                finding_evidence=finding_evidence,
             ),
         )
 

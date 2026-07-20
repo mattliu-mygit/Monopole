@@ -75,11 +75,16 @@ that reviewer alone is skipped for the session with
 For each reviewer, the pipeline first creates one rubric-neutral factual digest
 per core chunk. A rubric evaluation then slides across every window: the active
 chunk is supplied as raw captured evidence while the rest of the session is
-represented by that reviewer's ordered digests. Every window returns a bounded
-set of positive or negative findings, not a score. Findings are deduplicated in
-session order, then one final merge sees the coverage manifest, ordered digests,
-and findings and returns the reviewer's anchored session verdict and behavioral
-feedback.
+represented by that reviewer's ordered digests. The host replaces the active
+raw evidence IDs with short, window-local aliases before inference and resolves
+valid citations back to canonical trace identities. Surrounding digest
+provenance remains host-owned and is represented by the chunk ID rather than
+model-authored citations. Every window returns a bounded set of
+positive or negative findings, not a score. Findings are deduplicated in session
+order, then one final merge sees the coverage manifest, ordered digests, and
+findings and returns the reviewer's anchored session verdict and behavioral
+feedback. The merge cites finding IDs; the host derives the final canonical
+trace citations from those immutable findings.
 
 W&B digest and verdict-merge requests disable optional model reasoning through
 the provider's documented request setting. Those phases compress or consolidate
@@ -97,11 +102,10 @@ and internal tool-call count but omits its internal tool payloads; the parent's
 delegation call still carries the input and returned output that influenced the
 parent. The complete hydrated trace remains available outside this judge view.
 Digests, findings, verdicts, and behavioral feedback are schema-bounded. Models
-author only the semantic fields and evidence citations. The host adds the
-protocol version and authenticated chunk or window identity before validating
-and persisting the complete artifact. Each inference schema enumerates the exact
-evidence identities authorized for that phase; the same constraints are
-validated again after inference. Complete
+author semantic fields plus short citation references only where needed. The
+host adds protocol, chunk, and window identity and resolves aliases before using
+the result. Window and merge schemas enumerate only the references authorized
+for that phase; the same constraints are validated again after inference. Complete
 window-finding artifacts receive a 4,000-token budget, and each final behavioral
 feedback field is limited to 10,000 characters.
 
@@ -120,7 +124,8 @@ Every reviewer's final merge returns the closed versioned verdict contract:
   `0, 0.25, 0.5, 0.75, 1`;
 - an insufficient-evidence verdict has no score;
 - rationale is required;
-- a scored verdict cites at least one evidence ID from the complete session and
+- a scored verdict cites at least one supplied finding, from which the host
+  derives canonical session evidence IDs, and
   includes at least one nonblank success, problem, or desired-behavior field;
   and
 - an insufficient-evidence verdict has no citations or behavioral feedback.
@@ -128,12 +133,15 @@ Every reviewer's final merge returns the closed versioned verdict contract:
 `insufficient_evidence` is authoritative: transport output is canonicalized to
 the scoreless, citation-free, feedback-free abstention before persistence.
 
-Chunk digests must cite their exact core evidence. Window findings cite only
-evidence visible in that raw window, are capped in count and size, and receive
+Chunk provenance is the host-authenticated chunk ID; digest models do not repeat
+source IDs. Window findings cite only short aliases visible in that raw window,
+are capped in count and by the complete artifact token budget, and receive
 canonical identities from their response order. Aggregation scopes each identity
 to its authenticated window after deduplicating exact semantic findings in
-response order, then deduplicates again across windows in session order. An
-unknown citation, blank required text, or oversized artifact fails closed. The
+response order, then deduplicates again across windows in session order. A
+finding may include a short exact quote; the host retains it only when it occurs
+in the active raw window. An unknown citation, blank required text, or oversized
+artifact fails closed. The
 unknown-citation diagnostic reports at most three escaped, bounded identifiers
 without retaining the invalid response. The merge prompt asks for feedback
 about what the agent did or should do, while
@@ -159,8 +167,9 @@ After a W&B model and schema pair requires recovery, later calls for that pair
 within the same run start in concise JSON recovery mode instead of repeating the
 known-expensive failing path. Exact schema prompting and runtime validation are
 unchanged.
-If fallback JSON parses but violates the canonical output contract, one
-or two correction calls receive the bounded validation error and prior object.
+If returned JSON parses but violates the canonical output contract, regardless
+of structured or fallback output mode, one or two correction calls receive the
+bounded validation error and prior object.
 Each corrected object is validated normally; a third violation fails closed.
 Backend-specific schema emission may omit a keyword that the backend
 rejects when the same invariant remains enforced by the canonical runtime
@@ -262,8 +271,9 @@ under the run's cancellation barrier.
 
 ## Judge-call resume and failure behavior
 
-Successful digest, window, and merge outputs are persisted as request-keyed
-judge calls. Each identity hashes the requested and provider models, exact
+Successful digest, window, and merge model payloads are persisted as request-keyed
+judge calls; host-owned identities and resolved citations are reconstructed on
+validation. Each identity hashes the requested and provider models, exact
 messages, response schema, generation options, and protocol version. On
 restart, only a matching reusable success with a phase-valid result is reused;
 failed, audit-only, historical, or malformed calls are never reused.
