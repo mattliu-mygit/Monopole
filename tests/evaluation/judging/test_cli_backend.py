@@ -827,11 +827,16 @@ def test_cli_failure_emits_prompt_stripped_structured_provider_issue(tmp_path, m
 
     monkeypatch.setattr(client, "_run_with_cancel", fail_with_echo)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError) as caught:
         client.chat_json(
             model="gpt-5.1",
             messages=_msgs(system=prompt_marker),
         )
+
+    assert caught.value._provider_error_code == "model_unavailable"
+    assert caught.value._provider_error_message == (
+        "Requested model is unavailable; token=[REDACTED]"
+    )
 
     failure = activity[-1]
     assert failure["phase"] == "transport_failed"

@@ -63,7 +63,7 @@ log = logging.getLogger("weave_agent_signals.judges")
 ValidatedOutput = TypeVar("ValidatedOutput", bound=BaseModel)
 
 _ERROR_TEXT_LIMIT = 500
-SLIDING_PROTOCOL_VERSION = "16"
+SLIDING_PROTOCOL_VERSION = "17"
 
 _DIGEST_SYSTEM_TEMPLATE = (
     "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. "
@@ -78,7 +78,8 @@ _WINDOW_SYSTEM_TEMPLATE = (
     'return "findings": [] instead of an uncited finding. Do not cite any other ID; the response '
     "schema enforces the active raw window's evidence scope. Use the short e1, e2, ... aliases "
     "shown in the raw window; the host resolves them to canonical source IDs. Include a short "
-    "exact quote when useful. Finding IDs need only be unique within this response; the host "
+    "exact quote when useful; otherwise set quote to null. Finding IDs need only be unique "
+    "within this response; the host "
     "scopes them to the active window."
 )
 _WINDOW_USER_TEMPLATE = (
@@ -104,8 +105,8 @@ _MERGE_USER_TEMPLATE = (
 
 
 class _JudgeInvocationFailure(RuntimeError):
-    def __init__(self, error_type: str) -> None:
-        super().__init__("judge invocation failed")
+    def __init__(self, error_type: str, message: str = "judge invocation failed") -> None:
+        super().__init__(message)
         self.error_type = error_type
 
 
@@ -494,6 +495,18 @@ class SlidingReviewer:
         except Exception as error:
             request_count = getattr(error, "_transport_request_count", 1)
             count = request_count if type(request_count) is int and request_count > 0 else 1
+            provider_message = getattr(error, "_provider_error_message", None)
+            provider_code = getattr(error, "_provider_error_code", None)
+            failure_type = (
+                provider_code
+                if isinstance(provider_code, str) and provider_code
+                else type(error).__name__
+            )
+            failure_message = (
+                provider_message
+                if isinstance(provider_message, str) and provider_message
+                else "judge invocation failed"
+            )
             if phase == "digest":
                 target = f"digest chunk {item_index} of {item_total}"
             elif phase == "window":
@@ -511,8 +524,8 @@ class SlidingReviewer:
                     "request_attempt": count,
                     "max_attempts": count,
                     "retry_reason": phase,
-                    "error_category": type(error).__name__,
-                    "provider_error_message": _bounded_error(error),
+                    "error_category": failure_type,
+                    "provider_error_message": failure_message,
                 }
             )
             if isinstance(error, InferenceOutputExceeded):
@@ -540,8 +553,8 @@ class SlidingReviewer:
                 response_diagnostics=(
                     failed_response.response_diagnostics if failed_response else ()
                 ),
-                error_type=type(error).__name__,
-                message=_bounded_error(error),
+                error_type=failure_type,
+                message=failure_message,
             )
             steps.append(
                 InferenceStepAudit(
@@ -576,7 +589,7 @@ class SlidingReviewer:
             )
             if isinstance(error, (InferenceContextExceeded, InferenceOutputExceeded)):
                 raise
-            raise _JudgeInvocationFailure(type(error).__name__) from None
+            raise _JudgeInvocationFailure(failure_type, failure_message) from None
 
         normalized_usage = _normalized_usage(response.usage)
         _add_usage(usage, normalized_usage)

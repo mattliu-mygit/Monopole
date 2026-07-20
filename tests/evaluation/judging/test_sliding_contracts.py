@@ -47,6 +47,7 @@ def _valid_finding(**changes: object) -> dict[str, object]:
         "polarity": "negative",
         "observation": "The agent did not rerun the failed check.",
         "evidence_ids": ["trace-1"],
+        "quote": None,
     }
     finding.update(changes)
     return finding
@@ -63,6 +64,20 @@ def test_sliding_contract_schemas_are_closed():
     for schema_spec, name in roots:
         assert schema_spec.name == name
         assert schema_spec.schema["additionalProperties"] is False
+
+
+def test_window_finding_schema_requires_every_property_for_strict_providers():
+    schemas = (
+        WINDOW_FINDING_SCHEMA.schema,
+        WINDOW_FINDINGS_SCHEMA.schema["$defs"]["WindowFinding"],
+    )
+
+    for schema in schemas:
+        assert set(schema["required"]) == set(schema["properties"])
+        assert schema["properties"]["quote"]["anyOf"] == [
+            {"type": "string"},
+            {"type": "null"},
+        ]
 
 
 def test_model_output_schemas_omit_host_owned_envelope_fields():

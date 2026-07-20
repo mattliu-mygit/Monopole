@@ -246,10 +246,11 @@ evaluable and writes no feedback.
 A failed invocation or invalid attempt by an applicable reviewer still fails
 coverage even when another reviewer returned a valid score. After the bounded
 transport retries for that attempt are exhausted, the runtime cancels pending
-work in that panel and waits for started work to settle safely. It does not
-abort the shared provider transport, because other rubric panels may be using
-the same client. Concurrent rubric outcomes are collected in pinned order and
-any coverage failure then fails the session and stops remaining sessions.
+work across the session. Active local CLI processes are terminated; an active
+HTTP request may settle, but cannot start another digest, window, or merge.
+Concurrent outcomes that settled before cancellation remain ordered by pinned
+rubric and reviewer identity. Any coverage failure then fails the session and
+stops remaining sessions.
 Explicit run cancellation remains global and interrupts provider-gate waits.
 The HTTP transport makes at most three attempts for retryable timeouts, rate
 limits, and transient server failures, with backoff, and permits a 240-second
@@ -258,9 +259,12 @@ retry, recovery, and terminal transport events are emitted as they happen. They
 identify the phase or chunk, attempt count, per-attempt duration, safe error
 category, HTTP status when available, and bounded token or finish diagnostics
 for output exhaustion. The run UI derives each model's average request time from
-those completion events. Output is represented only by its digest. The terminal
-panel event summarizes each reviewer's score, abstention, skip, or safe failure
-and provider-request count.
+those completion events. Digest, window, merge, retry, recovery, and terminal
+events are visible normally; low-level request-attempt and cache-reuse events
+require debug events. Output is represented only by its digest. The terminal
+panel event leads with the first safe provider error and
+summarizes each reviewer's score, abstention, skip, or failure and
+provider-request count.
 
 Every attempt retains its requested and resolved model, outcome, rationale or
 safe error, evidence citations, structured-output mode, usage, bounded

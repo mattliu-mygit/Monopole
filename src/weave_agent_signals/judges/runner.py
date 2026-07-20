@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from weave_agent_signals.catalogs import build_rubric_catalog
 from weave_agent_signals.judges.families import model_family
-from weave_agent_signals.judges.inference import ChatClient
+from weave_agent_signals.judges.inference import ChatClient, InferenceCancelled
 from weave_agent_signals.judges.plan import JudgingPlan, SessionPlan, build_canonical_judging_plan
 from weave_agent_signals.judges.review import (
     PANEL_CONTRACT_VERSION,
@@ -265,6 +265,26 @@ def judge_session(
         provider: threading.BoundedSemaphore(limit)
         for provider, limit in _PROVIDER_CONCURRENCY.items()
     }
+    stage_abort = threading.Event()
+    abort_lock = threading.Lock()
+
+    def abort_stage() -> None:
+        with abort_lock:
+            if stage_abort.is_set():
+                return
+            stage_abort.set()
+            for client in clients.values():
+                abort = getattr(client, "abort", None)
+                if not callable(abort):
+                    continue
+                try:
+                    abort()
+                except Exception as error:
+                    log.warning(
+                        "Judge transport abort failed: error_type=%s",
+                        type(error).__name__,
+                    )
+
     reviewer_cache: dict[str, SlidingReviewer] = {}
     for judge in judges:
         if dispositions[judge.id][0] == "skipped":
@@ -282,7 +302,7 @@ def judge_session(
             client=client,
             load_call=call_loader,
             record_call=call_recorder,
-            is_cancelled=cancel_requested,
+            is_cancelled=lambda: cancel_requested() or stage_abort.is_set(),
             activity=activity,
             call_gate=provider_gates.get(judge.provider),
         )
@@ -297,7 +317,7 @@ def judge_session(
     evaluated_models = sorted({turn.model for turn in session.turns if turn.model})
     evaluated_families = sorted({model_family(turn.model or "") for turn in session.turns})
 
-    def evaluate(descriptor: RubricDescriptor) -> PanelOutcome:
+    def evaluate(descriptor: RubricDescriptor) -> PanelOutcome | None:
         _emit_activity(
             activity,
             {
@@ -307,24 +327,30 @@ def judge_session(
                 "rubric": descriptor.id,
             },
         )
-        outcome = execute_panel(
-            panel,
-            invoke=lambda judge: (
-                AttemptObservation(
-                    status="skipped",
-                    skip_reason="insufficient_context_capacity",
-                    resolved_model=None,
-                    score=None,
-                    rationale=None,
-                    usage={},
-                    error_type=None,
-                    message=None,
-                )
-                if dispositions[judge.id][0] == "skipped"
-                else reviewer(judge).review(descriptor)
-            ),
-            threshold=descriptor.pass_threshold,
-        )
+        try:
+            outcome = execute_panel(
+                panel,
+                invoke=lambda judge: (
+                    AttemptObservation(
+                        status="skipped",
+                        skip_reason="insufficient_context_capacity",
+                        resolved_model=None,
+                        score=None,
+                        rationale=None,
+                        usage={},
+                        error_type=None,
+                        message=None,
+                    )
+                    if dispositions[judge.id][0] == "skipped"
+                    else reviewer(judge).review(descriptor)
+                ),
+                threshold=descriptor.pass_threshold,
+                cancel_pending=abort_stage,
+            )
+        except InferenceCancelled:
+            if stage_abort.is_set() and not cancel_requested():
+                return None
+            raise
         _emit_activity(
             activity,
             {
@@ -341,9 +367,11 @@ def judge_session(
         max_workers=len(rubrics),
         thread_name_prefix="judge-rubric",
     ) as executor:
-        outcomes = tuple(executor.map(evaluate, rubrics))
+        evaluated = tuple(executor.map(evaluate, rubrics))
 
-    for descriptor, outcome in zip(rubrics, outcomes, strict=True):
+    for descriptor, outcome in zip(rubrics, evaluated, strict=True):
+        if outcome is None:
+            continue
         rubric = _resolve(descriptor)
         attempts = tuple(_attempt_record(value) for value in outcome.attempts)
         if outcome.rating is None:

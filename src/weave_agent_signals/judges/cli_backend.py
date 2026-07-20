@@ -819,6 +819,8 @@ class CliJudgeClient:
             f"error_category={_process_error_category(diagnostic, response_schema)} "
             f"process_output_sha256={_raw_output_digest(diagnostic)}"
         )
+        for key, value in _provider_issue(_process_diagnostic(diagnostic)).items():
+            setattr(error, f"_{key}", value)
         _add_transport_request_count(error, request_count)
         raise error
 

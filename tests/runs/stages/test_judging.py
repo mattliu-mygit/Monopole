@@ -411,7 +411,8 @@ def test_stage_preserves_successful_reviewer_count_for_failed_panel(store, monke
     assert failed_event.phase == "judging_failed"
     assert failed_event.message == (
         "Session Outcome Quality failed: judge-1 scored 0.75; "
-        "judge-2 abstained; judge-3 failed ReadTimeout after 6 provider requests"
+        "judge-2 abstained; judge-3 failed ReadTimeout after 6 provider requests: "
+        "judge invocation failed"
     )
 
 

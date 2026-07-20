@@ -111,8 +111,10 @@ content hash. Exact prompt echoes are removed before failure classification and
 hashing. A recognized provider error envelope may additionally contribute only
 its HTTP status, error code, and a bounded redacted message. Prompts, raw model
 output, credentials, and unstructured provider output are never stored in
-progress. The product emphasizes the current operation and recent events while
-retaining the bounded history for audit and debugging across refreshes.
+progress. The product emphasizes the current operation, failures, retries, and
+recoveries, including digest, window, and merge boundaries. Low-level transport
+attempts and cache-reuse events remain available through a debug-event control
+across refreshes.
 
 ## Managed instruction targets
 

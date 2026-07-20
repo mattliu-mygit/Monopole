@@ -1,12 +1,21 @@
 import { useEffect, useState } from 'react'
 import type {
   JudgingAttemptSummary,
+  JudgingFailureDetail,
   JudgingPlan,
   JudgingProgress as JudgingProgressData,
   JudgingResult,
   ReviewAttempt,
   InferenceStepAudit,
 } from '../../types'
+
+const DEBUG_EVENT_PHASES = new Set([
+  'judging_started',
+  'session_started',
+  'transport_attempt_started',
+  'transport_attempt_completed',
+  'schema_recovery_reused',
+])
 
 export interface JudgingProgressProps {
   plan: JudgingPlan | null
@@ -54,6 +63,7 @@ function JudgingActivity({
   fallback: string
 }) {
   const [showAll, setShowAll] = useState(false)
+  const [showDebug, setShowDebug] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
 
   useEffect(() => {
@@ -76,7 +86,10 @@ function JudgingActivity({
     const average = (timing.seconds / timing.attempts).toFixed(1).replace(/\.0$/, '')
     return `${model} · ${timing.attempts} ${timing.attempts === 1 ? 'attempt' : 'attempts'} · ${average}s average`
   })
-  const visibleEvents = showAll ? events : events.slice(-5)
+  const timelineEvents = showDebug
+    ? events
+    : events.filter((event) => !DEBUG_EVENT_PHASES.has(event.phase))
+  const visibleEvents = showAll ? timelineEvents : timelineEvents.slice(-5)
   const lastEvent = events.at(-1)
   const elapsedEnd = active ? nowMs : Date.parse(lastEvent?.at ?? '')
   const elapsed = state?.started_at ? durationLabel(state.started_at, elapsedEnd) : null
@@ -200,17 +213,29 @@ function JudgingActivity({
               )
             })}
           </ol>
-          {events.length > 5 && (
-            <button
-              type="button"
-              className="text-xs font-medium text-purple-700 hover:text-purple-900"
-              onClick={() => setShowAll((value) => !value)}
-              aria-expanded={showAll}
-              aria-controls="judging-activity-events"
-            >
-              {showAll ? 'Show latest 5' : 'Show all activity'}
-            </button>
-          )}
+          <div className="flex flex-wrap gap-3">
+            {timelineEvents.length > 5 && (
+              <button
+                type="button"
+                className="text-xs font-medium text-purple-700 hover:text-purple-900"
+                onClick={() => setShowAll((value) => !value)}
+                aria-expanded={showAll}
+                aria-controls="judging-activity-events"
+              >
+                {showAll ? 'Show latest 5' : 'Show all activity'}
+              </button>
+            )}
+            {events.some((event) => DEBUG_EVENT_PHASES.has(event.phase)) && (
+              <button
+                type="button"
+                className="text-xs font-medium text-gray-600 hover:text-gray-900"
+                onClick={() => setShowDebug((value) => !value)}
+                aria-pressed={showDebug}
+              >
+                {showDebug ? 'Hide debug events' : 'Show debug events'}
+              </button>
+            )}
+          </div>
         </>
       )}
     </div>
@@ -346,6 +371,63 @@ function ReviewRecord({ record }: { record: JudgingAttemptSummary }) {
   )
 }
 
+function FailureSummary({
+  failures,
+  truncated,
+  total,
+}: {
+  failures: JudgingFailureDetail[]
+  truncated: boolean
+  total: number
+}) {
+  if (failures.length === 0) return null
+  return (
+    <div className="rounded-lg border border-red-200 bg-red-50 p-3">
+      <h4 className="text-sm font-medium text-red-900">Incomplete coverage</h4>
+      <ul className="mt-2 space-y-3 text-xs text-red-800">
+        {failures.map((failure, index) => {
+          const root = failure.attempts.find((attempt) => attempt.status === 'failed')
+          return (
+            <li key={`${failure.scope}-${failure.rubric}-${index}`}>
+              <div className="font-medium">{failure.rubric}</div>
+              {root && (
+                <div className="mt-1 font-medium">
+                  Root cause: {root.requested_model} · {root.error_type ?? 'Error'}: {root.message ?? 'No error detail returned'}
+                </div>
+              )}
+              <div className="mt-1">{failure.error_type}: {failure.message ?? 'No error detail returned'}</div>
+              {failure.attempts.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1" aria-label={`${failure.rubric} reviewer matrix`}>
+                  {failure.attempts.map((attempt, attemptIndex) => (
+                    <span key={`${attempt.position}-${attemptIndex}`} className="rounded bg-white px-2 py-1 shadow-sm">
+                      {attempt.requested_model} · {attempt.status}{attempt.score === null ? '' : ` · ${attempt.score.toFixed(2)}`}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {failure.attempts.length > 0 && (
+                <details className="mt-2 rounded border border-red-200 bg-white/70 p-2 text-gray-800">
+                  <summary className="cursor-pointer font-medium text-red-900">Full failed-attempt audit</summary>
+                  <ol className="mt-2 space-y-2">
+                    {failure.attempts.map((attempt, attemptIndex) => (
+                      <Attempt key={`${attempt.position}-${attempt.trigger}-${attemptIndex}`} attempt={attempt} />
+                    ))}
+                  </ol>
+                </details>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+      {truncated && (
+        <p className="mt-2 text-xs text-amber-800">
+          Showing {failures.length} of {total} failures.
+        </p>
+      )}
+    </div>
+  )
+}
+
 export default function JudgingProgress({
   plan,
   progress,
@@ -424,6 +506,12 @@ export default function JudgingProgress({
         </div>
       </div>
 
+      <FailureSummary
+        failures={failures}
+        truncated={state?.failure_details_truncated ?? false}
+        total={state?.failure_detail_count ?? failures.length}
+      />
+
       {plan && plan.sessions.length > 0 && (
         <div>
           <h4 className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">Pinned sliding windows</h4>
@@ -484,34 +572,6 @@ export default function JudgingProgress({
         </div>
       )}
 
-      {failures.length > 0 && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3">
-          <h4 className="text-sm font-medium text-red-900">Incomplete coverage</h4>
-          <ul className="mt-2 space-y-2 text-xs text-red-800">
-            {failures.map((failure, index) => (
-              <li key={`${failure.scope}-${failure.rubric}-${index}`}>
-                <div className="font-medium">{failure.rubric}</div>
-                <div>{failure.error_type}: {failure.message ?? 'No error detail returned'}</div>
-                {failure.attempts.length > 0 && (
-                  <details className="mt-2 rounded border border-red-200 bg-white/70 p-2 text-gray-800">
-                    <summary className="cursor-pointer font-medium text-red-900">Full failed-attempt audit</summary>
-                    <ol className="mt-2 space-y-2">
-                      {failure.attempts.map((attempt, attemptIndex) => (
-                        <Attempt key={`${attempt.position}-${attempt.trigger}-${attemptIndex}`} attempt={attempt} />
-                      ))}
-                    </ol>
-                  </details>
-                )}
-              </li>
-            ))}
-          </ul>
-          {state?.failure_details_truncated && (
-            <p className="mt-2 text-xs text-amber-800">
-              Showing {failures.length} of {state.failure_detail_count ?? failures.length} failures.
-            </p>
-          )}
-        </div>
-      )}
     </section>
   )
 }

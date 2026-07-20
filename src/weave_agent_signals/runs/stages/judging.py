@@ -656,7 +656,9 @@ def run_judging_stage(
                     if type(requests) is int and requests > 0
                     else ""
                 )
-                outcomes.append(f"{label} failed {error_type}{request_note}")
+                detail = attempt.get("message")
+                detail_note = f": {detail}" if isinstance(detail, str) and detail else ""
+                outcomes.append(f"{label} failed {error_type}{request_note}{detail_note}")
         message = f"{rubric_label} failed"
         if outcomes:
             message += ": " + "; ".join(outcomes)

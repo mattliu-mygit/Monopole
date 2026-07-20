@@ -61,7 +61,7 @@ class WindowFinding(_ClosedModel):
     polarity: Literal["positive", "negative"]
     observation: StrictStr
     evidence_ids: tuple[StrictStr, ...] = Field(min_length=1)
-    quote: StrictStr | None = None
+    quote: StrictStr | None
 
 
 class WindowFindings(_ClosedModel):

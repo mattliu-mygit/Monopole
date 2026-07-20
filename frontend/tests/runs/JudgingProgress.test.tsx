@@ -86,11 +86,14 @@ const progress: Progress = {
     { id: 1, at: '2026-07-16T07:00:00+00:00', phase: 'judging_started', message: 'Starting 1 planned rubric judgment' },
     { id: 2, at: '2026-07-16T07:00:01+00:00', phase: 'session_started', message: 'Reviewing session session-1', conversation_id: 'session-1' },
     { id: 3, at: '2026-07-16T07:00:02+00:00', phase: 'digest_started', message: 'Judge A is digesting chunk 1 of 2', model: 'judge-a', item_index: 1, item_total: 2 },
+    { id: 30, at: '2026-07-16T07:03:12+00:00', phase: 'digest_completed', message: 'Completed digest call', model: 'judge-a' },
     { id: 31, at: '2026-07-16T07:03:13+00:00', phase: 'transport_attempt_completed', message: 'Judge A provider request attempt 1 failed after 191.8s', model: 'judge-a', request_attempt: 1, max_attempts: 3, elapsed_seconds: 191.8, status: 'failed' },
     { id: 4, at: '2026-07-16T07:03:14+00:00', phase: 'transport_retry', message: 'Judge A request failed after 191.8s; retrying attempt 2 of 3', model: 'judge-a', request_attempt: 2, max_attempts: 3, elapsed_seconds: 191.8, error_category: 'retryable_process_error', provider_status: 429, provider_error_code: 'rate_limit_exceeded', provider_error_message: 'Too many requests for this model.', output_sha256: 'e'.repeat(64) },
     { id: 5, at: '2026-07-16T07:03:25+00:00', phase: 'transport_recovered', message: 'Judge A recovered on request attempt 2 of 3', model: 'judge-a', request_attempt: 2, max_attempts: 3, elapsed_seconds: 202, output_sha256: 'f'.repeat(64) },
     { id: 6, at: '2026-07-16T07:03:26+00:00', phase: 'window_started', message: 'Judge A is reviewing window 1 of 2', model: 'judge-a', rubric: 'judge.session_outcome', item_index: 1, item_total: 2 },
+    { id: 61, at: '2026-07-16T07:03:50+00:00', phase: 'window_completed', message: 'Completed window call', model: 'judge-a' },
     { id: 7, at: '2026-07-16T07:04:00+00:00', phase: 'merge_started', message: 'Judge A is merging Session Outcome Quality', model: 'judge-a', rubric: 'judge.session_outcome' },
+    { id: 71, at: '2026-07-16T07:04:09+00:00', phase: 'merge_completed', message: 'Completed merge call', model: 'judge-a' },
     { id: 8, at: '2026-07-16T07:04:10+00:00', phase: 'transport_attempt_completed', message: 'Judge A provider request attempt 2 completed in 10.2s', model: 'judge-a', request_attempt: 2, max_attempts: 3, elapsed_seconds: 10.2, status: 'succeeded' },
   ],
   attempt_summaries: [{
@@ -116,14 +119,7 @@ describe('JudgingProgress', () => {
 
     expect(screen.getAllByText('Judge A is merging Session Outcome Quality').length).toBeGreaterThan(0)
     expect(screen.getByLabelText('Judging activity')).not.toBeNull()
-    expect(screen.getByText('Judge A request failed after 191.8s; retrying attempt 2 of 3')).not.toBeNull()
     expect(screen.getByText('Judge A recovered on request attempt 2 of 3')).not.toBeNull()
-    expect(screen.getAllByText('attempt 2 of 3').length).toBeGreaterThan(0)
-    expect(screen.getByText('191.8s')).not.toBeNull()
-    expect(screen.getByText('retryable process error')).not.toBeNull()
-    expect(screen.getByText('provider 429')).not.toBeNull()
-    expect(screen.getByText('rate limit exceeded')).not.toBeNull()
-    expect(screen.getByText('Too many requests for this model.')).not.toBeNull()
     expect(screen.getByText('Judge request timing')).not.toBeNull()
     expect(screen.getByText('judge-a · 2 attempts · 101s average')).not.toBeNull()
     const expectedTimestamp = new Intl.DateTimeFormat(undefined, {
@@ -132,11 +128,27 @@ describe('JudgingProgress', () => {
       second: '2-digit',
       timeZoneName: 'short',
     }).format(new Date('2026-07-16T07:04:10+00:00'))
-    expect(screen.getByText(expectedTimestamp)).not.toBeNull()
     expect(screen.queryByText('Starting 1 planned rubric judgment')).toBeNull()
+    expect(screen.queryByText('Judge A provider request attempt 2 completed in 10.2s')).toBeNull()
+    expect(screen.getByText('Judge A is reviewing window 1 of 2')).not.toBeNull()
+    expect(screen.getByText('Completed window call')).not.toBeNull()
+    expect(screen.getByText('Completed merge call')).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Show all activity' }))
+    expect(screen.getByText('Judge A is digesting chunk 1 of 2')).not.toBeNull()
+    expect(screen.getByText('Completed digest call')).not.toBeNull()
+    expect(screen.getByText('Judge A request failed after 191.8s; retrying attempt 2 of 3')).not.toBeNull()
+    expect(screen.getAllByText('attempt 2 of 3').length).toBeGreaterThan(0)
+    expect(screen.getByText('191.8s')).not.toBeNull()
+    expect(screen.getByText('retryable process error')).not.toBeNull()
+    expect(screen.getByText('provider 429')).not.toBeNull()
+    expect(screen.getByText('rate limit exceeded')).not.toBeNull()
+    expect(screen.getByText('Too many requests for this model.')).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show debug events' }))
     expect(screen.getByText('Starting 1 planned rubric judgment')).not.toBeNull()
+    expect(screen.getByText('Judge A provider request attempt 2 completed in 10.2s')).not.toBeNull()
+    expect(screen.getByText(expectedTimestamp)).not.toBeNull()
   })
 
   it('shows sliding-window work instead of episode selection', () => {
@@ -227,6 +239,15 @@ describe('JudgingProgress', () => {
   })
 
   it('keeps failure details and the pre-plan empty state visible', () => {
+    const failedAttempt: ReviewAttempt = {
+      ...secondAttempt,
+      status: 'failed',
+      score: null,
+      rationale: null,
+      error_type: 'invalid_json_schema',
+      message: 'Missing required field quote',
+      behavioral_feedback: null,
+    }
     const failed: Progress = {
       ...progress,
       failure_count: 1,
@@ -236,12 +257,15 @@ describe('JudgingProgress', () => {
         error_type: 'JudgeExecutionError',
         message: 'Every reviewer failed',
         attempt_count: 1,
-        attempts: [attempt],
+        attempts: [attempt, failedAttempt],
         conversation_id: 'session-2',
       }],
     }
     const { rerender } = render(<JudgingProgress plan={plan} progress={null} result={failed} />)
     expect(screen.getByText('JudgeExecutionError: Every reviewer failed')).not.toBeNull()
+    expect(screen.getByText('Root cause: judge-b · invalid_json_schema: Missing required field quote')).not.toBeNull()
+    expect(screen.getByText('judge-a · succeeded · 0.72')).not.toBeNull()
+    expect(screen.getByText('judge-b · failed')).not.toBeNull()
 
     rerender(<JudgingProgress plan={null} progress={null} result={null} />)
     expect(screen.getByRole('status').textContent).toBe('Waiting for judging to start.')

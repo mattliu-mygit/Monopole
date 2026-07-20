@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import threading
+import time
 from datetime import datetime, timezone
 
 import pytest
 
 from weave_agent_signals.catalogs import build_rubric_catalog
 from weave_agent_signals.judges import runner
+from weave_agent_signals.judges.inference import InferenceCancelled
 from weave_agent_signals.judges.plan import build_canonical_judging_plan
 from weave_agent_signals.judges.review import AttemptObservation
 from weave_agent_signals.judges.runner import JudgeExecutionError, judge_session
@@ -235,7 +237,7 @@ def test_runner_retains_duplicate_evidence_ids(monkeypatch) -> None:
     assert scores[0].metadata["evidence_trace_ids"] == ["turn-1", "turn-1"]
 
 
-def test_panel_failure_does_not_abort_shared_transport(monkeypatch) -> None:
+def test_terminal_panel_failure_aborts_shared_transport(monkeypatch) -> None:
     class Client:
         aborted = 0
 
@@ -251,7 +253,7 @@ def test_panel_failure_does_not_abort_shared_transport(monkeypatch) -> None:
             client=client,
         )
 
-    assert client.aborted == 0
+    assert client.aborted == 1
 
 
 def test_zero_success_raises_with_attempt_audit(monkeypatch) -> None:
@@ -318,6 +320,53 @@ def test_failed_rubrics_are_reported_in_pinned_order_after_parallel_execution(
         rubric.id for rubric in rubrics
     ]
     assert outcomes["judge-1"] == []
+
+
+def test_terminal_panel_failure_cancels_sibling_rubric_work(monkeypatch) -> None:
+    session = _session()
+    judges = (_judge("judge-1", 1),)
+    rubrics = build_rubric_catalog().rubrics[:2]
+    plan = build_canonical_judging_plan(
+        [session],
+        cohort_id="cohort",
+        rubrics=rubrics,
+        judge_models=judges,
+        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
+    )
+    started = threading.Barrier(2, timeout=1)
+    sibling_cancelled = threading.Event()
+
+    class FakeReviewer:
+        def __init__(self, **kwargs):
+            self.is_cancelled = kwargs["is_cancelled"]
+
+        def review(self, rubric):
+            started.wait()
+            if rubric.id == rubrics[0].id:
+                return _observation(None, failed=True)
+            for _ in range(100):
+                if self.is_cancelled():
+                    sibling_cancelled.set()
+                    raise InferenceCancelled("terminal sibling panel failure")
+                time.sleep(0.01)
+            return _observation(0.75)
+
+    monkeypatch.setattr(runner, "SlidingReviewer", FakeReviewer)
+
+    with pytest.raises(JudgeExecutionError) as caught:
+        judge_session(
+            session,
+            {judges[0].id: object()},
+            rubrics=rubrics,
+            judges=judges,
+            judging_plan=plan,
+            context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
+            call_loader=lambda _key: None,
+            call_recorder=lambda *_args: None,
+        )
+
+    assert sibling_cancelled.is_set()
+    assert [failure.rubric for failure in caught.value.failures] == [rubrics[0].id]
 
 
 def test_unanimous_abstention_is_audited_without_becoming_a_failure(monkeypatch) -> None:

@@ -202,6 +202,7 @@ class _ScriptedClient:
                         "polarity": "positive",
                         "observation": "The agent used relevant checks.",
                         "evidence_ids": [evidence_id],
+                        "quote": None,
                     }
                 ],
             }
@@ -546,6 +547,7 @@ def test_reviewer_binds_each_inference_schema_to_its_exact_evidence_scope() -> N
             "Reason carefully internally, then return only concise JSON"
             in call["messages"][0]["content"]
         )
+        assert "otherwise set quote to null" in call["messages"][0]["content"]
         assert "window_id" not in call["schema"]["properties"]
         assert "schema_version" not in call["schema"]["properties"]
         evidence = call["schema"]["$defs"]["WindowFinding"]["properties"]["evidence_ids"]
@@ -707,6 +709,7 @@ def test_cross_window_finding_identity_ignores_duplicate_citation_multiplicity()
         polarity="positive",
         observation="The agent used relevant checks.",
         evidence_ids=("trace-1",),
+        quote=None,
     )
     repeated_citation = first_finding.model_copy(update={"evidence_ids": ("trace-1", "trace-1")})
 
@@ -738,6 +741,7 @@ def test_cross_window_finding_ids_are_scoped_to_their_window() -> None:
                         polarity="positive",
                         observation="The agent chose appropriate repository tools.",
                         evidence_ids=("trace-1",),
+                        quote=None,
                     ),
                 ),
             ),
@@ -750,6 +754,7 @@ def test_cross_window_finding_ids_are_scoped_to_their_window() -> None:
                         polarity="positive",
                         observation="The agent chose appropriate verification tools.",
                         evidence_ids=("trace-2",),
+                        quote=None,
                     ),
                 ),
             ),
@@ -1069,6 +1074,19 @@ def test_inference_exception_message_is_sanitized_before_observation() -> None:
     assert result.transport_request_count == 3
     assert len(result.steps) == 1
     assert result.steps[0].phase == "digest"
+
+
+def test_safe_provider_message_is_preserved_in_failed_observation() -> None:
+    error = RuntimeError("raw provider output")
+    error._provider_error_code = "invalid_json_schema"  # type: ignore[attr-defined]
+    error._provider_error_message = "Invalid schema: missing required field quote"  # type: ignore[attr-defined]
+    reviewer, _, _, _ = _reviewer(client=_ScriptedClient(invocation_error=error))
+
+    result = reviewer.review(_rubric("judge.session_outcome"))
+
+    assert result.status == "failed"
+    assert result.error_type == "invalid_json_schema"
+    assert result.message == "Invalid schema: missing required field quote"
 
 
 def test_output_exhaustion_preserves_combined_failure_audit() -> None:
