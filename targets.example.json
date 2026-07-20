@@ -4,6 +4,7 @@
     {
       "kind": "markdown_root",
       "id": "this-repo",
+      "description": "Repository-wide agent instructions. Update an existing file for behavior in its scope; create a focused Markdown file only for narrower directory-specific guidance.",
       "root": ".",
       "files": ["AGENTS.md", "CLAUDE.md"],
       "allow_create": false

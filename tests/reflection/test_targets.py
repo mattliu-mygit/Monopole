@@ -66,6 +66,58 @@ def test_registry_resolves_admitted_create_without_exposing_absolute_paths(tmp_p
     assert str(tmp_path) not in manifest
 
 
+def test_registry_manifest_describes_model_facing_target_profiles(tmp_path: Path) -> None:
+    registry = load_target_registry(
+        _registry(
+            tmp_path,
+            [
+                {
+                    "kind": "file",
+                    "id": "global-agents",
+                    "path": "AGENTS.md",
+                    "description": "Cross-project agent behavior.",
+                },
+                {
+                    "kind": "skill_collection",
+                    "id": "repo-skills",
+                    "root": "skills",
+                    "description": "Focused reusable workflows.",
+                },
+                {
+                    "kind": "markdown_root",
+                    "id": "repo-docs",
+                    "root": "docs",
+                    "files": ["AGENTS.md"],
+                    "allow_create": False,
+                },
+            ],
+        )
+    )
+
+    assert registry.contract_manifest()["targets"] == [
+        {
+            "kind": "file",
+            "id": "global-agents",
+            "description": "Cross-project agent behavior.",
+            "allowed_actions": ["update", "create"],
+            "locator_format": "file:global-agents",
+        },
+        {
+            "kind": "skill_collection",
+            "id": "repo-skills",
+            "description": "Focused reusable workflows.",
+            "allowed_actions": ["update", "create"],
+            "locator_format": "skills:repo-skills/<skill-name>/SKILL.md",
+        },
+        {
+            "kind": "markdown_root",
+            "id": "repo-docs",
+            "allowed_actions": ["update"],
+            "locator_format": "markdown:repo-docs/<relative-path.md>",
+        },
+    ]
+
+
 @pytest.mark.parametrize(
     "target",
     [

@@ -809,6 +809,18 @@ def test_internal_baseline_may_use_empty_proposal():
 
 def test_writer_prompt_lists_exact_contract_scope_and_inventory():
     baseline = _bundle(**{"AGENTS.md": "alpha", "docs/check.md": "beta"})
+    scope_policy = {
+        **SCOPE_POLICY,
+        "targets": [
+            {
+                "kind": "markdown_root",
+                "id": "project",
+                "description": "Repository-wide agent instructions.",
+                "allowed_actions": ["update", "create"],
+                "locator_format": "markdown:project/<relative-path.md>",
+            }
+        ],
+    }
     exact_layout = """{
   "schema_version": 3,
   "changes": [
@@ -826,6 +838,9 @@ def test_writer_prompt_lists_exact_contract_scope_and_inventory():
         assert '"AGENTS.md": "alpha"' in prompt
         assert '"docs/check.md": "beta"' in prompt
         assert '"suffix": ".md"' in prompt
+        assert '"description": "Repository-wide agent instructions."' in prompt
+        assert '"allowed_actions": [\n        "update",\n        "create"' in prompt
+        assert '"locator_format": "markdown:project/<relative-path.md>"' in prompt
         assert "create requires a locator admitted by the pinned target registry" in prompt
         assert "update requires a locator present in baseline B" in prompt
         assert "delete requires" not in prompt
@@ -845,7 +860,7 @@ def test_writer_prompt_lists_exact_contract_scope_and_inventory():
         baseline=baseline,
         feedback=_feedback(),
         coaching_text="Improve verification.",
-        scope_policy=SCOPE_POLICY,
+        scope_policy=scope_policy,
         requested_writer=WRITER,
         requested_evaluator=EVALUATOR,
         writer_client=_writer_client(),

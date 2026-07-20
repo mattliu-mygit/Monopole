@@ -133,6 +133,13 @@ targets, path escape, non-Markdown exact files, invalid UTF-8, and symlinks at a
 target or existing parent fail before model work. The registry manifest and
 digest are pinned with reflection input.
 
+Each registry target may include a concise model-facing description of its
+purpose and when instructions in that target should be updated or created. The
+pinned proposal scope presents that description together with the target kind,
+stable ID, allowed actions, and locator format. It never exposes filesystem
+paths. These profiles help the proposal writer choose the right managed target;
+the registry remains authoritative and rejects any unadmitted action or locator.
+
 A proposal may create or update admitted files. Before target publication, new
 Markdown-root paths are added to the registry with an atomic compare-and-swap
 write. Registry drift or registration failure blocks every target write. A

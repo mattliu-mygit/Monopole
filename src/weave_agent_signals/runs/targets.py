@@ -10,7 +10,15 @@ import threading
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictStr,
+    StringConstraints,
+    model_validator,
+)
 
 from weave_agent_signals.runs.bundles import (
     BundleSnapshot,
@@ -47,10 +55,17 @@ class _ClosedModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+TargetDescription = Annotated[
+    StrictStr,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=500),
+]
+
+
 class FileTarget(_ClosedModel):
     kind: Literal["file"] = "file"
     id: StrictStr
     path: StrictStr
+    description: TargetDescription | None = None
 
     @model_validator(mode="after")
     def validate_target(self) -> FileTarget:
@@ -63,6 +78,7 @@ class SkillCollection(_ClosedModel):
     kind: Literal["skill_collection"] = "skill_collection"
     id: StrictStr
     root: StrictStr
+    description: TargetDescription | None = None
 
     @model_validator(mode="after")
     def validate_target(self) -> SkillCollection:
@@ -77,6 +93,7 @@ class MarkdownRoot(_ClosedModel):
     root: StrictStr
     files: tuple[StrictStr, ...]
     allow_create: StrictBool
+    description: TargetDescription | None = None
 
     @model_validator(mode="after")
     def validate_target(self) -> MarkdownRoot:
@@ -183,14 +200,32 @@ class TargetRegistry:
             resolved.append((path, container))
 
     def contract_manifest(self) -> dict[str, object]:
-        public = [{"kind": entry.kind, "id": entry.id} for entry in self._entries]
+        public: list[dict[str, object]] = []
+        for entry in self._entries:
+            profile: dict[str, object] = {"kind": entry.kind, "id": entry.id}
+            if entry.description is not None:
+                profile["description"] = entry.description
+            if isinstance(entry, FileTarget):
+                profile["allowed_actions"] = ["update", "create"]
+                profile["locator_format"] = f"file:{entry.id}"
+            elif isinstance(entry, SkillCollection):
+                profile["allowed_actions"] = ["update", "create"]
+                profile["locator_format"] = f"skills:{entry.id}/<skill-name>/SKILL.md"
+            else:
+                profile["allowed_actions"] = (
+                    ["update", "create"] if entry.allow_create else ["update"]
+                )
+                profile["locator_format"] = f"markdown:{entry.id}/<relative-path.md>"
+            public.append(profile)
         return {
             "schema_version": self.schema_version,
             "targets": public,
             "digest": revision_hash(
                 {
                     "schema_version": self.schema_version,
-                    "targets": [entry.model_dump(mode="json") for entry in self._entries],
+                    "targets": [
+                        entry.model_dump(mode="json", exclude_none=True) for entry in self._entries
+                    ],
                 }
             ),
         }
@@ -352,7 +387,7 @@ class TargetRegistry:
         if current != self._source_text:
             raise ValueError("target registry changed after it was loaded")
         document = _RegistryDocument(schema_version=self.schema_version, targets=entries)
-        content = json.dumps(document.model_dump(mode="json"), indent=2) + "\n"
+        content = json.dumps(document.model_dump(mode="json", exclude_none=True), indent=2) + "\n"
         descriptor, name = tempfile.mkstemp(
             prefix=".monopole-targets-",
             dir=self._registry_path.parent,

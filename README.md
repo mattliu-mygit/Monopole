@@ -191,6 +191,7 @@ The starter registry allows updates to this repository's `AGENTS.md` and
     {
       "kind": "markdown_root",
       "id": "this-repo",
+      "description": "Repository-wide agent instructions. Update an existing file for behavior in its scope; create a focused Markdown file only for narrower directory-specific guidance.",
       "root": ".",
       "files": ["AGENTS.md", "CLAUDE.md"],
       "allow_create": false
@@ -204,6 +205,8 @@ Paths are resolved relative to the registry file. Locators use
 `files`; setting `allow_create` to `true` additionally permits new `.md` files
 beneath that root. Paths cannot escape the root, cross symlinks, enter
 dependency or cache directories, or target non-Markdown files.
+The optional, concise `description` tells the proposal writer what the target
+contains and when it should update or create instructions there.
 
 ## What Monopole does
 
