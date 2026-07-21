@@ -92,7 +92,6 @@ def test_model_output_schemas_omit_host_owned_envelope_fields():
 def test_parsers_attach_host_owned_envelope_fields():
     digest = parse_chunk_digest(
         {"text": "Observed behavior."},
-        max_tokens=100,
         expected_chunk_id="chunk-1",
     )
     findings = parse_window_findings(
@@ -118,20 +117,22 @@ def test_parsers_attach_host_owned_envelope_fields():
     assert verdict.schema_version == 1
 
 
-def test_structured_schemas_advertise_parser_bounds_to_models():
+def test_structured_schemas_advertise_structural_bounds_without_character_limits():
     digest = CHUNK_DIGEST_SCHEMA.schema["properties"]
     finding = WINDOW_FINDING_SCHEMA.schema["properties"]
     feedback = BEHAVIORAL_FEEDBACK_SCHEMA.schema["properties"]
     verdict = MERGED_VERDICT_SCHEMA.schema["properties"]
 
-    assert digest["text"]["maxLength"] == 2_400
+    assert "maxLength" not in digest["text"]
     assert "maxLength" not in finding["observation"]
     assert finding["evidence_ids"]["minItems"] == 1
     assert "uniqueItems" not in finding["evidence_ids"]
     assert "minItems" not in WINDOW_FINDINGS_SCHEMA.schema["properties"]["findings"]
-    assert feedback["success"]["anyOf"][0]["maxLength"] == 10_000
-    assert feedback["problem"]["anyOf"][0]["maxLength"] == 10_000
-    assert feedback["desired_behavior"]["anyOf"][0]["maxLength"] == 10_000
+    for field in ("success", "problem", "desired_behavior"):
+        text_schema = next(
+            variant for variant in feedback[field]["anyOf"] if variant.get("type") == "string"
+        )
+        assert "maxLength" not in text_schema
     assert verdict["score"]["enum"] == [0.0, 0.25, 0.5, 0.75, 1.0, None]
     assert verdict["score"]["anyOf"] == [{"type": "number"}, {"type": "null"}]
 
@@ -186,7 +187,6 @@ def test_chunk_digest_parses_normalized_bounded_cited_text():
             "chunk_id": "chunk-1",
             "text": "Observed   recovery\n after a failed check.",
         },
-        max_tokens=20,
     )
     assert isinstance(parsed, ChunkDigest)
     assert parsed.text == "Observed recovery after a failed check."
@@ -207,10 +207,7 @@ def test_chunk_digest_rejects_open_or_uncited_content(changes: dict[str, object]
     }
     payload.update(changes)
     with pytest.raises(ValueError, match=match):
-        parse_chunk_digest(
-            payload,
-            max_tokens=50,
-        )
+        parse_chunk_digest(payload)
 
 
 def test_window_findings_resolve_short_aliases_and_drop_unverified_quote():
@@ -252,16 +249,13 @@ def test_window_findings_keep_exact_source_quote():
     assert parsed.findings[0].quote == "tool reported success"
 
 
-def test_chunk_digest_rejects_text_over_token_limit():
-    with pytest.raises(ValueError, match="token limit"):
-        parse_chunk_digest(
-            {
-                "schema_version": 1,
-                "chunk_id": "chunk-1",
-                "text": "A digest that cannot fit in one token.",
-            },
-            max_tokens=1,
-        )
+def test_chunk_digest_has_no_host_length_cap():
+    text = "x" * 20_000
+    parsed = parse_chunk_digest(
+        {"schema_version": 1, "chunk_id": "chunk-1", "text": text},
+    )
+
+    assert parsed.text == text
 
 
 def test_window_finding_parses_normalized_bounded_observation():
@@ -472,20 +466,24 @@ def test_window_findings_uses_expected_window_and_rejects_extra_fields():
         )
 
 
-def test_behavioral_feedback_requires_bounded_nonblank_content():
+def test_behavioral_feedback_requires_nonblank_content_without_character_limit():
     parsed = parse_behavioral_feedback(
         {"success": "  Good   recovery. ", "problem": None, "desired_behavior": None}
     )
     assert isinstance(parsed, BehavioralFeedback)
     assert parsed.success == "Good recovery."
 
+    long_feedback = "x" * 10_001
+    assert (
+        parse_behavioral_feedback(
+            {"success": long_feedback, "problem": None, "desired_behavior": None}
+        ).success
+        == long_feedback
+    )
+
     invalid = (
         ({"success": None, "problem": None, "desired_behavior": None}, "at least one"),
         ({"success": " ", "problem": None, "desired_behavior": None}, "nonblank"),
-        (
-            {"success": "x" * 10_001, "problem": None, "desired_behavior": None},
-            "at most 10000",
-        ),
         (
             {"success": "Good.", "problem": None, "desired_behavior": None, "extra": True},
             "Extra inputs",

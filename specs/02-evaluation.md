@@ -106,8 +106,10 @@ author semantic fields plus short citation references only where needed. The
 host adds protocol, chunk, and window identity and resolves aliases before using
 the result. Window and merge schemas enumerate only the references authorized
 for that phase; the same constraints are validated again after inference. Complete
-window-finding artifacts receive a 4,000-token budget, and each final behavioral
-feedback field is limited to 10,000 characters.
+window-finding artifacts receive a 10,000-token budget. Digest prompts request a
+soft target of about 1,000 tokens, but digest text is not rejected for crossing
+that estimate. Actual inference calls still enforce model context capacity.
+Judge-authored semantic text has no character-count limits.
 
 The current session rubrics evaluate verification, error recovery, tool choice,
 state consistency, outcome, and autonomy. A rubric may return
@@ -253,7 +255,7 @@ rubric and reviewer identity. Any coverage failure then fails the session and
 stops remaining sessions.
 Explicit run cancellation remains global and interrupts provider-gate waits.
 The HTTP transport makes at most three attempts for retryable timeouts, rate
-limits, and transient server failures, with backoff, and permits a 240-second
+limits, and transient server failures, with backoff, and permits a 300-second
 response wait per attempt. Every provider request start and completion plus
 retry, recovery, and terminal transport events are emitted as they happen. They
 identify the phase or chunk, attempt count, per-attempt duration, safe error

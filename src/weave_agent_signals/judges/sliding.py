@@ -63,11 +63,12 @@ log = logging.getLogger("weave_agent_signals.judges")
 ValidatedOutput = TypeVar("ValidatedOutput", bound=BaseModel)
 
 _ERROR_TEXT_LIMIT = 500
-SLIDING_PROTOCOL_VERSION = "17"
+SLIDING_PROTOCOL_VERSION = "18"
 
 _DIGEST_SYSTEM_TEMPLATE = (
     "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. "
     "Preserve important actions, results, omissions, corrections, and constraints. "
+    "Be concise and aim for about 1,000 tokens of digest text or less. "
     "The host records which chunk this digest summarizes. Return the requested JSON."
 )
 _DIGEST_USER_TEMPLATE = "RAW_CHUNK:\n{raw_text}"
@@ -798,7 +799,6 @@ class SlidingReviewer:
             item_total=len(self._windows),
             parser=lambda payload: parse_chunk_digest(
                 payload,
-                max_tokens=self.context_policy.digest_max_tokens,
                 expected_chunk_id=chunk_id,
             ),
         )

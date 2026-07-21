@@ -31,7 +31,7 @@ def test_judging_context_policy_uses_capacity_tiers_at_exact_threshold():
     assert policy.generation_budget(200_001) == 10_000
     assert policy.small_model_raw_target_tokens == 50_000
     assert policy.large_model_raw_target_tokens == 128_000
-    assert policy.finding_max_tokens == 4_000
+    assert policy.finding_max_tokens == 10_000
     assert "target_input_tokens" not in policy.model_dump()
     assert "token_estimator" not in policy.model_dump()
 

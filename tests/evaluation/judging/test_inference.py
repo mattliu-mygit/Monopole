@@ -169,7 +169,7 @@ def test_http_chat_captures_response_diagnostics(client, monkeypatch):
 
 
 def test_http_transport_allows_long_reasoning_responses(client):
-    assert client._http.timeout.read == 240.0
+    assert client._http.timeout.read == 300.0
     assert client._http.timeout.connect == 10.0
     assert client._http.timeout.write == 60.0
     assert client._http.timeout.pool == 10.0

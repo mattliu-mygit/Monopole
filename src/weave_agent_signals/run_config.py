@@ -56,7 +56,7 @@ class JudgingContextPolicy(StrictFrozenModel):
     large_model_output_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 10_000
     safety_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 8_000
     digest_max_tokens: Annotated[int, Field(strict=True, ge=1)] = 1_000
-    finding_max_tokens: Annotated[int, Field(strict=True, ge=1)] = 4_000
+    finding_max_tokens: Annotated[int, Field(strict=True, ge=1)] = 10_000
     overlap_turns: Literal[1] = 1
     max_chunks: Annotated[int, Field(strict=True, ge=1)] = 40
 

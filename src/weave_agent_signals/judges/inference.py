@@ -387,7 +387,7 @@ class InferenceClient:
         self._http = httpx.Client(
             base_url=resolved_url,
             headers=headers,
-            timeout=httpx.Timeout(connect=10.0, read=240.0, write=60.0, pool=10.0),
+            timeout=httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=10.0),
         )
         self._activity = threading.local()
         self._schema_recovery: set[tuple[str, str]] = set()

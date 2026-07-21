@@ -15,8 +15,6 @@ from weave_agent_signals.judges.tokens import count_tokens
 
 SLIDING_CONTRACT_SCHEMA_VERSION = 1
 MAX_WINDOW_FINDINGS = 4
-MAX_CHUNK_DIGEST_CHARACTERS = 2_400
-MAX_BEHAVIORAL_FEEDBACK_CHARACTERS = 10_000
 MAX_REPORTED_UNKNOWN_EVIDENCE_IDS = 3
 MAX_REPORTED_EVIDENCE_ID_CHARACTERS = 64
 SCORE_ANCHORS = (0.0, 0.25, 0.5, 0.75, 1.0)
@@ -53,7 +51,7 @@ def _validate_score_anchor(value: object, *, field: str) -> float:
 class ChunkDigest(_ClosedModel):
     schema_version: Literal[1]
     chunk_id: StrictStr
-    text: StrictStr = Field(max_length=MAX_CHUNK_DIGEST_CHARACTERS)
+    text: StrictStr
 
 
 class WindowFinding(_ClosedModel):
@@ -79,11 +77,9 @@ def window_finding_semantic_key(finding: WindowFinding) -> tuple[object, ...]:
 
 
 class BehavioralFeedback(_ClosedModel):
-    success: Annotated[StrictStr, Field(max_length=MAX_BEHAVIORAL_FEEDBACK_CHARACTERS)] | None
-    problem: Annotated[StrictStr, Field(max_length=MAX_BEHAVIORAL_FEEDBACK_CHARACTERS)] | None
-    desired_behavior: (
-        Annotated[StrictStr, Field(max_length=MAX_BEHAVIORAL_FEEDBACK_CHARACTERS)] | None
-    )
+    success: StrictStr | None
+    problem: StrictStr | None
+    desired_behavior: StrictStr | None
 
 
 class MergedVerdict(_ClosedModel):
@@ -193,12 +189,10 @@ def render_window_findings(value: WindowFindings) -> str:
     )
 
 
-def _normalized_text(value: str, *, field: str, max_characters: int | None = None) -> str:
+def _normalized_text(value: str, *, field: str) -> str:
     normalized = " ".join(value.split())
     if not normalized:
         raise ValueError(f"{field} must be nonblank")
-    if max_characters is not None and len(normalized) > max_characters:
-        raise ValueError(f"{field} must contain at most {max_characters} normalized characters")
     return normalized
 
 
@@ -285,13 +279,10 @@ def _validated_evidence_ids(
 def parse_chunk_digest(
     value: Mapping[str, object] | ChunkDigest,
     *,
-    max_tokens: int,
     expected_chunk_id: str | None = None,
 ) -> ChunkDigest:
-    """Validate one bounded digest against its exact source evidence."""
+    """Validate one digest against its exact source evidence."""
 
-    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
-        raise ValueError("max_tokens must be a positive integer")
     data = _validation_data(value)
     if expected_chunk_id is not None and isinstance(data, Mapping):
         data = {
@@ -302,8 +293,6 @@ def parse_chunk_digest(
     digest = ChunkDigest.model_validate(data)
     chunk_id = _nonblank_id(digest.chunk_id, field="chunk ID")
     text = _normalized_text(digest.text, field="digest text")
-    if count_tokens(text, "utf8_bytes_div_3") > max_tokens:
-        raise ValueError("digest text exceeds the configured token limit")
     return digest.model_copy(update={"chunk_id": chunk_id, "text": text})
 
 
@@ -376,20 +365,14 @@ def parse_window_findings(
 def parse_behavioral_feedback(
     value: Mapping[str, object] | BehavioralFeedback,
 ) -> BehavioralFeedback:
-    """Validate bounded behavioral feedback without interpreting its wording."""
+    """Validate behavioral feedback without interpreting its wording."""
 
     feedback = BehavioralFeedback.model_validate(_validation_data(value))
     normalized: dict[str, str | None] = {}
     for field in ("success", "problem", "desired_behavior"):
         text = getattr(feedback, field)
         normalized[field] = (
-            None
-            if text is None
-            else _normalized_text(
-                text,
-                field=f"feedback {field}",
-                max_characters=MAX_BEHAVIORAL_FEEDBACK_CHARACTERS,
-            )
+            None if text is None else _normalized_text(text, field=f"feedback {field}")
         )
     if not any(text is not None for text in normalized.values()):
         raise ValueError("behavioral feedback requires at least one non-null field")

@@ -26,6 +26,7 @@ from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.judges.sliding import (
     SlidingReviewer,
     sliding_protocol_contract_digest,
+    sliding_protocol_contract_manifest,
 )
 from weave_agent_signals.judges.sliding_contracts import WindowFinding, WindowFindings
 from weave_agent_signals.judges.windowing import (
@@ -885,6 +886,12 @@ def test_protocol_contract_digest_binds_version_prompts_and_schemas(
         ),
     )
     assert sliding_protocol_contract_digest() not in {original, prompt_changed}
+
+
+def test_digest_prompt_requests_a_concise_soft_token_target():
+    prompt = sliding_protocol_contract_manifest()["prompt_templates"]["digest_system"]
+
+    assert "about 1,000 tokens" in prompt
 
 
 def test_request_ids_bind_protocol_contract(monkeypatch: pytest.MonkeyPatch) -> None:
