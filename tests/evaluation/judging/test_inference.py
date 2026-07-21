@@ -25,6 +25,7 @@ def _schema():
             "required": ["score"],
             "additionalProperties": False,
         },
+        examples=({"score": 0.75},),
     )
 
 
@@ -118,6 +119,10 @@ def test_http_chat_json_sends_strict_named_schema(client, monkeypatch):
             "schema": _schema().schema,
         },
     }
+    contract = calls[0]["messages"][0]["content"]
+    assert contract.count("REQUIRED_JSON_SCHEMA:") == 1
+    assert contract.count("CANONICAL_JSON_EXAMPLE_1:") == 1
+    assert 'CANONICAL_JSON_EXAMPLE_1:\n{"score":0.75}' in contract
     assert response.output_mode == "json_schema"
     assert response.schema_name == "judge_verdict"
 
@@ -197,8 +202,11 @@ def test_http_chat_json_falls_back_only_for_explicit_schema_rejection(client, mo
     assert [call["model"] for call in calls] == ["gpt-pinned", "gpt-pinned"]
     assert calls[0]["response_format"]["type"] == "json_schema"
     assert calls[1]["response_format"] == {"type": "json_object"}
-    assert "REQUIRED_JSON_SCHEMA:" in calls[1]["messages"][0]["content"]
-    assert '"required":["score"]' in calls[1]["messages"][0]["content"]
+    for call in calls:
+        contract = call["messages"][0]["content"]
+        assert contract.count("REQUIRED_JSON_SCHEMA:") == 1
+        assert contract.count("CANONICAL_JSON_EXAMPLE_1:") == 1
+        assert '"required":["score"]' in contract
 
 
 @pytest.mark.parametrize(
@@ -419,8 +427,11 @@ def test_wandb_transport_retry_uses_concise_json_mode(client, monkeypatch):
         {"enable_thinking": False},
         {"enable_thinking": False},
     ]
-    assert "REQUIRED_JSON_SCHEMA:" not in calls[0]["messages"][0]["content"]
-    assert all('"required":["score"]' in call["messages"][0]["content"] for call in calls[1:])
+    assert all(call["messages"][0]["content"].count("REQUIRED_JSON_SCHEMA:") == 1 for call in calls)
+    assert all(
+        call["messages"][0]["content"].count("CANONICAL_JSON_EXAMPLE_1:") == 1 for call in calls
+    )
+    assert all('"required":["score"]' in call["messages"][0]["content"] for call in calls)
     assert response.output_mode == "json_object_fallback"
     assert events[2]["output_mode"] == "json_object_fallback"
     assert "concise JSON recovery mode" in str(events[2]["message"])

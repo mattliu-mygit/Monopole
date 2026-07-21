@@ -40,24 +40,13 @@ MAX_REJECTED_RESPONSE_EXCERPT = 1_000
 _CORRECTION_CONTEXT_LIMIT = 500
 _GEPA_FENCE = "```"
 
-_PROPOSAL_LAYOUT = """{
-  "schema_version": 3,
-  "changes": [
-    {
-      "action": "update",
-      "locator": "file:project-agents",
-      "content": "Complete replacement content for AGENTS.md"
-    }
-  ]
-}"""
 _GEPA_OBJECTIVE_TEMPLATE = (
     "Improve the complete managed instruction bundle to increase the agent's "
     "evaluation scores. Treat every target as part of one coherent configuration. "
     "The bundle may contain project instructions, commands, skills, and other "
     "adapter-managed prompt files.\n\n"
     "Current evaluation summary:\n{coaching_text}\n\n"
-    "Propose specific, actionable edits to the lowest-scoring dimensions. Use "
-    "this exact JSON layout:\n{proposal_layout}\n\n"
+    "Propose specific, actionable edits to the lowest-scoring dimensions.\n\n"
     "Contract rules:\n"
     "- `changes` contains only files changed by the proposal, and each locator "
     "appears once.\n"
@@ -88,9 +77,7 @@ _EVALUATOR_SYSTEM = (
 )
 _EVALUATOR_USER = (
     "## Evaluation evidence\n\n{coaching_text}\n\n"
-    "## Complete managed instruction bundle\n\n{bundle_text}\n\n"
-    "Respond with JSON: "
-    '{{"score": <float 0.0-1.0>, "rationale": "<brief explanation>"}}'
+    "## Complete managed instruction bundle\n\n{bundle_text}"
 )
 _EVALUATOR_SCHEMA = JsonSchemaSpec(
     name="reflection_bundle_evaluation",
@@ -103,6 +90,12 @@ _EVALUATOR_SCHEMA = JsonSchemaSpec(
         },
         "required": ["score", "rationale"],
     },
+    examples=(
+        {
+            "score": 0.75,
+            "rationale": "The proposal directly addresses the measured verification gap.",
+        },
+    ),
 )
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -1320,7 +1313,6 @@ def run_reflection(
         evaluator=evaluator,
         objective=_GEPA_OBJECTIVE_TEMPLATE.format(
             coaching_text=coaching_text,
-            proposal_layout=_PROPOSAL_LAYOUT,
         ),
         background=_GEPA_BACKGROUND_TEMPLATE.format(
             baseline_contents=baseline_contents_text,

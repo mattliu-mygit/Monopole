@@ -29,6 +29,7 @@ from weave_agent_signals.judges.inference import (
     _explicit_schema_rejection_reason,
     _parse_exact_json_object,
     _raw_output_digest,
+    json_output_contract_messages,
 )
 from weave_agent_signals.judges.process import CODEX_CONFINED_ARGS, prepare_cli_subprocess
 
@@ -362,6 +363,8 @@ class CliJudgeClient:
         response_schema: JsonSchemaSpec | None = None,
         reasoning: Literal["default", "disabled"] = "default",
     ) -> tuple[dict[str, Any], JudgeResponse]:
+        if response_schema is not None:
+            messages = json_output_contract_messages(messages, response_schema)
         system = "\n\n".join(m["content"] for m in messages if m.get("role") == "system")
         user = "\n\n".join(m["content"] for m in messages if m.get("role") == "user")
         env = _build_env(self._provider)
@@ -1009,11 +1012,6 @@ class CliJudgeClient:
         response_schema: JsonSchemaSpec | None,
     ) -> str:
         sections = [system] if system else []
-        if response_schema is not None:
-            sections.append(
-                "Return exactly one JSON object matching this JSON Schema:\n"
-                + json.dumps(response_schema.schema, separators=(",", ":"))
-            )
         sections.append(user)
         return "\n\n".join(sections)
 

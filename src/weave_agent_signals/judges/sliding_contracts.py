@@ -14,7 +14,6 @@ from weave_agent_signals.judges.inference import JsonSchemaSpec
 from weave_agent_signals.judges.tokens import count_tokens
 
 SLIDING_CONTRACT_SCHEMA_VERSION = 1
-MAX_WINDOW_FINDINGS = 4
 MAX_REPORTED_UNKNOWN_EVIDENCE_IDS = 3
 MAX_REPORTED_EVIDENCE_ID_CHARACTERS = 64
 SCORE_ANCHORS = (0.0, 0.25, 0.5, 0.75, 1.0)
@@ -65,7 +64,7 @@ class WindowFinding(_ClosedModel):
 class WindowFindings(_ClosedModel):
     schema_version: Literal[1]
     window_id: StrictStr
-    findings: tuple[WindowFinding, ...] = Field(max_length=MAX_WINDOW_FINDINGS)
+    findings: tuple[WindowFinding, ...]
 
 
 def window_finding_semantic_key(finding: WindowFinding) -> tuple[object, ...]:
@@ -127,22 +126,59 @@ def _merged_verdict_json_schema() -> dict:
 CHUNK_DIGEST_SCHEMA = JsonSchemaSpec(
     name="chunk_digest",
     schema=_model_output_json_schema(ChunkDigest, "schema_version", "chunk_id"),
+    examples=({"text": "The agent changed the target and verified the focused check passed."},),
 )
 WINDOW_FINDING_SCHEMA = JsonSchemaSpec(
     name="window_finding",
     schema=WindowFinding.model_json_schema(),
+    examples=(
+        {
+            "finding_id": "finding-1",
+            "polarity": "positive",
+            "observation": "The agent verified the completed change with a focused check.",
+            "evidence_ids": ["e1"],
+            "quote": None,
+        },
+    ),
 )
 WINDOW_FINDINGS_SCHEMA = JsonSchemaSpec(
     name="window_findings",
     schema=_model_output_json_schema(WindowFindings, "schema_version", "window_id"),
+    examples=(
+        {"findings": [WINDOW_FINDING_SCHEMA.examples[0]]},
+        {"findings": []},
+    ),
 )
 BEHAVIORAL_FEEDBACK_SCHEMA = JsonSchemaSpec(
     name="behavioral_feedback",
     schema=BehavioralFeedback.model_json_schema(),
+    examples=(
+        {
+            "success": "The agent implemented the requested change.",
+            "problem": "It did not rerun the focused check after the final edit.",
+            "desired_behavior": "Rerun the focused check after the final edit.",
+        },
+    ),
 )
 MERGED_VERDICT_SCHEMA = JsonSchemaSpec(
     name="merged_verdict",
     schema=_merged_verdict_json_schema(),
+    examples=(
+        {
+            "status": "scored",
+            "score": 0.75,
+            "rationale": "The supported behavior was strong with one verification gap.",
+            "finding_ids": ["finding-1"],
+            "feedback": BEHAVIORAL_FEEDBACK_SCHEMA.examples[0],
+        },
+        {
+            "status": "insufficient_evidence",
+            "score": None,
+            "rationale": "The supplied windows do not support a rubric finding.",
+            "finding_ids": [],
+            "feedback": None,
+        },
+    ),
 )
 
 
@@ -161,8 +197,15 @@ def bind_window_findings_schema(
 
     schema = deepcopy(dict(WINDOW_FINDINGS_SCHEMA.schema))
     finding = schema["$defs"]["WindowFinding"]["properties"]
-    finding["evidence_ids"]["items"]["enum"] = _bound_evidence_ids(allowed_evidence_ids)
-    return JsonSchemaSpec(name=WINDOW_FINDINGS_SCHEMA.name, schema=schema)
+    values = _bound_evidence_ids(allowed_evidence_ids)
+    finding["evidence_ids"]["items"]["enum"] = values
+    examples = deepcopy(WINDOW_FINDINGS_SCHEMA.examples)
+    examples[0]["findings"][0]["evidence_ids"] = [values[0]]
+    return JsonSchemaSpec(
+        name=WINDOW_FINDINGS_SCHEMA.name,
+        schema=schema,
+        examples=examples,
+    )
 
 
 def bind_merged_verdict_schema(
@@ -175,7 +218,18 @@ def bind_merged_verdict_schema(
     _allowed_id_set(values)
     if values:
         schema["properties"]["finding_ids"]["items"]["enum"] = values
-    return JsonSchemaSpec(name=MERGED_VERDICT_SCHEMA.name, schema=schema)
+    else:
+        schema["properties"]["finding_ids"]["maxItems"] = 0
+    examples = deepcopy(MERGED_VERDICT_SCHEMA.examples)
+    if values:
+        examples[0]["finding_ids"] = [values[0]]
+    else:
+        examples = examples[1:]
+    return JsonSchemaSpec(
+        name=MERGED_VERDICT_SCHEMA.name,
+        schema=schema,
+        examples=examples,
+    )
 
 
 def render_window_findings(value: WindowFindings) -> str:
@@ -330,7 +384,7 @@ def parse_window_findings(
     max_tokens: int,
     expected_window_id: str | None = None,
 ) -> WindowFindings:
-    """Validate one window response containing no more than four unique findings."""
+    """Validate one window response and canonicalize its unique findings."""
 
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
         raise ValueError("max_tokens must be a positive integer")

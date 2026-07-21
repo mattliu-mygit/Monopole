@@ -9,7 +9,11 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from weave_agent_signals.judges.families import model_family
-from weave_agent_signals.judges.inference import ChatClient, JsonSchemaSpec
+from weave_agent_signals.judges.inference import (
+    ChatClient,
+    JsonSchemaSpec,
+    json_output_contract_messages,
+)
 from weave_agent_signals.judges.rubrics import Rubric
 from weave_agent_signals.judges.tokens import count_tokens
 from weave_agent_signals.run_config import ModelDescriptor, PositionedJudge
@@ -66,6 +70,30 @@ MATERIAL_PLAN_SCHEMA = JsonSchemaSpec(
         },
         "required": ["setup_mode", "materials"],
     },
+    examples=(
+        {
+            "setup_mode": "prepared_workspace",
+            "materials": [
+                {
+                    "kind": "git_repository",
+                    "url": "https://github.com/example/project.git",
+                    "revision": "0123456789abcdef0123456789abcdef01234567",
+                    "destination": "task",
+                }
+            ],
+        },
+        {
+            "setup_mode": "agent_bootstrap",
+            "materials": [
+                {
+                    "kind": "git_repository",
+                    "url": "https://github.com/example/project.git",
+                    "revision": "0123456789abcdef0123456789abcdef01234567",
+                    "destination": "task",
+                }
+            ],
+        },
+    ),
 )
 
 TASK_SCHEMA = JsonSchemaSpec(
@@ -117,6 +145,20 @@ TASK_SCHEMA = JsonSchemaSpec(
             "requires_git_metadata",
         ],
     },
+    examples=(
+        {
+            "prompt": "Repair the parser regression and verify the focused test.",
+            "goal": "The parser handles the failing case and its focused tests pass.",
+            "judging_criteria": [
+                "The parser handles the reported case.",
+                "The focused tests pass.",
+            ],
+            "start_checks": ["The parser source and focused test are present."],
+            "required_files": ["task/src/parser.py", "task/tests/test_parser.py"],
+            "required_executables": ["python"],
+            "requires_git_metadata": False,
+        },
+    ),
 )
 
 _MATERIAL_SYSTEM = """\
@@ -175,7 +217,9 @@ def _input_tokens(
     *,
     token_counter: str,
 ) -> int:
-    rendered = "".join(message["content"] for message in messages)
+    rendered = "".join(
+        message["content"] for message in json_output_contract_messages(list(messages), schema)
+    )
     rendered += json.dumps(schema.schema, sort_keys=True)
     return count_tokens(rendered, token_counter)
 
@@ -333,6 +377,26 @@ def author_task(
 
 def _judge_schema(rubrics: Sequence[Rubric]) -> JsonSchemaSpec:
     ids = [rubric.scorer_name for rubric in rubrics]
+    valid_rubrics = [
+        {
+            "rubric_id": rubric_id,
+            "arm_1_score": 0.75,
+            "arm_2_score": 0.5,
+            "winner": "arm-1",
+            "rationale": "Arm 1 better satisfies this rubric.",
+        }
+        for rubric_id in ids
+    ]
+    invalid_rubrics = [
+        {
+            "rubric_id": rubric_id,
+            "arm_1_score": 0.0,
+            "arm_2_score": 0.0,
+            "winner": "tie",
+            "rationale": "The invalid task does not support a comparison.",
+        }
+        for rubric_id in ids
+    ]
     return JsonSchemaSpec(
         name="paired_challenge_verdict",
         schema={
@@ -378,6 +442,22 @@ def _judge_schema(rubrics: Sequence[Rubric]) -> JsonSchemaSpec:
                 "rubrics",
             ],
         },
+        examples=(
+            {
+                "task_valid": True,
+                "task_invalid_reason": None,
+                "winner": "arm-1",
+                "rationale": "Arm 1 achieved the goal more completely.",
+                "rubrics": valid_rubrics,
+            },
+            {
+                "task_valid": False,
+                "task_invalid_reason": "The task cannot be completed from the supplied workspace.",
+                "winner": "tie",
+                "rationale": "The task is not fair or achievable for either arm.",
+                "rubrics": invalid_rubrics,
+            },
+        ),
     )
 
 

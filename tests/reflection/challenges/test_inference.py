@@ -1,6 +1,9 @@
 import json
 
-from weave_agent_signals.judges.inference import JudgeResponse
+from weave_agent_signals.judges.inference import (
+    JudgeResponse,
+    json_output_contract_messages,
+)
 from weave_agent_signals.judges.rubrics import TOOL_CHOICE, VERIFICATION_DISCIPLINE
 from weave_agent_signals.judges.tokens import count_tokens
 from weave_agent_signals.run_config import ModelDescriptor, PositionedJudge
@@ -11,6 +14,10 @@ from weave_agent_signals.runs.challenges.contracts import (
     TaskMaterialPlan,
 )
 from weave_agent_signals.runs.challenges.inference import (
+    MATERIAL_PLAN_SCHEMA,
+    TASK_SCHEMA,
+    _input_tokens,
+    _judge_schema,
     author_task,
     judge_pair,
     plan_task_materials,
@@ -71,6 +78,34 @@ def _arm(arm: str, transcript: str) -> ArmResult:
         transcript=transcript,
         transcript_digest=f"sha256:{arm}-transcript",
         artifact_digests={"result.txt": f"sha256:{arm}-result"},
+    )
+
+
+def test_challenge_schemas_include_canonical_examples() -> None:
+    assert [example["setup_mode"] for example in MATERIAL_PLAN_SCHEMA.examples] == [
+        "prepared_workspace",
+        "agent_bootstrap",
+    ]
+    assert TASK_SCHEMA.examples[0]["judging_criteria"]
+
+    schema = _judge_schema((VERIFICATION_DISCIPLINE, TOOL_CHOICE))
+    assert [example["task_valid"] for example in schema.examples] == [True, False]
+    assert [item["rubric_id"] for item in schema.examples[0]["rubrics"]] == [
+        "judge.verification",
+        "judge.tool_choice",
+    ]
+    assert schema.examples[1]["winner"] == "tie"
+
+
+def test_challenge_input_tokens_count_prompt_contract_and_provider_schema() -> None:
+    messages = [{"role": "user", "content": "author a task"}]
+    contract_messages = json_output_contract_messages(messages, TASK_SCHEMA)
+    rendered = "".join(message["content"] for message in contract_messages)
+    rendered += json.dumps(TASK_SCHEMA.schema, sort_keys=True)
+
+    assert _input_tokens(messages, TASK_SCHEMA, token_counter="utf8_bytes_div_3") == count_tokens(
+        rendered,
+        "utf8_bytes_div_3",
     )
 
 

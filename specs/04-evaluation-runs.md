@@ -167,6 +167,9 @@ Every proposal is a complete action set against B, not an unstructured patch.
 The writer must return valid create or update actions for registry locators,
 and a no-op proposal is rejected. Candidate provenance must map
 unambiguously to a successful generation attempt.
+All structured writer, evaluator, task-author, and paired-judge requests include
+their exact schema and schema-owned canonical examples. A second example is
+included only when the contract has a materially different valid mode.
 
 The proposal evaluator scores exact immutable bundle revisions. Its output is a
 predicted artifact-quality score over the pinned evaluation feedback, not a

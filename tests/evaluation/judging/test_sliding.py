@@ -887,6 +887,26 @@ def test_protocol_contract_digest_binds_version_prompts_and_schemas(
     )
     assert sliding_protocol_contract_digest() not in {original, prompt_changed}
 
+    monkeypatch.setattr(
+        sliding,
+        "CHUNK_DIGEST_SCHEMA",
+        JsonSchemaSpec(
+            name="chunk_digest",
+            schema=dict(sliding.CHUNK_DIGEST_SCHEMA.schema),
+            examples=({"text": "changed example"},),
+        ),
+    )
+    assert sliding_protocol_contract_digest() not in {original, prompt_changed}
+
+
+def test_protocol_contract_includes_examples_and_current_version():
+    contract = sliding_protocol_contract_manifest()
+
+    assert contract["protocol_version"] == "19"
+    assert contract["schemas"]["digest"]["examples"] == [
+        {"text": "The agent changed the target and verified the focused check passed."}
+    ]
+
 
 def test_digest_prompt_requests_a_concise_soft_token_target():
     prompt = sliding_protocol_contract_manifest()["prompt_templates"]["digest_system"]

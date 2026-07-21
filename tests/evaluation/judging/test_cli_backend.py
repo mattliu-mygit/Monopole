@@ -54,7 +54,32 @@ def _schema():
             "required": ["score"],
             "additionalProperties": False,
         },
+        examples=({"score": 0.75},),
     )
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_cli_structured_prompts_include_exact_contract_and_example(provider, tmp_path, monkeypatch):
+    seen = {}
+    if provider == "codex":
+        monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
+        monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "judge-home"))
+        monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(tmp_path / "judge-home" / "sandbox"))
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["input"] = kwargs.get("input", "")
+        if provider == "claude":
+            return _FakeProc(stdout=json.dumps({"structured_output": {"score": 0.75}}))
+        return _FakeProc(stdout='{"score":0.75}')
+
+    client = _CliJudgeClient(provider=provider, runner=fake_run)
+    client.chat_json(model="test-model", messages=_msgs(), response_schema=_schema())
+
+    rendered = " ".join(seen["argv"]) + " " + seen["input"]
+    assert rendered.count("REQUIRED_JSON_SCHEMA:") == 1
+    assert rendered.count("CANONICAL_JSON_EXAMPLE_1:") == 1
+    assert 'CANONICAL_JSON_EXAMPLE_1:\n{"score":0.75}' in rendered
 
 
 def test_http_and_cli_clients_satisfy_chat_client_protocol(monkeypatch):
@@ -178,7 +203,9 @@ def test_antigravity_provider_routes_models_through_private_prompt_files(monkeyp
         assert "sys prompt" in prompt
         assert "judge this turn" in prompt
         assert '"required":["score"]' in prompt
-        assert prompt.index("Return exactly one JSON object") < prompt.index("judge this turn")
+        assert prompt.count("REQUIRED_JSON_SCHEMA:") == 1
+        assert prompt.count("CANONICAL_JSON_EXAMPLE_1:") == 1
+        assert prompt.index("REQUIRED_JSON_SCHEMA:") < prompt.index("judge this turn")
         assert prompt not in argv
         assert prompt_model == model
         assert home == cli_backend._HOME

@@ -93,7 +93,10 @@ reviews, so spending their output budget on hidden reasoning reduces reliability
 Window review retains each model's default reasoning behavior on its first
 attempt and asks for careful internal reasoning followed by concise JSON. W&B
 retries use JSON-object mode with optional thinking disabled and receive the
-same bound schema in the prompt; canonical runtime validation remains unchanged.
+same bound schema and canonical examples in the prompt; canonical runtime
+validation remains unchanged. Every structured judge request receives one
+schema-owned example, plus a second only for a materially different valid mode;
+validation correction repeats that exact contract.
 
 Raw rendering includes captured user, assistant, tool, event, status, token, and
 trace-identity evidence while omitting the generating model's identity from the

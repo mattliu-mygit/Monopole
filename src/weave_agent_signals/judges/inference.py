@@ -35,6 +35,7 @@ class JsonSchemaSpec:
 
     name: str
     schema: Mapping[str, Any]
+    examples: tuple[Mapping[str, Any], ...] = ()
 
 
 class InferenceResponseDiagnostic(BaseModel):
@@ -171,6 +172,63 @@ def _raw_output_digest(raw_output: str) -> str:
     return hashlib.sha256(raw_output.encode("utf-8")).hexdigest()
 
 
+_OUTPUT_CONTRACT_MARKER = "REQUIRED_JSON_SCHEMA:"
+
+
+def _output_contract_messages(
+    messages: list[dict[str, str]],
+    schema: Mapping[str, Any],
+    examples: tuple[Mapping[str, Any], ...] = (),
+) -> list[dict[str, str]]:
+    recovered = [dict(message) for message in messages]
+    if any(
+        message.get("role") == "system" and _OUTPUT_CONTRACT_MARKER in message.get("content", "")
+        for message in recovered
+    ):
+        return recovered
+    sections = [
+        _OUTPUT_CONTRACT_MARKER
+        + "\n"
+        + json.dumps(
+            schema,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    ]
+    sections.extend(
+        f"CANONICAL_JSON_EXAMPLE_{index}:\n"
+        + json.dumps(
+            example,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        for index, example in enumerate(examples, 1)
+    )
+    instruction = "\n".join(sections)
+    if recovered and recovered[0].get("role") == "system":
+        recovered[0]["content"] = f"{recovered[0].get('content', '')}\n\n{instruction}"
+    else:
+        recovered.insert(0, {"role": "system", "content": instruction})
+    return recovered
+
+
+def json_output_contract_messages(
+    messages: list[dict[str, str]],
+    response_schema: JsonSchemaSpec,
+) -> list[dict[str, str]]:
+    """Attach one exact schema and its canonical examples to model messages."""
+
+    return _output_contract_messages(
+        messages,
+        response_schema.schema,
+        response_schema.examples,
+    )
+
+
 def _json_object_recovery_messages(
     messages: list[dict[str, str]],
     response_format: Mapping[str, Any],
@@ -178,19 +236,7 @@ def _json_object_recovery_messages(
     json_schema = response_format.get("json_schema")
     if not isinstance(json_schema, Mapping) or not isinstance(json_schema.get("schema"), Mapping):
         return messages
-    instruction = "REQUIRED_JSON_SCHEMA:\n" + json.dumps(
-        json_schema["schema"],
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    )
-    recovered = [dict(message) for message in messages]
-    if recovered and recovered[0].get("role") == "system":
-        recovered[0]["content"] = f"{recovered[0].get('content', '')}\n\n{instruction}"
-    else:
-        recovered.insert(0, {"role": "system", "content": instruction})
-    return recovered
+    return _output_contract_messages(messages, json_schema["schema"])
 
 
 def _wandb_retry_body(body: dict[str, Any]) -> dict[str, Any]:
@@ -737,6 +783,7 @@ class InferenceClient:
                     "schema": response_schema.schema,
                 },
             }
+            messages = json_output_contract_messages(messages, response_schema)
 
         fallback_reason: str | None = None
         schema_request_count = 0

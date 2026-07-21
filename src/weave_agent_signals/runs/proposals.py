@@ -72,6 +72,18 @@ REFLECTION_PROPOSAL_SCHEMA = JsonSchemaSpec(
         },
         "required": ["schema_version", "changes"],
     },
+    examples=(
+        {
+            "schema_version": 3,
+            "changes": [
+                {
+                    "action": "update",
+                    "locator": "file:project-agents",
+                    "content": "Complete replacement content for AGENTS.md",
+                }
+            ],
+        },
+    ),
 )
 
 

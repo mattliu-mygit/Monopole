@@ -89,6 +89,40 @@ def test_model_output_schemas_omit_host_owned_envelope_fields():
     assert "schema_version" not in MERGED_VERDICT_SCHEMA.schema["properties"]
 
 
+def test_sliding_schemas_include_valid_canonical_examples():
+    assert parse_chunk_digest(
+        CHUNK_DIGEST_SCHEMA.examples[0],
+        expected_chunk_id="chunk-1",
+    ).text
+
+    window_schema = bind_window_findings_schema(("e1", "e2"))
+    assert window_schema.examples[0]["findings"][0]["evidence_ids"] == ["e1"]
+    assert window_schema.examples[1] == {"findings": []}
+    for example in window_schema.examples:
+        parse_window_findings(
+            example,
+            evidence_aliases={"e1": "trace-1", "e2": "trace-2"},
+            raw_text="",
+            max_tokens=1_000,
+            expected_window_id="window-1",
+        )
+
+    merge_schema = bind_merged_verdict_schema(("window-1:finding-1",))
+    assert merge_schema.examples[0]["finding_ids"] == ["window-1:finding-1"]
+    assert merge_schema.examples[1]["status"] == "insufficient_evidence"
+    for example in merge_schema.examples:
+        parse_merged_verdict(
+            example,
+            finding_evidence={"window-1:finding-1": ("trace-1",)},
+        )
+
+
+def test_merge_schema_omits_scored_example_without_available_findings():
+    schema = bind_merged_verdict_schema(())
+
+    assert schema.examples == (MERGED_VERDICT_SCHEMA.examples[1],)
+
+
 def test_parsers_attach_host_owned_envelope_fields():
     digest = parse_chunk_digest(
         {"text": "Observed behavior."},
@@ -166,6 +200,7 @@ def test_merge_schema_allows_empty_finding_list_for_abstention():
     schema = bind_merged_verdict_schema(())
 
     assert "enum" not in schema.schema["properties"]["finding_ids"]["items"]
+    assert schema.schema["properties"]["finding_ids"]["maxItems"] == 0
 
 
 @pytest.mark.parametrize(
@@ -310,7 +345,7 @@ def test_window_finding_allows_long_observation_within_artifact_token_budget():
     assert parsed.findings[0].observation == "x" * 2_000
 
 
-def test_window_findings_canonicalizes_local_ids_and_rejects_excess_findings():
+def test_window_findings_canonicalizes_local_ids_without_an_artificial_count_cap():
     payload = {
         "schema_version": 1,
         "window_id": "window-1",
@@ -327,14 +362,21 @@ def test_window_findings_canonicalizes_local_ids_and_rejects_excess_findings():
     )
     assert [finding.finding_id for finding in parsed.findings] == ["finding-1", "finding-2"]
 
-    payload["findings"] = [_valid_finding(finding_id=f"finding-{index}") for index in range(5)]
-    with pytest.raises(ValueError, match="at most 4"):
-        parse_window_findings(
-            payload,
-            evidence_aliases={"trace-1": "trace-1"},
-            raw_text="",
-            max_tokens=750,
+    payload["findings"] = [
+        _valid_finding(
+            finding_id=f"finding-{index}",
+            observation=f"Distinct observation {index}.",
         )
+        for index in range(5)
+    ]
+    parsed = parse_window_findings(
+        payload,
+        evidence_aliases={"trace-1": "trace-1"},
+        raw_text="",
+        max_tokens=750,
+    )
+
+    assert len(parsed.findings) == 5
 
 
 def test_window_findings_deduplicates_repeated_evidence_semantics():

@@ -21,6 +21,7 @@ from weave_agent_signals.judges.inference import (
     InferenceOutputExceeded,
     JsonSchemaSpec,
     JudgeResponse,
+    json_output_contract_messages,
 )
 from weave_agent_signals.judges.records import (
     JudgeCallAudit,
@@ -63,7 +64,7 @@ log = logging.getLogger("weave_agent_signals.judges")
 ValidatedOutput = TypeVar("ValidatedOutput", bound=BaseModel)
 
 _ERROR_TEXT_LIMIT = 500
-SLIDING_PROTOCOL_VERSION = "18"
+SLIDING_PROTOCOL_VERSION = "19"
 
 _DIGEST_SYSTEM_TEMPLATE = (
     "PHASE: digest\nCreate a rubric-neutral factual digest of the supplied raw chunk. "
@@ -171,14 +172,17 @@ def sliding_protocol_contract_manifest() -> dict[str, object]:
             "digest": {
                 "name": CHUNK_DIGEST_SCHEMA.name,
                 "schema": dict(CHUNK_DIGEST_SCHEMA.schema),
+                "examples": list(CHUNK_DIGEST_SCHEMA.examples),
             },
             "window": {
                 "name": WINDOW_FINDINGS_SCHEMA.name,
                 "schema": dict(WINDOW_FINDINGS_SCHEMA.schema),
+                "examples": list(WINDOW_FINDINGS_SCHEMA.examples),
             },
             "merge": {
                 "name": MERGED_VERDICT_SCHEMA.name,
                 "schema": dict(MERGED_VERDICT_SCHEMA.schema),
+                "examples": list(MERGED_VERDICT_SCHEMA.examples),
             },
         },
         "inference": {
@@ -366,10 +370,11 @@ class SlidingReviewer:
         max_tokens: int,
         schema: JsonSchemaSpec,
     ) -> int:
+        contract_messages = json_output_contract_messages(messages, schema)
         input_tokens = count_tokens(
             _canonical_json(
                 {
-                    "messages": messages,
+                    "messages": contract_messages,
                     "response_schema": schema.schema,
                 }
             ),

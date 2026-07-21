@@ -821,20 +821,9 @@ def test_writer_prompt_lists_exact_contract_scope_and_inventory():
             }
         ],
     }
-    exact_layout = """{
-  "schema_version": 3,
-  "changes": [
-    {
-      "action": "update",
-      "locator": "file:project-agents",
-      "content": "Complete replacement content for AGENTS.md"
-    }
-  ]
-}"""
 
     def optimize(*, seed_candidate, evaluator, objective, background, **_kwargs):
         prompt = f"{objective}\n{background}"
-        assert exact_layout in prompt
         assert '"AGENTS.md": "alpha"' in prompt
         assert '"docs/check.md": "beta"' in prompt
         assert '"suffix": ".md"' in prompt
