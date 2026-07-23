@@ -439,7 +439,7 @@ def test_reviewer_digests_once_then_reads_every_window_and_merges() -> None:
     assert second.transport_request_count == 3
     assert [step.reused for step in second.steps] == [True, True, False, False, False]
     assert all(step.requested_model == "judge-1" for step in first.steps)
-    assert all(call["temperature"] == 0.0 for call in client.calls)
+    assert all(call["temperature"] == 0.2 for call in client.calls)
     assert all(
         call["max_tokens"]
         == reviewer.context_policy.generation_budget(reviewer.judge.max_input_tokens)

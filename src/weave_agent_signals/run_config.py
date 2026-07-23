@@ -98,6 +98,7 @@ class ModelDescriptor(StrictFrozenModel):
     supported_roles: tuple[ModelRole, ...]
     max_input_tokens: Annotated[int, Field(strict=True, ge=1)] = 128_000
     token_counter: TokenCounterName = "utf8_bytes_div_3"
+    raw_window_target_tokens: Annotated[int, Field(strict=True, ge=1)] | None = None
 
     @model_validator(mode="after")
     def validate_descriptor(self) -> ModelDescriptor:
@@ -439,7 +440,7 @@ def _selection_warnings(
             evaluated_models,
             code_prefix="challenge_",
             role_prefix="challenge_judge",
-            panel_label="B/C verification",
+            panel_label="A/B verification",
         )
     )
 

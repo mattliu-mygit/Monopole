@@ -272,11 +272,18 @@ def build_window_plan(
     policy: JudgingContextPolicy,
     model_limit: int,
     token_counter: TokenCounterName,
+    model_raw_target_tokens: int | None = None,
 ) -> dict[str, object]:
     """Build a deterministic overlap-aware fixed-point raw-window plan."""
 
     if isinstance(model_limit, bool) or not isinstance(model_limit, int) or model_limit <= 0:
         raise ValueError("model_limit must be a positive integer")
+    if model_raw_target_tokens is not None and (
+        isinstance(model_raw_target_tokens, bool)
+        or not isinstance(model_raw_target_tokens, int)
+        or model_raw_target_tokens <= 0
+    ):
+        raise ValueError("model_raw_target_tokens must be a positive integer")
     _validate_session_evidence_ids(session)
     trace_ids = [turn.trace_id for turn in session.turns]
 
@@ -311,6 +318,8 @@ def build_window_plan(
 
     tier_reserve = policy.capacity_reserve(model_limit)
     tier_target = policy.raw_window_target(model_limit)
+    if model_raw_target_tokens is not None:
+        tier_target = min(tier_target, model_raw_target_tokens)
     capacity_reserve = max(tier_reserve, base_reserve)
     if input_cap - capacity_reserve <= 0:
         raise WindowPlanInapplicable()

@@ -209,6 +209,49 @@ def test_http_chat_json_falls_back_only_for_explicit_schema_rejection(client, mo
         assert '"required":["score"]' in contract
 
 
+def test_http_chat_json_falls_back_for_wandb_unimplemented_schema_keyword(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.inference.wandb.ai/v1/chat/completions")
+    rejection = httpx.HTTPStatusError(
+        "Bad Request",
+        request=request,
+        response=httpx.Response(
+            400,
+            request=request,
+            json={
+                "error": {
+                    "message": 'Grammar error: Unimplemented keys: ["uniqueItems"]',
+                    "type": "BadRequestError",
+                    "param": None,
+                    "code": 400,
+                }
+            },
+        ),
+    )
+    calls: list[dict] = []
+
+    def fake_post(_path, body):
+        calls.append(body)
+        if len(calls) == 1:
+            raise rejection
+        return _completion('{"score":0.5}'), 1
+
+    monkeypatch.setattr(client, "_post_with_retry", fake_post)
+
+    parsed, response = client.chat_json(
+        model="Qwen/Qwen3.6-35B-A3B",
+        messages=_messages(),
+        response_schema=_schema(),
+    )
+
+    assert parsed == {"score": 0.5}
+    assert [call["response_format"]["type"] for call in calls] == [
+        "json_schema",
+        "json_object",
+    ]
+    assert response.output_mode == "json_object_fallback"
+    assert response.schema_fallback_reason == "schema_output_unsupported"
+
+
 @pytest.mark.parametrize(
     ("status", "message"),
     [

@@ -39,6 +39,7 @@ def _wandb_model(
     family: str,
     max_input_tokens: int,
     token_counter: TokenCounterName = "utf8_bytes_div_3",
+    raw_window_target_tokens: int | None = None,
 ) -> ModelDescriptor:
     return ModelDescriptor(
         id=model_id,
@@ -49,6 +50,7 @@ def _wandb_model(
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=max_input_tokens,
         token_counter=token_counter,
+        raw_window_target_tokens=raw_window_target_tokens,
     )
 
 
@@ -101,6 +103,8 @@ _WANDB_MODELS = tuple(
             "deepseek-ai/DeepSeek-V4-Pro",
             "deepseek",
             1_049_000,
+            "utf8_bytes_div_3",
+            96_000,
         ),
         ("wandb:gemma-4-31B-it", "Gemma 4 31B", "google/gemma-4-31B-it", "google", 262_000),
         (

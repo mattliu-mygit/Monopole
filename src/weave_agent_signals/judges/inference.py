@@ -120,6 +120,7 @@ _WHOLE_FEATURE_END = (
 _SCHEMA_REJECTION_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
+        r"\bgrammar error:\s*unimplemented keys?\s*:",
         rf"(?:unknown|unexpected|unrecognized)\s+(?:option|argument|parameter)\s*"
         rf"[:=]?\s*['\"]?{_SCHEMA_TOKEN}",
         rf"{_SCHEMA_TOKEN}(?:[ \t]+(?:mode|feature|type))?[ \t]+(?:"

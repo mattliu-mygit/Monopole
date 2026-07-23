@@ -64,6 +64,7 @@ log = logging.getLogger("weave_agent_signals.judges")
 ValidatedOutput = TypeVar("ValidatedOutput", bound=BaseModel)
 
 _ERROR_TEXT_LIMIT = 500
+_JUDGE_TEMPERATURE = 0.2
 SLIDING_PROTOCOL_VERSION = "19"
 
 _DIGEST_SYSTEM_TEMPLATE = (
@@ -276,6 +277,7 @@ class SlidingReviewer:
             context_policy,
             judge.max_input_tokens,
             judge.token_counter,
+            judge.raw_window_target_tokens,
         )
         expected_slim = {
             key: expected_plan[key]
@@ -413,7 +415,7 @@ class SlidingReviewer:
             provider_model=self.judge.provider_model,
             messages=messages,
             response_schema=schema,
-            temperature=0.0,
+            temperature=_JUDGE_TEMPERATURE,
             max_tokens=max_tokens,
             reasoning=reasoning,
             protocol_version=SLIDING_PROTOCOL_VERSION,
@@ -488,7 +490,7 @@ class SlidingReviewer:
                 parsed, response = self.client.chat_json(
                     model=self.judge.provider_model,
                     messages=messages,
-                    temperature=0.0,
+                    temperature=_JUDGE_TEMPERATURE,
                     max_tokens=max_tokens,
                     response_schema=schema,
                     reasoning=reasoning,

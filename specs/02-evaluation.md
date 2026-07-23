@@ -54,7 +54,10 @@ that reserve as the chunk count grows. At the 200,000-token context threshold,
 the generation allowance is 4,000 tokens at or below the threshold and 10,000
 tokens above it. This API allowance is independent of the smaller validated
 artifact limits. Raw windows have separate soft targets of 128,000 tokens above
-the same model threshold and 50,000 tokens at or below it. OpenAI catalog
+the same model threshold and 50,000 tokens at or below it. A model catalog
+entry may lower that target when its inference harness has a smaller reliable
+operational window; this does not change the model's advertised context
+capacity. OpenAI catalog
 entries use their explicitly pinned `tiktoken` encoding; other model families
 use the conservative UTF-8 byte estimator.
 
@@ -196,7 +199,7 @@ the ordered panel, and visible family-overlap warnings. A panel contains one,
 two, or three unique judges. The runtime honors the chosen order, plans or skips
 each selected judge per session, and never silently replaces one.
 
-One versioned catalog is authoritative for proposal writers, run judges, B/C
+One versioned catalog is authoritative for proposal writers, run judges, A/B
 verification judges, and proposal evaluators. Each globally unique model ID is
 provider-qualified, while its descriptor separately pins the provider's exact
 model name. Role capability is part of the descriptor. A panel may therefore

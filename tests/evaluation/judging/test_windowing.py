@@ -175,6 +175,21 @@ def test_window_plan_uses_large_capacity_tier_above_threshold():
     assert plan["target_raw_tokens"] == 128_000
 
 
+def test_window_plan_honors_model_raw_window_target():
+    session = _session_with_rendered_turn_sizes([180_000, 180_000, 180_000])
+
+    plan = build_window_plan(
+        session,
+        JudgingContextPolicy(),
+        model_limit=1_049_000,
+        token_counter="utf8_bytes_div_3",
+        model_raw_target_tokens=96_000,
+    )
+
+    assert plan["target_raw_tokens"] == 96_000
+    assert [window["raw_tokens"] for window in plan["windows"]] == [120_001, 60_000]
+
+
 def test_window_plan_rounds_soft_target_to_nearest_whole_turn():
     session = _session_with_rendered_turn_sizes([75_000, 105_000, 105_000])
 

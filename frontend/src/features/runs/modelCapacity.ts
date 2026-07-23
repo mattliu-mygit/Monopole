@@ -39,9 +39,13 @@ function estimateSession(
 ): Required<ModelCapacityEstimate> {
   const tokens = session.judging_token_estimates[model.token_counter]
   const large = model.max_input_tokens > policy.large_model_threshold_tokens
-  const rawTarget = large
+  const policyRawTarget = large
     ? policy.large_model_raw_target_tokens
     : policy.small_model_raw_target_tokens
+  const rawTarget = Math.min(
+    policyRawTarget,
+    model.raw_window_target_tokens ?? policyRawTarget,
+  )
   const tierReserve = large
     ? policy.large_model_reserve_tokens
     : policy.small_model_reserve_tokens

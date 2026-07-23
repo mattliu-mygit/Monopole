@@ -97,7 +97,11 @@ def test_model_catalog_is_stable_role_oriented_and_immutable():
             "supported_roles",
             "max_input_tokens",
             "token_counter",
+            "raw_window_target_tokens",
         }
+
+    deepseek = by_id["wandb:DeepSeek-V4-Pro"]
+    assert deepseek["raw_window_target_tokens"] == 96_000
 
     with pytest.raises(ValidationError):
         first.catalog_version = "changed"  # type: ignore[misc]
@@ -369,6 +373,7 @@ def test_model_descriptor_serializes_only_its_public_fields():
         "supported_roles": ["judge"],
         "max_input_tokens": 128_000,
         "token_counter": "utf8_bytes_div_3",
+        "raw_window_target_tokens": None,
     }
 
 

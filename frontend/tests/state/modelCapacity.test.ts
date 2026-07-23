@@ -22,6 +22,7 @@ const policy = {
 function model(
   maxInputTokens: number,
   tokenCounter: ModelDescriptor['token_counter'] = 'utf8_bytes_div_3',
+  rawWindowTargetTokens?: number,
 ): ModelDescriptor {
   return {
     id: `test:${maxInputTokens}`,
@@ -32,6 +33,7 @@ function model(
     supported_roles: ['judge'],
     max_input_tokens: maxInputTokens,
     token_counter: tokenCounter,
+    raw_window_target_tokens: rawWindowTargetTokens ?? null,
   }
 }
 
@@ -134,6 +136,18 @@ describe('estimateModelCapacity', () => {
       fits: true,
       estimatedRequestTokens: 228_000,
       estimatedChunks: 21,
+    })
+  })
+
+  it('uses a model-specific raw-window target when configured', () => {
+    expect(estimateModelCapacity(
+      model(1_048_576, 'utf8_bytes_div_3', 96_000),
+      [session(700_000, 70_000)],
+      policy,
+    )).toEqual({
+      fits: true,
+      estimatedRequestTokens: 196_000,
+      estimatedChunks: 10,
     })
   })
 

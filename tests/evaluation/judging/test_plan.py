@@ -70,12 +70,12 @@ def test_plan_pins_incapable_reviewer_as_skipped_and_excludes_its_work(
 ) -> None:
     original = plan_module.build_window_plan
 
-    def build(session, policy, limit, counter):
+    def build(session, policy, limit, counter, model_raw_target_tokens=None):
         if limit == 64_000:
             from weave_agent_signals.judges.windowing import WindowPlanInapplicable
 
             raise WindowPlanInapplicable()
-        return original(session, policy, limit, counter)
+        return original(session, policy, limit, counter, model_raw_target_tokens)
 
     monkeypatch.setattr(plan_module, "build_window_plan", build)
     plan = _canonical_plan(judges=(_judge("small", 1, 64_000), _judge("large", 2)))
@@ -151,6 +151,39 @@ def test_canonical_plan_id_authenticates_evidence_model_and_policy() -> None:
         )
         == 4
     )
+
+
+def test_canonical_plan_accepts_authenticated_policy_before_large_output_reserve() -> None:
+    payload = _canonical_plan().model_dump(mode="json")
+    del payload["context_policy"]["large_model_output_reserve_tokens"]
+    payload["plan_id"] = plan_module._digest(
+        {key: value for key, value in payload.items() if key != "plan_id"}
+    )
+
+    restored = JudgingPlan.model_validate(payload)
+
+    assert restored.plan_id == payload["plan_id"]
+    assert (
+        restored.context_policy.large_model_output_reserve_tokens
+        == DEFAULT_JUDGING_CONTEXT_POLICY.large_model_output_reserve_tokens
+    )
+    payload["cohort_id"] = "tampered"
+    with pytest.raises(ValueError, match="plan ID does not match"):
+        JudgingPlan.model_validate(payload)
+
+
+def test_canonical_plan_accepts_authenticated_models_before_raw_window_target() -> None:
+    payload = _canonical_plan().model_dump(mode="json")
+    for reviewer in payload["reviewers"]:
+        del reviewer["raw_window_target_tokens"]
+    payload["plan_id"] = plan_module._digest(
+        {key: value for key, value in payload.items() if key != "plan_id"}
+    )
+
+    restored = JudgingPlan.model_validate(payload)
+
+    assert restored.plan_id == payload["plan_id"]
+    assert all(reviewer.raw_window_target_tokens is None for reviewer in restored.reviewers)
 
 
 def test_canonical_plan_derives_totals_instead_of_storing_them() -> None:
