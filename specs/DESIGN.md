@@ -17,8 +17,8 @@ flowchart LR
     E --> F["Analysis and monitoring"]
     E --> G["Pinned evaluation run"]
     G --> H["Whole-bundle proposals"]
-    H --> P["Paired B / C microVM verification"]
-    P --> I["B / C / D human review"]
+    H --> P["Paired A / B microVM verification"]
+    P --> I["A / B / C human review"]
     I --> J["Drift-checked promotion"]
 ```
 
@@ -55,9 +55,9 @@ Evaluation is layered:
    comparing configurations or trends.
 5. Evaluation runs pin their cohort and configuration, score and judge it,
    predict complete instruction-bundle improvements, then verify the provisional
-   candidate against B in isolated paired executions.
-6. Human review compares Past B, behaviorally verified proposal C, and optional
-   unevaluated edit D before a drift-checked promotion.
+   candidate against A in isolated paired executions.
+6. Human review compares Past A, behaviorally verified proposal B, and optional
+   unevaluated edit C before a drift-checked promotion.
 
 Every persisted rating is a boolean or finite number in `[0, 1]`, and higher
 always means better. Harmful raw measures such as correction density or
@@ -82,14 +82,14 @@ The model catalog is one provider-qualified source for every inference role;
 descriptors separate durable model identity from the exact provider model name,
 and each call dispatches through the selected descriptor's provider.
 
-Reflection pins the feedback it consumed, captures exact Past B, predicts B and
+Reflection pins the feedback it consumed, captures exact Past A, predicts A and
 candidate scores, authors a reproducible task package, prepares any pinned
-public Git inputs once when requested, then runs the provisional C and B with
+public Git inputs once when requested, then runs the provisional B and A with
 the original model identity in two otherwise identical local microVMs. Only a
-separately configured blinded B/C-panel C win
+separately configured blinded A/B-panel B win
 initializes immutable review evidence. Review is
-separate from pipeline status. The user may select an evaluated C, edit its
-contents as unevaluated D, promote, or dismiss. D requires explicit
+separate from pipeline status. The user may select an evaluated B, edit its
+contents as unevaluated C, promote, or dismiss. C requires explicit
 acknowledgement but not another inference run. A later evaluation run can assess
 the promoted state.
 

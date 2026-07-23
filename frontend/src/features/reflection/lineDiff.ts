@@ -115,8 +115,8 @@ export function lineDiff(
   locator: string,
   before: ReflectionTargetSnapshot | undefined,
   after: ReflectionTargetSnapshot | undefined,
-  beforeLabel = 'Past (B)',
-  afterLabel = 'Proposed (C)',
+  beforeLabel = 'Past (A)',
+  afterLabel = 'Proposed (B)',
 ): string {
   return [
     `--- ${before?.exists ? locator : '/dev/null'} — ${beforeLabel}`,

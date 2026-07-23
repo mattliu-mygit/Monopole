@@ -265,14 +265,15 @@ describe('run API request contracts', () => {
     })
   })
 
-  it('sends the unevaluated-D acknowledgement to the promotion endpoint', async () => {
+  it('sends the unevaluated-C acknowledgement to the promotion endpoint', async () => {
     const fetch = mockFetch()
 
     await promoteRunReflection('run-review', {
       expectedRevision: 5,
-      expectedDraftRevision: 'draft:d',
+      expectedDraftRevision: 'draft:c',
       idempotencyKey: 'promotion-1',
       acknowledgeUnevaluated: true,
+      acknowledgeUnverified: true,
     })
 
     expect(fetch).toHaveBeenCalledWith('/api/runs/run-review/promote', {
@@ -280,9 +281,10 @@ describe('run API request contracts', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         expected_revision: 5,
-        expected_draft_revision: 'draft:d',
+        expected_draft_revision: 'draft:c',
         idempotency_key: 'promotion-1',
         acknowledge_unevaluated: true,
+        acknowledge_unverified: true,
       }),
     })
   })

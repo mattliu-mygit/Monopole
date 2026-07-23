@@ -277,12 +277,16 @@ export default function RunDetail() {
       ))
     } catch (error) { reviewError(error) }
   }
-  const promote = async (acknowledgeUnevaluated: boolean) => {
+  const promote = async (
+    acknowledgeUnevaluated: boolean,
+    acknowledgeUnverified: boolean,
+  ) => {
     try {
       updateRun(await promoteRunReflection(run.run_id, {
         expectedRevision: run.reflection_review_revision,
         expectedDraftRevision: run.reflection_review?.draft?.revision ?? null,
         acknowledgeUnevaluated,
+        acknowledgeUnverified,
         idempotencyKey: [
           run.run_id,
           run.reflection_review_revision,
@@ -359,7 +363,7 @@ export default function RunDetail() {
 
       {blocker.state === 'blocked' && (
         <Dialog
-          title="Leave without saving edited D?"
+          title="Leave without saving edited C?"
           closeLabel="Keep editing"
           onClose={() => blocker.reset()}
         >

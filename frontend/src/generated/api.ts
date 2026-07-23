@@ -905,7 +905,7 @@ export interface components {
             digest_max_tokens: number;
             /**
              * Finding Max Tokens
-             * @default 4000
+             * @default 10000
              */
             finding_max_tokens: number;
             /**
@@ -1258,6 +1258,8 @@ export interface components {
             provider: string;
             /** Provider Model */
             provider_model: string;
+            /** Raw Window Target Tokens */
+            raw_window_target_tokens?: number | null;
             /** Supported Roles */
             supported_roles: ("proposal_writer" | "judge" | "proposal_evaluator")[];
             /**
@@ -1293,6 +1295,8 @@ export interface components {
             provider: string;
             /** Provider Model */
             provider_model: string;
+            /** Raw Window Target Tokens */
+            raw_window_target_tokens?: number | null;
             /**
              * Role
              * @default judge
@@ -1315,6 +1319,11 @@ export interface components {
              * @default false
              */
             acknowledge_unevaluated: boolean;
+            /**
+             * Acknowledge Unverified
+             * @default false
+             */
+            acknowledge_unverified: boolean;
             /** Expected Draft Revision */
             expected_draft_revision?: string | null;
             /** Expected Revision */
@@ -1326,6 +1335,12 @@ export interface components {
         PromotionReceiptResponse: {
             /** Candidate Id */
             candidate_id: string;
+            /** Challenge Id */
+            challenge_id: string | null;
+            /** Challenge Reason */
+            challenge_reason: string | null;
+            /** Challenge Status */
+            challenge_status: string | null;
             /** Decided At */
             decided_at: string;
             evaluated_candidate: components["schemas"]["BundleSnapshotResponse"];
@@ -1341,8 +1356,12 @@ export interface components {
             review_revision: number;
             /** Run Id */
             run_id: string;
+            /** Sandbox Verified */
+            sandbox_verified: boolean;
             /** Unevaluated D Acknowledged */
             unevaluated_d_acknowledged: boolean;
+            /** Unverified B Acknowledged */
+            unverified_b_acknowledged: boolean;
         };
         /** PromotionTargetOutcomeResponse */
         PromotionTargetOutcomeResponse: {

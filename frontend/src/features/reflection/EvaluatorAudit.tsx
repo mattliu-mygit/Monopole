@@ -10,7 +10,7 @@ export default function EvaluatorAudit({
   label,
   record,
 }: {
-  label: 'B' | 'C'
+  label: 'A' | 'B'
   record: EvaluatorRecord
 }) {
   return (

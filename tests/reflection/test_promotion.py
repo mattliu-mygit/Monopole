@@ -383,6 +383,18 @@ def test_receipt_round_trips_exact_per_file_outcomes(tmp_path: Path) -> None:
     assert PromotionReceipt.from_dict(receipt.to_dict()) == receipt
 
 
+def test_receipt_rejects_invalid_sandbox_verification_provenance(tmp_path: Path) -> None:
+    (tmp_path / "AGENTS.md").write_text("old", encoding="utf-8")
+    promoter = TargetPromoter(load_target_registry(_registry(tmp_path)))
+    baseline = promoter.capture()
+    requested = _candidate(baseline, **{"file:agents": "new"})
+    serialized = _promote(promoter, baseline, requested).to_dict()
+    serialized["sandbox_verified"] = "yes"
+
+    with pytest.raises(Exception, match="sandbox verification"):
+        PromotionReceipt.from_dict(serialized)
+
+
 def test_receipt_rejects_an_applied_file_after_a_not_applied_outcome(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -35,7 +35,7 @@ class PromotionApplyError(PromotionError):
 
 
 class StaleBaseError(PromotionError):
-    """The current registry scope no longer equals evaluated baseline B."""
+    """The current registry scope no longer equals evaluated baseline A."""
 
     def __init__(
         self,
@@ -107,7 +107,7 @@ class PromotionTargetOutcome:
 
 @dataclass(frozen=True)
 class PromotionReceipt:
-    """Auditable B/C/D decision plus the outcome of each complete file action."""
+    """Auditable A/B/C decision plus the outcome of each complete file action."""
 
     promotion_id: str
     run_id: str
@@ -120,6 +120,11 @@ class PromotionReceipt:
     decided_at: str
     promoted_was_evaluated: bool
     unevaluated_d_acknowledged: bool
+    sandbox_verified: bool
+    challenge_id: str | None
+    challenge_status: str | None
+    challenge_reason: str | None
+    unverified_b_acknowledged: bool
 
     def __post_init__(self) -> None:
         for value in (self.promotion_id, self.run_id, self.candidate_id, self.decided_at):
@@ -157,6 +162,15 @@ class PromotionReceipt:
             raise PromotionValidationError("receipt evaluation marker is inconsistent")
         if self.unevaluated_d_acknowledged is not (not expected_evaluated):
             raise PromotionValidationError("receipt acknowledgement is inconsistent")
+        if type(self.sandbox_verified) is not bool:
+            raise PromotionValidationError("receipt sandbox verification marker is invalid")
+        if self.challenge_status not in {None, "complete", "incomplete", "invalid_task"}:
+            raise PromotionValidationError("receipt challenge status is invalid")
+        for value in (self.challenge_id, self.challenge_reason):
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise PromotionValidationError("receipt challenge provenance is invalid")
+        if self.unverified_b_acknowledged is not (not self.sandbox_verified):
+            raise PromotionValidationError("receipt verification acknowledgement is inconsistent")
         object.__setattr__(self, "outcomes", outcomes)
 
     @property
@@ -187,6 +201,11 @@ class PromotionReceipt:
             "decided_at": self.decided_at,
             "promoted_was_evaluated": self.promoted_was_evaluated,
             "unevaluated_d_acknowledged": self.unevaluated_d_acknowledged,
+            "sandbox_verified": self.sandbox_verified,
+            "challenge_id": self.challenge_id,
+            "challenge_status": self.challenge_status,
+            "challenge_reason": self.challenge_reason,
+            "unverified_b_acknowledged": self.unverified_b_acknowledged,
         }
 
     @classmethod
@@ -203,6 +222,11 @@ class PromotionReceipt:
             "decided_at",
             "promoted_was_evaluated",
             "unevaluated_d_acknowledged",
+            "sandbox_verified",
+            "challenge_id",
+            "challenge_status",
+            "challenge_reason",
+            "unverified_b_acknowledged",
         }
         try:
             if set(value) != expected or not isinstance(value["outcomes"], list):
@@ -221,6 +245,11 @@ class PromotionReceipt:
                 decided_at=value["decided_at"],
                 promoted_was_evaluated=value["promoted_was_evaluated"],
                 unevaluated_d_acknowledged=value["unevaluated_d_acknowledged"],
+                sandbox_verified=value["sandbox_verified"],
+                challenge_id=value["challenge_id"],
+                challenge_status=value["challenge_status"],
+                challenge_reason=value["challenge_reason"],
+                unverified_b_acknowledged=value["unverified_b_acknowledged"],
             )
         except (KeyError, TypeError, bundles.BundleValidationError) as exc:
             raise PromotionValidationError("invalid promotion receipt") from exc
@@ -279,6 +308,11 @@ class TargetPromoter:
         promoted: bundles.BundleSnapshot,
         review_revision: int,
         acknowledge_unevaluated: bool,
+        sandbox_verified: bool = True,
+        challenge_id: str | None = None,
+        challenge_status: str | None = None,
+        challenge_reason: str | None = None,
+        acknowledge_unverified: bool = False,
     ) -> PromotionReceipt:
         with self.registry.promotion_guard():
             return self._promote_locked(
@@ -290,6 +324,11 @@ class TargetPromoter:
                 promoted=promoted,
                 review_revision=review_revision,
                 acknowledge_unevaluated=acknowledge_unevaluated,
+                sandbox_verified=sandbox_verified,
+                challenge_id=challenge_id,
+                challenge_status=challenge_status,
+                challenge_reason=challenge_reason,
+                acknowledge_unverified=acknowledge_unverified,
             )
 
     def _promote_locked(
@@ -303,6 +342,11 @@ class TargetPromoter:
         promoted: bundles.BundleSnapshot,
         review_revision: int,
         acknowledge_unevaluated: bool,
+        sandbox_verified: bool,
+        challenge_id: str | None,
+        challenge_status: str | None,
+        challenge_reason: str | None,
+        acknowledge_unverified: bool,
     ) -> PromotionReceipt:
         try:
             actions = bundles.compare_bundles(past, promoted).actions
@@ -313,6 +357,8 @@ class TargetPromoter:
         edited = evaluated_candidate != promoted
         if acknowledge_unevaluated is not edited:
             raise PromotionValidationError("unevaluated draft acknowledgement is inconsistent")
+        if acknowledge_unverified is not (not sandbox_verified):
+            raise PromotionValidationError("unverified proposal acknowledgement is inconsistent")
         if not actions:
             raise PromotionValidationError("promotion must contain at least one action")
 
@@ -417,6 +463,11 @@ class TargetPromoter:
             decided_at=datetime.now(timezone.utc).isoformat(),
             promoted_was_evaluated=not edited,
             unevaluated_d_acknowledged=edited,
+            sandbox_verified=sandbox_verified,
+            challenge_id=challenge_id,
+            challenge_status=challenge_status,
+            challenge_reason=challenge_reason,
+            unverified_b_acknowledged=acknowledge_unverified,
         )
 
     def _resolve(self, action: bundles.PromotionAction) -> Path:

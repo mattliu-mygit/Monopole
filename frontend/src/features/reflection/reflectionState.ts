@@ -21,6 +21,7 @@ export type PromotionAvailability = {
   enabled: boolean
   target: 'evaluated-candidate' | 'edited-candidate' | null
   requiresUnevaluatedAcknowledgement: boolean
+  requiresUnverifiedAcknowledgement: boolean
   reason: string | null
 }
 
@@ -127,9 +128,18 @@ export function promotionAvailability(run: Run, mutating = false): PromotionAvai
     : edited
       ? 'edited-candidate'
       : 'evaluated-candidate'
-  const base: Pick<PromotionAvailability, 'target' | 'requiresUnevaluatedAcknowledgement'> = {
+  const recommendedCandidateId = run.reflecting_result &&
+    'recommended_candidate_id' in run.reflecting_result
+    ? run.reflecting_result.recommended_candidate_id
+    : null
+  const base: Pick<
+    PromotionAvailability,
+    'target' | 'requiresUnevaluatedAcknowledgement' | 'requiresUnverifiedAcknowledgement'
+  > = {
     target,
     requiresUnevaluatedAcknowledgement: target === 'edited-candidate',
+    requiresUnverifiedAcknowledgement: candidate != null &&
+      candidate.candidate_id !== recommendedCandidateId,
   }
   if (mutating) return { ...base, enabled: false, reason: 'Another review action is in progress.' }
   if (run.status === 'reflecting') {

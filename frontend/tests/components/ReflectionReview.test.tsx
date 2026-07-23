@@ -168,6 +168,11 @@ function receipt(): PromotionReceipt {
     decided_at: '2026-07-14T18:30:00Z',
     promoted_was_evaluated: false,
     unevaluated_d_acknowledged: true,
+    sandbox_verified: true,
+    challenge_id: null,
+    challenge_status: null,
+    challenge_reason: null,
+    unverified_b_acknowledged: false,
   }
 }
 
@@ -175,7 +180,7 @@ describe('ReflectionReview', () => {
   it.each([
     'No evaluation feedback was found for the pinned cohort.',
     'No managed instruction targets were found.',
-  ])('shows an early reflection exit without assuming B exists: %s', (reason) => {
+  ])('shows an early reflection exit without assuming A exists: %s', (reason) => {
     render(<ReflectionReview run={run({
       reflecting_result: { candidates: [], reason },
       reflection_review: null,
@@ -183,15 +188,15 @@ describe('ReflectionReview', () => {
 
     expect(screen.getByText(reason)).not.toBeNull()
     expect(screen.getByText(/reflection ended before a baseline could be evaluated/i)).not.toBeNull()
-    expect(screen.queryByText(/B evaluator audit/i)).toBeNull()
-    expect(screen.queryByText(/Evaluated past B/i)).toBeNull()
+    expect(screen.queryByText(/A evaluator audit/i)).toBeNull()
+    expect(screen.queryByText(/Evaluated past A/i)).toBeNull()
   })
 
-  it('leads with evaluated C versus B and shows evaluator provenance and every changed file', () => {
+  it('leads with evaluated B versus A and shows evaluator provenance and every changed file', () => {
     render(<ReflectionReview run={run()} />)
 
-    expect(screen.getAllByText('Past (B)').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Proposed (C)').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Past (A)').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Proposed (B)').length).toBeGreaterThan(0)
     expect(screen.getByText('0.420')).not.toBeNull()
     expect(screen.getByText('0.680')).not.toBeNull()
     expect(screen.getByText('+0.260')).not.toBeNull()
@@ -200,16 +205,60 @@ describe('ReflectionReview', () => {
     expect(screen.getByRole('heading', { name: 'Writer provenance' })).not.toBeNull()
     expect(screen.getAllByText('Better verification guidance.').length).toBeGreaterThan(0)
     expect(screen.getByText(/predicted evaluator score, not a verification run/i)).not.toBeNull()
-    fireEvent.click(screen.getByText('B evaluator audit'))
+    fireEvent.click(screen.getByText('A evaluator audit'))
     expect(screen.getByText('evaluation-baseline')).not.toBeNull()
     expect(screen.getByText('Baseline evaluation.')).not.toBeNull()
-    fireEvent.click(screen.getByText('C evaluator audit'))
+    fireEvent.click(screen.getByText('B evaluator audit'))
     expect(screen.getByText('evaluation-1')).not.toBeNull()
     expect(screen.getByRole('button', { name: /CLAUDE\.md.*update/i })).not.toBeNull()
     expect(screen.getByRole('button', { name: /review\.md.*create/i })).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /CLAUDE\.md.*update/i }))
     expect(screen.getByText('Verify before claiming success.').closest('tr')?.getAttribute('data-change'))
       .toBe('addition')
+  })
+
+  it('opens pending B in a line-numbered editor with a live A-to-C diff', () => {
+    render(<ReflectionReview run={run()} />)
+
+    const editor = screen.getByLabelText('Edit CLAUDE.md')
+    const editorSurface = editor.parentElement
+    const lineNumbers = screen.getByLabelText('Line numbers for CLAUDE.md')
+
+    expect(editorSurface?.className).toContain('max-h-[32rem]')
+    expect(editorSurface?.className).toContain('overflow-auto')
+    expect(editorSurface?.className).toContain('bg-white')
+    expect(editor.className).toContain('text-gray-700')
+    expect(lineNumbers.className).toContain('bg-gray-50')
+    expect(lineNumbers.textContent).toContain('1')
+    expect(screen.getByText('2 lines')).not.toBeNull()
+    expect(screen.getByRole('heading', { name: 'Live diff A → C' })).not.toBeNull()
+    const diff = within(screen.getByRole('table', { name: 'Line changes for CLAUDE.md' }))
+    expect(diff.getByText('Be concise.').closest('tr')?.getAttribute('data-change')).toBe('deletion')
+    expect(diff.getByText('Verify before claiming success.').closest('tr')?.getAttribute('data-change'))
+      .toBe('addition')
+    expect(screen.queryByRole('button', { name: 'Edit proposal inline' })).toBeNull()
+  })
+
+  it('labels predicted winner B as unverified and requires its own promotion acknowledgement', async () => {
+    const onPromote = vi.fn().mockResolvedValue(undefined)
+    render(<ReflectionReview run={run({
+      reflecting_result: {
+        ...result,
+        recommended_candidate_id: null,
+        provisional_candidate_id: 'candidate-one',
+        baseline_won: true,
+        challenge: null,
+      },
+    })} onPromote={onPromote} />)
+
+    expect(screen.getByText(/B scored better in predicted evaluation/i)).not.toBeNull()
+    expect(screen.queryByText(/^A scored best/i)).toBeNull()
+    const promote = screen.getByRole('button', { name: 'Promote unverified B' })
+    expect(promote.hasAttribute('disabled')).toBe(true)
+    fireEvent.click(screen.getByRole('checkbox', { name: /did not pass paired sandbox verification/i }))
+    fireEvent.click(promote)
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm promotion' }))
+    await waitFor(() => expect(onPromote).toHaveBeenCalledWith(false, true))
   })
 
   it.each([
@@ -254,51 +303,22 @@ describe('ReflectionReview', () => {
     expect(screen.queryByText('0.810')).toBeNull()
   })
 
-  it('associates bundle tabs with panels and supports arrow, Home, and End keys', () => {
-    render(<ReflectionReview run={run()} />)
-
-    const pastTab = screen.getByRole('tab', { name: 'Past (B)' })
-    const proposedTab = screen.getByRole('tab', { name: 'Proposed (C)' })
-    const diffTab = screen.getByRole('tab', { name: 'Diff B → C' })
-    const controlledId = pastTab.getAttribute('aria-controls')
-    expect(pastTab.id).not.toBe('')
-    expect(controlledId).not.toBeNull()
-    expect(document.getElementById(controlledId!)?.getAttribute('aria-labelledby')).toBe(pastTab.id)
-
-    fireEvent.click(pastTab)
-    fireEvent.keyDown(pastTab, { key: 'ArrowRight' })
-    expect(proposedTab.getAttribute('aria-selected')).toBe('true')
-    expect(document.activeElement).toBe(proposedTab)
-
-    fireEvent.keyDown(proposedTab, { key: 'End' })
-    expect(diffTab.getAttribute('aria-selected')).toBe('true')
-    expect(document.activeElement).toBe(diffTab)
-
-    fireEvent.keyDown(diffTab, { key: 'Home' })
-    expect(pastTab.getAttribute('aria-selected')).toBe('true')
-    expect(document.activeElement).toBe(pastTab)
-  })
-
   it('edits inline and sends only locator content for server-side hashing', async () => {
     const onSaveDraft = vi.fn().mockResolvedValue(undefined)
     render(<ReflectionReview run={run()} onSaveDraft={onSaveDraft} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit proposal inline' }))
-    expect(screen.getByRole('tab', { name: 'Edited (D)' }).getAttribute('aria-selected')).toBe('true')
-    expect(document.activeElement).toBe(screen.getByLabelText('Edit CLAUDE.md'))
     fireEvent.click(screen.getByRole('button', { name: /CLAUDE\.md.*update/i }))
-    fireEvent.click(screen.getByRole('tab', { name: 'Edited (D)' }))
     const editor = screen.getByLabelText('Edit CLAUDE.md')
     fireEvent.change(editor, { target: { value: '# Edited locally' } })
-    const editedDiffTab = screen.getByRole('tab', { name: 'Diff C → D' })
-    fireEvent.click(editedDiffTab)
-    const editedDiffPanel = document.getElementById(editedDiffTab.getAttribute('aria-controls')!)!
-    expect(within(editedDiffPanel).getByText('# Proposed').closest('tr')?.getAttribute('data-change'))
+    const comparison = screen.getByRole('region', { name: 'Bundle comparison' })
+    expect(within(comparison).getByText('# Past').closest('tr')?.getAttribute('data-change'))
       .toBe('deletion')
-    expect(within(editedDiffPanel).getByText('# Edited locally').closest('tr')?.getAttribute('data-change'))
+    const added = within(comparison).getAllByText('# Edited locally')
+      .find((element) => element.closest('tr'))
+    expect(added?.closest('tr')?.getAttribute('data-change'))
       .toBe('addition')
-    expect(screen.getByText(/D is not evaluated/i)).not.toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Save edited D' }))
+    expect(screen.getByText(/C is not evaluated/i)).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Save edited C' }))
 
     await waitFor(() => expect(onSaveDraft).toHaveBeenCalledWith({
       'CLAUDE.md': '# Edited locally',
@@ -306,13 +326,12 @@ describe('ReflectionReview', () => {
     }))
   })
 
-  it('keeps an unsaved D when equivalent run data is refreshed', () => {
+  it('keeps an unsaved C when equivalent run data is refreshed', () => {
     const onDirtyChange = vi.fn()
     const { rerender } = render(
       <ReflectionReview run={run()} onDirtyChange={onDirtyChange} />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit proposal inline' }))
     fireEvent.change(screen.getByLabelText('Edit CLAUDE.md'), {
       target: { value: '# Unsaved local D' },
     })
@@ -329,7 +348,7 @@ describe('ReflectionReview', () => {
     expect(onDirtyChange).toHaveBeenLastCalledWith(true)
   })
 
-  it('warns that dismissal abandons unsaved D and clears it after dismissal succeeds', async () => {
+  it('warns that dismissal abandons unsaved C and clears it after dismissal succeeds', async () => {
     const onDismiss = vi.fn().mockResolvedValue(undefined)
     const onDirtyChange = vi.fn()
     render(
@@ -340,28 +359,27 @@ describe('ReflectionReview', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit proposal inline' }))
     fireEvent.change(screen.getByLabelText('Edit CLAUDE.md'), {
       target: { value: '# Unsaved local D' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss proposal' }))
 
     expect(screen.getByRole('dialog', { name: 'Dismiss this proposal?' }).textContent)
-      .toMatch(/discard your unsaved edited D/i)
+      .toMatch(/discard your unsaved edited C/i)
     fireEvent.click(screen.getByRole('button', { name: 'Confirm dismissal' }))
 
     await waitFor(() => expect(onDismiss).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(screen.queryByLabelText('Edit CLAUDE.md')).toBeNull())
+    await waitFor(() => expect((screen.getByLabelText('Edit CLAUDE.md') as HTMLTextAreaElement).value)
+      .toBe('# Proposed\nVerify before claiming success.'))
     expect(onDirtyChange).toHaveBeenLastCalledWith(false)
   })
 
-  it('clears unsaved D when a pending review becomes resolved externally', () => {
+  it('clears unsaved C when a pending review becomes resolved externally', () => {
     const onDirtyChange = vi.fn()
     const { rerender } = render(
       <ReflectionReview run={run()} onDirtyChange={onDirtyChange} />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit proposal inline' }))
     fireEvent.change(screen.getByLabelText('Edit CLAUDE.md'), {
       target: { value: '# Unsaved local D' },
     })
@@ -383,7 +401,7 @@ describe('ReflectionReview', () => {
     expect(onDirtyChange).toHaveBeenLastCalledWith(false)
   })
 
-  it('keeps a dismissed saved D visible as evidence without mutation controls', () => {
+  it('keeps a dismissed saved C visible as evidence without mutation controls', () => {
     render(<ReflectionReview run={run({
       reflection_review: {
         status: 'dismissed',
@@ -393,9 +411,9 @@ describe('ReflectionReview', () => {
       reflection_review_revision: 2,
     })} />)
 
-    expect(screen.getByRole('tab', { name: 'Edited (D)' })).not.toBeNull()
+    expect(screen.getByRole('heading', { name: 'Edited C' })).not.toBeNull()
     expect(screen.queryByRole('region', { name: 'Reflection decision' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Reset to evaluated C' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Reset to evaluated B' })).toBeNull()
   })
 
   it.each([
@@ -457,14 +475,13 @@ describe('ReflectionReview', () => {
     expect(alternative.getAttribute('aria-pressed')).toBe('true')
   })
 
-  it('disables stale draft writes while preserving local unsaved D for explicit reset', () => {
+  it('disables stale draft writes while preserving local unsaved C for explicit reset', () => {
     const onSaveDraft = vi.fn()
     const current = bundle('current', '# Current')
     const { rerender } = render(
       <ReflectionReview run={run()} onSaveDraft={onSaveDraft} />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit proposal inline' }))
     fireEvent.change(screen.getByLabelText('Edit CLAUDE.md'), {
       target: { value: '# Unsaved local D' },
     })
@@ -480,16 +497,17 @@ describe('ReflectionReview', () => {
       },
     })} onSaveDraft={onSaveDraft} />)
 
-    expect(screen.getByRole('button', { name: 'Save edited D' }).hasAttribute('disabled'))
+    expect(screen.getByRole('button', { name: 'Save edited C' }).hasAttribute('disabled'))
       .toBe(true)
-    expect(screen.getByRole('button', { name: 'Reset to evaluated C' }).hasAttribute('disabled'))
+    expect(screen.getByRole('button', { name: 'Reset to evaluated B' }).hasAttribute('disabled'))
       .toBe(false)
-    fireEvent.click(screen.getByRole('button', { name: 'Reset to evaluated C' }))
-    expect(screen.queryByLabelText('Edit CLAUDE.md')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Reset to evaluated B' }))
+    expect((screen.getByLabelText('Edit CLAUDE.md') as HTMLTextAreaElement).value)
+      .toBe('# Proposed\nVerify before claiming success.')
     expect(onSaveDraft).not.toHaveBeenCalled()
   })
 
-  it('keeps unsaved D attached to its selected proposal while inspecting stale alternatives', () => {
+  it('keeps unsaved C attached to its selected proposal while inspecting stale alternatives', () => {
     const reflection = multiCandidateResult()
     const onSelect = vi.fn()
     const { rerender } = render(
@@ -499,7 +517,6 @@ describe('ReflectionReview', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit proposal inline' }))
     fireEvent.change(screen.getByLabelText('Edit CLAUDE.md'), {
       target: { value: '# Unsaved selected D' },
     })
@@ -556,28 +573,27 @@ describe('ReflectionReview', () => {
       <ReflectionReview run={pending} onSelect={onSelect} />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Promote evaluated C' }))
-    expect(screen.getByRole('dialog', { name: 'Promote evaluated C?' })).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Promote evaluated B' }))
+    expect(screen.getByRole('dialog', { name: 'Promote evaluated B?' })).not.toBeNull()
     rerender(<ReflectionReview run={stale} onSelect={onSelect} />)
-    expect(screen.queryByRole('dialog', { name: 'Promote evaluated C?' })).toBeNull()
+    expect(screen.queryByRole('dialog', { name: 'Promote evaluated B?' })).toBeNull()
 
     rerender(<ReflectionReview run={pending} onSelect={onSelect} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Edit proposal inline' }))
     fireEvent.change(screen.getByLabelText('Edit CLAUDE.md'), {
       target: { value: '# Unsaved selected D' },
     })
     fireEvent.click(screen.getByRole('button', {
       name: /Proposal 2.*attempt-2.*candidate-two/i,
     }))
-    expect(screen.getByRole('dialog', { name: 'Discard edited D?' })).not.toBeNull()
+    expect(screen.getByRole('dialog', { name: 'Discard edited C?' })).not.toBeNull()
     rerender(<ReflectionReview run={stale} onSelect={onSelect} />)
 
-    expect(screen.queryByRole('dialog', { name: 'Discard edited D?' })).toBeNull()
+    expect(screen.queryByRole('dialog', { name: 'Discard edited C?' })).toBeNull()
     expect((screen.getByLabelText('Edit CLAUDE.md') as HTMLTextAreaElement).value)
       .toBe('# Unsaved selected D')
   })
 
-  it('disables stale reset when D is already persisted and reset would write to the server', () => {
+  it('disables stale reset when C is already persisted and reset would write to the server', () => {
     render(<ReflectionReview run={run({
       reflection_review: {
         status: 'pending',
@@ -590,37 +606,36 @@ describe('ReflectionReview', () => {
       },
     })} />)
 
-    expect(screen.getByRole('button', { name: 'Reset to evaluated C' }).hasAttribute('disabled'))
+    expect(screen.getByRole('button', { name: 'Reset to evaluated B' }).hasAttribute('disabled'))
       .toBe(true)
-    expect(screen.getByRole('button', { name: 'Promote unevaluated D' }).hasAttribute('disabled'))
+    expect(screen.getByRole('button', { name: 'Promote unevaluated C' }).hasAttribute('disabled'))
       .toBe(true)
     expect(screen.getByRole('button', { name: 'Dismiss proposal' }).hasAttribute('disabled'))
       .toBe(false)
   })
 
-  it('blocks saving when D changes the evaluated action set and points to reset', () => {
+  it('blocks saving when C changes the evaluated action set and points to reset', () => {
     render(<ReflectionReview run={run()} onSaveDraft={vi.fn()} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit proposal inline' }))
     fireEvent.change(screen.getByLabelText('Edit CLAUDE.md'), {
       target: { value: '# Past\nBe concise.' },
     })
 
-    expect(screen.getByRole('button', { name: 'Save edited D' }).hasAttribute('disabled')).toBe(true)
-    expect(screen.getByText(/D changes the evaluated action set.*CLAUDE\.md/i)).not.toBeNull()
-    expect(screen.getByRole('button', { name: 'Reset to evaluated C' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Save edited C' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByText(/C changes the evaluated action set.*CLAUDE\.md/i)).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Reset to evaluated B' })).not.toBeNull()
   })
 
-  it('promotes evaluated C without an unevaluated acknowledgement', async () => {
+  it('promotes evaluated B without an unevaluated acknowledgement', async () => {
     const onPromote = vi.fn().mockResolvedValue(undefined)
     render(<ReflectionReview run={run()} onPromote={onPromote} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Promote evaluated C' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Promote evaluated B' }))
     fireEvent.click(screen.getByRole('button', { name: 'Confirm promotion' }))
-    await waitFor(() => expect(onPromote).toHaveBeenCalledWith(false))
+    await waitFor(() => expect(onPromote).toHaveBeenCalledWith(false, false))
   })
 
-  it('marks D unevaluated and requires acknowledgement before promotion', async () => {
+  it('marks C unevaluated and requires acknowledgement before promotion', async () => {
     const onPromote = vi.fn().mockResolvedValue(undefined)
     const withDraft = run({
       reflection_review: {
@@ -631,23 +646,23 @@ describe('ReflectionReview', () => {
     })
     render(<ReflectionReview run={withDraft} onPromote={onPromote} />)
 
-    const promote = screen.getByRole('button', { name: 'Promote unevaluated D' })
+    const promote = screen.getByRole('button', { name: 'Promote unevaluated C' })
     expect(promote.hasAttribute('disabled')).toBe(true)
-    fireEvent.click(screen.getByRole('checkbox', { name: /differs from evaluated C/i }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /differs from evaluated B/i }))
     expect(promote.hasAttribute('disabled')).toBe(false)
     fireEvent.click(promote)
     fireEvent.click(screen.getByRole('button', { name: 'Confirm promotion' }))
-    await waitFor(() => expect(onPromote).toHaveBeenCalledWith(true))
+    await waitFor(() => expect(onPromote).toHaveBeenCalledWith(true, false))
   })
 
   it('shows finalizing evidence without editable or promotion controls', () => {
     render(<ReflectionReview run={run({ status: 'reflecting' })} />)
     expect(screen.getByRole('status').textContent).toMatch(/finalizing review evidence/i)
-    expect(screen.queryByRole('button', { name: /Promote evaluated C/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Promote evaluated B/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Edit proposal inline/i })).toBeNull()
   })
 
-  it('keeps exact B, evaluated C, and promoted D visible in the receipt', () => {
+  it('keeps exact A, evaluated B, and promoted C visible in the receipt', () => {
     render(<ReflectionReview run={run({
       reflection_review: {
         status: 'promoted',
@@ -659,14 +674,40 @@ describe('ReflectionReview', () => {
     })} />)
 
     expect(screen.getByRole('region', { name: 'Promotion receipt' })).not.toBeNull()
-    expect(screen.queryByText('Evaluated C was promoted.')).toBeNull()
-    expect(screen.getByText('Unevaluated edited D was promoted.')).not.toBeNull()
-    expect(screen.getAllByText('Past B').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Evaluated C').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Requested D').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Evaluated B was promoted.')).toBeNull()
+    expect(screen.getByText('Unevaluated edited C was promoted.')).not.toBeNull()
+    expect(screen.getAllByText('Past A').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Evaluated B').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Requested C').length).toBeGreaterThan(0)
     expect(screen.getByText('promotion-1')).not.toBeNull()
     expect(screen.getAllByText('candidate-one').length).toBeGreaterThan(0)
-    expect(screen.getByText(/unevaluated D acknowledgement recorded/i)).not.toBeNull()
+    expect(screen.getByText(/unevaluated C acknowledgement recorded/i)).not.toBeNull()
+    expect(screen.getByText(/paired sandbox verification passed/i)).not.toBeNull()
+  })
+
+  it('shows unverified B provenance and its recorded acknowledgement in the receipt', () => {
+    const unverified = {
+      ...receipt(),
+      sandbox_verified: false,
+      challenge_id: 'challenge-incomplete',
+      challenge_status: 'incomplete',
+      challenge_reason: 'sandbox launch failed',
+      unverified_b_acknowledged: true,
+    }
+    render(<ReflectionReview run={run({
+      reflection_review: {
+        status: 'promoted',
+        selected_candidate_id: 'candidate-one',
+        draft: { candidate_id: 'candidate-one', revision: edited.revision, bundle: edited },
+        receipt: unverified,
+      },
+      reflection_review_revision: 2,
+    })} />)
+
+    expect(screen.getByText(/paired sandbox verification did not pass/i)).not.toBeNull()
+    expect(screen.getByText(/unverified B acknowledgement recorded/i)).not.toBeNull()
+    expect(screen.getByText(/sandbox launch failed/i)).not.toBeNull()
+    expect(screen.getByText('challenge-incomplete')).not.toBeNull()
   })
 
   it('blocks stale review mutations and names changed managed files', () => {
@@ -677,17 +718,17 @@ describe('ReflectionReview', () => {
         draft: null,
         stale: true,
         changed_targets: ['CLAUDE.md'],
-        stale_reason: 'CLAUDE.md changed from the evaluated B revision.',
+        stale_reason: 'CLAUDE.md changed from the evaluated A revision.',
         current: bundle('current', '# Current\nChanged independently.'),
       },
     })} />)
-    expect(screen.getByText('CLAUDE.md changed from the evaluated B revision.')).not.toBeNull()
-    expect(screen.getAllByText(/Diff B → Current/).length).toBeGreaterThan(0)
+    expect(screen.getByText('CLAUDE.md changed from the evaluated A revision.')).not.toBeNull()
+    expect(screen.getAllByText(/Diff A → Current/).length).toBeGreaterThan(0)
     expect(screen.getByText((_, element) =>
       element?.tagName === 'PRE' && Boolean(element.textContent?.includes('+ # Current')),
     )).not.toBeNull()
     expect(screen.getByRole('link', { name: 'Start a new run' }).getAttribute('href')).toBe('/runs')
-    expect(screen.getByRole('button', { name: /Promote evaluated C/i }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: /Promote evaluated B/i }).hasAttribute('disabled')).toBe(true)
     expect(screen.queryByRole('button', { name: 'Edit proposal inline' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Dismiss proposal' }).hasAttribute('disabled')).toBe(false)
   })
@@ -723,13 +764,13 @@ describe('ReflectionReview', () => {
 
     expect(screen.getByText('No valid proposal generated')).not.toBeNull()
     expect(screen.getByText('0.420')).not.toBeNull()
-    expect(screen.getByText(/No proposed C was evaluated/i)).not.toBeNull()
+    expect(screen.getByText(/No proposed B was evaluated/i)).not.toBeNull()
     expect(screen.getAllByText('Baseline evaluation.').length).toBeGreaterThan(0)
     fireEvent.click(screen.getByText('CLAUDE.md'))
     expect(screen.getByText((_, element) =>
       element?.tagName === 'PRE' && element.textContent === '# Past\nBe concise.',
     )).not.toBeNull()
-    expect(screen.queryByText(/evaluated past B scored best/i)).toBeNull()
+    expect(screen.queryByText(/evaluated past A scored best/i)).toBeNull()
     expect(screen.queryByText(/baseline beat/i)).toBeNull()
     expect(screen.queryByRole('button', { name: /Promote/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Edit proposal/i })).toBeNull()
@@ -783,7 +824,7 @@ describe('ReflectionReview', () => {
           baseline: {
             arm: 'baseline', status: 'exited', exit_code: 0, duration_seconds: 12.5,
             initial_workspace_digest: 'sha256:b-initial', final_workspace_digest: 'sha256:b-final',
-            transcript: 'B ran the full test suite.', transcript_digest: 'sha256:b-transcript',
+            transcript: 'A ran the full test suite.', transcript_digest: 'sha256:b-transcript',
             artifact_digests: { 'src/parser.py': 'sha256:b-parser' },
             artifact_changes: [{
               path: 'src/parser.py', action: 'modified', before_digest: 'sha256:before',
@@ -794,7 +835,7 @@ describe('ReflectionReview', () => {
           candidate: {
             arm: 'candidate', status: 'exited', exit_code: 0, duration_seconds: 10,
             initial_workspace_digest: 'sha256:c-initial', final_workspace_digest: 'sha256:c-final',
-            transcript: 'C ran a focused test.', transcript_digest: 'sha256:c-transcript',
+            transcript: 'B ran a focused test.', transcript_digest: 'sha256:c-transcript',
             artifact_digests: { 'src/parser.py': 'sha256:c-parser' },
             artifact_changes: [{
               path: 'src/parser.py', action: 'modified', before_digest: 'sha256:before',
@@ -806,10 +847,10 @@ describe('ReflectionReview', () => {
             position: 1, requested_model: 'judge-model', resolved_model: 'judge-model',
             family: 'openai', backend: 'cli', baseline_label: 'arm-1',
             candidate_label: 'arm-2', task_valid: true, task_invalid_reason: null,
-            winner: 'baseline', rationale: 'B completed the goal.',
+            winner: 'baseline', rationale: 'A completed the goal.',
             rubrics: [{
               rubric_id: 'judge.session_outcome', baseline_score: 1, candidate_score: 0.5,
-              delta: -0.5, winner: 'baseline', rationale: 'B passed all tests.',
+              delta: -0.5, winner: 'baseline', rationale: 'A passed all tests.',
             }],
             usage: {},
           }],
@@ -819,7 +860,7 @@ describe('ReflectionReview', () => {
     })} />)
 
     expect(screen.getByRole('region', { name: 'Paired sandbox verification' })).not.toBeNull()
-    expect(screen.getByText('B won paired sandbox verification')).not.toBeNull()
+    expect(screen.getByText('A won paired sandbox verification')).not.toBeNull()
     expect(screen.getByText('Repair the parser.')).not.toBeNull()
     expect(screen.getByText('prepared_workspace')).not.toBeNull()
     expect(screen.getByText('https://github.com/example/parser.git')).not.toBeNull()
@@ -832,8 +873,8 @@ describe('ReflectionReview', () => {
     expect(screen.getByText(/gpt-5.6-sol via codex 1.2.3/i)).not.toBeNull()
     expect(screen.getByText(/judge.session_outcome/)).not.toBeNull()
     expect(screen.getByText(/Δ -0.50/)).not.toBeNull()
-    fireEvent.click(screen.getByText(/B arm: exited/))
-    expect(screen.getByText('B ran the full test suite.')).not.toBeNull()
+    fireEvent.click(screen.getByText(/A arm: exited/))
+    expect(screen.getByText('A ran the full test suite.')).not.toBeNull()
     expect(screen.getAllByText(/modified src\/parser.py/)).toHaveLength(2)
   })
 
@@ -889,7 +930,7 @@ describe('ReflectionReview', () => {
     expect(screen.queryByRole('button', { name: /Dismiss/i })).toBeNull()
   })
 
-  it('reloads saved multi-file D, resets D views when removed, and confirms candidate switches', async () => {
+  it('reloads saved multi-file C, resets C views when removed, and confirms candidate switches', async () => {
     const alternative = bundle('c-two', '# Alternative C\nKeep checks focused.')
     const second = {
       ...result.candidates[0],
@@ -914,10 +955,10 @@ describe('ReflectionReview', () => {
     const onSelect = vi.fn().mockResolvedValue(undefined)
     const { rerender } = render(<ReflectionReview run={saved} onSelect={onSelect} />)
 
-    expect(screen.getByRole('tab', { name: 'Edited (D)' })).not.toBeNull()
-    expect(screen.getByRole('tab', { name: 'Diff C → D' })).not.toBeNull()
+    expect(screen.getByRole('heading', { name: 'Editable proposal C' })).not.toBeNull()
+    expect(screen.getByRole('heading', { name: 'Live diff A → C' })).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Proposal 2.*attempt-2.*candidate-two/i }))
-    fireEvent.click(screen.getByRole('button', { name: 'Discard D and select proposal' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Discard C and select proposal' }))
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith('candidate-two', true))
 
     rerender(<ReflectionReview run={run({
@@ -927,7 +968,7 @@ describe('ReflectionReview', () => {
       },
       reflection_review_revision: 2,
     })} onSelect={onSelect} />)
-    expect(screen.queryByRole('tab', { name: 'Edited (D)' })).toBeNull()
-    expect(screen.getByRole('tab', { name: 'Diff B → C' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('heading', { name: 'Editable proposal C' })).not.toBeNull()
+    expect(screen.getByRole('heading', { name: 'Live diff A → C' })).not.toBeNull()
   })
 })

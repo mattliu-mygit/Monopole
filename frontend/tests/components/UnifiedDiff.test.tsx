@@ -26,8 +26,8 @@ describe('UnifiedDiff', () => {
         locator="CLAUDE.md"
         before={target('shared\nold instruction\ntail')}
         after={target('shared\nnew instruction\nextra instruction\ntail')}
-        beforeLabel="Past (B)"
-        afterLabel="Proposed (C)"
+        beforeLabel="Past (A)"
+        afterLabel="Proposed (B)"
       />,
     )
 
@@ -55,13 +55,13 @@ describe('UnifiedDiff', () => {
         locator="CLAUDE.md"
         before={target('before')}
         after={target('after')}
-        beforeLabel="Past (B)"
-        afterLabel="Proposed (C)"
+        beforeLabel="Past (A)"
+        afterLabel="Proposed (B)"
       />,
     )
 
-    expect(screen.getByText('Past (B)')).not.toBeNull()
-    expect(screen.getByText('Proposed (C)')).not.toBeNull()
+    expect(screen.getByText('Past (A)')).not.toBeNull()
+    expect(screen.getByText('Proposed (B)')).not.toBeNull()
     expect(screen.getByTestId('diff-scroll').className).toContain('overflow-auto')
     expect(screen.getByText('after').className).toContain('whitespace-pre')
   })

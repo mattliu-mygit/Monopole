@@ -21,7 +21,7 @@ export default function ReflectionScoreComparison({
     <section aria-label="Reflection score comparison" className="space-y-3">
       <div className="grid gap-3 sm:grid-cols-[1fr_auto_1fr] sm:items-stretch">
         <div className="rounded-lg border border-gray-200 p-4">
-          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Past (B)</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Past (A)</div>
           <div className="mt-2 font-mono text-2xl font-semibold text-gray-900">
             {score(result.baseline_score)}
           </div>
@@ -38,7 +38,7 @@ export default function ReflectionScoreComparison({
         </div>
         <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-4">
           <div className="text-xs font-semibold uppercase tracking-wide text-indigo-700">
-            Proposed (C)
+            Proposed (B)
           </div>
           <div className="mt-2 font-mono text-2xl font-semibold text-gray-900">
             {score(candidate.score)}
@@ -49,7 +49,7 @@ export default function ReflectionScoreComparison({
 
       {hasEditedDraft && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-          Edited proposal D is not evaluated. The scores above still compare evaluated C with B.
+          Edited proposal C is not evaluated. The scores above still compare evaluated B with A.
         </div>
       )}
     </section>

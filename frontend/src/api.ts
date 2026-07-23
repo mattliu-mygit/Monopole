@@ -219,6 +219,7 @@ export function promoteRunReflection(
     expectedDraftRevision?: string | null
     idempotencyKey: string
     acknowledgeUnevaluated: boolean
+    acknowledgeUnverified: boolean
   },
 ): Promise<Run> {
   const body: PromoteRequestTransport = {
@@ -226,6 +227,7 @@ export function promoteRunReflection(
     expected_draft_revision: options.expectedDraftRevision,
     idempotency_key: options.idempotencyKey,
     acknowledge_unevaluated: options.acknowledgeUnevaluated,
+    acknowledge_unverified: options.acknowledgeUnverified,
   }
   return apiFetch<RunTransport>(`/api/runs/${encodeURIComponent(runId)}/promote`, {
     method: 'POST',

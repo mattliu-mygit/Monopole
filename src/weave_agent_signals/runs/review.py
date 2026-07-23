@@ -1,4 +1,4 @@
-"""Reflection review decisions over canonical B/C/D instruction bundles."""
+"""Reflection review decisions over canonical A/B/C instruction bundles."""
 
 from __future__ import annotations
 
@@ -172,6 +172,7 @@ class ReviewService:
         expected_revision: int,
         expected_draft_revision: str | None,
         acknowledge_unevaluated: bool = False,
+        acknowledge_unverified: bool = False,
     ) -> Run:
         run = self._load(run_id)
         if self._is_idempotent_promotion(
@@ -180,6 +181,7 @@ class ReviewService:
             expected_revision=expected_revision,
             expected_draft_revision=expected_draft_revision,
             acknowledge_unevaluated=acknowledge_unevaluated,
+            acknowledge_unverified=acknowledge_unverified,
         ):
             return run
 
@@ -189,6 +191,13 @@ class ReviewService:
         promoted = self._draft_bundle(review, candidate_id) or candidate
         edited = promoted != candidate
         self._check_acknowledgement(edited, acknowledge_unevaluated)
+        sandbox_verified = candidate_id == run.reflecting_result.recommended_candidate_id
+        self._check_verification_acknowledgement(
+            sandbox_verified,
+            acknowledge_unverified,
+        )
+        challenge = run.reflecting_result.challenge
+        challenge_value = challenge.to_dict() if hasattr(challenge, "to_dict") else challenge or {}
         try:
             adapter = self.adapter_factory()
         except PromotionError as error:
@@ -208,6 +217,11 @@ class ReviewService:
                 promoted=promoted,
                 review_revision=run.reflection_review_revision,
                 acknowledge_unevaluated=acknowledge_unevaluated,
+                sandbox_verified=sandbox_verified,
+                challenge_id=challenge_value.get("challenge_id"),
+                challenge_status=challenge_value.get("status"),
+                challenge_reason=challenge_value.get("reason"),
+                acknowledge_unverified=acknowledge_unverified,
             )
         except StaleBaseError as error:
             raise self._stale_error(
@@ -501,12 +515,25 @@ class ReviewService:
         if edited and not acknowledged:
             raise ReviewRequestError(
                 "unevaluated_d_acknowledgement_required",
-                "Acknowledge that edited draft D was not evaluated before promotion",
+                "Acknowledge that edited draft C was not evaluated before promotion",
             )
         if not edited and acknowledged:
             raise ReviewRequestError(
                 "unexpected_unevaluated_acknowledgement",
-                "Evaluated proposal C does not require an unevaluated-D acknowledgement",
+                "Evaluated proposal B does not require an unevaluated-C acknowledgement",
+            )
+
+    @staticmethod
+    def _check_verification_acknowledgement(verified: bool, acknowledged: bool) -> None:
+        if not verified and not acknowledged:
+            raise ReviewRequestError(
+                "unverified_b_acknowledgement_required",
+                "Acknowledge that proposal B did not pass paired sandbox verification",
+            )
+        if verified and acknowledged:
+            raise ReviewRequestError(
+                "unexpected_unverified_acknowledgement",
+                "Verified proposal B does not require an unverified-B acknowledgement",
             )
 
     def _store(self, run: Run, review: Mapping[str, Any]) -> Run:
@@ -563,6 +590,7 @@ class ReviewService:
         expected_revision: int,
         expected_draft_revision: str | None,
         acknowledge_unevaluated: bool,
+        acknowledge_unverified: bool,
     ) -> bool:
         review = run.reflection_review
         if not isinstance(review, Mapping) or review.get("status") not in {
@@ -595,6 +623,7 @@ class ReviewService:
             receipt.review_revision != expected_revision
             or committed_draft_revision != expected_draft_revision
             or receipt.unevaluated_d_acknowledged != acknowledge_unevaluated
+            or receipt.unverified_b_acknowledged != acknowledge_unverified
         ):
             raise ReviewConflictError(
                 "promotion_idempotency_conflict",

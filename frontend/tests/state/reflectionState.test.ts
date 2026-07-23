@@ -161,7 +161,7 @@ describe('reflectionState', () => {
     }))).toBe('no-change')
   })
 
-  it('compares exact bundle revisions and derives every B-to-C action', () => {
+  it('compares exact bundle revisions and derives every A-to-B action', () => {
     expect(bundlesEqual(proposed, { ...proposed })).toBe(true)
     expect(bundlesEqual(proposed, edited)).toBe(false)
     expect(bundleActions(past, proposed).map((action) => [action.action, action.locator])).toEqual([
@@ -174,7 +174,7 @@ describe('reflectionState', () => {
     ])
   })
 
-  it('distinguishes promotable evaluated C from unevaluated D', () => {
+  it('distinguishes promotable evaluated B from unevaluated C', () => {
     const evaluated = run({
       reflection_review: { status: 'pending', selected_candidate_id: 'candidate-1', draft: null },
     })
@@ -182,6 +182,7 @@ describe('reflectionState', () => {
       enabled: true,
       target: 'evaluated-candidate',
       requiresUnevaluatedAcknowledgement: false,
+      requiresUnverifiedAcknowledgement: false,
       reason: null,
     })
 
@@ -196,7 +197,23 @@ describe('reflectionState', () => {
       enabled: true,
       target: 'edited-candidate',
       requiresUnevaluatedAcknowledgement: true,
+      requiresUnverifiedAcknowledgement: false,
       reason: null,
+    })
+
+    expect(promotionAvailability(run({
+      reflecting_result: {
+        ...result,
+        recommended_candidate_id: null,
+        provisional_candidate_id: 'candidate-1',
+        baseline_won: true,
+      },
+      reflection_review: {
+        status: 'pending', selected_candidate_id: 'candidate-1', draft: null,
+      },
+    }))).toMatchObject({
+      enabled: true,
+      requiresUnverifiedAcknowledgement: true,
     })
   })
 
@@ -213,7 +230,7 @@ describe('reflectionState', () => {
       .toMatch(/in progress/i)
   })
 
-  it('maps receipt evidence without treating promoted D as evaluated C', () => {
+  it('maps receipt evidence without treating promoted C as evaluated B', () => {
     const receipt: PromotionReceipt = {
       promotion_id: 'promotion-1',
       run_id: 'run-state',
@@ -226,6 +243,11 @@ describe('reflectionState', () => {
       decided_at: '2026-07-14T18:30:00Z',
       promoted_was_evaluated: false,
       unevaluated_d_acknowledged: true,
+      sandbox_verified: false,
+      challenge_id: 'challenge-1',
+      challenge_status: 'incomplete',
+      challenge_reason: 'sandbox failed',
+      unverified_b_acknowledged: true,
     }
     expect(receiptBundles(receipt)).toEqual({ past, evaluated: proposed, promoted: edited })
   })

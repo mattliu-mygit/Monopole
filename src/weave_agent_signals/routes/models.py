@@ -148,6 +148,11 @@ class PromotionReceiptResponse(ResponseModel):
     decided_at: str
     promoted_was_evaluated: bool
     unevaluated_d_acknowledged: bool
+    sandbox_verified: bool
+    challenge_id: str | None
+    challenge_status: str | None
+    challenge_reason: str | None
+    unverified_b_acknowledged: bool
 
 
 class ReflectionReviewResponse(ResponseModel):

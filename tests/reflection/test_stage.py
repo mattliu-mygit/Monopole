@@ -586,11 +586,11 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
     )
 
 
-@pytest.mark.parametrize(("winner", "review_created"), [("candidate", True), ("tie", False)])
+@pytest.mark.parametrize(("winner", "verified"), [("candidate", True), ("tie", False)])
 def test_stage_applies_paired_challenge_before_initializing_review(
     store,
     winner: str,
-    review_created: bool,
+    verified: bool,
 ):
     run, config = _reflecting_run(store)
     baseline = bundle_from_content_map({"CLAUDE.md": "old"}, scope=SCOPE)
@@ -630,8 +630,12 @@ def test_stage_applies_paired_challenge_before_initializing_review(
     assert result.provisional_candidate_id == "candidate-1"
     assert result.challenge is not None
     assert result.challenge.winner == winner
-    assert result.recommended_candidate_id == ("candidate-1" if review_created else None)
-    assert (updated.reflection_review is not None) is review_created
+    assert result.recommended_candidate_id == ("candidate-1" if verified else None)
+    assert updated.reflection_review == {
+        "status": "pending",
+        "selected_candidate_id": "candidate-1",
+        "draft": None,
+    }
     assert len(challenge_calls) == 1
     assert challenge_calls[0]["candidate"].candidate_id == "candidate-1"
     assert challenge_calls[0]["baseline"] is baseline
@@ -1230,7 +1234,7 @@ def test_stage_finalizes_persisted_evidence_without_rerunning_inference(store):
     with pytest.raises(ReflectionStageError, match="failed unexpectedly"):
         run_reflection_stage(run, config, threading.Event(), dependencies=pinning)
 
-    evidence = _result(baseline, config)
+    evidence = _result(baseline, config).with_challenge(_challenge_result("candidate-1", "tie"))
     store.record_stage_result(
         run.run_id,
         stage=RunStatus.REFLECTING,

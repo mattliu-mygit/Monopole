@@ -44,8 +44,8 @@ export default function PromotionReceiptView({ receipt }: { receipt: PromotionRe
             {partial
               ? `${applied} of ${receipt.outcomes.length} complete files were applied. Earlier applied files were not rolled back.`
               : receipt.promoted_was_evaluated
-                ? 'Evaluated C was promoted.'
-                : 'Unevaluated edited D was promoted.'}
+                ? 'Evaluated B was promoted.'
+                : 'Unevaluated edited C was promoted.'}
           </p>
         </div>
         <time className={timeClass} dateTime={receipt.decided_at}>
@@ -57,14 +57,40 @@ export default function PromotionReceiptView({ receipt }: { receipt: PromotionRe
         <div><dt className="font-medium">Promotion ID</dt><dd className="font-mono break-all">{receipt.promotion_id}</dd></div>
         <div><dt className="font-medium">Candidate ID</dt><dd className="font-mono break-all">{receipt.candidate_id}</dd></div>
         <div><dt className="font-medium">Review revision</dt><dd className="font-mono">{receipt.review_revision}</dd></div>
-        <div><dt className="font-medium">Past B</dt><dd className="font-mono break-all">{receipt.past.revision}</dd></div>
-        <div><dt className="font-medium">Evaluated C</dt><dd className="font-mono break-all">{receipt.evaluated_candidate.revision}</dd></div>
-        <div><dt className="font-medium">Requested {receipt.promoted_was_evaluated ? 'C' : 'D'}</dt><dd className="font-mono break-all">{receipt.promoted.revision}</dd></div>
+        <div><dt className="font-medium">Past A</dt><dd className="font-mono break-all">{receipt.past.revision}</dd></div>
+        <div><dt className="font-medium">Evaluated B</dt><dd className="font-mono break-all">{receipt.evaluated_candidate.revision}</dd></div>
+        <div><dt className="font-medium">Requested {receipt.promoted_was_evaluated ? 'B' : 'C'}</dt><dd className="font-mono break-all">{receipt.promoted.revision}</dd></div>
+        <div>
+          <dt className="font-medium">Sandbox verification</dt>
+          <dd>{receipt.sandbox_verified ? 'Passed' : 'Did not pass'}</dd>
+        </div>
+        {receipt.challenge_id && (
+          <div><dt className="font-medium">Challenge ID</dt><dd className="font-mono break-all">{receipt.challenge_id}</dd></div>
+        )}
+        {receipt.challenge_status && (
+          <div><dt className="font-medium">Challenge status</dt><dd>{receipt.challenge_status}</dd></div>
+        )}
       </dl>
+
+      <p className={`rounded border p-2 text-xs ${
+        receipt.sandbox_verified
+          ? 'border-green-200 bg-green-50 text-green-900'
+          : 'border-amber-200 bg-amber-50 text-amber-900'
+      }`}>
+        {receipt.sandbox_verified
+          ? 'Paired sandbox verification passed.'
+          : `Paired sandbox verification did not pass.${receipt.challenge_reason ? ` ${receipt.challenge_reason}` : ''}`}
+      </p>
+
+      {!receipt.sandbox_verified && receipt.unverified_b_acknowledged && (
+        <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
+          Unverified B acknowledgement recorded.
+        </p>
+      )}
 
       {!receipt.promoted_was_evaluated && (
         <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
-          Unevaluated D acknowledgement recorded.
+          Unevaluated C acknowledgement recorded.
         </p>
       )}
 
@@ -78,13 +104,13 @@ export default function PromotionReceiptView({ receipt }: { receipt: PromotionRe
               </summary>
               {outcome.message && <p className="mt-2 text-xs text-red-800">{outcome.message}</p>}
               <div className="mt-3 grid gap-3 lg:grid-cols-3">
-                <div><div className="mb-1 text-xs font-medium text-gray-500">Past B</div><pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-gray-950 p-2 font-mono text-xs text-gray-100">{content(past.get(outcome.locator))}</pre></div>
-                <div><div className="mb-1 text-xs font-medium text-indigo-700">Evaluated C</div><pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-gray-950 p-2 font-mono text-xs text-gray-100">{content(evaluated.get(outcome.locator))}</pre></div>
-                <div><div className="mb-1 text-xs font-medium text-green-700">Requested {receipt.promoted_was_evaluated ? 'C' : 'D'}</div><pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-gray-950 p-2 font-mono text-xs text-gray-100">{content(requested.get(outcome.locator))}</pre></div>
+                <div><div className="mb-1 text-xs font-medium text-gray-500">Past A</div><pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-gray-950 p-2 font-mono text-xs text-gray-100">{content(past.get(outcome.locator))}</pre></div>
+                <div><div className="mb-1 text-xs font-medium text-indigo-700">Evaluated B</div><pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-gray-950 p-2 font-mono text-xs text-gray-100">{content(evaluated.get(outcome.locator))}</pre></div>
+                <div><div className="mb-1 text-xs font-medium text-green-700">Requested {receipt.promoted_was_evaluated ? 'B' : 'C'}</div><pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-gray-950 p-2 font-mono text-xs text-gray-100">{content(requested.get(outcome.locator))}</pre></div>
               </div>
               {action && (
                 <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-gray-950 p-2 font-mono text-xs text-gray-100">
-                  {lineDiff(action.locator, action.before, action.after, 'Past B', 'Requested contents')}
+                  {lineDiff(action.locator, action.before, action.after, 'Past A', 'Requested contents')}
                 </pre>
               )}
             </details>

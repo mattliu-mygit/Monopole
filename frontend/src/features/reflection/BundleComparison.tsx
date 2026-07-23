@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type {
   ReflectionBundleSnapshot,
   ReflectionTargetSnapshot,
@@ -6,10 +6,12 @@ import type {
 import { bundleActions } from './reflectionState'
 import UnifiedDiff from './UnifiedDiff'
 
-type View = 'past' | 'proposed' | 'diff' | 'edited' | 'edited-diff'
-
 function targetContent(target: ReflectionTargetSnapshot): string {
   return target.exists ? target.content ?? '' : 'This file does not exist in this snapshot.'
+}
+
+function lineCount(content: string): number {
+  return content.split('\n').length
 }
 
 export default function BundleComparison({
@@ -24,43 +26,31 @@ export default function BundleComparison({
   onEditedTargetsChange?: (targets: ReflectionTargetSnapshot[]) => void
 }) {
   const actions = useMemo(() => bundleActions(past, proposed), [past, proposed])
-  const [selectedLocator, setSelectedLocator] = useState(actions[0]?.locator ?? '')
-  const [view, setView] = useState<View>('diff')
-  const editorRef = useRef<HTMLTextAreaElement>(null)
-  const tabRefs = useRef(new Map<View, HTMLButtonElement>())
-  const tabsId = useId().replaceAll(':', '')
+  const hasEdited = editedTargets != null
+  const editable = hasEdited && onEditedTargetsChange != null
+  const preferredLocator = (editable
+    ? actions.find((action) => action.action === 'update') ?? actions[0]
+    : actions[0])?.locator ?? ''
+  const [selectedLocator, setSelectedLocator] = useState(preferredLocator)
 
   useEffect(() => {
     if (!actions.some((action) => action.locator === selectedLocator)) {
-      setSelectedLocator(actions[0]?.locator ?? '')
+      setSelectedLocator(preferredLocator)
     }
-  }, [actions, selectedLocator])
+  }, [actions, preferredLocator, selectedLocator])
 
   useEffect(() => {
-    if (onEditedTargetsChange) {
-      const firstEditable = actions.find((candidate) => candidate.action === 'update')
-        ?? actions[0]
-      if (firstEditable) setSelectedLocator(firstEditable.locator)
-      setView('edited')
-    }
-  }, [actions, onEditedTargetsChange])
+    if (editable && preferredLocator) setSelectedLocator(preferredLocator)
+  }, [editable, preferredLocator])
 
-  useEffect(() => {
-    if (!editedTargets) {
-      setView((current) => current === 'edited' || current === 'edited-diff' ? 'diff' : current)
-    }
-  }, [editedTargets])
-
-  useEffect(() => {
-    if (view === 'edited') editorRef.current?.focus()
-  }, [selectedLocator, view])
-
-  const action = actions.find((item) => item.locator === selectedLocator) ?? actions[0]
+  const action = actions.find((item) => item.locator === selectedLocator) ??
+    actions.find((item) => item.locator === preferredLocator)
   if (!action) {
     return <p className="text-sm text-gray-500">The proposed bundle has no file changes.</p>
   }
   const edited = editedTargets?.find((target) => target.locator === action.locator) ?? action.after
-  const editable = Boolean(onEditedTargetsChange)
+  const editedContent = edited.content ?? ''
+  const lines = lineCount(editedContent)
 
   function updateContent(content: string) {
     if (!onEditedTargetsChange || !editedTargets) return
@@ -69,40 +59,6 @@ export default function BundleComparison({
         ? { ...target, content, revision: `unsaved:${target.locator}` }
         : target
     )))
-  }
-
-  const views: { value: View; label: string }[] = [
-    { value: 'past', label: 'Past (B)' },
-    { value: 'proposed', label: 'Proposed (C)' },
-    { value: 'diff', label: 'Diff B → C' },
-  ]
-  if (editedTargets) views.push({ value: 'edited', label: 'Edited (D)' })
-  if (editedTargets) views.push({ value: 'edited-diff', label: 'Diff C → D' })
-
-  function tabId(value: View): string {
-    return `${tabsId}-tab-${value}`
-  }
-
-  function panelId(value: View): string {
-    return `${tabsId}-panel-${value}`
-  }
-
-  function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
-    let nextIndex: number | null = null
-    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
-      nextIndex = (index + 1) % views.length
-    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-      nextIndex = (index - 1 + views.length) % views.length
-    } else if (event.key === 'Home') {
-      nextIndex = 0
-    } else if (event.key === 'End') {
-      nextIndex = views.length - 1
-    }
-    if (nextIndex === null) return
-    event.preventDefault()
-    const nextView = views[nextIndex].value
-    setView(nextView)
-    tabRefs.current.get(nextView)?.focus()
   }
 
   return (
@@ -133,70 +89,53 @@ export default function BundleComparison({
         </div>
       </div>
 
-      <div
-        className="flex flex-wrap gap-1 border-b border-gray-200 px-3 pt-3"
-        role="tablist"
-        aria-label="Bundle views"
-      >
-        {views.map((item, index) => (
-          <button
-            key={item.value}
-            ref={(element) => {
-              if (element) tabRefs.current.set(item.value, element)
-              else tabRefs.current.delete(item.value)
-            }}
-            id={tabId(item.value)}
-            type="button"
-            role="tab"
-            aria-selected={view === item.value}
-            aria-controls={panelId(item.value)}
-            tabIndex={view === item.value ? 0 : -1}
-            onClick={() => setView(item.value)}
-            onKeyDown={(event) => handleTabKeyDown(event, index)}
-            className={`rounded-t px-3 py-2 text-xs font-medium ${
-              view === item.value ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
-            }`}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
-
-      {views.map((item) => (
-        <div
-          key={item.value}
-          id={panelId(item.value)}
-          role="tabpanel"
-          aria-labelledby={tabId(item.value)}
-          hidden={view !== item.value}
-          tabIndex={0}
-          className="p-3"
-        >
-          {item.value === 'edited' && editable ? (
-            <textarea
-              ref={editorRef}
-              aria-label={`Edit ${action.locator}`}
-              value={edited.content ?? ''}
-              onChange={(event) => updateContent(event.target.value)}
-              className="min-h-72 w-full rounded bg-gray-950 p-3 font-mono text-xs text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          ) : item.value === 'diff' || item.value === 'edited-diff' ? (
-            <UnifiedDiff
-              locator={action.locator}
-              before={item.value === 'diff' ? action.before : action.after}
-              after={item.value === 'diff' ? action.after : edited}
-              beforeLabel={item.value === 'diff' ? 'Past (B)' : 'Proposed (C)'}
-              afterLabel={item.value === 'diff' ? 'Proposed (C)' : 'Edited (D)'}
-            />
+      <div className="grid min-w-0 gap-3 p-3 xl:grid-cols-2">
+        <section className="min-w-0 overflow-hidden rounded-lg border border-gray-200">
+          <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2">
+            <h4 className="text-xs font-semibold text-gray-800">
+              {editable ? 'Editable proposal C' : hasEdited ? 'Edited C' : 'Proposed B'}
+            </h4>
+            {editable && <span className="text-xs text-gray-500">{lines} {lines === 1 ? 'line' : 'lines'}</span>}
+          </div>
+          {editable ? (
+            <div className="flex min-h-80 max-h-[32rem] overflow-auto bg-white font-mono text-xs leading-5 text-gray-700">
+              <pre
+                aria-label={`Line numbers for ${action.locator}`}
+                className="select-none border-r border-gray-200 bg-gray-50 px-3 py-3 text-right text-gray-400"
+              >
+                {Array.from({ length: lines }, (_, index) => index + 1).join('\n')}
+              </pre>
+              <textarea
+                aria-label={`Edit ${action.locator}`}
+                value={editedContent}
+                rows={lines}
+                onChange={(event) => updateContent(event.target.value)}
+                className="min-h-80 min-w-0 flex-1 resize-none overflow-hidden whitespace-pre bg-white p-3 font-mono text-xs leading-5 text-gray-700 outline-none focus:ring-2 focus:ring-inset focus:ring-blue-500"
+                spellCheck={false}
+              />
+            </div>
           ) : (
-            <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap rounded bg-gray-950 p-3 font-mono text-xs text-gray-100">
-              {item.value === 'past' && targetContent(action.before)}
-              {item.value === 'proposed' && targetContent(action.after)}
-              {item.value === 'edited' && targetContent(edited)}
+            <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap bg-gray-950 p-3 font-mono text-xs text-gray-100">
+              {targetContent(hasEdited ? edited : action.after)}
             </pre>
           )}
-        </div>
-      ))}
+        </section>
+
+        <section className="min-w-0 overflow-hidden rounded-lg border border-gray-200">
+          <h4 className="border-b border-gray-200 px-3 py-2 text-xs font-semibold text-gray-800">
+            {hasEdited ? 'Live diff A → C' : 'Diff A → B'}
+          </h4>
+          <div className="overflow-auto p-3">
+            <UnifiedDiff
+              locator={action.locator}
+              before={action.before}
+              after={hasEdited ? edited : action.after}
+              beforeLabel="Past (A)"
+              afterLabel={hasEdited ? 'Edited (C)' : 'Proposed (B)'}
+            />
+          </div>
+        </section>
+      </div>
     </section>
   )
 }

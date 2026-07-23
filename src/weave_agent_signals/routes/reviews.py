@@ -53,6 +53,7 @@ class PromoteRequest(BaseModel):
     expected_draft_revision: StrictStr | None = None
     idempotency_key: Identifier
     acknowledge_unevaluated: StrictBool = False
+    acknowledge_unverified: StrictBool = False
 
 
 class DismissRequest(BaseModel):
@@ -128,6 +129,7 @@ def create_reviews_router(service: ReviewService) -> APIRouter:
                     expected_revision=request.expected_revision,
                     expected_draft_revision=request.expected_draft_revision,
                     acknowledge_unevaluated=request.acknowledge_unevaluated,
+                    acknowledge_unverified=request.acknowledge_unverified,
                 )
             )
         )

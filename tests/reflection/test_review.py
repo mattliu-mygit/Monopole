@@ -93,7 +93,12 @@ def _candidate(baseline: BundleSnapshot, locator: str, content: str) -> BundleSn
     return BundleSnapshot(tuple(targets), baseline.scope)
 
 
-def _context(tmp_path, *, status: RunStatus = RunStatus.COMPLETE):
+def _context(
+    tmp_path,
+    *,
+    status: RunStatus = RunStatus.COMPLETE,
+    verified: bool = True,
+):
     (tmp_path / "skills" / "audit").mkdir(parents=True)
     (tmp_path / "CLAUDE.md").write_text("past\n")
     (tmp_path / "skills" / "audit" / "SKILL.md").write_text("audit past\n")
@@ -154,8 +159,20 @@ def _context(tmp_path, *, status: RunStatus = RunStatus.COMPLETE):
         baseline=baseline,
         attempts=attempts,
         evaluations=evaluations,
-        recommended_candidate_id="candidate-1",
-        baseline_won=False,
+        recommended_candidate_id="candidate-1" if verified else None,
+        baseline_won=not verified,
+        provisional_candidate_id=None if verified else "candidate-1",
+        challenge=(
+            None
+            if verified
+            else {
+                "challenge_id": "challenge-incomplete",
+                "candidate_id": "candidate-1",
+                "status": "incomplete",
+                "winner": "tie",
+                "reason": "sandbox launch failed",
+            }
+        ),
     )
     run = Run(
         run_id="run-1",
@@ -178,13 +195,13 @@ def _context(tmp_path, *, status: RunStatus = RunStatus.COMPLETE):
     return service, store, adapter, baseline, candidate_one, candidate_two
 
 
-def test_selects_c_and_requires_explicit_draft_discard(tmp_path):
+def test_selects_b_and_requires_explicit_draft_discard(tmp_path):
     service, store, _adapter, _baseline, candidate, _other = _context(tmp_path)
     saved = service.save_draft(
         "run-1",
         contents={
             **_contents(candidate),
-            "file:claude": "edited D\n",
+            "file:claude": "edited C\n",
         },
         expected_revision=1,
         expected_draft_revision=None,
@@ -212,14 +229,14 @@ def test_selects_c_and_requires_explicit_draft_discard(tmp_path):
     assert store.run.reflection_review_revision == 3
 
 
-def test_saves_and_resets_content_only_d_with_two_revisions(tmp_path):
+def test_saves_and_resets_content_only_c_with_two_revisions(tmp_path):
     service, _store, adapter, _baseline, candidate, _other = _context(tmp_path)
-    draft = _candidate(candidate, "file:claude", "edited D\n")
+    draft = _candidate(candidate, "file:claude", "edited C\n")
     saved = service.save_draft(
         "run-1",
         contents={
             **_contents(candidate),
-            "file:claude": "edited D\n",
+            "file:claude": "edited C\n",
         },
         expected_revision=1,
         expected_draft_revision=None,
@@ -247,7 +264,7 @@ def test_saves_and_resets_content_only_d_with_two_revisions(tmp_path):
     assert reset.reflection_review_revision == 3
 
 
-def test_rejects_d_content_that_changes_target_membership(tmp_path):
+def test_rejects_c_content_that_changes_target_membership(tmp_path):
     service, _store, _adapter, _baseline, candidate, _other = _context(tmp_path)
     incomplete = _contents(candidate)
     incomplete.pop("skills:skills/audit/SKILL.md")
@@ -305,7 +322,7 @@ def test_read_derives_stale_overlay_without_persisting_it(tmp_path):
     assert store.run.reflection_review_revision == 1
 
 
-def test_promotes_evaluated_c_and_persists_exact_receipt(tmp_path):
+def test_promotes_evaluated_b_and_persists_exact_receipt(tmp_path):
     service, store, _adapter, baseline, candidate, _other = _context(tmp_path)
     promoted = service.promote(
         "run-1",
@@ -346,14 +363,46 @@ def test_promotes_evaluated_c_and_persists_exact_receipt(tmp_path):
     assert retry_conflict.value.code == "promotion_idempotency_conflict"
 
 
+def test_unverified_b_requires_separate_acknowledgement_and_records_provenance(tmp_path):
+    service, _store, _adapter, _baseline, _candidate, _other = _context(
+        tmp_path,
+        verified=False,
+    )
+
+    with pytest.raises(ReviewRequestError) as missing_ack:
+        service.promote(
+            "run-1",
+            promotion_id="promotion-unverified",
+            expected_revision=1,
+            expected_draft_revision=None,
+            acknowledge_unverified=False,
+        )
+    assert missing_ack.value.code == "unverified_b_acknowledgement_required"
+
+    promoted = service.promote(
+        "run-1",
+        promotion_id="promotion-unverified",
+        expected_revision=1,
+        expected_draft_revision=None,
+        acknowledge_unverified=True,
+    )
+    receipt = promoted.reflection_review["receipt"]
+    assert receipt["sandbox_verified"] is False
+    assert receipt["challenge_id"] == "challenge-incomplete"
+    assert receipt["challenge_status"] == "incomplete"
+    assert receipt["challenge_reason"] == "sandbox launch failed"
+    assert receipt["unverified_b_acknowledged"] is True
+    assert receipt["unevaluated_d_acknowledged"] is False
+
+
 def test_d_requires_exact_acknowledgement_then_promotes(tmp_path):
     service, _store, adapter, _baseline, candidate, _other = _context(tmp_path)
-    draft = _candidate(candidate, "file:claude", "edited D\n")
+    draft = _candidate(candidate, "file:claude", "edited C\n")
     service.save_draft(
         "run-1",
         contents={
             **_contents(candidate),
-            "file:claude": "edited D\n",
+            "file:claude": "edited C\n",
         },
         expected_revision=1,
         expected_draft_revision=None,

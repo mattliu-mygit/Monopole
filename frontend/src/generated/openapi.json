@@ -1874,7 +1874,7 @@
             "type": "integer"
           },
           "finding_max_tokens": {
-            "default": 4000,
+            "default": 10000,
             "minimum": 1.0,
             "title": "Finding Max Tokens",
             "type": "integer"
@@ -2757,6 +2757,18 @@
             "title": "Provider Model",
             "type": "string"
           },
+          "raw_window_target_tokens": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Window Target Tokens"
+          },
           "supported_roles": {
             "items": {
               "enum": [
@@ -2844,6 +2856,18 @@
             "title": "Provider Model",
             "type": "string"
           },
+          "raw_window_target_tokens": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Window Target Tokens"
+          },
           "role": {
             "const": "judge",
             "default": "judge",
@@ -2893,6 +2917,11 @@
             "title": "Acknowledge Unevaluated",
             "type": "boolean"
           },
+          "acknowledge_unverified": {
+            "default": false,
+            "title": "Acknowledge Unverified",
+            "type": "boolean"
+          },
           "expected_draft_revision": {
             "anyOf": [
               {
@@ -2930,6 +2959,39 @@
             "title": "Candidate Id",
             "type": "string"
           },
+          "challenge_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Challenge Id"
+          },
+          "challenge_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Challenge Reason"
+          },
+          "challenge_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Challenge Status"
+          },
           "decided_at": {
             "title": "Decided At",
             "type": "string"
@@ -2966,8 +3028,16 @@
             "title": "Run Id",
             "type": "string"
           },
+          "sandbox_verified": {
+            "title": "Sandbox Verified",
+            "type": "boolean"
+          },
           "unevaluated_d_acknowledged": {
             "title": "Unevaluated D Acknowledged",
+            "type": "boolean"
+          },
+          "unverified_b_acknowledged": {
+            "title": "Unverified B Acknowledged",
             "type": "boolean"
           }
         },
@@ -2982,7 +3052,12 @@
           "outcomes",
           "decided_at",
           "promoted_was_evaluated",
-          "unevaluated_d_acknowledged"
+          "unevaluated_d_acknowledged",
+          "sandbox_verified",
+          "challenge_id",
+          "challenge_status",
+          "challenge_reason",
+          "unverified_b_acknowledged"
         ],
         "title": "PromotionReceiptResponse",
         "type": "object"

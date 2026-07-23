@@ -1,4 +1,4 @@
-"""Canonical immutable instruction bundles and exact B/C/D comparison rules."""
+"""Canonical immutable instruction bundles and exact A/B/C comparison rules."""
 
 from __future__ import annotations
 
@@ -456,7 +456,7 @@ def validate_edited_bundle(
     evaluated: BundleSnapshot,
     edited: BundleSnapshot,
 ) -> None:
-    """Require unevaluated D to preserve C target identity and B-to-C actions."""
+    """Require unevaluated C to preserve B target identity and A-to-B actions."""
 
     for bundle in (baseline, evaluated, edited):
         if not isinstance(bundle, BundleSnapshot):

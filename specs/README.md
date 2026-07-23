@@ -10,7 +10,7 @@ The component specs then cover the current behavioral contract:
 3. [Analysis and monitoring](03-analysis-monitoring.md) — comparable evidence,
    summaries, cohorts, trends, coaching, and alerts.
 4. [Evaluation runs](04-evaluation-runs.md) — pinned execution, reflection,
-   B/C/D review, drift, promotion, and audit.
+   A/B/C review, drift, promotion, and audit.
 
 Specifications explain product intent, observable behavior, boundaries,
 invariants, tradeoffs, and current architecture. They do not duplicate

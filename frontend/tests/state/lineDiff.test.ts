@@ -45,8 +45,8 @@ describe('lineDiff', () => {
     const result = lineDiff('CLAUDE.md', target('', false), target(''))
 
     expect(result).toBe([
-      '--- /dev/null — Past (B)',
-      '+++ CLAUDE.md — Proposed (C)',
+      '--- /dev/null — Past (A)',
+      '+++ CLAUDE.md — Proposed (B)',
     ].join('\n'))
   })
 

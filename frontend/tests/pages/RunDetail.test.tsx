@@ -696,13 +696,13 @@ describe('RunDetail wiring', () => {
     expect(screen.getByRole('region', { name: 'Reflection decision' })).not.toBeNull()
   })
 
-  it('protects unsaved D from route navigation and browser unload', async () => {
+  it('protects unsaved C from route navigation and browser unload', async () => {
     api.getRun.mockResolvedValue(completedReflectionRun())
     const { router } = renderPage()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit proposal inline' }))
+    await screen.findByLabelText('Edit CLAUDE.md')
     fireEvent.change(screen.getByLabelText('Edit CLAUDE.md'), {
-      target: { value: 'Unsaved edited D' },
+      target: { value: 'Unsaved edited C' },
     })
 
     const unload = new Event('beforeunload', { cancelable: true })
@@ -711,23 +711,23 @@ describe('RunDetail wiring', () => {
 
     void router.navigate('/runs')
     expect(await screen.findByRole('dialog', {
-      name: 'Leave without saving edited D?',
+      name: 'Leave without saving edited C?',
     })).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
-    expect(screen.getByDisplayValue('Unsaved edited D')).not.toBeNull()
+    expect(screen.getByDisplayValue('Unsaved edited C')).not.toBeNull()
 
     void router.navigate('/runs')
     fireEvent.click(await screen.findByRole('button', { name: 'Leave without saving' }))
     expect(await screen.findByText('Run list')).not.toBeNull()
   })
 
-  it('keeps cached run evidence and unsaved D visible when a background refresh fails', async () => {
+  it('keeps cached run evidence and unsaved C visible when a background refresh fails', async () => {
     api.getRun
       .mockResolvedValueOnce(completedReflectionRun())
       .mockRejectedValueOnce(new Error('Run refresh unavailable'))
     const { client } = renderPage()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit proposal inline' }))
+    await screen.findByLabelText('Edit CLAUDE.md')
     fireEvent.change(screen.getByLabelText('Edit CLAUDE.md'), {
       target: { value: 'Cached unsaved D' },
     })
@@ -749,13 +749,14 @@ describe('RunDetail wiring', () => {
 
     expect(await screen.findByRole('region', { name: 'Reflection review' })).not.toBeNull()
     expect(screen.getByText('Review needed')).not.toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Promote evaluated C' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Promote evaluated B' }))
     fireEvent.click(screen.getByRole('button', { name: 'Confirm promotion' }))
 
     await waitFor(() => expect(api.promoteRunReflection).toHaveBeenCalledWith('run-ui', {
       expectedRevision: 1,
       expectedDraftRevision: null,
       acknowledgeUnevaluated: false,
+      acknowledgeUnverified: false,
       idempotencyKey: 'run-ui:1:evaluated',
     }))
   })
@@ -806,7 +807,7 @@ describe('RunDetail wiring', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Reflecting' }))
     expect(await screen.findByRole('region', { name: 'Reflection review' })).not.toBeNull()
-    expect(screen.getByText(/No proposed C was evaluated/i)).not.toBeNull()
+    expect(screen.getByText(/No proposed B was evaluated/i)).not.toBeNull()
     expect(screen.getAllByText('Baseline evidence.').length).toBeGreaterThan(0)
   })
 

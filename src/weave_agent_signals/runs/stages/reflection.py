@@ -402,7 +402,7 @@ def _finalize_persisted_result(current: Run, store: RunStore) -> bool:
         return True
     if not evidence.attempts and evidence.reason is not None:
         return True
-    selected = evidence.recommended_candidate_id
+    selected = evidence.recommended_candidate_id or evidence.provisional_candidate_id
     if selected is not None:
         store.initialize_reflection_review(
             current.run_id,
@@ -552,7 +552,7 @@ def _execute_reflection_stage(
             raise ValueError("Reflection runner must return ReflectionResult")
         if result.provisional_candidate_id is not None:
             if dependencies.challenge_runner is None:
-                raise ValueError("paired challenge runner is required for provisional C")
+                raise ValueError("paired challenge runner is required for provisional B")
             judge_clients = {}
             for judge in config.models.challenge_judges:
                 client = stack.enter_context(dependencies.evaluator_client_factory(judge.model))
@@ -603,12 +603,13 @@ def _execute_reflection_stage(
         ReflectionResultRecord.from_epoch9(result.to_dict()),
     )
 
-    if result.recommended_candidate_id is not None:
+    selected = result.recommended_candidate_id or result.provisional_candidate_id
+    if selected is not None:
         dependencies.store.initialize_reflection_review(
             run.run_id,
             {
                 "status": "pending",
-                "selected_candidate_id": result.recommended_candidate_id,
+                "selected_candidate_id": selected,
                 "draft": None,
             },
             expected_revision=persisted.reflection_review_revision,

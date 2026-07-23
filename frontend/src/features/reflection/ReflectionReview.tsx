@@ -36,7 +36,10 @@ export interface ReflectionReviewProps {
   onSelect?: (candidateId: string, discardDraft: boolean) => MaybePromise
   onSaveDraft?: (contents: Record<string, string | null>) => MaybePromise
   onResetDraft?: () => MaybePromise
-  onPromote?: (acknowledgeUnevaluated: boolean) => MaybePromise
+  onPromote?: (
+    acknowledgeUnevaluated: boolean,
+    acknowledgeUnverified: boolean,
+  ) => MaybePromise
   onDismiss?: () => MaybePromise
   onDirtyChange?: (dirty: boolean) => void
 }
@@ -210,8 +213,8 @@ function EvaluatorAssessment({
         Score basis: predicted evaluator score, not a verification run.
       </p>
       <div className="grid gap-2 lg:grid-cols-2">
-        <EvaluatorAudit label="B" record={baseline} />
-        <EvaluatorAudit label="C" record={candidate.evaluation} />
+        <EvaluatorAudit label="A" record={baseline} />
+        <EvaluatorAudit label="B" record={candidate.evaluation} />
       </div>
     </section>
   )
@@ -236,14 +239,14 @@ function BaselineResult({ result }: { result: SuccessfulReflectionResult }) {
           No change recommended
         </span>
         <p className="mt-3 text-sm text-green-950">
-          Evaluated past B scored best. No instruction change is recommended.
+          Evaluated past A scored best. No instruction change is recommended.
         </p>
         <div className="mt-3 font-mono text-2xl font-semibold text-green-950">
           {result.baseline_score.toFixed(3)}
         </div>
       </div>
       <SnapshotTargets bundle={result.baseline} />
-      <EvaluatorAudit label="B" record={result.baseline_evaluation} />
+      <EvaluatorAudit label="A" record={result.baseline_evaluation} />
     </section>
   )
 }
@@ -253,12 +256,12 @@ type ChallengeArm = NonNullable<Challenge['baseline']>
 
 function challengeTitle(challenge: Challenge): string {
   if (challenge.status !== 'complete') return 'Paired sandbox verification incomplete'
-  if (challenge.winner === 'candidate') return 'C won paired sandbox verification'
-  if (challenge.winner === 'baseline') return 'B won paired sandbox verification'
+  if (challenge.winner === 'candidate') return 'B won paired sandbox verification'
+  if (challenge.winner === 'baseline') return 'A won paired sandbox verification'
   return 'Paired sandbox verification tied'
 }
 
-function PairedArmEvidence({ label, arm }: { label: 'B' | 'C', arm: ChallengeArm | null }) {
+function PairedArmEvidence({ label, arm }: { label: 'A' | 'B', arm: ChallengeArm | null }) {
   if (!arm) return null
   return (
     <details className="rounded border border-sky-200 bg-white p-3 text-xs">
@@ -361,8 +364,8 @@ function PairedChallengeEvidence({ challenge }: { challenge: Challenge }) {
         {execution.timeout_seconds}s timeout · {execution.network_enabled ? 'network enabled' : 'network disabled'}
       </p>
       <div className="grid gap-2 sm:grid-cols-2">
-        <PairedArmEvidence label="B" arm={challenge.baseline} />
-        <PairedArmEvidence label="C" arm={challenge.candidate} />
+        <PairedArmEvidence label="A" arm={challenge.baseline} />
+        <PairedArmEvidence label="B" arm={challenge.candidate} />
       </div>
       <details className="rounded border border-sky-200 bg-white p-3 text-xs">
         <summary className="cursor-pointer font-medium text-sky-950">
@@ -381,7 +384,7 @@ function PairedChallengeEvidence({ challenge }: { challenge: Challenge }) {
               <ul className="mt-2 space-y-1 font-mono">
                 {judge.rubrics.map((rubric) => (
                   <li key={rubric.rubric_id}>
-                    {rubric.rubric_id}: B {rubric.baseline_score.toFixed(2)} / C{' '}
+                    {rubric.rubric_id}: A {rubric.baseline_score.toFixed(2)} / B{' '}
                     {rubric.candidate_score.toFixed(2)} · Δ{' '}
                     {(rubric.delta ?? rubric.candidate_score - rubric.baseline_score) >= 0 ? '+' : ''}
                     {(rubric.delta ?? rubric.candidate_score - rubric.baseline_score).toFixed(2)}{' '}
@@ -406,16 +409,16 @@ function NoValidProposalResult({ result }: { result: SuccessfulReflectionResult 
       <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
         <h4 className="text-sm font-semibold text-amber-950">{result.reason}</h4>
         <p className="mt-1 text-sm text-amber-900">
-          Every proposal attempt was rejected. No proposed C was evaluated, so editing and promotion are unavailable.
+          Every proposal attempt was rejected. No proposed B was evaluated, so editing and promotion are unavailable.
         </p>
-        <div className="mt-3 text-xs font-semibold uppercase tracking-wide text-amber-800">Evaluated past B</div>
+        <div className="mt-3 text-xs font-semibold uppercase tracking-wide text-amber-800">Evaluated past A</div>
         <div className="mt-1 font-mono text-2xl font-semibold text-amber-950">
           {result.baseline_score.toFixed(3)}
         </div>
         <p className="mt-2 text-sm text-amber-900">{result.baseline_evaluation.rationale}</p>
       </div>
       <SnapshotTargets bundle={result.baseline} />
-      <EvaluatorAudit label="B" record={result.baseline_evaluation} />
+      <EvaluatorAudit label="A" record={result.baseline_evaluation} />
       <FailedAttemptAudit attempts={result.generation_attempts} />
     </section>
   )
@@ -445,15 +448,15 @@ export default function ReflectionReview({
   const [draftTargets, setDraftTargets] = useState<ReflectionTargetSnapshot[]>(() => (
     cloneTargets(initialTargets)
   ))
-  const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [acknowledged, setAcknowledged] = useState(false)
+  const [acknowledgedUnevaluated, setAcknowledgedUnevaluated] = useState(false)
+  const [acknowledgedUnverified, setAcknowledgedUnverified] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [dialog, setDialog] = useState<DialogState>(null)
   const [inspectedCandidateId, setInspectedCandidateId] = useState<string | null>(
     () => selected?.candidate_id ?? null,
   )
-  const dirty = editing && !sameTargets(
+  const dirty = !sameTargets(
     draftTargets,
     persistedTargets ?? selectedTargets ?? [],
   )
@@ -464,8 +467,8 @@ export default function ReflectionReview({
 
   useEffect(() => {
     setDraftTargets(cloneTargets(resetTargetsRef.current))
-    setEditing(false)
-    setAcknowledged(false)
+    setAcknowledgedUnevaluated(false)
+    setAcknowledgedUnverified(false)
     setDialog(null)
   }, [
     selected?.candidate_id,
@@ -490,7 +493,8 @@ export default function ReflectionReview({
     }
     if (review?.stale) {
       setDialog((current) => current === 'dismiss' ? current : null)
-      setAcknowledged(false)
+      setAcknowledgedUnevaluated(false)
+      setAcknowledgedUnverified(false)
     }
   }, [finalizing, review?.stale])
 
@@ -520,14 +524,16 @@ export default function ReflectionReview({
     ? selected
     : inspectedCandidate ?? selected
   const activeCandidateIsSelected = activeCandidate.candidate_id === selected.candidate_id
+  const editable = activeCandidateIsSelected && review?.status === 'pending' &&
+    !finalizing
 
   const activeDraft = persistedDraft?.candidate_id === activeCandidate.candidate_id
     ? persistedDraft
     : null
   const savedDraft = activeDraft != null && activeDraft.revision !== activeCandidate.bundle.revision
   const unsaved = dirty
-  const showEditedDraft = activeCandidateIsSelected && (editing || savedDraft)
-  const actionMismatchPaths = activeCandidateIsSelected && editing
+  const showEditedDraft = activeCandidateIsSelected && (dirty || savedDraft)
+  const actionMismatchPaths = editable && dirty
     ? actionSetMismatches(result.baseline, activeCandidate.bundle, draftTargets)
     : []
   const availability = promotionAvailability(run, busy)
@@ -563,12 +569,10 @@ export default function ReflectionReview({
     if (persistedDraft && onResetDraft) {
       void perform(async () => {
         await onResetDraft()
-        setEditing(false)
       })
       return
     }
     setDraftTargets(cloneTargets(activeCandidate.bundle.targets))
-    setEditing(false)
   }
 
   return (
@@ -582,13 +586,18 @@ export default function ReflectionReview({
             Finalizing review evidence. Editing and promotion will unlock when the run completes.
           </p>
         )}
-        {result.baseline_won && (
+        {result.baseline_won && result.provisional_candidate_id && (
+          <p className="mt-3 text-sm text-amber-800">
+            B scored better in predicted evaluation, but paired sandbox verification did not confirm it. You can review, edit, and promote it with an explicit acknowledgement.
+          </p>
+        )}
+        {result.baseline_won && !result.provisional_candidate_id && (
           <p className="mt-3 text-sm text-gray-600">
-            B scored best. Generated alternatives remain visible below as read-only evaluation evidence.
+            A scored best. Generated alternatives remain visible below as read-only evaluation evidence.
           </p>
         )}
         {review?.stale && (
-          <p className="mt-3 text-sm text-amber-900">Promotion is blocked because evaluated B no longer matches the managed files.</p>
+          <p className="mt-3 text-sm text-amber-900">Promotion is blocked because evaluated A no longer matches the managed files.</p>
         )}
       </div>
 
@@ -604,9 +613,9 @@ export default function ReflectionReview({
       )}
 
       <nav aria-label="Reflection decision sequence" className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
-        <span>1. B evaluated</span><span aria-hidden="true">→</span>
-        <span>2. C evaluated</span><span aria-hidden="true">→</span>
-        <span>3. Review or edit D</span><span aria-hidden="true">→</span>
+        <span>1. A evaluated</span><span aria-hidden="true">→</span>
+        <span>2. B evaluated</span><span aria-hidden="true">→</span>
+        <span>3. Review or edit C</span><span aria-hidden="true">→</span>
         <a className="font-medium text-blue-700 hover:underline" href="#reflection-decision">4. Decide</a>
       </nav>
 
@@ -663,8 +672,8 @@ export default function ReflectionReview({
       <BundleComparison
         past={result.baseline}
         proposed={activeCandidate.bundle}
-        editedTargets={showEditedDraft ? draftTargets : null}
-        onEditedTargetsChange={activeCandidateIsSelected && editing ? setDraftTargets : undefined}
+        editedTargets={editable || savedDraft ? draftTargets : null}
+        onEditedTargetsChange={editable ? setDraftTargets : undefined}
       />
 
       {receipt ? (
@@ -672,18 +681,15 @@ export default function ReflectionReview({
       ) : review?.status === 'pending' && !finalizing && activeCandidateIsSelected && (
         <ReflectionDecisionControls
           availability={availability}
-          editing={editing}
           hasSavedDraft={savedDraft}
           hasUnsavedChanges={unsaved}
           actionMismatchPaths={actionMismatchPaths}
           busy={busy}
           canDismiss={run.status === 'complete' && review?.status === 'pending'}
-          acknowledged={acknowledged}
-          onAcknowledgedChange={setAcknowledged}
-          onStartEditing={() => {
-            setDraftTargets(cloneTargets(persistedDraft?.bundle.targets ?? activeCandidate.bundle.targets))
-            setEditing(true)
-          }}
+          acknowledgedUnevaluated={acknowledgedUnevaluated}
+          acknowledgedUnverified={acknowledgedUnverified}
+          onAcknowledgedUnevaluatedChange={setAcknowledgedUnevaluated}
+          onAcknowledgedUnverifiedChange={setAcknowledgedUnverified}
           onSaveDraft={() => {
             if (onSaveDraft) void perform(() => onSaveDraft(contents(draftTargets)))
           }}
@@ -701,15 +707,23 @@ export default function ReflectionReview({
       {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
 
       {dialog === 'promote' && (
-        <Dialog title={savedDraft ? 'Promote unevaluated D?' : 'Promote evaluated C?'} busy={busy} onClose={() => setDialog(null)}>
+        <Dialog
+          title={savedDraft
+            ? 'Promote unevaluated C?'
+            : availability.requiresUnverifiedAcknowledgement
+              ? 'Promote unverified B?'
+              : 'Promote evaluated B?'}
+          busy={busy}
+          onClose={() => setDialog(null)}
+        >
           <p className="mt-3 text-sm text-gray-600">
-            The server will first confirm every managed instruction still matches evaluated B.
+            The server will first confirm every managed instruction still matches evaluated A.
           </p>
           <button
             type="button"
             disabled={busy}
             onClick={() => void perform(async () => {
-              if (onPromote) await onPromote(savedDraft)
+              if (onPromote) await onPromote(savedDraft, acknowledgedUnverified)
               setDialog(null)
             })}
             className="mt-4 rounded-lg bg-green-700 px-3 py-2 text-sm font-semibold text-white disabled:bg-gray-300"
@@ -722,7 +736,7 @@ export default function ReflectionReview({
         <Dialog title="Dismiss this proposal?" busy={busy} onClose={() => setDialog(null)}>
           {unsaved && (
             <p className="mt-3 text-sm font-medium text-amber-900">
-              Dismissal will discard your unsaved edited D.
+              Dismissal will discard your unsaved edited C.
             </p>
           )}
           <p className="mt-3 text-sm text-gray-600">No managed files will be changed.</p>
@@ -732,8 +746,8 @@ export default function ReflectionReview({
             onClick={() => void perform(async () => {
               if (onDismiss) await onDismiss()
               setDraftTargets(cloneTargets(activeCandidate.bundle.targets))
-              setEditing(false)
-              setAcknowledged(false)
+              setAcknowledgedUnevaluated(false)
+              setAcknowledgedUnverified(false)
               setDialog(null)
             })}
             className="mt-4 rounded-lg bg-gray-800 px-3 py-2 text-sm font-semibold text-white disabled:bg-gray-300"
@@ -743,9 +757,9 @@ export default function ReflectionReview({
         </Dialog>
       )}
       {dialog && typeof dialog === 'object' && 'selectCandidate' in dialog && (
-        <Dialog title="Discard edited D?" busy={busy} onClose={() => setDialog(null)}>
+        <Dialog title="Discard edited C?" busy={busy} onClose={() => setDialog(null)}>
           <p className="mt-3 text-sm text-gray-600">
-            Selecting another evaluated proposal discards the current edited D.
+            Selecting another evaluated proposal discards the current edited C.
           </p>
           <button
             type="button"
@@ -756,7 +770,7 @@ export default function ReflectionReview({
             })}
             className="mt-4 rounded-lg bg-red-700 px-3 py-2 text-sm font-semibold text-white disabled:bg-gray-300"
           >
-            Discard D and select proposal
+            Discard C and select proposal
           </button>
         </Dialog>
       )}
