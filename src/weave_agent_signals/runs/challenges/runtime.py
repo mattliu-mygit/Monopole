@@ -55,7 +55,7 @@ class RuntimeFileSource(BaseModel):
 
 
 class SandboxRuntime(BaseModel):
-    """Platform runtime inputs that are identical for B and C."""
+    """Platform runtime inputs that are identical for A and B."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

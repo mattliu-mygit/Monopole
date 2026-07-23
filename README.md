@@ -144,7 +144,7 @@ reflection additionally need a usable model backend:
 - Local Claude, Codex, or Antigravity inference requires an installed,
   authenticated `claude`, `codex`, or `agy` CLI on `PATH`.
 
-One provider-qualified model catalog supplies proposal writers, judges, B/C
+One provider-qualified model catalog supplies proposal writers, judges, A/B
 verification judges, and proposal evaluators. The web UI only offers local
 models whose provider executable it detects. Antigravity contributes its
 Gemini/Google and open-source models; duplicate Anthropic choices remain under
@@ -175,8 +175,8 @@ Standalone `reflect` only previews output. Use an evaluation run in the web UI
 to persist candidates, edit a proposal, promote it, or retain a receipt.
 Displayed reflection scores are predicted evaluator scores, not verification
 runs. The default proposal loop evaluates up to three candidate bundles, then
-runs only the selected provisional C against B. Normal session judging defaults
-to three recommended reviewers; the independently configured B/C verification
+runs only the selected provisional B against A. Normal session judging defaults
+to three recommended reviewers; the independently configured A/B verification
 panel defaults to one for cost.
 
 ## Target registries

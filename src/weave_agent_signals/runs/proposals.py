@@ -145,7 +145,7 @@ def materialize_candidate_proposal(
     baseline: BundleSnapshot,
     resolve_locator: Callable[..., object],
 ) -> BundleSnapshot:
-    """Apply one complete proposal to B and build its immutable C snapshot."""
+    """Apply one complete proposal to A and build its immutable B snapshot."""
 
     if not isinstance(proposal, CandidateProposal):
         raise ValueError("expected CandidateProposal")
@@ -159,11 +159,11 @@ def materialize_candidate_proposal(
         target = by_locator.get(change.locator)
         exists = target is not None and target.exists
         if change.action == "create" and exists:
-            raise ValueError(f"create locator already exists in baseline B: {change.locator}")
+            raise ValueError(f"create locator already exists in baseline A: {change.locator}")
         if change.action == "update" and not exists:
-            raise ValueError(f"update locator is absent from baseline B: {change.locator}")
+            raise ValueError(f"update locator is absent from baseline A: {change.locator}")
         if change.action == "update" and target is not None and target.content == change.content:
-            raise ValueError(f"update must change baseline B content: {change.locator}")
+            raise ValueError(f"update must change baseline A content: {change.locator}")
         resolve_locator(
             change.locator,
             require_absent_for_create=change.action == "create",

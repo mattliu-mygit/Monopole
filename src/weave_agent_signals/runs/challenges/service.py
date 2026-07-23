@@ -134,7 +134,7 @@ def run_challenge(
     prepare_pair: Callable[[TaskMaterialPlan], PreparedPair] | None = None,
     cancel_requested: Callable[[], bool] = lambda: False,
 ) -> ChallengeResult:
-    """Run one full comparison; every non-clear-C outcome conservatively keeps B."""
+    """Run one full comparison; every non-clear-B outcome conservatively keeps A."""
 
     positions = tuple(judge.position for judge in judges)
     if positions != tuple(range(1, len(judges) + 1)) or not 1 <= len(judges) <= 3:

@@ -670,8 +670,8 @@ def _render_bundle_diff(past: BundleSnapshot, proposed: BundleSnapshot) -> str:
             for line in difflib.unified_diff(
                 before,
                 after,
-                fromfile=f"B/{action.locator}",
-                tofile=f"C/{action.locator}",
+                fromfile=f"A/{action.locator}",
+                tofile=f"B/{action.locator}",
             )
         )
     return "".join(chunks)

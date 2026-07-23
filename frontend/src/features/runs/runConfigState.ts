@@ -235,14 +235,14 @@ export function assessRunConfig(
     errors.push('Judge selections must be unique.')
   }
   if (state.challengeJudgeModels.value.length < 1 || state.challengeJudgeModels.value.length > 3) {
-    errors.push('Select one through three B/C verification judges.')
+    errors.push('Select one through three A/B verification judges.')
   }
   const challengeJudges = state.challengeJudgeModels.value.map((id) => model(models, id))
   if (challengeJudges.some((judge) => judge === undefined || !supports(judge, 'judge'))) {
-    errors.push('Select only available B/C verification judge models.')
+    errors.push('Select only available A/B verification judge models.')
   }
   if (new Set(state.challengeJudgeModels.value).size !== state.challengeJudgeModels.value.length) {
-    errors.push('B/C verification judge selections must be unique.')
+    errors.push('A/B verification judge selections must be unique.')
   }
   const selectedEvaluator = model(models, state.proposalEvaluatorModel.value)
   if (!selectedEvaluator || !supports(selectedEvaluator, 'proposal_evaluator')) {

@@ -462,7 +462,7 @@ def test_challenge_preflight_infrastructure_failure_is_not_an_invalid_task() -> 
     assert runner.calls == []
 
 
-def test_challenge_candidate_majority_recommends_c() -> None:
+def test_challenge_candidate_majority_recommends_b() -> None:
     client = _Client(_author_responses())
     judge_client = _Client(
         [

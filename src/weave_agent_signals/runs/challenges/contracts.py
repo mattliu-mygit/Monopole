@@ -52,6 +52,20 @@ class _Contract(BaseModel):
         return cls.model_validate(value)
 
 
+def validate_public_git_url(value: object) -> str:
+    """Return one supported public Git URL or reject it before network access."""
+
+    if not isinstance(value, str):
+        raise ValueError("material url must be a string")
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username is not None:
+        raise ValueError("material url must be a public https URL without credentials")
+    hostname = parsed.hostname
+    if hostname is None or hostname.lower() not in _PUBLIC_GIT_HOSTS:
+        raise ValueError("material url must use a supported public Git host")
+    return value
+
+
 class NamedDigest(_Contract):
     name: StrictStr
     digest: StrictStr
@@ -117,12 +131,7 @@ class TaskMaterial(_Contract):
 
     @model_validator(mode="after")
     def validate_material(self) -> TaskMaterial:
-        parsed = urlparse(self.url)
-        if parsed.scheme != "https" or not parsed.netloc or parsed.username is not None:
-            raise ValueError("material url must be a public https URL without credentials")
-        hostname = parsed.hostname
-        if hostname is None or hostname.lower() not in _PUBLIC_GIT_HOSTS:
-            raise ValueError("material url must use a supported public Git host")
+        validate_public_git_url(self.url)
         if not re.fullmatch(r"[0-9a-fA-F]{40}", self.revision):
             raise ValueError("material revision must be a full 40-character Git commit SHA")
         destination = PurePosixPath(self.destination)

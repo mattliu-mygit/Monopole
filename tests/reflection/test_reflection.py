@@ -831,7 +831,7 @@ def test_writer_prompt_lists_exact_contract_scope_and_inventory():
         assert '"allowed_actions": [\n        "update",\n        "create"' in prompt
         assert '"locator_format": "markdown:project/<relative-path.md>"' in prompt
         assert "create requires a locator admitted by the pinned target registry" in prompt
-        assert "update requires a locator present in baseline B" in prompt
+        assert "update requires a locator present in baseline A" in prompt
         assert "delete requires" not in prompt
         assert "one atomic multi-file proposal" in prompt
         assert "JSON only" in prompt

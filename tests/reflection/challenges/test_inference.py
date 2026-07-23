@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from weave_agent_signals.judges.inference import (
     JudgeResponse,
     json_output_contract_messages,
@@ -14,6 +16,7 @@ from weave_agent_signals.runs.challenges.contracts import (
     TaskMaterialPlan,
 )
 from weave_agent_signals.runs.challenges.inference import (
+    _MATERIAL_SYSTEM,
     MATERIAL_PLAN_SCHEMA,
     TASK_SCHEMA,
     _input_tokens,
@@ -95,6 +98,13 @@ def test_challenge_schemas_include_canonical_examples() -> None:
         "judge.tool_choice",
     ]
     assert schema.examples[1]["winner"] == "tie"
+    material_properties = MATERIAL_PLAN_SCHEMA.schema["properties"]["materials"]["items"][
+        "properties"
+    ]
+    assert "revision" not in material_properties
+    material_prompt = " ".join(_MATERIAL_SYSTEM.split())
+    assert "real source and tests" in material_prompt
+    assert "toy, demo, example, or placeholder repositories" in material_prompt
 
 
 def test_challenge_input_tokens_count_prompt_contract_and_provider_schema() -> None:
@@ -119,7 +129,6 @@ def test_task_author_plans_materials_then_uses_the_fetched_manifest() -> None:
                         {
                             "kind": "git_repository",
                             "url": "https://github.com/example/parser.git",
-                            "revision": "a" * 40,
                             "destination": "task",
                         }
                     ],
@@ -141,12 +150,19 @@ def test_task_author_plans_materials_then_uses_the_fetched_manifest() -> None:
         ]
     )
 
+    resolved_urls: list[str] = []
+
+    def resolve_revision(url: str) -> str:
+        resolved_urls.append(url)
+        return "a" * 40
+
     plan = plan_task_materials(
         client,
         author=_author(),
         coaching_digest="Agents often failed to verify parser fixes.",
         workspace_digest="sha256:seed",
         workspace=WorkspaceSnapshot((WorkspaceFile("README.md", b"seed workspace\n"),)),
+        resolve_revision=resolve_revision,
     )
     task = author_task(
         client,
@@ -172,6 +188,7 @@ def test_task_author_plans_materials_then_uses_the_fetched_manifest() -> None:
     assert task.goal == "The parser regression test passes."
     assert task.setup_mode == "prepared_workspace"
     assert task.materials[0].revision == "a" * 40
+    assert resolved_urls == ["https://github.com/example/parser.git"]
     assert task.judging_criteria == ("The regression is fixed.", "Tests pass.")
     assert task.required_files == ("task/src/parser.py", "task/tests/test_parser.py")
     assert task.required_executables == ("python",)
@@ -203,6 +220,95 @@ def test_task_author_plans_materials_then_uses_the_fetched_manifest() -> None:
         "required_executables",
         "requires_git_metadata",
     }
+
+
+def test_material_planner_replaces_an_inaccessible_repository() -> None:
+    client = _Client(
+        [
+            (
+                {
+                    "setup_mode": "prepared_workspace",
+                    "materials": [
+                        {
+                            "kind": "git_repository",
+                            "url": "https://github.com/wandb/private-project.git",
+                            "destination": "task",
+                        }
+                    ],
+                },
+                "claude-sonnet-5",
+            ),
+            (
+                {
+                    "setup_mode": "prepared_workspace",
+                    "materials": [
+                        {
+                            "kind": "git_repository",
+                            "url": "https://github.com/psf/requests.git",
+                            "destination": "task",
+                        }
+                    ],
+                },
+                "claude-sonnet-5",
+            ),
+        ]
+    )
+
+    def resolve_revision(url: str) -> str:
+        if "private-project" in url:
+            raise RuntimeError("anonymous access failed")
+        return "b" * 40
+
+    plan = plan_task_materials(
+        client,
+        author=_author(),
+        coaching_digest="Agents need a fresh analogous verification task.",
+        workspace_digest="sha256:seed",
+        workspace=WorkspaceSnapshot((WorkspaceFile("README.md", b"seed\n"),)),
+        resolve_revision=resolve_revision,
+    )
+
+    assert len(client.calls) == 2
+    assert plan.materials[0].url == "https://github.com/psf/requests.git"
+    assert plan.materials[0].revision == "b" * 40
+    correction_messages = client.calls[1]["messages"]
+    assert "https://github.com/wandb/private-project.git" in str(correction_messages)
+    assert "accessed anonymously" in str(correction_messages)
+
+
+def test_material_planner_reports_rejected_urls_after_three_attempts() -> None:
+    urls = [
+        "https://github.com/wandb/private-one.git",
+        "https://github.com/wandb/private-two.git",
+        "https://github.com/wandb/private-three.git",
+    ]
+    client = _Client(
+        [
+            (
+                {
+                    "setup_mode": "prepared_workspace",
+                    "materials": [{"kind": "git_repository", "url": url, "destination": "task"}],
+                },
+                "claude-sonnet-5",
+            )
+            for url in urls
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="anonymously accessible public material") as error:
+        plan_task_materials(
+            client,
+            author=_author(),
+            coaching_digest="Agents need a fresh analogous verification task.",
+            workspace_digest="sha256:seed",
+            workspace=WorkspaceSnapshot((WorkspaceFile("README.md", b"seed\n"),)),
+            resolve_revision=lambda _url: (_ for _ in ()).throw(
+                RuntimeError("anonymous access failed")
+            ),
+        )
+
+    assert len(client.calls) == 3
+    assert all(url in str(error.value) for url in urls)
 
 
 def test_pairwise_judge_uses_exact_configured_rubrics_and_blinded_order() -> None:

@@ -10,6 +10,7 @@ from weave_agent_signals.runs.challenges.contracts import (
 from weave_agent_signals.runs.challenges.preparation import (
     prepare_task_context,
     prepare_task_workspace,
+    resolve_repository_head,
     validate_task_workspace,
 )
 from weave_agent_signals.runs.challenges.workspace import WorkspaceFile, WorkspaceSnapshot
@@ -173,6 +174,38 @@ def test_default_git_fetcher_uses_detached_pinned_revision_and_excludes_git_meta
     ]
     assert all(kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0" for kwargs in run_kwargs)
     assert result.paths == ("task/app.py",)
+
+
+def test_repository_head_resolver_returns_the_advertised_commit(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+        return type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": f"{'b' * 40}\tHEAD\n", "stderr": ""},
+        )()
+
+    monkeypatch.setattr("weave_agent_signals.runs.challenges.preparation.subprocess.run", run)
+
+    revision = resolve_repository_head("https://github.com/example/parser.git")
+
+    assert revision == "b" * 40
+    assert calls == [
+        [
+            "git",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "core.askPass=",
+            "ls-remote",
+            "--exit-code",
+            "https://github.com/example/parser.git",
+            "HEAD",
+        ]
+    ]
 
 
 class _TempDirectory:

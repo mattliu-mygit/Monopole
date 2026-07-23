@@ -1,4 +1,4 @@
-"""Deterministic, mount-free workspace capture and B/C arm materialization."""
+"""Deterministic, mount-free workspace capture and A/B arm materialization."""
 
 from __future__ import annotations
 
@@ -307,7 +307,7 @@ def _require_baseline_matches(
                 and source.read_bytes() == (target.content or "").encode("utf-8")
             ) or (not source.exists() and not target.exists)
         if not matches:
-            raise ValueError(f"workspace does not match baseline B at {target.locator}")
+            raise ValueError(f"workspace does not match baseline A at {target.locator}")
     return locations
 
 
@@ -338,7 +338,7 @@ def materialize_arms(
     guest_home: str = "/root",
     verify_baseline: bool = True,
 ) -> ArmSnapshots:
-    """Build private B/C workspace archives and authenticate their sole differences."""
+    """Build private A/B workspace archives and authenticate their sole differences."""
 
     if not isinstance(snapshot, WorkspaceSnapshot):
         raise ValueError("snapshot must be a WorkspaceSnapshot")
@@ -448,7 +448,7 @@ def materialize_arms(
     )
     actual_paths = tuple(sorted((*workspace_changes, *runtime_changes)))
     if actual_paths != tuple(sorted(expected_paths)):
-        raise ValueError("B/C workspace delta does not match declared candidate actions")
+        raise ValueError("A/B workspace delta does not match declared candidate actions")
     managed_paths = frozenset(
         path for kind, path, _source in locations.values() if kind == "workspace"
     )

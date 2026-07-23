@@ -194,7 +194,7 @@ def test_epoch9_challenge_task_v2_upgrades_to_current_authenticated_contract() -
 
 
 @pytest.mark.parametrize("winner", ["baseline", "tie"])
-def test_only_a_complete_candidate_win_recommends_c(winner: str) -> None:
+def test_only_a_complete_candidate_win_recommends_b(winner: str) -> None:
     assert _result(winner=winner).recommendation() is None
 
 

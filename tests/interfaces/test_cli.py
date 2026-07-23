@@ -203,8 +203,8 @@ def test_standalone_reflect_always_infers_with_resolved_roles_and_only_prints_di
     output = capsys.readouterr().out
     assert "proposal_writer=codex:gpt-5.6-sol" in output
     assert "proposal_evaluator=claude:claude-sonnet-5" in output
-    assert "--- B/CLAUDE.md" in output
-    assert "+++ C/CLAUDE.md" in output
+    assert "--- A/CLAUDE.md" in output
+    assert "+++ B/CLAUDE.md" in output
     assert "preview-only" in output
 
 
@@ -214,7 +214,7 @@ def test_bundle_diff_separates_multiple_files_without_trailing_newlines():
 
     rendered = cli._render_bundle_diff(past, proposed)
 
-    assert "-old\n+new\n--- B/CLAUDE.md" in rendered
+    assert "-old\n+new\n--- A/CLAUDE.md" in rendered
     assert "-before\n+after\n" in rendered
 
 

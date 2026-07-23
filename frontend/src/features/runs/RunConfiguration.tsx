@@ -326,9 +326,9 @@ export default function RunConfiguration({
 
         <fieldset>
           <legend className="mb-2 flex w-full items-center justify-between gap-2 text-sm font-medium text-gray-700">
-            <span>B/C verification judges</span>
+            <span>A/B verification judges</span>
             <SourceBadge
-              label="B/C verification judges"
+              label="A/B verification judges"
               source={state.challengeJudgeModels.source}
             />
           </legend>
@@ -342,7 +342,7 @@ export default function RunConfiguration({
                   htmlFor={`challenge-judge-${index + 1}`}
                   className="mb-1 block text-xs font-medium text-gray-600"
                 >
-                  B/C verification judge {index + 1}
+                  A/B verification judge {index + 1}
                 </label>
                 <select
                   id={`challenge-judge-${index + 1}`}
@@ -378,7 +378,7 @@ export default function RunConfiguration({
                 }}
                 className="text-xs font-medium text-blue-700 hover:text-blue-900 disabled:text-gray-400"
               >
-                Add B/C verification judge
+                Add A/B verification judge
               </button>
             )}
             {state.challengeJudgeModels.value.length > 1 && (
@@ -387,7 +387,7 @@ export default function RunConfiguration({
                 onClick={() => onAction({ type: 'remove-last-challenge-judge' })}
                 className="text-xs font-medium text-blue-700 hover:text-blue-900"
               >
-                Remove last B/C verification judge
+                Remove last A/B verification judge
               </button>
             )}
           </div>

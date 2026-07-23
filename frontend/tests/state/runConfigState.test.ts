@@ -95,7 +95,7 @@ describe('judge panel configuration state', () => {
     expect(state.judgeModels.value).toEqual([anthropic.id, openai.id])
   })
 
-  it('configures the B/C verification panel independently', () => {
+  it('configures the A/B verification panel independently', () => {
     let state = initializeRunConfigState(models, rubrics)
     state = transitionRunConfig(
       state,

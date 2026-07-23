@@ -150,7 +150,7 @@ def test_workspace_changes_include_bounded_semantic_diffs() -> None:
     assert "-before" in changes[2].diff and "+after" in changes[2].diff
 
 
-def test_materialization_rejects_workspace_that_no_longer_matches_b(tmp_path: Path) -> None:
+def test_materialization_rejects_workspace_that_no_longer_matches_a(tmp_path: Path) -> None:
     root = _workspace(tmp_path)
     baseline, candidate = _bundles()
     (root / "AGENTS.md").write_text("drifted\n", encoding="utf-8")
@@ -160,7 +160,7 @@ def test_materialization_rejects_workspace_that_no_longer_matches_b(tmp_path: Pa
         "markdown:repo/new/POLICY.md": root / "new" / "POLICY.md",
     }
 
-    with pytest.raises(ValueError, match="does not match baseline B"):
+    with pytest.raises(ValueError, match="does not match baseline A"):
         materialize_arms(
             capture_workspace(root),
             baseline=baseline,
@@ -170,7 +170,7 @@ def test_materialization_rejects_workspace_that_no_longer_matches_b(tmp_path: Pa
         )
 
 
-def test_materialization_injects_b_and_c_after_common_preparation(tmp_path: Path) -> None:
+def test_materialization_injects_a_and_b_after_common_preparation(tmp_path: Path) -> None:
     root = _workspace(tmp_path)
     baseline, candidate = _bundles()
     prepared = WorkspaceSnapshot(

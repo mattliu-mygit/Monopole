@@ -51,8 +51,8 @@ _GEPA_OBJECTIVE_TEMPLATE = (
     "- `changes` contains only files changed by the proposal, and each locator "
     "appears once.\n"
     "- create requires a locator admitted by the pinned target registry and absent "
-    "from baseline B, with complete string content.\n"
-    "- update requires a locator present in baseline B and changed complete "
+    "from baseline A, with complete string content.\n"
+    "- update requires a locator present in baseline A and changed complete "
     "replacement string content.\n"
     "- The complete change list is one atomic multi-file proposal; every change "
     "must be valid together.\n"
@@ -66,7 +66,7 @@ _GEPA_BACKGROUND_TEMPLATE = (
     "Instructions should be clear, specific, non-redundant, and focused on "
     "verification, error handling, and effective tool use. Human review gates "
     "every promotion.\n\n"
-    "Pinned baseline B complete inventory and contents:\n{baseline_contents}\n\n"
+    "Pinned baseline A complete inventory and contents:\n{baseline_contents}\n\n"
     "Pinned scope policy:\n{scope_policy}\n"
 )
 _EVALUATOR_SYSTEM = (

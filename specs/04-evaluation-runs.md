@@ -204,11 +204,13 @@ currently fetched revision; it does not claim to replay the historical task or
 source tree exactly.
 
 Public source preparation is deliberately narrow. A material may name an HTTPS
-Git repository on GitHub, GitLab, Bitbucket, or Codeberg, a full commit SHA,
-and a safe relative destination; model-
-authored host shell commands, credentials, private sources, and moving branches
-are rejected. The service fetches each repository once into a temporary checkout
-and excludes Git metadata before task authoring. In `prepared_workspace` mode,
+Git repository on GitHub, GitLab, Bitbucket, or Codeberg and a safe relative
+destination. Trusted service code resolves the repository's advertised `HEAD`
+to a full commit SHA before constructing the pinned material plan; the model
+does not supply revisions. Model-authored host shell commands, credentials,
+private sources, and moving branches are rejected. The service fetches each
+pinned revision once into a temporary checkout and excludes Git metadata before
+task authoring. In `prepared_workspace` mode,
 it overlays the fetched files on the common execution workspace before forking
 B and C. In `agent_bootstrap` mode, fetched files are authoring context only;
 both agents receive the same pinned material specification and must perform the

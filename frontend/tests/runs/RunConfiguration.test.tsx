@@ -140,11 +140,11 @@ describe('RunConfiguration', () => {
     expect(screen.getByRole('combobox', { name: 'Judge 1' })).not.toBeNull()
     expect(screen.getByRole('combobox', { name: 'Judge 2' })).not.toBeNull()
     expect(screen.getByRole('combobox', { name: 'Judge 3' })).not.toBeNull()
-    expect(screen.getByRole('combobox', { name: 'B/C verification judge 1' })).not.toBeNull()
+    expect(screen.getByRole('combobox', { name: 'A/B verification judge 1' })).not.toBeNull()
     expect(screen.getByRole('combobox', { name: 'Proposal evaluator' })).not.toBeNull()
     expect(screen.getByLabelText('Proposal writer source').textContent).toBe('recommended')
     expect(screen.getByLabelText('Ordered judges source').textContent).toBe('recommended')
-    expect(screen.getByLabelText('B/C verification judges source').textContent).toBe('recommended')
+    expect(screen.getByLabelText('A/B verification judges source').textContent).toBe('recommended')
     expect(screen.getByLabelText('Proposal evaluator source').textContent).toBe('automatic')
     expect(screen.queryByRole('textbox')).toBeNull()
   })
@@ -166,7 +166,7 @@ describe('RunConfiguration', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Judge 1' }), {
       target: { value: cliMeta.id },
     })
-    fireEvent.change(screen.getByRole('combobox', { name: 'B/C verification judge 1' }), {
+    fireEvent.change(screen.getByRole('combobox', { name: 'A/B verification judge 1' }), {
       target: { value: cliMeta.id },
     })
     fireEvent.change(screen.getByRole('combobox', { name: 'Proposal evaluator' }), {
@@ -244,7 +244,7 @@ describe('RunConfiguration', () => {
     expect(onAction).toHaveBeenLastCalledWith({ type: 'remove-last-judge' })
   })
 
-  it('supports one through three B/C verification judges independently', () => {
+  it('supports one through three A/B verification judges independently', () => {
     const onAction = vi.fn()
     render(
       <RunConfiguration
@@ -255,7 +255,7 @@ describe('RunConfiguration', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add B/C verification judge' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add A/B verification judge' }))
     expect(onAction).toHaveBeenLastCalledWith({
       type: 'select-challenge-judge',
       position: 2,

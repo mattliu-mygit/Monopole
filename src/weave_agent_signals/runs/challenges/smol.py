@@ -1,4 +1,4 @@
-"""Mount-free local Smol Machines execution for paired B/C agent arms."""
+"""Mount-free local Smol Machines execution for paired A/B agent arms."""
 
 from __future__ import annotations
 

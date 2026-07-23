@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -26,7 +26,9 @@ from weave_agent_signals.runs.challenges.contracts import (
     TaskMaterial,
     TaskMaterialPlan,
     Winner,
+    validate_public_git_url,
 )
+from weave_agent_signals.runs.challenges.preparation import resolve_repository_head
 from weave_agent_signals.runs.challenges.workspace import WorkspaceSnapshot
 
 _INFERENCE_SAFETY_TOKENS = 1_024
@@ -34,6 +36,7 @@ _JUDGE_MAX_TRANSCRIPT_CHARACTERS = 100_000
 _JUDGE_MAX_ARTIFACT_DIFF_CHARACTERS = 50_000
 _JUDGE_MAX_ARTIFACT_CHANGES = 200
 _TASK_WORKSPACE_MANIFEST_PATHS = 64
+_MATERIAL_PLAN_ATTEMPTS = 3
 _REDACTED_INSTRUCTION_EVIDENCE = "managed instruction evidence withheld from blinded judge"
 
 MATERIAL_PLAN_SCHEMA = JsonSchemaSpec(
@@ -61,10 +64,9 @@ MATERIAL_PLAN_SCHEMA = JsonSchemaSpec(
                                 "bitbucket\\.org|codeberg\\.org)/"
                             ),
                         },
-                        "revision": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
                         "destination": {"type": "string", "minLength": 1},
                     },
-                    "required": ["kind", "url", "revision", "destination"],
+                    "required": ["kind", "url", "destination"],
                 },
             },
         },
@@ -77,7 +79,6 @@ MATERIAL_PLAN_SCHEMA = JsonSchemaSpec(
                 {
                     "kind": "git_repository",
                     "url": "https://github.com/example/project.git",
-                    "revision": "0123456789abcdef0123456789abcdef01234567",
                     "destination": "task",
                 }
             ],
@@ -88,7 +89,6 @@ MATERIAL_PLAN_SCHEMA = JsonSchemaSpec(
                 {
                     "kind": "git_repository",
                     "url": "https://github.com/example/project.git",
-                    "revision": "0123456789abcdef0123456789abcdef01234567",
                     "destination": "task",
                 }
             ],
@@ -170,9 +170,12 @@ them.
 
 Use prepared_workspace when public files should be fetched once and copied identically into both
 environments. Use agent_bootstrap only when source acquisition is itself part of the challenge.
-Git materials must use a public HTTPS URL, a full 40-character commit SHA, and a safe relative
-destination. Do not request credentials, private sources, moving branches, or host shell commands.
-Supported repository hosts are github.com, gitlab.com, bitbucket.org, and codeberg.org.
+Git materials must use a public HTTPS URL and a safe relative destination. The service resolves and
+pins the repository's current HEAD; do not supply a commit, tag, or branch. Do not request
+credentials, private sources, or host shell commands. Supported repository hosts are github.com,
+gitlab.com, bitbucket.org, and codeberg.org. Choose a maintained repository with real source and
+tests that can support a realistic task analogous to the measured weakness. Do not choose toy,
+demo, example, or placeholder repositories.
 """
 
 _TASK_SYSTEM = """\
@@ -255,6 +258,7 @@ def plan_task_materials(
     coaching_digest: str,
     workspace_digest: str,
     workspace: WorkspaceSnapshot,
+    resolve_revision: Callable[[str], str] = resolve_repository_head,
 ) -> TaskMaterialPlan:
     """Select immutable public material before the final task is authored."""
 
@@ -277,24 +281,87 @@ def plan_task_materials(
             ),
         },
     ]
-    if _input_tokens(
-        messages,
-        MATERIAL_PLAN_SCHEMA,
-        token_counter=author.token_counter,
-    ) > _input_limit(author, max_output_tokens=512):
-        raise ValueError("task material planner input cannot fit the configured model context")
-    parsed, _response = client.chat_json(
-        model=author.provider_model,
-        messages=messages,
-        temperature=0.0,
-        max_tokens=512,
-        response_schema=MATERIAL_PLAN_SCHEMA,
-    )
-    value = _strict_object(parsed, {"setup_mode", "materials"}, "task material response")
-    return TaskMaterialPlan(
-        setup_mode=value["setup_mode"],
-        materials=tuple(TaskMaterial.model_validate(item) for item in value["materials"]),
-    )
+    rejected_urls: list[str] = []
+    resolved_revisions: dict[str, str] = {}
+    for attempt in range(1, _MATERIAL_PLAN_ATTEMPTS + 1):
+        if _input_tokens(
+            messages,
+            MATERIAL_PLAN_SCHEMA,
+            token_counter=author.token_counter,
+        ) > _input_limit(author, max_output_tokens=512):
+            raise ValueError("task material planner input cannot fit the configured model context")
+        parsed, _response = client.chat_json(
+            model=author.provider_model,
+            messages=messages,
+            temperature=0.0,
+            max_tokens=512,
+            response_schema=MATERIAL_PLAN_SCHEMA,
+        )
+        value = _strict_object(
+            parsed,
+            {"setup_mode", "materials"},
+            "task material response",
+        )
+        materials = []
+        failed_url: str | None = None
+        resolution_error: Exception | None = None
+        for item in value["materials"]:
+            selected = _strict_object(
+                item,
+                {"kind", "url", "destination"},
+                "task material",
+            )
+            url = validate_public_git_url(selected["url"])
+            revision = resolved_revisions.get(url)
+            if revision is None:
+                try:
+                    if url in rejected_urls:
+                        raise RuntimeError("repository was already rejected")
+                    revision = resolve_revision(url)
+                    resolved_revisions[url] = revision
+                except Exception as exc:
+                    failed_url = url
+                    resolution_error = exc
+                    break
+            materials.append(
+                TaskMaterial(
+                    kind=selected["kind"],
+                    url=url,
+                    revision=revision,
+                    destination=selected["destination"],
+                )
+            )
+        if resolution_error is None:
+            return TaskMaterialPlan(
+                setup_mode=value["setup_mode"],
+                materials=tuple(materials),
+            )
+        if failed_url is not None and failed_url not in rejected_urls:
+            rejected_urls.append(failed_url)
+        if attempt == _MATERIAL_PLAN_ATTEMPTS:
+            raise RuntimeError(
+                f"could not select anonymously accessible public material after "
+                f"{attempt} attempts; rejected: {', '.join(rejected_urls)}; "
+                f"last error: {resolution_error}"
+            ) from resolution_error
+        messages.extend(
+            (
+                {
+                    "role": "assistant",
+                    "content": json.dumps(parsed, sort_keys=True, separators=(",", ":")),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "The selected repository could not be accessed anonymously. "
+                        f"Rejected URLs: {', '.join(rejected_urls)}. "
+                        "Return a complete replacement plan using different public-only "
+                        "resources for a fresh analogous task. Do not repeat a rejected URL."
+                    ),
+                },
+            )
+        )
+    raise AssertionError("unreachable")
 
 
 def author_task(

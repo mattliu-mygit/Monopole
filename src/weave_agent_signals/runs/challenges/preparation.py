@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -13,6 +14,7 @@ from weave_agent_signals.runs.challenges.contracts import (
     TaskMaterial,
     TaskMaterialPlan,
     TaskPreflightError,
+    validate_public_git_url,
 )
 from weave_agent_signals.runs.challenges.workspace import (
     WorkspaceFile,
@@ -21,6 +23,46 @@ from weave_agent_signals.runs.challenges.workspace import (
 )
 
 RepositoryFetcher = Callable[[TaskMaterial], WorkspaceSnapshot]
+
+
+def _git_environment() -> dict[str, str]:
+    return {
+        "PATH": os.defpath,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+
+
+def resolve_repository_head(url: str) -> str:
+    """Resolve a public repository's advertised HEAD to an immutable commit SHA."""
+
+    url = validate_public_git_url(url)
+    result = subprocess.run(
+        [
+            "git",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "core.askPass=",
+            "ls-remote",
+            "--exit-code",
+            url,
+            "HEAD",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=_git_environment(),
+    )
+    if result.returncode != 0:
+        message = " ".join(result.stderr.split())[:500]
+        raise RuntimeError(f"public Git HEAD resolution failed: {message}")
+    fields = result.stdout.split()
+    if len(fields) != 2 or fields[1] != "HEAD" or not re.fullmatch(r"[0-9a-fA-F]{40}", fields[0]):
+        raise RuntimeError("public Git HEAD resolution returned an invalid revision")
+    return fields[0].lower()
 
 
 def _fetch_repository(material: TaskMaterial) -> WorkspaceSnapshot:
@@ -47,12 +89,6 @@ def _fetch_repository(material: TaskMaterial) -> WorkspaceSnapshot:
             ),
             ("checkout", ["git", "checkout", "--quiet", "--detach", "FETCH_HEAD"]),
         )
-        environment = {
-            "PATH": os.defpath,
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_TERMINAL_PROMPT": "0",
-        }
         for stage, command in commands:
             result = subprocess.run(
                 command,
@@ -61,7 +97,7 @@ def _fetch_repository(material: TaskMaterial) -> WorkspaceSnapshot:
                 capture_output=True,
                 text=True,
                 timeout=300,
-                env=environment,
+                env=_git_environment(),
             )
             if result.returncode != 0:
                 message = " ".join(result.stderr.split())[:500]
@@ -95,7 +131,7 @@ def prepare_task_workspace(
     *,
     fetch_repository: RepositoryFetcher = _fetch_repository,
 ) -> WorkspaceSnapshot:
-    """Return the one common workspace snapshot from which B and C are forked."""
+    """Return the one common workspace snapshot from which A and B are forked."""
 
     if task.setup_mode == "agent_bootstrap":
         return seed

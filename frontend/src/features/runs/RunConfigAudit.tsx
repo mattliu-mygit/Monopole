@@ -99,8 +99,8 @@ export default function RunConfigAudit({ config }: RunConfigAuditProps) {
 
       <JudgeCards title="Ordered judges" labelPrefix="Judge" judges={config.models.judges} />
       <JudgeCards
-        title="B/C verification judges"
-        labelPrefix="B/C judge"
+        title="A/B verification judges"
+        labelPrefix="A/B judge"
         judges={config.models.challenge_judges}
       />
 
@@ -108,7 +108,7 @@ export default function RunConfigAudit({ config }: RunConfigAuditProps) {
         <AuditItem label="Judge panel">
           {config.models.judges.length} judge{config.models.judges.length === 1 ? '' : 's'}
         </AuditItem>
-        <AuditItem label="B/C judge panel">
+        <AuditItem label="A/B judge panel">
           {config.models.challenge_judges.length} judge
           {config.models.challenge_judges.length === 1 ? '' : 's'}
         </AuditItem>
