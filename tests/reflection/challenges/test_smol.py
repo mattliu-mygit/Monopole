@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import io
+import re
 import tarfile
 import threading
 from dataclasses import dataclass
-from pathlib import Path
 from subprocess import CompletedProcess, TimeoutExpired
 
 import pytest
 
+from weave_agent_signals.runs.challenges import smol as smol_module
 from weave_agent_signals.runs.challenges.contracts import AuthoredTask, TaskMaterial
 from weave_agent_signals.runs.challenges.environment import (
     RuntimeFile,
@@ -54,7 +57,7 @@ class _FakeMachine:
         self.writes: dict[str, bytes] = {}
         self.calls: list[tuple[list[str], object]] = []
 
-    def write_file(self, path: str, data: bytes, mode: int | None = None) -> None:
+    def write_file(self, path: str, data: bytes, mode: int | None = None, **_) -> None:
         self.writes[path] = data
 
     def exec(self, command: list[str], options=None):
@@ -80,7 +83,7 @@ class _FakeMachine:
             return _ExecResult(stdout=f"{self.session_path}\n" if self.session_path else "")
         raise AssertionError(command)
 
-    def read_file(self, path: str) -> bytes:
+    def read_file(self, path: str, **_) -> bytes:
         if path == self.session_path:
             return f'{{"session": "{self.name}"}}\n'.encode()
         assert path == "/root/.monopole-final-workspace.tar"
@@ -454,75 +457,118 @@ def test_cli_adapter_uses_local_machine_and_secret_environment_references(monkey
         "--net",
     ]
     exec_argv, exec_env = popen_calls[0]
+    host_name = f"MONOPOLE_SMOL_{hashlib.sha256(b'pair-baseline').hexdigest()[:12].upper()}_ENV_0"
     assert "--local" in exec_argv
-    assert "TOKEN=MONOPOLE_SMOL_ENV_0" in exec_argv
+    assert f"TOKEN={host_name}" in exec_argv
     assert "secret-value" not in exec_argv
-    assert exec_env["MONOPOLE_SMOL_ENV_0"] == "secret-value"
+    assert exec_env[host_name] == "secret-value"
     assert result.exit_code == 0
 
 
-def test_cli_adapter_uses_native_copy_for_bounded_machine_files(monkeypatch) -> None:
-    calls: list[list[str]] = []
-    binary_calls: list[tuple[list[str], bytes | None]] = []
+def _machine_with_exec(monkeypatch, exec_):
+    monkeypatch.setattr(
+        _CliMachine,
+        "_run",
+        staticmethod(lambda command, *, env=None: CompletedProcess(command, 0, "", "")),
+    )
+    monkeypatch.setattr(_CliMachine, "exec", exec_)
+    return _CliMachine("/bin/smol", "pair-baseline", "runtime@sha256:digest", False)
 
-    def run(command, *, env=None):
-        del env
-        calls.append(command)
-        if command[-4:] == ["stat", "-c", "%s", "/tmp/result.tar"]:
-            return CompletedProcess(command, 0, stdout="8", stderr="")
-        if command[1:3] == ["machine", "cp"]:
-            Path(command[-1]).write_bytes(b"captured")
-        return CompletedProcess(command, 0, stdout="done", stderr="")
 
-    def run_binary(command, *, input_data=None):
-        binary_calls.append((command, input_data))
-        return CompletedProcess(command, 0, stdout=b"", stderr=b"")
+def _is_copy(command: list[str]) -> bool:
+    return command[:2] == ["sh", "-c"] and smol_module._TRANSFER_GUEST_ENV in command[2]
 
-    monkeypatch.setattr(_CliMachine, "_run", staticmethod(run))
-    monkeypatch.setattr(_CliMachine, "_run_binary", staticmethod(run_binary))
-    machine = _CliMachine("/bin/smol", "pair-baseline", "runtime@sha256:digest", False)
 
-    machine.write_file("/tmp/workspace.tar", b"archive", 0o600)
-    captured = machine.read_file("/tmp/result.tar")
+def test_cli_adapter_transfers_files_in_chunks_through_secret_environment(monkeypatch) -> None:
+    calls: list[tuple[list[str], ExecutionOptions]] = []
+    files: dict[str, bytearray] = {}
+    chunk = smol_module._FILE_CHUNK_BYTES
 
-    assert binary_calls == [
-        (
-            [
-                "/bin/smol",
-                "machine",
-                "exec",
-                "--name",
-                "pair-baseline",
-                "--local",
-                "--interactive",
-                "--",
-                "dd",
-                "of=/tmp/workspace.tar",
-                "status=none",
-            ],
-            b"archive",
-        ),
+    def exec_(self, command, options=None):
+        calls.append((command, options))
+        if command[:2] == ["sh", "-c"] and command[2].startswith("umask"):
+            files[command[4]] = bytearray()
+        elif _is_copy(command):
+            offsets = [int(value) for value in re.findall(r"seek=(\d+)", command[2])]
+            for encoded, offset in zip(options.env.values(), offsets, strict=True):
+                value = base64.b64decode(encoded)
+                files[command[4]][offset * chunk : offset * chunk + len(value)] = value
+        elif command[:3] == ["stat", "-c", "%s"]:
+            return _ExecResult(stdout=str(len(files[command[3]])))
+        elif command[:2] == ["sh", "-c"] and command[2].startswith("dd"):
+            start = int(command[5]) * chunk
+            return _ExecResult(
+                stdout=base64.encodebytes(bytes(files[command[4]][start : start + chunk])).decode()
+            )
+        return _ExecResult()
+
+    machine = _machine_with_exec(monkeypatch, exec_)
+    data = bytes(range(256)) * (chunk * (smol_module._FILE_WRITE_BATCH_CHUNKS + 1) // 256 + 1)
+
+    machine.write_file("/tmp/workspace.tar", data, 0o600)
+    captured = machine.read_file("/tmp/workspace.tar")
+
+    assert captured == data
+    copies = [(command, options) for command, options in calls if _is_copy(command)]
+    assert len(copies) == 2
+    secrets = [secret for _, options in copies for secret in options.env.values()]
+    assert all(secret not in " ".join(command) for command, _ in copies for secret in secrets)
+    assert all(len(secret) < 128 * 1024 for secret in secrets)
+    assert (["chmod", "600", "/tmp/workspace.tar"], "/") in [
+        (command, options.workdir) for command, options in calls
     ]
-    assert captured == b"captured"
-    transfer_call = next(call for call in calls if call[1:3] == ["machine", "cp"])
-    assert transfer_call[-2] == "pair-baseline:/tmp/result.tar"
-    assert ["chmod", "600", "/tmp/workspace.tar"] in [call[-3:] for call in calls]
 
 
-def test_cli_adapter_rejects_failed_native_copy(monkeypatch) -> None:
-    def run(command, *, env=None):
-        del env
-        if command[-4:] == ["stat", "-c", "%s", "/tmp/result.tar"]:
-            return CompletedProcess(command, 0, stdout="8", stderr="")
-        if command[1:3] == ["machine", "cp"]:
-            return CompletedProcess(command, 1, stdout="", stderr="copy unavailable")
-        return CompletedProcess(command, 0, stdout="done", stderr="")
+def test_cli_transfer_retries_a_failed_chunk_at_the_same_offset(monkeypatch) -> None:
+    attempts: list[list[str]] = []
 
-    monkeypatch.setattr(_CliMachine, "_run", staticmethod(run))
-    machine = _CliMachine("/bin/smol", "pair-baseline", "runtime@sha256:digest", False)
+    def exec_(self, command, options=None):
+        if _is_copy(command):
+            attempts.append(command)
+            return _ExecResult(exit_code=1 if len(attempts) == 1 else 0, stderr="transient")
+        return _ExecResult()
 
-    with pytest.raises(RuntimeError, match="copy failed"):
+    monkeypatch.setattr(smol_module.time, "sleep", lambda _seconds: None)
+    machine = _machine_with_exec(monkeypatch, exec_)
+
+    machine.write_file("/tmp/workspace.tar", b"archive")
+
+    assert len(attempts) == 2
+    assert attempts[0] == attempts[1]
+    assert "seek=0" in attempts[0][2]
+
+
+def test_cli_transfer_gives_up_after_its_attempts(monkeypatch) -> None:
+    def exec_(self, command, options=None):
+        if command[:3] == ["stat", "-c", "%s"]:
+            return _ExecResult(stdout="8")
+        return _ExecResult(exit_code=1, stderr="read unavailable")
+
+    monkeypatch.setattr(smol_module.time, "sleep", lambda _seconds: None)
+    machine = _machine_with_exec(monkeypatch, exec_)
+
+    with pytest.raises(RuntimeError, match="Smol file read exited 1: read unavailable"):
         machine.read_file("/tmp/result.tar")
+
+
+def test_cli_transfer_stops_between_chunks_when_cancelled(monkeypatch) -> None:
+    copied = 0
+
+    def exec_(self, command, options=None):
+        nonlocal copied
+        copied += _is_copy(command)
+        return _ExecResult()
+
+    machine = _machine_with_exec(monkeypatch, exec_)
+
+    with pytest.raises(ChallengeCancelled):
+        machine.write_file(
+            "/tmp/workspace.tar",
+            b"x" * (smol_module._FILE_CHUNK_BYTES * smol_module._FILE_WRITE_BATCH_CHUNKS * 2),
+            cancel_requested=lambda: copied >= 1,
+        )
+
+    assert copied == 1
 
 
 def test_cli_adapter_does_not_treat_agent_stderr_text_as_harness_timeout(monkeypatch) -> None:

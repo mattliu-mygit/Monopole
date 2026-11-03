@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -44,8 +45,15 @@ _RUNTIME_ARCHIVE = "/tmp/runtime-files.tar"
 _FINAL_ARCHIVE = "/root/.monopole-final-workspace.tar"
 _MAX_TRANSCRIPT_CHARACTERS = 200_000
 _MAX_PROCESS_OUTPUT_BYTES = 200_000
-# The oldest Smol CLI the challenge sandbox is verified against.
+# Smol CLI 1.6.6 held each finished guest command open for seconds; 1.6.13 returns at once.
 _MIN_SMOL_CLI_VERSION = (1, 6, 13)
+# Files go into a machine as base64 in secret env vars and come back out through dd, in 90 KiB
+# chunks, each step retried: Smol CLI 1.6.13's stdin upload and `machine cp` can report success
+# without writing the file, and an exec can fail intermittently without a diagnostic.
+_FILE_CHUNK_BYTES = 90 * 1024
+_FILE_WRITE_BATCH_CHUNKS = 6
+_FILE_TRANSFER_ATTEMPTS = 3
+_TRANSFER_GUEST_ENV = "MONOPOLE_TRANSFER_CHUNK"
 _MAX_PROCESS_CAPTURE_BYTES = 32 * 1024 * 1024
 _MAX_PROCESS_CAPTURE_FILE_BYTES = _MAX_PROCESS_CAPTURE_BYTES // 2
 _MAX_WORKSPACE_ARCHIVE_BYTES = 320 * 1024 * 1024
@@ -80,11 +88,20 @@ class ExecResult(Protocol):
 
 
 class Machine(Protocol):
-    def write_file(self, path: str, data: bytes, mode: int | None = None) -> None: ...
+    def write_file(
+        self,
+        path: str,
+        data: bytes,
+        mode: int | None = None,
+        *,
+        cancel_requested: Callable[[], bool] = lambda: False,
+    ) -> None: ...
 
     def exec(self, command: list[str], options: ExecutionOptions | None = None) -> ExecResult: ...
 
-    def read_file(self, path: str) -> bytes: ...
+    def read_file(
+        self, path: str, *, cancel_requested: Callable[[], bool] = lambda: False
+    ) -> bytes: ...
 
     def delete(self) -> None: ...
 
@@ -136,48 +153,74 @@ class _CliMachine:
             timeout=300,
         )
 
-    @staticmethod
-    def _run_binary(command: list[str], *, input_data: bytes | None = None):
-        return subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            input=input_data,
-            timeout=300,
-        )
-
     _popen = staticmethod(subprocess.Popen)
 
-    def write_file(self, path: str, data: bytes, mode: int | None = None) -> None:
-        copied = self._run_binary(
-            [
-                self._executable,
-                "machine",
-                "exec",
-                "--name",
-                self._name,
-                "--local",
-                "--interactive",
-                "--",
-                "dd",
-                f"of={path}",
-                "status=none",
-            ],
-            input_data=data,
+    def _transfer(
+        self,
+        command: list[str],
+        operation: str,
+        *,
+        secrets: dict[str, str] | None = None,
+        cancel_requested: Callable[[], bool] = lambda: False,
+    ) -> ExecResult:
+        """Run one file-transfer step, retrying a failed attempt."""
+        for attempt in range(_FILE_TRANSFER_ATTEMPTS):
+            _require_active(cancel_requested)
+            result = self.exec(
+                command,
+                ExecutionOptions(
+                    env=secrets or {}, workdir="/", timeout=30, cancel_requested=cancel_requested
+                ),
+            )
+            _require_active(cancel_requested)
+            if result.exit_code == 0:
+                return result
+            if attempt < _FILE_TRANSFER_ATTEMPTS - 1:
+                time.sleep(0.1)
+        raise RuntimeError(f"Smol file {operation} exited {result.exit_code}: {result.stderr}")
+
+    def write_file(
+        self,
+        path: str,
+        data: bytes,
+        mode: int | None = None,
+        *,
+        cancel_requested: Callable[[], bool] = lambda: False,
+    ) -> None:
+        self._transfer(
+            ["sh", "-c", 'umask 077; : > "$1"', "sh", path],
+            "creation",
+            cancel_requested=cancel_requested,
         )
-        if copied.returncode != 0:
-            raise RuntimeError(f"Smol file copy failed: {_safe_process_error(copied)}")
+        batch = _FILE_CHUNK_BYTES * _FILE_WRITE_BATCH_CHUNKS
+        for batch_start in range(0, len(data), batch):
+            commands, secrets = ["set -e"], {}
+            for offset in range(
+                batch_start, min(len(data), batch_start + batch), _FILE_CHUNK_BYTES
+            ):
+                name = f"{_TRANSFER_GUEST_ENV}_{len(secrets)}"
+                secrets[name] = base64.b64encode(data[offset : offset + _FILE_CHUNK_BYTES]).decode()
+                commands.append(
+                    f'printf %s "${name}" | base64 -d | dd of="$1" bs={_FILE_CHUNK_BYTES} '
+                    f"seek={offset // _FILE_CHUNK_BYTES} conv=notrunc status=none"
+                )
+            self._transfer(
+                ["sh", "-c", "; ".join(commands), "sh", path],
+                "copy",
+                secrets=secrets,
+                cancel_requested=cancel_requested,
+            )
         if mode is not None:
-            changed = self.exec(["chmod", f"{mode:o}", path])
-            if changed.exit_code != 0:
-                raise RuntimeError(f"Smol file mode failed: {changed.stderr}")
+            self._transfer(["chmod", f"{mode:o}", path], "mode", cancel_requested=cancel_requested)
 
     def exec(self, command: list[str], options: ExecutionOptions | None = None) -> ExecResult:
         argv = [self._executable, "machine", "exec", "--name", self._name, "--local"]
         child_env = dict(os.environ)
         if options is not None:
+            # Scoped to the machine, so arms running at once never share host variable names.
+            scope = hashlib.sha256(self._name.encode()).hexdigest()[:12].upper()
             for index, (name, value) in enumerate(sorted(options.env.items())):
-                host_name = f"MONOPOLE_SMOL_ENV_{index}"
+                host_name = f"MONOPOLE_SMOL_{scope}_ENV_{index}"
                 child_env[host_name] = value
                 argv.extend(("--secret-env", f"{name}={host_name}"))
             argv.extend(("--workdir", options.workdir, "--timeout", str(options.timeout)))
@@ -235,10 +278,10 @@ class _CliMachine:
             raise TimeoutError("Smol agent execution reached its timeout")
         return _CliExecResult(result.returncode, result.stdout, result.stderr)
 
-    def read_file(self, path: str) -> bytes:
-        size = self.exec(["stat", "-c", "%s", path])
-        if size.exit_code != 0:
-            raise RuntimeError(f"Smol file size failed: {size.stderr}")
+    def read_file(
+        self, path: str, *, cancel_requested: Callable[[], bool] = lambda: False
+    ) -> bytes:
+        size = self._transfer(["stat", "-c", "%s", path], "size", cancel_requested=cancel_requested)
         try:
             byte_count = int(size.stdout.strip())
         except ValueError as exc:
@@ -247,24 +290,27 @@ class _CliMachine:
             raise RuntimeError("Smol file size cannot be negative")
         if byte_count > _MAX_WORKSPACE_ARCHIVE_BYTES:
             raise RuntimeError("Smol file exceeds the maximum captured archive size")
-        with tempfile.TemporaryDirectory(prefix="monopole-smol-copy-") as directory:
-            destination = Path(directory) / "captured"
-            copied = self._run(
+        value = bytearray()
+        for index in range(0, byte_count, _FILE_CHUNK_BYTES):
+            chunk = self._transfer(
                 [
-                    self._executable,
-                    "machine",
-                    "cp",
-                    "--local",
-                    f"{self._name}:{path}",
-                    str(destination),
-                ]
+                    "sh",
+                    "-c",
+                    f'dd if="$1" bs={_FILE_CHUNK_BYTES} skip="$2" count=1 status=none | base64',
+                    "sh",
+                    path,
+                    str(index // _FILE_CHUNK_BYTES),
+                ],
+                "read",
+                cancel_requested=cancel_requested,
             )
-            if copied.returncode != 0:
-                raise RuntimeError(f"Smol file copy failed: {_safe_process_error(copied)}")
-            value = destination.read_bytes()
+            try:
+                value.extend(base64.b64decode("".join(chunk.stdout.split()), validate=True))
+            except ValueError as exc:
+                raise RuntimeError("Smol file read returned invalid base64") from exc
         if len(value) != byte_count:
             raise RuntimeError("Smol file read returned a truncated archive")
-        return value
+        return bytes(value)
 
     def delete(self) -> None:
         deleted = self._run(
@@ -473,12 +519,15 @@ class SmolMachineRunner:
                 environment.identity.image,
                 environment.identity.network_enabled,
             )
-            machine.write_file(_SOURCE_ARCHIVE, workspace.archive, 0o600)
+            machine.write_file(
+                _SOURCE_ARCHIVE, workspace.archive, 0o600, cancel_requested=cancel_requested
+            )
             if environment.runtime_files:
                 machine.write_file(
                     _RUNTIME_ARCHIVE,
                     _runtime_archive(environment.runtime_files),
                     0o600,
+                    cancel_requested=cancel_requested,
                 )
                 extracted = machine.exec(["tar", "-xf", _RUNTIME_ARCHIVE, "-C", "/"])
                 if extracted.exit_code != 0:
@@ -577,7 +626,9 @@ class SmolMachineRunner:
                 environment.identity.network_enabled,
             )
             _require_active(cancel_requested)
-            machine.write_file(_SOURCE_ARCHIVE, snapshot.archive, 0o600)
+            machine.write_file(
+                _SOURCE_ARCHIVE, snapshot.archive, 0o600, cancel_requested=cancel_requested
+            )
             _require_active(cancel_requested)
             common_paths = {item.path for item in environment.runtime_files}
             instruction_paths = {item.path for item in instruction_runtime_files}
@@ -587,7 +638,12 @@ class SmolMachineRunner:
                 raise ValueError("arm instructions cannot replace common runtime files")
             runtime_files = (*environment.runtime_files, *instruction_runtime_files)
             if runtime_files:
-                machine.write_file(_RUNTIME_ARCHIVE, _runtime_archive(runtime_files), 0o600)
+                machine.write_file(
+                    _RUNTIME_ARCHIVE,
+                    _runtime_archive(runtime_files),
+                    0o600,
+                    cancel_requested=cancel_requested,
+                )
                 extracted = machine.exec(["tar", "-xf", _RUNTIME_ARCHIVE, "-C", "/"])
                 if extracted.exit_code != 0:
                     raise RuntimeError(
@@ -646,7 +702,9 @@ class SmolMachineRunner:
             )
             if packed.exit_code != 0:
                 raise RuntimeError(f"artifact capture exited {packed.exit_code}: {packed.stderr}")
-            final = _snapshot_from_archive(machine.read_file(_FINAL_ARCHIVE))
+            final = _snapshot_from_archive(
+                machine.read_file(_FINAL_ARCHIVE, cancel_requested=cancel_requested)
+            )
             transcript, transcript_digest = _transcript(stdout, stderr)
             session_transcript = _session_transcript(machine, environment)
             return ArmResult(
