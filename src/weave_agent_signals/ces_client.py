@@ -45,7 +45,6 @@ MAX_RETRY_AFTER_S = 30.0
 PAGE_LIMIT = 1000
 # A turn's row is its first Case; the adapter numbers each turn's Cases from 0.
 FIRST_STEP = "i.step_index = 0"
-SESSIONS_PER_SEARCH = 50
 _STATUS = {"completed": "OK", "aborted": "ERROR"}
 
 
@@ -320,10 +319,10 @@ def session_or_none(client: CesClient, trajectory_id: str) -> SessionView | None
         raise
 
 
-def _turns_of(session_ids: list[str]) -> str:
-    """A rows/search filter for the turns of these sessions."""
-    either = " OR ".join(f"i.session_trajectory_id = {json.dumps(sid)}" for sid in session_ids)
-    return f"{FIRST_STEP} AND ({either})"
+def _turns_of(session_id: str) -> str:
+    """A rows/search filter for one session's turns. Deployed CES filters join predicates with
+    AND only, without OR or parentheses, so each session takes its own search."""
+    return f"{FIRST_STEP} AND i.session_trajectory_id = {json.dumps(session_id)}"
 
 
 @dataclass
@@ -551,7 +550,7 @@ class CesClient:
         """Scores on each turn of one session, keyed by the turn's first Case ID."""
         rows = self._rows(
             f"/evaluations/{catalog.turns_evaluation_id}/rows/search",
-            {"filter": _turns_of([trajectory_id])},
+            {"filter": _turns_of(trajectory_id)},
         )
         return {r["case_id"]: r.get("scores") or [] for r in rows}
 
@@ -628,10 +627,10 @@ class CesClient:
     def cohort_scores(self, catalog: Catalog, session_ids: list[str]) -> list[dict]:
         """The Scores on these sessions and their turns, as feedback-shaped records."""
         targets = []
-        for start in range(0, len(session_ids), SESSIONS_PER_SEARCH):
+        for sid in session_ids:
             rows = self._rows(
                 f"/evaluations/{catalog.turns_evaluation_id}/rows/search",
-                {"filter": _turns_of(session_ids[start : start + SESSIONS_PER_SEARCH])},
+                {"filter": _turns_of(sid)},
             )
             targets += [(r["case_id"], r["input"], r.get("scores") or []) for r in rows]
         return self._score_records(targets + self._session_targets(catalog, set(session_ids)))

@@ -12,7 +12,6 @@ import respx
 from weave_agent_signals.ces_catalog import VERDICT, Catalog, ScorerSpec
 from weave_agent_signals.ces_client import (
     MAX_RETRY_AFTER_S,
-    SESSIONS_PER_SEARCH,
     CesClient,
     _score_record,
     _tool_span,
@@ -636,7 +635,7 @@ def test_a_limit_reads_the_newest_turns_and_only_their_sessions_scores():
 
 
 @respx.mock
-def test_cohort_feedback_searches_the_turns_of_all_sessions_at_once():
+def test_cohort_scores_searches_each_sessions_turns_with_an_and_only_filter():
     client = CesClient("http://ces.test", "scope-1", api_key="k")
     turns = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
         return_value=httpx.Response(200, json={"rows": []})
@@ -647,10 +646,10 @@ def test_cohort_feedback_searches_the_turns_of_all_sessions_at_once():
 
     client.cohort_scores(Catalog("ev-turns", "ev-sessions", {}), ["s1", "s2"])
 
-    assert turns.call_count == 1
-    assert json.loads(turns.calls.last.request.content)["filter"] == (
-        'i.step_index = 0 AND (i.session_trajectory_id = "s1" OR i.session_trajectory_id = "s2")'
-    )
+    assert [json.loads(call.request.content)["filter"] for call in turns.calls] == [
+        'i.step_index = 0 AND i.session_trajectory_id = "s1"',
+        'i.step_index = 0 AND i.session_trajectory_id = "s2"',
+    ]
 
 
 def test_a_score_that_is_not_a_rating_is_skipped():
@@ -798,24 +797,6 @@ def test_find_sessions_stops_reading_at_its_limit():
 
     assert found == ["s1"]
     assert route.call_count == 1
-
-
-@respx.mock
-def test_cohort_feedback_searches_one_batch_of_sessions_at_a_time():
-    client = CesClient("http://ces.test", "scope-1", api_key="k")
-    turns = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
-        return_value=httpx.Response(200, json={"rows": []})
-    )
-    respx.post(f"{BASE}/evaluations/ev-sessions/trajectory-rows/search").mock(
-        return_value=httpx.Response(200, json={"rows": []})
-    )
-    ids = [f"s{index}" for index in range(SESSIONS_PER_SEARCH + 1)]
-
-    client.cohort_scores(Catalog("ev-turns", "ev-sessions", {}), ids)
-
-    first, second = (json.loads(call.request.content)["filter"] for call in turns.calls)
-    last = f'"s{SESSIONS_PER_SEARCH}"'
-    assert last not in first and last in second
 
 
 @respx.mock
