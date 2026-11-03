@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { useQueries, useQuery } from '@tanstack/react-query'
-import { getSession, getSessions } from '../../api'
+import { useQuery } from '@tanstack/react-query'
+import { getSessions } from '../../api'
 import type { DataSelection, ModelCatalog, RubricCatalog, RunConfig } from '../../types'
 import RunConfiguration from './RunConfiguration'
 import RunSelection from './RunSelection'
@@ -129,21 +129,26 @@ export default function RunSetup({
   const untilInstant = dayBoundary(until, true, timezone) ?? undefined
   const sessionsQuery = useQuery({
     queryKey: ['sessions-for-run', sinceInstant, untilInstant, timezone],
-    queryFn: () => getSessions({ since: sinceInstant, until: untilInstant, timezone, limit: 100 }),
+    queryFn: () =>
+      getSessions({
+        since: sinceInstant,
+        until: untilInstant,
+        timezone,
+        limit: 100,
+        include_estimates: true,
+      }),
   })
   const sessions = sessionsQuery.data?.sessions ?? []
   const selectedSessions = sessions.filter((session) =>
     selectedIds.includes(session.conversation_id))
-  const selectedDetailQueries = useQueries({
-    queries: selectedIds.map((sessionId) => ({
-      queryKey: ['session-capacity', sessionId],
-      queryFn: () => getSession(sessionId),
-    })),
-  })
-  const capacitySessions = selectedDetailQueries.flatMap((query) =>
-    query.data ? [{ judging_token_estimates: query.data.judging_token_estimates }] : [])
-  const capacityLoading = selectedDetailQueries.some((query) => query.isPending)
-  const capacityError = selectedDetailQueries.find((query) => query.error)?.error
+  // The session list carries each session's judge token estimates, so capacity needs no
+  // further requests.
+  const capacitySessions = selectedSessions.flatMap((session) =>
+    session.judging_token_estimates
+      ? [{ judging_token_estimates: session.judging_token_estimates }]
+      : [])
+  const capacityLoading = sessionsQuery.isLoading
+  const capacityError = sessionsQuery.error
   const assessment = assessRunConfig(config, models, rubrics, capacitySessions)
   const selectionError =
     selectedIds.length === 0

@@ -142,7 +142,7 @@ def test_session_listing_filters_synthetic_sessions_and_reports_truncation():
     body = response.json()
     assert (body["total"], body["truncated"]) == (1, False)
     assert body["sessions"][0]["conversation_id"] == "session-one"
-    assert "judging_token_estimates" not in body["sessions"][0]
+    assert body["sessions"][0].get("judging_token_estimates") is None
     assert body["sessions"][0]["signal_evidence"] == []
     assert backend.windows == [
         (
@@ -185,7 +185,7 @@ def test_session_listing_totals_only_turns_inside_the_window():
 
     summary = response.json()["sessions"][0]
     assert (summary["total_tokens"], summary["turn_count"]) == (115, 2)
-    assert "judging_token_estimates" not in summary
+    assert summary.get("judging_token_estimates") is None
 
 
 def test_session_listing_excludes_mixed_sessions_even_when_the_judge_turn_is_outside_the_window():
@@ -281,4 +281,21 @@ def test_empty_analysis_is_stable():
         "ab_leaderboard": [],
         "trends": [],
         "coaching_markdown": "",
+    }
+
+
+def test_session_listing_includes_judge_token_estimates_only_when_asked():
+    client, _backend = _client()
+    params = {"since": "2026-07-14T00:00:00Z", "limit": 1}
+
+    plain = client.get("/api/sessions", params=params).json()["sessions"][0]
+    estimated = client.get("/api/sessions", params={**params, "include_estimates": "true"}).json()[
+        "sessions"
+    ][0]
+
+    assert plain.get("judging_token_estimates") is None
+    assert set(estimated["judging_token_estimates"]) == {
+        "utf8_bytes_div_3",
+        "o200k_base",
+        "o200k_harmony",
     }

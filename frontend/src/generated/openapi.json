@@ -4820,6 +4820,27 @@
             ],
             "title": "Input Preview"
           },
+          "judging_token_estimates": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JudgingTokenEstimateResponse"
+                },
+                "propertyNames": {
+                  "enum": [
+                    "utf8_bytes_div_3",
+                    "o200k_base",
+                    "o200k_harmony"
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judging Token Estimates"
+          },
           "last_activity": {
             "anyOf": [
               {
@@ -6356,6 +6377,16 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_estimates",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Estimates",
+              "type": "boolean"
             }
           }
         ],

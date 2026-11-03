@@ -562,6 +562,8 @@ class SessionSummaryResponse(ResponseModel):
     total_tool_calls: int
     input_preview: str | None
     signal_evidence: list[SignalEvidenceResponse]
+    # Only when the request asks for them, since estimating every listed session costs time.
+    judging_token_estimates: dict[TokenCounterName, JudgingTokenEstimateResponse] | None = None
 
 
 class SessionListResponse(ResponseModel):

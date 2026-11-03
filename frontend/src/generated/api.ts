@@ -1848,6 +1848,10 @@ export interface components {
             git_branch: string | null;
             /** Input Preview */
             input_preview: string | null;
+            /** Judging Token Estimates */
+            judging_token_estimates?: {
+                [key: string]: components["schemas"]["JudgingTokenEstimateResponse"];
+            } | null;
             /** Last Activity */
             last_activity: string | null;
             /** Model */
@@ -2608,6 +2612,7 @@ export interface operations {
                 until?: string | null;
                 timezone?: string | null;
                 limit?: number;
+                include_estimates?: boolean;
             };
             header?: never;
             path?: never;

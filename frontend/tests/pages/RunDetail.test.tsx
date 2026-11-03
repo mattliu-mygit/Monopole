@@ -357,9 +357,10 @@ beforeEach(() => {
   vi.clearAllMocks()
   const created = baseRun()
   api.getRun.mockResolvedValue(created)
-  api.getSessions.mockResolvedValue({ sessions: [session], total: 1, truncated: false })
-  api.getSession.mockResolvedValue({
-    judging_token_estimates: sessionEstimates,
+  api.getSessions.mockResolvedValue({
+    sessions: [{ ...session, judging_token_estimates: sessionEstimates }],
+    total: 1,
+    truncated: false,
   })
   api.getModels.mockResolvedValue(models)
   api.getRubrics.mockResolvedValue(rubrics)
@@ -526,12 +527,17 @@ describe('RunDetail wiring', () => {
   })
 
   it('keeps start disabled when the selected session exceeds configured model capacity', async () => {
-    api.getSession.mockResolvedValue({
-      judging_token_estimates: {
-        utf8_bytes_div_3: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
-        o200k_base: { total_tokens: 90_000, largest_turn_tokens: 80_000, turn_tokens: [80_000, 10_000] },
-        o200k_harmony: { total_tokens: 85_000, largest_turn_tokens: 75_000, turn_tokens: [75_000, 10_000] },
-      },
+    api.getSessions.mockResolvedValue({
+      sessions: [{
+        ...session,
+        judging_token_estimates: {
+          utf8_bytes_div_3: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
+          o200k_base: { total_tokens: 90_000, largest_turn_tokens: 80_000, turn_tokens: [80_000, 10_000] },
+          o200k_harmony: { total_tokens: 85_000, largest_turn_tokens: 75_000, turn_tokens: [75_000, 10_000] },
+        },
+      }],
+      total: 1,
+      truncated: false,
     })
     renderPage()
 

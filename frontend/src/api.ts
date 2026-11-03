@@ -58,7 +58,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json()
 }
 
-function qs(params: Record<string, string | number | undefined>): string {
+function qs(params: Record<string, string | number | boolean | undefined>): string {
   const entries = Object.entries(params).filter(
     ([, v]) => v !== undefined && v !== '',
   )
@@ -67,7 +67,13 @@ function qs(params: Record<string, string | number | undefined>): string {
 }
 
 export function getSessions(
-  params?: { since?: string; until?: string; timezone?: string; limit?: number },
+  params?: {
+    since?: string
+    until?: string
+    timezone?: string
+    limit?: number
+    include_estimates?: boolean
+  },
 ): Promise<{
   sessions: SessionSummary[]
   total?: number
@@ -80,6 +86,7 @@ export function getSessions(
       until: params?.until,
       timezone: params?.timezone,
       limit: params?.limit,
+      include_estimates: params?.include_estimates,
     })}`,
   )
 }

@@ -184,6 +184,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
         until: str | None = None,
         timezone_name: str | None = Query(default=None, alias="timezone"),
         limit: int = Query(default=20, ge=1, le=100),
+        include_estimates: bool = False,
     ) -> SessionListResponse:
         try:
             since_value, until_value = parse_selection_bounds(
@@ -218,7 +219,10 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                     and (until_value is None or turn.started_at <= until_value)
                 ]
                 if in_window:
-                    visible.append((_session_summary(sid, in_window), in_window))
+                    summary = _session_summary(sid, in_window)
+                    if include_estimates:
+                        summary["judging_token_estimates"] = _judging_token_estimates(session.turns)
+                    visible.append((summary, in_window))
             feedback = _by_target(
                 ces.client.cohort_scores(ces.catalog, [s["conversation_id"] for s, _ in visible])
                 if visible
