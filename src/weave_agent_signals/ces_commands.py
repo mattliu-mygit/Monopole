@@ -17,7 +17,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from weave_agent_signals.ces_catalog import Catalog, judge_spec
-from weave_agent_signals.ces_client import CesClient
+from weave_agent_signals.ces_client import CesClient, CesSession
 from weave_agent_signals.models import Score, SessionView, session_is_evaluable
 from weave_agent_signals.scorers import score_session, score_turn
 from weave_agent_signals.scorers.outcome import classify_command
@@ -35,25 +35,23 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         default="weave",
         help="Where sessions and scores live (default: weave)",
     )
-    parser.add_argument(
-        "--ces-url", default=os.environ.get("WEAVE_AGENT_SIGNALS_CES_URL", DEFAULT_CES_URL)
-    )
+    parser.add_argument("--ces-url", default=None, help=f"Default: {DEFAULT_CES_URL}")
     parser.add_argument(
         "--ces-scope-ref",
-        default=os.environ.get("WEAVE_AGENT_SIGNALS_CES_SCOPE_REF"),
+        default=None,
         help="Default: the adapter's evaluations.json",
     )
     parser.add_argument(
         "--ces-dataset-id",
-        default=os.environ.get("WEAVE_AGENT_SIGNALS_CES_DATASET_ID"),
+        default=None,
         help="Default: the adapter's evaluations.json",
     )
 
 
-def connect(args: argparse.Namespace) -> tuple[CesClient, Catalog]:
-    """The client and catalog for the adapter's Dataset.
-
-    Flags and env vars win over the adapter's state file."""
+def ces_settings(
+    url: str | None = None, scope: str | None = None, dataset: str | None = None
+) -> tuple[str, str, str]:
+    """The CES URL, scope, and Dataset: explicit values, then env vars, then the adapter's state."""
     state: dict = {}
     path = os.path.expanduser(
         os.environ.get("WEAVE_AGENT_ADAPTER_EVALUATIONS_STATE", ADAPTER_STATE)
@@ -63,17 +61,36 @@ def connect(args: argparse.Namespace) -> tuple[CesClient, Catalog]:
             state = json.load(fh)
     except (OSError, ValueError):
         pass
-    scope, dataset = (
-        args.ces_scope_ref or state.get("scope_ref"),
-        args.ces_dataset_id or state.get("dataset_id"),
+    url = url or os.environ.get("WEAVE_AGENT_SIGNALS_CES_URL") or DEFAULT_CES_URL
+    scope = scope or os.environ.get("WEAVE_AGENT_SIGNALS_CES_SCOPE_REF") or state.get("scope_ref")
+    dataset = (
+        dataset or os.environ.get("WEAVE_AGENT_SIGNALS_CES_DATASET_ID") or state.get("dataset_id")
     )
     if not scope or not dataset:
-        raise SystemExit(
+        raise RuntimeError(
             "CES needs --ces-scope-ref and --ces-dataset-id, "
             "or `weave-agent-adapter evaluations setup`"
         )
-    client = CesClient(args.ces_url, scope)
-    return client, client.ensure_catalog(dataset)
+    return url, scope, dataset
+
+
+def open_session(
+    url: str | None = None, scope: str | None = None, dataset: str | None = None
+) -> CesSession:
+    url, scope, dataset = ces_settings(url, scope, dataset)
+    client = CesClient(url, scope)
+    try:
+        return CesSession(client, client.ensure_catalog(dataset))
+    except Exception:
+        client.close()
+        raise
+
+
+def connect(args: argparse.Namespace) -> CesSession:
+    try:
+        return open_session(args.ces_url, args.ces_scope_ref, args.ces_dataset_id)
+    except RuntimeError as error:
+        raise SystemExit(str(error)) from error
 
 
 class _Stats:
@@ -161,8 +178,8 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
 
 def score(args: argparse.Namespace) -> int:
     since = args.since or (datetime.now(timezone.utc) - timedelta(hours=24))
-    client, catalog = connect(args)
-    try:
+    with connect(args) as ces:
+        client, catalog = ces.client, ces.catalog
         session_ids = client.find_sessions(catalog, since=since)
         if not session_ids:
             print("No turns found.")
@@ -176,8 +193,6 @@ def score(args: argparse.Namespace) -> int:
             force=args.force,
             limit=args.limit,
         )
-    finally:
-        client.close()
     print(
         f"Scored {stats.turns} turns, {stats.sessions} sessions"
         f" ({stats.scored} scores). Wrote {stats.written}."
@@ -190,8 +205,8 @@ def score(args: argparse.Namespace) -> int:
 
 
 def backfill(args: argparse.Namespace) -> int:
-    client, catalog = connect(args)
-    try:
+    with connect(args) as ces:
+        client, catalog = ces.client, ces.catalog
         session_ids = client.find_sessions(catalog, since=args.start, until=args.end)
         if not session_ids:
             print("No turns found in date range.")
@@ -199,8 +214,6 @@ def backfill(args: argparse.Namespace) -> int:
         stats, sessions = _score_sessions(
             client, catalog, session_ids, since=args.start, until=args.end, force=args.force
         )
-    finally:
-        client.close()
     commands = []
     for session in sessions:
         for turn in session.turns:
@@ -263,8 +276,8 @@ def inspect(args: argparse.Namespace) -> int:
     if not args.session and not args.recent:
         print("Specify --recent N or --session SESSION_TRAJECTORY_ID")
         return 1
-    client, catalog = connect(args)
-    try:
+    with connect(args) as ces:
+        client, catalog = ces.client, ces.catalog
         if args.session:
             session_ids = [args.session]
         else:
@@ -283,8 +296,6 @@ def inspect(args: argparse.Namespace) -> int:
                 session_rows.get(session.conversation_id, []),
                 args.feedback,
             )
-    finally:
-        client.close()
     return 0
 
 
@@ -326,8 +337,6 @@ def write_judge_scores(client, catalog: Catalog, pending: list, *, force: bool) 
 
 def read_feedback(args: argparse.Namespace) -> list[dict]:
     """The newest `args.limit` Scores as feedback records, for analyze, monitor, and reflect."""
-    client, catalog = connect(args)
-    try:
+    with connect(args) as ces:
+        client, catalog = ces.client, ces.catalog
         return client.read_all_scores(catalog)[: args.limit]
-    finally:
-        client.close()

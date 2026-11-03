@@ -12,7 +12,7 @@ from weave_agent_signals.ces_catalog import (
     ScorerRef,
     judge_spec,
 )
-from weave_agent_signals.ces_client import session_view
+from weave_agent_signals.ces_client import CesSession, session_view
 from weave_agent_signals.models import Score
 
 CATALOG = Catalog(
@@ -83,7 +83,7 @@ class FakeCes:
 @pytest.fixture
 def fake(monkeypatch):
     client = FakeCes()
-    monkeypatch.setattr(ces_commands, "connect", lambda args: (client, CATALOG))
+    monkeypatch.setattr(ces_commands, "connect", lambda args: CesSession(client, CATALOG))
     monkeypatch.setattr(
         ces_commands,
         "score_turn",
@@ -259,7 +259,7 @@ def test_judge_with_the_ces_backend_judges_found_sessions_and_writes_finished_sc
     monkeypatch, capsys
 ):
     client = FakeJudgeCes()
-    monkeypatch.setattr(ces_commands, "connect", lambda args: (client, CATALOG))
+    monkeypatch.setattr(ces_commands, "connect", lambda args: CesSession(client, CATALOG))
     seen = {}
 
     def judge_sessions(args, sessions, judges, rubrics):

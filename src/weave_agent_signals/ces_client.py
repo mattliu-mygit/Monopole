@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
@@ -250,6 +251,20 @@ def session_view(
         config_version=first_turn.config_version if first_turn else None,
         git_branch=first_turn.git_branch if first_turn else None,
     )
+
+
+@dataclass
+class CesSession:
+    """A CES client and Monopole's catalog for the adapter's Dataset. Exiting closes the client."""
+
+    client: CesClient
+    catalog: Catalog
+
+    def __enter__(self) -> CesSession:
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.client.close()
 
 
 class CesClient:

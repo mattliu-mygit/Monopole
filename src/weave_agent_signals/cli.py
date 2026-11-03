@@ -432,8 +432,8 @@ def cmd_judge(args: argparse.Namespace) -> int:
         selected_rubrics = rubric_catalog.rubrics
 
     if args.backend == "ces":
-        client, catalog = ces_commands.connect(args)
-        try:
+        with ces_commands.connect(args) as ces:
+            client, catalog = ces.client, ces.catalog
             sessions = ces_commands.sessions_to_judge(
                 client, catalog, since=since, limit=args.limit
             )
@@ -448,8 +448,6 @@ def cmd_judge(args: argparse.Namespace) -> int:
                 if errors
                 else ces_commands.write_judge_scores(client, catalog, pending, force=args.force)
             )
-        finally:
-            client.close()
         return _report_judging(judging_plan, pending, written, errors)
 
     with WeaveClient(entity=args.entity, project=args.project) as client:
