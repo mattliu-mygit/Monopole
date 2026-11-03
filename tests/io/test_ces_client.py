@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+
 import httpx
+import pytest
 import respx
 
 from weave_agent_signals.ces_client import CesClient, session_view
+from weave_agent_signals.models import Score
 
 BASE = "http://ces.test/v1/namespaces/wandb/scopes/scope-1"
 
@@ -176,3 +181,130 @@ def test_read_session_pages_and_follows_subagents_with_retries():
     assert [t.trace_id for t in view.turns] == ["c1", "c5"]
     assert [s.span_id for s in view.turns[0].subagents] == ["traj-a", "traj-b"]
     assert slept == [1.0]
+
+
+def _catalog_routes():
+    respx.post(f"{BASE}/evaluations").mock(
+        side_effect=lambda request: httpx.Response(
+            200,
+            json={"evaluation_id": "ev-turns" if b'"case"' in request.content else "ev-sessions"},
+        )
+    )
+    made = []
+
+    def scorer(request):
+        made.append(request.headers["Idempotency-Key"])
+        return httpx.Response(
+            200, json={"scorer_id": f"sc-{len(made)}", "version_id": f"v-{len(made)}"}
+        )
+
+    respx.post(f"{BASE}/scorers").mock(side_effect=scorer)
+    respx.patch(url__regex=rf"{BASE}/evaluations/ev-.*/scorers").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    return made
+
+
+@respx.mock
+def test_the_catalog_makes_a_value_and_a_details_scorer_for_each_scorer():
+    made = _catalog_routes()
+    catalog = CesClient("http://ces.test", "scope-1", api_key="k").ensure_catalog("ds-1")
+
+    assert (catalog.turns_evaluation_id, catalog.sessions_evaluation_id) == (
+        "ev-turns",
+        "ev-sessions",
+    )
+    assert made[:2] == [
+        "monopole-scorer-v1:efficiency:number:case",
+        "monopole-scorer-v1:efficiency.details:json:case",
+    ]
+    assert "monopole-scorer-v1:implicit.completion:boolean:trajectory" in made
+    assert catalog.by_scorer_id()["sc-2"] == ("efficiency", True)
+
+
+@respx.mock
+def test_scores_and_their_details_go_in_one_request_keyed_by_pass_and_target():
+    _catalog_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = client.ensure_catalog("ds-1")
+    route = respx.post(f"{BASE}/scores").mock(
+        return_value=httpx.Response(200, json={"score_ids": ["s1", "s2"]})
+    )
+    ids = client.write_scores(
+        catalog,
+        "pass-1",
+        "case",
+        "c1",
+        [Score("efficiency", 1, ["fast"], {"waste": 0}, "turn", reason="ok")],
+    )
+
+    request = route.calls.last.request
+    body = json.loads(request.content)
+    assert ids == ["s1", "s2"]
+    assert request.headers["Idempotency-Key"] == "score-v1:pass-1:case:c1"
+    assert [s["value"] for s in body["scores"]][0] == 1.0
+    assert body["scores"][1]["value"]["tags"] == ["fast"]
+    assert {s["target"]["id"] for s in body["scores"]} == {"c1"}
+
+
+@respx.mock
+def test_a_score_outside_the_catalog_or_of_the_wrong_type_is_refused():
+    _catalog_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = client.ensure_catalog("ds-1")
+
+    with pytest.raises(ValueError, match="not in the CES catalog"):
+        client.write_scores(catalog, "p", "case", "c1", [Score("unknown", 1.0, [], {}, "turn")])
+    with pytest.raises(ValueError, match="is boolean"):
+        client.write_scores(
+            catalog, "p", "trajectory", "s1", [Score("implicit.completion", 0.5, [], {}, "session")]
+        )
+
+
+@respx.mock
+def test_find_sessions_reads_newest_first_and_stops_before_since():
+    _catalog_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = client.ensure_catalog("ds-1")
+    rows = [
+        {
+            "input": {
+                "started_at": f"2026-11-0{day}T10:00:00.000Z",
+                "session_trajectory_id": f"s{day % 2}",
+            }
+        }
+        for day in (5, 4, 3, 1)
+    ]
+    route = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
+        return_value=httpx.Response(200, json={"rows": rows, "next_cursor": "more"})
+    )
+
+    found = client.find_sessions(
+        catalog,
+        since=datetime(2026, 11, 2, tzinfo=timezone.utc),
+        until=datetime(2026, 11, 4, 12, tzinfo=timezone.utc),
+    )
+
+    assert found == ["s0", "s1"]
+    assert route.call_count == 1
+    assert json.loads(route.calls.last.request.content)["order_by"] == "i.started_at desc"
+
+
+@respx.mock
+def test_session_scores_keep_only_the_requested_trajectories():
+    _catalog_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = client.ensure_catalog("ds-1")
+    respx.post(f"{BASE}/evaluations/ev-sessions/trajectory-rows/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "rows": [
+                    {"trajectory": {"trajectory_id": "s1"}, "scores": [{"scorer_id": "sc-1"}]},
+                    {"trajectory": {"trajectory_id": "s9"}, "scores": []},
+                ]
+            },
+        )
+    )
+
+    assert client.session_scores(catalog, ["s1"]) == {"s1": [{"scorer_id": "sc-1"}]}
