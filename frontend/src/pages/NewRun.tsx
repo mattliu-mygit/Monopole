@@ -49,6 +49,10 @@ export default function NewRun() {
       // Navigate only after setup finished, so a failed step is shown here instead of lost.
       navigate(`/runs/${run.run_id}`)
     },
+    // A run created before a later setup step failed still exists, so the list must show it.
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey: ['runs'] })
+    },
   })
   const catalogError = modelsQuery.error ?? rubricsQuery.error
 

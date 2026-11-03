@@ -295,9 +295,9 @@ work. Concurrent panel activity and call completion are serialized before
 persistence. Partial model outputs never become scores, and cancelled or
 unattempted work after a fail-fast stop is not reported as completed. Any
 planned rubric failure prevents all judge feedback writes for that run;
-successful scores are written only after complete coverage is known. Forced
-replacement creates new feedback before deleting prior matches, and write or
-cleanup failures remain visible.
+successful scores are written only after complete coverage is known. A forced
+rescore writes newer Scores under the run's pass ID and never deletes older
+ones; reads take the newest Score per Scorer, and write failures remain visible.
 
 ## Inference trust boundary
 

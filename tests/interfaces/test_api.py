@@ -91,3 +91,13 @@ def test_static_frontend_uses_spa_fallback_without_shadowing_api(tmp_path):
         assert client.get("/asset.txt").text == "asset"
         assert client.get("/runs/run-1").text == "<main>evaluation app</main>"
         assert client.get("/api/runs").json() == {"runs": []}
+
+
+def test_an_unknown_api_path_is_a_404_not_the_app_shell(tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<main>evaluation app</main>")
+    app = create_app(dependencies=_dependencies(), frontend_dist=dist)
+
+    with TestClient(app) as client:
+        assert client.get("/api/no-such-route").status_code == 404

@@ -95,7 +95,7 @@ function ABComparison({ data }: { data: ABEntry[] }) {
       <div className="rounded-lg border border-dashed p-6 text-sm text-gray-600">
         <p className="font-medium text-gray-900">No A/B comparisons yet.</p>
         <p className="mt-1">
-          Evaluate traces from more than one configuration version to compare them.
+          Evaluate sessions from more than one configuration version to compare them.
         </p>
       </div>
     )

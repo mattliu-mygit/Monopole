@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -236,6 +236,9 @@ def _register_frontend(application: FastAPI, frontend_dist: Path) -> None:
 
     @application.get("/{full_path:path}", include_in_schema=False)
     def serve_spa(full_path: str) -> FileResponse:
+        if full_path == "api" or full_path.startswith("api/"):
+            # An unknown API path is an error, not the app shell with a 200.
+            raise HTTPException(status_code=404, detail="Not Found")
         requested = (resolved_dist / full_path).resolve()
         try:
             requested.relative_to(resolved_dist)
