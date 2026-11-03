@@ -8,7 +8,7 @@ from typing import get_args
 
 from fastapi import APIRouter, HTTPException, Query
 
-from weave_agent_signals.ces_client import CesSession, session_or_none
+from weave_agent_signals.ces_client import CesSession, session_or_none, turns_from_rows
 from weave_agent_signals.judges.tokens import TokenCounterName, count_tokens
 from weave_agent_signals.judges.windowing import render_raw_turn
 from weave_agent_signals.models import FEEDBACK_PREFIX, TurnSpan, session_is_evaluable
@@ -208,12 +208,15 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                 ces.catalog, since=since_value, until=until_value, limit=scan
             )
             visible: list[tuple[dict, list[TurnSpan]]] = []
+            visible_rows: dict[str, list[dict]] = {}
             read = 0
-            # Turn rows only: a session's steps and subagents can take hundreds of reads.
+            # Turn rows only: a session's steps and subagents can take hundreds of reads. The
+            # rows also carry the turn Scores, so they're read once.
             while read < len(session_ids) and len(visible) < limit:
                 batch = session_ids[read : read + limit - len(visible)]
                 read += len(batch)
-                for sid, turns in ces.client.session_turns(ces.catalog, batch).items():
+                for sid, rows in ces.client.session_turn_rows(ces.catalog, batch).items():
+                    turns = turns_from_rows(sid, rows)
                     if not session_is_evaluable(turns):
                         continue
                     in_window = [
@@ -224,13 +227,14 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                     ]
                     if in_window:
                         visible.append((_session_summary(sid, in_window), in_window))
+                        visible_rows[sid] = rows
             if include_estimates:
                 for summary, _turns in visible:
                     session = session_or_none(ces.client, summary["conversation_id"])
                     if session is not None:
                         summary["judging_token_estimates"] = _judging_token_estimates(session.turns)
             feedback = _by_target(
-                ces.client.cohort_scores(ces.catalog, [s["conversation_id"] for s, _ in visible])
+                ces.client.cohort_scores(ces.catalog, list(visible_rows), turn_rows=visible_rows)
                 if visible
                 else []
             )

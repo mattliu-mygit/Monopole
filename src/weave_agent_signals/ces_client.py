@@ -46,8 +46,9 @@ MAX_RETRY_AFTER_S = 30.0
 PAGE_LIMIT = 1000
 # Independent reads (one session's turn rows, one subagent's Cases) run this many at once.
 CONCURRENT_READS = 16
-# A turn's row is its first Case; the adapter numbers each turn's Cases from 0.
-FIRST_STEP = "i.step_index = 0"
+# A turn's row is its first Case; the adapter numbers each turn's Cases from 0. Subagent turns
+# carry an agent ID and belong to the session turn that launched them, so they're left out.
+FIRST_STEP = "i.step_index = 0 AND i.agent_id = null"
 _STATUS = {"completed": "OK", "aborted": "ERROR"}
 
 
@@ -321,6 +322,14 @@ def session_or_none(
         raise
 
 
+def ces_http(base_url: str, api_key: str | None = None) -> httpx.Client:
+    """An HTTP client for CES. Clients that share one also share its connections; a
+    CesClient closes only an HTTP client it made."""
+    return httpx.Client(
+        base_url=base_url.rstrip("/"), auth=("api", api_key or get_api_key()), timeout=60.0
+    )
+
+
 def _child_ids(cases: list[dict]) -> list[str]:
     return [child for case in cases for child in case.get("child_trajectory_ids") or []]
 
@@ -376,6 +385,11 @@ def turn_from_row(trajectory_id: str, row: dict) -> TurnSpan:
     )
 
 
+def turns_from_rows(trajectory_id: str, rows: list[dict]) -> list[TurnSpan]:
+    """A session's own turns, in order, from their rows."""
+    return [turn_from_row(trajectory_id, row) for row in _own_turn_rows(rows)]
+
+
 def _turns_of(session_id: str) -> str:
     """A rows/search filter for one session's turns. Deployed CES filters join predicates with
     AND only, without OR or parentheses, so each session takes its own search."""
@@ -410,16 +424,16 @@ class CesClient:
         scorer_names: dict[tuple[str, str], str] | None = None,
     ):
         self.base = f"/v1/namespaces/{namespace}/scopes/{quote(scope_ref, safe='')}"
-        self._http = http or httpx.Client(
-            base_url=base_url.rstrip("/"), auth=("api", api_key or get_api_key()), timeout=60.0
-        )
+        self._owns_http = http is None
+        self._http = http or ces_http(base_url, api_key)
         self._sleep = sleep
         self._index = score_index or ScoreIndex()
         # A Scorer version's name never changes, so callers may share one cache across clients.
         self._scorer_names = {} if scorer_names is None else scorer_names
 
     def close(self) -> None:
-        self._http.close()
+        if self._owns_http:
+            self._http.close()
 
     def _request(
         self, method: str, path: str, *, params=None, body=None, key: str | None = None
@@ -496,21 +510,13 @@ class CesClient:
         turn = next(iter(view.turns), None)
         return turn.subagents if turn is not None and turn.trace_id == turn_case_id else None
 
-    def _session_turn_rows(self, catalog: Catalog, session_ids: list[str]) -> dict[str, list]:
+    def session_turn_rows(self, catalog: Catalog, session_ids: list[str]) -> dict[str, list]:
         """Each session's turn rows with their Scores, subagent turns included, read
         concurrently."""
         path = f"/evaluations/{catalog.turns_evaluation_id}/rows/search"
         with ThreadPoolExecutor(max_workers=CONCURRENT_READS) as pool:
             found = pool.map(lambda sid: self._rows(path, {"filter": _turns_of(sid)}), session_ids)
             return dict(zip(session_ids, found))
-
-    def session_turns(self, catalog: Catalog, session_ids: list[str]) -> dict[str, list[TurnSpan]]:
-        """Each session's own turns from its turn rows, without the steps and subagents that
-        `read_session` reads. One search per session, which is enough to list sessions."""
-        return {
-            sid: [turn_from_row(sid, row) for row in _own_turn_rows(rows)]
-            for sid, rows in self._session_turn_rows(catalog, session_ids).items()
-        }
 
     def _rows(self, path: str, body: dict, limit: int | None = None) -> list[dict]:
         rows, cursor = [], None
@@ -735,11 +741,16 @@ class CesClient:
         )
         return self._score_records(targets + self._session_targets(catalog, sessions))
 
-    def cohort_scores(self, catalog: Catalog, session_ids: list[str]) -> list[dict]:
-        """The Scores on these sessions and their turns, as feedback-shaped records."""
+    def cohort_scores(
+        self, catalog: Catalog, session_ids: list[str], *, turn_rows: dict | None = None
+    ) -> list[dict]:
+        """The Scores on these sessions and their turns, as feedback-shaped records. Pass
+        `turn_rows` when the sessions' turn rows were already read."""
+        if turn_rows is None:
+            turn_rows = self.session_turn_rows(catalog, session_ids)
         targets = [
             (r["case_id"], r["input"], r.get("scores") or [])
-            for rows in self._session_turn_rows(catalog, session_ids).values()
+            for rows in turn_rows.values()
             for r in rows
         ]
         return self._score_records(targets + self._session_targets(catalog, set(session_ids)))

@@ -16,6 +16,7 @@ from weave_agent_signals.ces_client import (
     _score_record,
     _tool_span,
     session_view,
+    turns_from_rows,
 )
 from weave_agent_signals.ces_score_index import ScoreIndex
 from weave_agent_signals.models import Score
@@ -647,8 +648,8 @@ def test_cohort_scores_searches_each_sessions_turns_with_an_and_only_filter():
     client.cohort_scores(Catalog("ev-turns", "ev-sessions", {}), ["s1", "s2"])
 
     assert sorted(json.loads(call.request.content)["filter"] for call in turns.calls) == [
-        'i.step_index = 0 AND i.session_trajectory_id = "s1"',
-        'i.step_index = 0 AND i.session_trajectory_id = "s2"',
+        'i.step_index = 0 AND i.agent_id = null AND i.session_trajectory_id = "s1"',
+        'i.step_index = 0 AND i.agent_id = null AND i.session_trajectory_id = "s2"',
     ]
 
 
@@ -820,7 +821,9 @@ def test_turn_scores_are_keyed_by_each_turns_first_case():
     assert scores == {"c1": [{"score_id": "x"}], "c5": []}
 
 
-def _row(case_id, *, kind, turn_id, turn_index, text=None, duration=None, agent_id=None):
+def _row(
+    case_id, *, kind, turn_id, turn_index, text=None, duration=None, agent_id=None, session="traj-s"
+):
     return {
         "case_id": case_id,
         "input": {
@@ -833,6 +836,7 @@ def _row(case_id, *, kind, turn_id, turn_index, text=None, duration=None, agent_
             "agent_id": agent_id,
             "model": "gpt-6",
             "session_id": "sess-1",
+            "session_trajectory_id": session,
             "trace_role": "agent_session",
         },
         "output": {
@@ -845,29 +849,16 @@ def _row(case_id, *, kind, turn_id, turn_index, text=None, duration=None, agent_
     }
 
 
-@respx.mock
-def test_session_turns_reads_turn_rows_and_keeps_only_the_sessions_own_turns():
-    def search(request):
-        if '"traj-s"' not in json.loads(request.content)["filter"]:
-            return httpx.Response(200, json={"rows": []})
-        rows = [
-            _row(
-                "c-t2", kind="user_message", turn_id="t2", turn_index=2, text="next", duration=2000
-            ),
-            _row("c-sub", kind="user_message", turn_id="k1", turn_index=0, agent_id="explorer"),
-            _row("c-t1", kind="compaction", turn_id="t1", turn_index=1),
-            _row("c-session", kind="session", turn_id=None, turn_index=0),
-        ]
-        return httpx.Response(200, json={"rows": rows})
+def test_turns_from_rows_keeps_the_sessions_own_turns_in_order_with_their_totals():
+    rows = [
+        _row("c-t2", kind="user_message", turn_id="t2", turn_index=2, text="next", duration=2000),
+        _row("c-sub", kind="user_message", turn_id="k1", turn_index=0, agent_id="explorer"),
+        _row("c-t1", kind="compaction", turn_id="t1", turn_index=1),
+        _row("c-session", kind="session", turn_id=None, turn_index=0),
+    ]
 
-    respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(side_effect=search)
-    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    first, second = turns_from_rows("traj-s", rows)
 
-    turns = client.session_turns(Catalog("ev-turns", "ev-sessions", {}), ["traj-s", "traj-x"])
-
-    assert list(turns) == ["traj-s", "traj-x"]
-    assert turns["traj-x"] == []
-    first, second = turns["traj-s"]
     assert (first.trace_id, first.user_input, first.ended_at) == ("c-t1", None, None)
     assert (second.trace_id, second.user_input, second.input_tokens, second.status_code) == (
         "c-t2",
@@ -876,6 +867,22 @@ def test_session_turns_reads_turn_rows_and_keeps_only_the_sessions_own_turns():
         "OK",
     )
     assert second.ended_at - second.started_at == timedelta(seconds=2)
+
+
+@respx.mock
+def test_cohort_scores_reads_no_turn_rows_it_is_given():
+    turns = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
+        return_value=httpx.Response(200, json={"rows": []})
+    )
+    respx.post(f"{BASE}/evaluations/ev-sessions/trajectory-rows/search").mock(
+        return_value=httpx.Response(200, json={"rows": []})
+    )
+
+    CesClient("http://ces.test", "scope-1", api_key="k").cohort_scores(
+        Catalog("ev-turns", "ev-sessions", {}), ["s1"], turn_rows={"s1": []}
+    )
+
+    assert turns.call_count == 0
 
 
 @respx.mock

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from weave_agent_signals import ces_commands
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
 from weave_agent_signals.ces_catalog import Catalog
-from weave_agent_signals.ces_client import CesClient, CesSession
+from weave_agent_signals.ces_client import CesClient, CesSession, ces_http
 from weave_agent_signals.judges.cli_backend import CliJudgeClient
 from weave_agent_signals.judges.inference import ChatClient, InferenceClient
 from weave_agent_signals.patterns import coaching_digest
@@ -107,10 +108,16 @@ def _build_default_dependencies(
     catalogs: dict[tuple[str, str, str], Catalog] = {}
     catalog_lock = threading.Lock()
     scorer_names: dict[tuple[str, str], str] = {}
+    # One HTTP client per CES URL, so requests reuse connections instead of opening new ones.
+    http_clients: dict[str, httpx.Client] = {}
 
     def ces_factory() -> CesSession:
         settings = ces_commands.ces_settings()
-        client = CesClient(settings[0], settings[1], scorer_names=scorer_names)
+        with catalog_lock:
+            if settings[0] not in http_clients:
+                http_clients[settings[0]] = ces_http(settings[0])
+            http = http_clients[settings[0]]
+        client = CesClient(settings[0], settings[1], http=http, scorer_names=scorer_names)
         try:
             with catalog_lock:
                 if settings not in catalogs:
@@ -218,6 +225,8 @@ def _build_default_dependencies(
     def close() -> None:
         executor.shutdown(wait=True, cancel_futures=True)
         store.close()
+        for http in http_clients.values():
+            http.close()
 
     return ApiDependencies(
         run_service=run_service,

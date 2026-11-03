@@ -59,6 +59,36 @@ def _record(target: str, scorer: str, rating: float, reason: str = "") -> dict:
     }
 
 
+def _row_of(turn: TurnSpan) -> dict:
+    """The turn as CES returns its row: the turn's first Case, carrying the turn totals."""
+    return {
+        "case_id": turn.trace_id,
+        "input": {
+            "kind": "user_message",
+            "turn_id": turn.trace_id,
+            "turn_index": turn.started_at.hour,
+            "step_index": 0,
+            "started_at": turn.started_at.isoformat(),
+            "text": turn.user_input,
+            "trace_role": turn.trace_role.value,
+            "model": turn.model,
+            "effort": turn.effort_level,
+            "config_version": turn.config_version,
+            "git_branch": turn.git_branch,
+            "session_id": turn.session_id,
+            "session_trajectory_id": turn.conversation_id,
+            "agent_id": None,
+        },
+        "output": {
+            "turn_input_tokens": turn.input_tokens,
+            "turn_output_tokens": turn.output_tokens,
+            "turn_status": "completed",
+            "turn_duration_ms": (turn.ended_at - turn.started_at).total_seconds() * 1000,
+        },
+        "scores": [],
+    }
+
+
 class FakeCes:
     """A CesSession stand-in serving sessions and Score records from memory."""
 
@@ -118,16 +148,13 @@ class FakeCes:
         )
         return None if turn is None else turn.subagents
 
-    def session_turns(self, _catalog, session_ids):
+    def session_turn_rows(self, _catalog, session_ids):
         return {
-            sid: sorted(
-                (turn for turn in self.turns if turn.conversation_id == sid),
-                key=lambda turn: turn.started_at,
-            )
+            sid: [_row_of(turn) for turn in self.turns if turn.conversation_id == sid]
             for sid in session_ids
         }
 
-    def cohort_scores(self, _catalog, session_ids):
+    def cohort_scores(self, _catalog, session_ids, *, turn_rows=None):
         self.feedback_calls.append(list(session_ids))
         targets = set(session_ids) | {
             turn.trace_id for turn in self.turns if turn.conversation_id in session_ids
