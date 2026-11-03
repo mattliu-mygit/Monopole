@@ -173,14 +173,15 @@ def run_scoring_stage(
 ) -> None:
     """Score the exact pinned cohort and guard writes against cancellation."""
 
-    _require_active(dependencies.store, run.run_id, cancel)
+    store = dependencies.store
+    _require_active(store, run.run_id, cancel)
     if run.turn_cohort is None:
         raise ValueError(f"Run {run.run_id} has no pinned turn cohort")
 
     turns, sessions = dependencies.hydrate_cohort(run.turn_cohort)
-    _require_active(dependencies.store, run.run_id, cancel)
+    _require_active(store, run.run_id, cancel)
     _record_event(
-        dependencies.store,
+        store,
         run.run_id,
         "scoring_started",
         f"Scoring {len(turns)} turns",
@@ -188,7 +189,7 @@ def run_scoring_stage(
     )
     turn_details: list[dict[str, Any]] = []
     _record_progress(
-        dependencies.store,
+        store,
         run.run_id,
         cancel,
         _progress(
@@ -201,109 +202,31 @@ def run_scoring_stage(
     )
 
     with dependencies.ces_factory() as ces:
-        existing: dict[Target, set[str]] = {}
-        if not config.force:
-            for sid in sessions:
-                for case_id, rows in ces.client.turn_scores(ces.catalog, sid).items():
-                    existing[("case", case_id)] = ces.catalog.scored(rows)
-            for sid, rows in ces.client.session_scores(ces.catalog, list(sessions)).items():
-                existing[("trajectory", sid)] = ces.catalog.scored(rows)
-        _require_active(dependencies.store, run.run_id, cancel)
-
-        errors = 0
+        existing = {} if config.force else _existing_scores(ces, sessions)
+        _require_active(store, run.run_id, cancel)
         pending_writes: dict[Target, list[Score]] = {}
-        for index, turn in enumerate(turns):
-            _require_active(dependencies.store, run.run_id, cancel)
-            try:
-                scores = score_turn(turn)
-                turn_details.append(_turn_detail(turn, scores))
-                _queue_scores(
-                    scores,
-                    target=("case", turn.trace_id),
-                    config_version=turn.config_version,
-                    git_branch=turn.git_branch,
-                    run_time=turn.started_at,
-                    existing=existing.get(("case", turn.trace_id), set()),
-                    force=config.force,
-                    pending_writes=pending_writes,
-                )
-            except Exception as exc:
-                errors += 1
-                log.warning(
-                    "Run %s score error on %s: %s",
-                    run.run_id,
-                    turn.trace_id[:12],
-                    exc,
-                )
-                _record_event(
-                    dependencies.store,
-                    run.run_id,
-                    "turn_failed",
-                    f"Turn {index + 1} could not be scored",
-                    trace_id=turn.trace_id,
-                    conversation_id=turn.conversation_id,
-                    model=turn.model,
-                    scored=index + 1,
-                    total=len(turns),
-                    errors=errors,
-                )
-            else:
-                detail = turn_details[-1]
-                _record_event(
-                    dependencies.store,
-                    run.run_id,
-                    "turn_scored",
-                    f"Scored turn {index + 1} of {len(turns)}",
-                    trace_id=turn.trace_id,
-                    conversation_id=turn.conversation_id,
-                    model=turn.model,
-                    scored=index + 1,
-                    total=len(turns),
-                    errors=errors,
-                    tokens=detail["tokens"],
-                    tool_count=detail["tool_count"],
-                    steering=detail["steering"],
-                    denials=detail["denials"],
-                )
-            _record_progress(
-                dependencies.store,
-                run.run_id,
-                cancel,
-                _progress(
-                    turns,
-                    scored=index + 1,
-                    written=0,
-                    status_message=(f"Scored turn {index + 1} of {len(turns)}"),
-                    turn_details=turn_details,
-                ),
-            )
-
-        for session in sessions.values():
-            _require_active(dependencies.store, run.run_id, cancel)
-            try:
-                scores = score_session(session)
-                _queue_scores(
-                    scores,
-                    target=("trajectory", session.conversation_id),
-                    config_version=session.config_version,
-                    git_branch=session.git_branch,
-                    run_time=session.turns[0].started_at if session.turns else None,
-                    existing=existing.get(("trajectory", session.conversation_id), set()),
-                    force=config.force,
-                    pending_writes=pending_writes,
-                )
-            except Exception as exc:
-                errors += 1
-                log.warning(
-                    "Run %s session score error on %s: %s",
-                    run.run_id,
-                    session.conversation_id[:12],
-                    exc,
-                )
-
-        _require_active(dependencies.store, run.run_id, cancel)
+        errors = _score_turns(
+            store,
+            run.run_id,
+            cancel,
+            turns,
+            existing=existing,
+            force=config.force,
+            pending_writes=pending_writes,
+            turn_details=turn_details,
+        )
+        errors += _score_sessions(
+            store,
+            run.run_id,
+            cancel,
+            sessions,
+            existing=existing,
+            force=config.force,
+            pending_writes=pending_writes,
+        )
+        _require_active(store, run.run_id, cancel)
         _record_progress(
-            dependencies.store,
+            store,
             run.run_id,
             cancel,
             _progress(
@@ -314,65 +237,208 @@ def run_scoring_stage(
                 turn_details=turn_details,
             ),
         )
+        written, write_errors = _write_pending(store, run.run_id, cancel, ces, pending_writes)
+        errors += write_errors
 
-        written = 0
-        if pending_writes:
-            _require_active(dependencies.store, run.run_id, cancel)
-            try:
-                with dependencies.store.external_write_barrier(
-                    run.run_id,
-                    RunStatus.SCORING,
-                ):
-                    written, write_errors = _write_scores(
-                        ces,
-                        pending_writes,
-                        run_id=run.run_id,
-                    )
-                    errors += write_errors
-            except RunStoreConflictError as exc:
-                _translate_cancellation(
-                    dependencies.store,
-                    run.run_id,
-                    cancel,
-                    exc,
-                )
-                raise
+    _finish_scoring(
+        store,
+        run.run_id,
+        cancel,
+        turns,
+        sessions_scored=len(sessions),
+        written=written,
+        errors=errors,
+        turn_details=turn_details,
+    )
 
-    _require_active(dependencies.store, run.run_id, cancel)
+
+def _existing_scores(
+    ces: CesSession, sessions: Mapping[str, SessionView]
+) -> dict[Target, set[str]]:
+    """The Scorers that already scored each target, so a rerun skips them unless forced."""
+    existing: dict[Target, set[str]] = {}
+    for sid in sessions:
+        for case_id, rows in ces.client.turn_scores(ces.catalog, sid).items():
+            existing[("case", case_id)] = ces.catalog.scored(rows)
+    for sid, rows in ces.client.session_scores(ces.catalog, list(sessions)).items():
+        existing[("trajectory", sid)] = ces.catalog.scored(rows)
+    return existing
+
+
+def _score_turns(
+    store: RunStore,
+    run_id: str,
+    cancel: threading.Event,
+    turns: list[TurnSpan],
+    *,
+    existing: dict[Target, set[str]],
+    force: bool,
+    pending_writes: dict[Target, list[Score]],
+    turn_details: list[dict[str, Any]],
+) -> int:
+    """Score each turn, queue its Scores, and record its event. Returns the error count."""
+    errors = 0
+    for index, turn in enumerate(turns):
+        _require_active(store, run_id, cancel)
+        try:
+            scores = score_turn(turn)
+            turn_details.append(_turn_detail(turn, scores))
+            _queue_scores(
+                scores,
+                target=("case", turn.trace_id),
+                config_version=turn.config_version,
+                git_branch=turn.git_branch,
+                run_time=turn.started_at,
+                existing=existing.get(("case", turn.trace_id), set()),
+                force=force,
+                pending_writes=pending_writes,
+            )
+        except Exception as exc:
+            errors += 1
+            log.warning("Run %s score error on %s: %s", run_id, turn.trace_id[:12], exc)
+            _record_event(
+                store,
+                run_id,
+                "turn_failed",
+                f"Turn {index + 1} could not be scored",
+                trace_id=turn.trace_id,
+                conversation_id=turn.conversation_id,
+                model=turn.model,
+                scored=index + 1,
+                total=len(turns),
+                errors=errors,
+            )
+        else:
+            detail = turn_details[-1]
+            _record_event(
+                store,
+                run_id,
+                "turn_scored",
+                f"Scored turn {index + 1} of {len(turns)}",
+                trace_id=turn.trace_id,
+                conversation_id=turn.conversation_id,
+                model=turn.model,
+                scored=index + 1,
+                total=len(turns),
+                errors=errors,
+                tokens=detail["tokens"],
+                tool_count=detail["tool_count"],
+                steering=detail["steering"],
+                denials=detail["denials"],
+            )
+        _record_progress(
+            store,
+            run_id,
+            cancel,
+            _progress(
+                turns,
+                scored=index + 1,
+                written=0,
+                status_message=f"Scored turn {index + 1} of {len(turns)}",
+                turn_details=turn_details,
+            ),
+        )
+    return errors
+
+
+def _score_sessions(
+    store: RunStore,
+    run_id: str,
+    cancel: threading.Event,
+    sessions: Mapping[str, SessionView],
+    *,
+    existing: dict[Target, set[str]],
+    force: bool,
+    pending_writes: dict[Target, list[Score]],
+) -> int:
+    """Score each session and queue its Scores. Returns the error count."""
+    errors = 0
+    for session in sessions.values():
+        _require_active(store, run_id, cancel)
+        try:
+            _queue_scores(
+                score_session(session),
+                target=("trajectory", session.conversation_id),
+                config_version=session.config_version,
+                git_branch=session.git_branch,
+                run_time=session.turns[0].started_at if session.turns else None,
+                existing=existing.get(("trajectory", session.conversation_id), set()),
+                force=force,
+                pending_writes=pending_writes,
+            )
+        except Exception as exc:
+            errors += 1
+            log.warning(
+                "Run %s session score error on %s: %s", run_id, session.conversation_id[:12], exc
+            )
+    return errors
+
+
+def _write_pending(
+    store: RunStore,
+    run_id: str,
+    cancel: threading.Event,
+    ces: CesSession,
+    pending_writes: dict[Target, list[Score]],
+) -> tuple[int, int]:
+    """Write the queued Scores inside the cancellation barrier. Returns (written, errors)."""
+    if not pending_writes:
+        return 0, 0
+    _require_active(store, run_id, cancel)
+    try:
+        with store.external_write_barrier(run_id, RunStatus.SCORING):
+            return _write_scores(ces, pending_writes, run_id=run_id)
+    except RunStoreConflictError as exc:
+        _translate_cancellation(store, run_id, cancel, exc)
+        raise
+
+
+def _finish_scoring(
+    store: RunStore,
+    run_id: str,
+    cancel: threading.Event,
+    turns: list[TurnSpan],
+    *,
+    sessions_scored: int,
+    written: int,
+    errors: int,
+    turn_details: list[dict[str, Any]],
+) -> None:
+    """Record the final progress, result, and event. Raises when any Score failed."""
+    _require_active(store, run_id, cancel)
     error_label = "error" if errors == 1 else "errors"
     status_message = (
         f"Scoring failed: {errors} {error_label}; {written} scores written."
         if errors
         else f"Scoring complete: {written} scores written."
     )
-    final_progress = _progress(
-        turns,
-        scored=len(turns),
-        written=written,
-        status_message=status_message,
-        turn_details=turn_details,
-    )
     _record_progress(
-        dependencies.store,
-        run.run_id,
+        store,
+        run_id,
         cancel,
-        final_progress,
+        _progress(
+            turns,
+            scored=len(turns),
+            written=written,
+            status_message=status_message,
+            turn_details=turn_details,
+        ),
     )
     _record_result(
-        dependencies.store,
-        run.run_id,
+        store,
+        run_id,
         cancel,
         {
             "turns_scored": len(turns),
-            "sessions_scored": len(sessions),
+            "sessions_scored": sessions_scored,
             "scores_written": written,
             "errors": errors,
             "turn_details": turn_details,
         },
     )
     _record_event(
-        dependencies.store,
-        run.run_id,
+        store,
+        run_id,
         "scoring_complete" if not errors else "scoring_failed",
         status_message,
         total=len(turns),
