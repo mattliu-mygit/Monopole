@@ -322,3 +322,12 @@ def write_judge_scores(client, catalog: Catalog, pending: list, *, force: bool) 
         have = _scored_names(catalog, existing.get(sid, []))
         _write(client, catalog, pass_id, "trajectory", sid, scores, have, force, stats)
     return stats.written
+
+
+def read_feedback(args: argparse.Namespace) -> list[dict]:
+    """The newest `args.limit` Scores as feedback records, for analyze, monitor, and reflect."""
+    client, catalog = connect(args)
+    try:
+        return client.read_all_scores(catalog)[: args.limit]
+    finally:
+        client.close()

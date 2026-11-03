@@ -595,9 +595,15 @@ def _report_judging(judging_plan, pending: list, written: int, errors: int) -> i
     return 1 if errors else 0
 
 
-def cmd_analyze(args: argparse.Namespace) -> int:
+def _project_feedback(args: argparse.Namespace) -> list[dict]:
+    if args.backend == "ces":
+        return ces_commands.read_feedback(args)
     with WeaveClient(entity=args.entity, project=args.project) as client:
-        feedback = client.query_project_feedback(limit=args.limit)
+        return client.query_project_feedback(limit=args.limit)
+
+
+def cmd_analyze(args: argparse.Namespace) -> int:
+    feedback = _project_feedback(args)
 
     if not feedback:
         print("No scored feedback found.")
@@ -653,8 +659,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 
 def cmd_monitor(args: argparse.Namespace) -> int:
-    with WeaveClient(entity=args.entity, project=args.project) as client:
-        feedback = client.query_project_feedback(limit=args.limit)
+    feedback = _project_feedback(args)
 
     if not feedback:
         print("No scored feedback found.")
@@ -721,8 +726,7 @@ def _render_bundle_diff(past: BundleSnapshot, proposed: BundleSnapshot) -> str:
 
 
 def cmd_reflect(args: argparse.Namespace) -> int:
-    with WeaveClient(entity=args.entity, project=args.project) as client:
-        feedback = client.query_project_feedback(limit=args.limit)
+    feedback = _project_feedback(args)
 
     feedback = [item for item in feedback if is_evaluation_feedback_eligible(item)]
     if not feedback:
@@ -878,6 +882,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # analyze
     p_analyze = subs.add_parser("analyze", help="Analyze scored feedback patterns")
+    ces_commands.add_arguments(p_analyze)
     p_analyze.add_argument(
         "--limit",
         type=int,
@@ -894,6 +899,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # monitor
     p_mon = subs.add_parser("monitor", help="Alert on significant score regressions")
+    ces_commands.add_arguments(p_mon)
     p_mon.add_argument(
         "--limit",
         type=int,
@@ -916,6 +922,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_reflect = subs.add_parser(
         "reflect", help="Propose managed instruction edits from evaluation scores"
     )
+    ces_commands.add_arguments(p_reflect)
     p_reflect.add_argument(
         "--limit",
         type=int,

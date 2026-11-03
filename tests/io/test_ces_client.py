@@ -398,3 +398,124 @@ def test_a_route_error_other_than_missing_is_not_hidden_by_the_fallback(tmp_path
 
     with pytest.raises(httpx.HTTPStatusError):
         client.session_scores(catalog, ["s1"])
+
+
+@respx.mock
+def test_read_all_scores_turns_ces_rows_into_feedback_records(tmp_path):
+    _catalog_routes()
+    client = CesClient(
+        "http://ces.test", "scope-1", api_key="k", score_index=ScoreIndex(str(tmp_path / "i.jsonl"))
+    )
+    catalog = client.ensure_catalog("ds-1")
+    case_input = {
+        "config_version": "cfg1",
+        "git_branch": "main",
+        "started_at": "2026-11-02T10:00:00.000Z",
+    }
+    respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "rows": [
+                    {
+                        "case_id": "c1",
+                        "input": case_input,
+                        "scores": [
+                            {
+                                "score_id": "1",
+                                "scorer_id": "sc-v",
+                                "scorer_version_id": "v1",
+                                "value": 0.9,
+                            },
+                            {
+                                "score_id": "2",
+                                "scorer_id": "sc-d",
+                                "scorer_version_id": "v1",
+                                "value": {
+                                    "tags": ["efficient"],
+                                    "reason": "fine",
+                                    "granularity": "turn",
+                                    "details": {"waste": 0},
+                                },
+                            },
+                        ],
+                    }
+                ]
+            },
+        )
+    )
+    respx.post(f"{BASE}/evaluations/ev-sessions/trajectory-rows/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "rows": [
+                    {
+                        "trajectory": {"trajectory_id": "s1", "depth": 0},
+                        "root_case": {
+                            "input": {**case_input, "started_at": "2026-11-03T10:00:00.000Z"}
+                        },
+                        "scores": [
+                            {
+                                "score_id": "3",
+                                "scorer_id": "sc-j",
+                                "scorer_version_id": "v1",
+                                "value": 0.75,
+                            },
+                            {
+                                "score_id": "4",
+                                "scorer_id": "sc-jd",
+                                "scorer_version_id": "v1",
+                                "value": {
+                                    "tags": [],
+                                    "reason": "ok",
+                                    "details": {"review_status": "complete"},
+                                },
+                            },
+                        ],
+                    },
+                    {
+                        "trajectory": {"trajectory_id": "a1", "depth": 1},
+                        "root_case": {},
+                        "scores": [
+                            {
+                                "score_id": "5",
+                                "scorer_id": "sc-j",
+                                "scorer_version_id": "v1",
+                                "value": 0.1,
+                            }
+                        ],
+                    },
+                ]
+            },
+        )
+    )
+    names = {
+        "sc-v": "efficiency",
+        "sc-d": "efficiency.details",
+        "sc-j": "judge.tool_choice.panel-abc",
+        "sc-jd": "judge.tool_choice.panel-abc.details",
+    }
+    respx.get(url__regex=rf"{BASE}/scorers/[^/]+/versions/v1").mock(
+        side_effect=lambda request: httpx.Response(
+            200, json={"name": names[request.url.path.split("/")[-3]]}
+        )
+    )
+
+    judge, turn = client.read_all_scores(catalog)
+
+    assert (turn["feedback_type"], turn["weave_ref"], turn["payload"]["rating"]) == (
+        "weave_agent_signals.efficiency",
+        "c1",
+        0.9,
+    )
+    assert (turn["payload"]["tags"], turn["payload"]["details"]["config_version"]) == (
+        ["efficient"],
+        "cfg1",
+    )
+    assert turn["payload"]["details"]["turn_started_at"] == "2026-11-02T10:00:00.000Z"
+    assert (judge["feedback_type"], judge["weave_ref"]) == (
+        "weave_agent_signals.judge.tool_choice",
+        "s1",
+    )
+    assert judge["payload"]["details"]["ces_scorer"] == "judge.tool_choice.panel-abc"
+    assert judge["payload"]["details"]["review_status"] == "complete"

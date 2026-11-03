@@ -87,6 +87,53 @@ def _score_row(score: dict[str, Any]) -> dict[str, Any]:
     return {k: score.get(k) for k in ("score_id", "scorer_id", "scorer_version_id", "value")}
 
 
+def _feedback(target_id: str, case_input: dict, scores: list[dict], names: dict) -> list[dict]:
+    """One target's Scores as Weave-feedback-shaped records, so the analysis reads CES unchanged.
+
+    `names` maps (scorer_id, scorer_version_id) to the CES Scorer name. A `.details` Scorer
+    supplies the tags, reason, and details of the value Scorer it shadows. The target Case
+    fills in the config, branch, and start time when the details lack them. A judge Scorer
+    named `<rubric>.panel-<digest>` reports as its rubric."""
+    values, details = {}, {}
+    for score in scores:
+        name = names.get((score["scorer_id"], score["scorer_version_id"]))
+        if name is None:
+            continue
+        if name.endswith(DETAILS_SUFFIX):
+            details[name[: -len(DETAILS_SUFFIX)]] = score["value"]
+        else:
+            values[name] = score["value"]
+    records = []
+    for name, value in values.items():
+        extra = details.get(name) if isinstance(details.get(name), dict) else {}
+        detail = dict(extra.get("details") or {})
+        detail.setdefault("config_version", case_input.get("config_version"))
+        detail.setdefault("git_branch", case_input.get("git_branch"))
+        detail.setdefault("turn_started_at", case_input.get("started_at"))
+        detail["ces_scorer"] = name
+        payload = {
+            "scorer_version": extra.get("scorer_version", "v1"),
+            "rating": float(value) if isinstance(value, bool) else value,
+            "tags": extra.get("tags") or [],
+            "reason": extra.get("reason") or "",
+            "granularity": extra.get("granularity"),
+            "details": detail,
+        }
+        if extra.get("confidence") is not None:
+            payload["confidence"] = extra["confidence"]
+        if detail.get("scored_at"):
+            payload["scored_at"] = detail["scored_at"]
+        rubric = name.split(".panel-")[0]
+        records.append(
+            {
+                "feedback_type": f"weave_agent_signals.{rubric}",
+                "weave_ref": target_id,
+                "payload": payload,
+            }
+        )
+    return records
+
+
 def session_view(
     trajectory_id: str, cases: list[dict], children: dict[str, list[dict]]
 ) -> SessionView:
@@ -421,6 +468,52 @@ class CesClient:
             for r in rows
             if r["trajectory"]["trajectory_id"] in wanted
         }
+
+    def read_all_scores(self, catalog: Catalog) -> list[dict]:
+        """Every turn and session Score, newest run first, as feedback-shaped records."""
+        turn_rows = self._rows(
+            f"/evaluations/{catalog.turns_evaluation_id}/rows/search",
+            {"filter": "i.step_index = 0"},
+        )
+        targets = [(r["case_id"], r["input"], r.get("scores") or []) for r in turn_rows]
+        try:
+            session_rows = self._rows(
+                f"/evaluations/{catalog.sessions_evaluation_id}/trajectory-rows/search", {}
+            )
+            targets += [
+                (
+                    r["trajectory"]["trajectory_id"],
+                    (r.get("root_case") or {}).get("input") or {},
+                    r.get("scores") or [],
+                )
+                for r in session_rows
+                if not r["trajectory"].get("depth")
+            ]
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code not in (404, 405):
+                raise
+            # Workaround until the Trajectory-row route deploys; see ces_score_index.
+            targets += [
+                (
+                    trajectory,
+                    {},
+                    [_score_row(self.get_score(score_id)) for score_id in newest.values()],
+                )
+                for trajectory, newest in self._index.newest().items()
+            ]
+        names: dict[tuple[str, str], str] = {}
+        for _, _, scores in targets:
+            for score in scores:
+                key = (score["scorer_id"], score["scorer_version_id"])
+                if key not in names:
+                    names[key] = self._request("GET", f"/scorers/{key[0]}/versions/{key[1]}")[
+                        "name"
+                    ]
+        records = [record for target in targets for record in _feedback(*target, names)]
+        records.sort(
+            key=lambda r: r["payload"]["details"].get("turn_started_at") or "", reverse=True
+        )
+        return records
 
     def get_score(self, score_id: str) -> dict:
         return self._request("GET", f"/scores/{score_id}")

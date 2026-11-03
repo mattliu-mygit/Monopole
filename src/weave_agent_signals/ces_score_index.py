@@ -34,9 +34,9 @@ class ScoreIndex:
                 }
                 fh.write(json.dumps(entry) + "\n")
 
-    def newest(self, trajectory_ids) -> dict[str, dict[str, str]]:
-        """Trajectory ID → {scorer_id: the newest score_id written for it}."""
-        wanted, found = set(trajectory_ids), {}
+    def newest(self, trajectory_ids=None) -> dict[str, dict[str, str]]:
+        """Trajectory ID → {scorer_id: the newest score_id written for it}. None means every one."""
+        wanted, found = None if trajectory_ids is None else set(trajectory_ids), {}
         try:
             with open(self.path, encoding="utf-8") as fh:
                 for line in fh:
@@ -44,7 +44,7 @@ class ScoreIndex:
                         entry = json.loads(line)
                     except ValueError:
                         continue
-                    if entry.get("trajectory_id") in wanted:
+                    if wanted is None or entry.get("trajectory_id") in wanted:
                         found.setdefault(entry["trajectory_id"], {})[entry["scorer_id"]] = entry[
                             "score_id"
                         ]

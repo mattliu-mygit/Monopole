@@ -279,3 +279,11 @@ def test_judge_with_the_ces_backend_judges_found_sessions_and_writes_finished_sc
         in capsys.readouterr().out
     )
     assert client.closed
+
+
+def test_analysis_commands_read_feedback_from_ces_with_the_ces_backend(monkeypatch):
+    records = [{"feedback_type": "weave_agent_signals.efficiency", "payload": {"rating": 1.0}}]
+    monkeypatch.setattr(ces_commands, "read_feedback", lambda args: records)
+    args = cli.build_parser().parse_args(["analyze", "--backend", "ces"])
+
+    assert cli._project_feedback(args) is records

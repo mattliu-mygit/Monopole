@@ -50,6 +50,7 @@ def _args(**over):
         limit=1000,
         alert_webhook=None,
         state_file=None,
+        backend="weave",
     )
     base.update(over)
     return argparse.Namespace(**base)
