@@ -3,10 +3,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import plistlib
 import re
 import tarfile
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from subprocess import CompletedProcess, TimeoutExpired
 
 import pytest
@@ -25,6 +27,12 @@ from weave_agent_signals.runs.challenges.smol import (
     _task_text,
 )
 from weave_agent_signals.runs.challenges.workspace import WorkspaceFile, WorkspaceSnapshot
+
+
+@pytest.fixture(autouse=True)
+def _not_macos(monkeypatch):
+    """Keep the CLI adapter's macOS data-directory handling out of tests that don't ask for it."""
+    monkeypatch.setattr(smol_module, "_macos", lambda: False)
 
 
 @dataclass
@@ -676,3 +684,135 @@ def test_a_current_smol_cli_version_is_accepted(value):
     from weave_agent_signals.runs.challenges import smol
 
     smol._validate_smol_cli_version(value)
+
+
+def _recording_run(calls, *, fail=lambda command: None):
+    def run(command, *, env=None):
+        calls.append(command)
+        failure = fail(command)
+        if isinstance(failure, BaseException):
+            raise failure
+        return failure or CompletedProcess(command, 0, stdout="", stderr="")
+
+    return run
+
+
+def test_cli_adapter_stops_the_machine_before_removing_it(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(_CliMachine, "_run", staticmethod(_recording_run(calls)))
+    machine = _CliMachine("/bin/smol", "pair-baseline", "runtime@sha256:digest", False)
+
+    machine.delete()
+
+    assert [call[1:3] for call in calls[-2:]] == [["machine", "stop"], ["machine", "rm"]]
+
+
+def test_cli_adapter_removes_the_machine_when_stop_raises(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def stop_times_out(command):
+        return TimeoutExpired(command, 300) if "stop" in command else None
+
+    monkeypatch.setattr(
+        _CliMachine, "_run", staticmethod(_recording_run(calls, fail=stop_times_out))
+    )
+    machine = _CliMachine("/bin/smol", "pair-baseline", "runtime@sha256:digest", False)
+
+    machine.delete()
+
+    assert calls[-1][1:3] == ["machine", "rm"]
+
+
+def test_cli_adapter_removes_a_machine_whose_create_timed_out(monkeypatch, tmp_path) -> None:
+    calls: list[list[str]] = []
+    cleaned: list[Path] = []
+    data_dir = tmp_path / "0123456789abcdef"
+    data_dir.mkdir()
+
+    def create_times_out(command):
+        return TimeoutExpired(command, 300) if "create" in command else None
+
+    monkeypatch.setattr(
+        _CliMachine, "_run", staticmethod(_recording_run(calls, fail=create_times_out))
+    )
+    monkeypatch.setattr(_CliMachine, "_resolve_data_dir", lambda _self: data_dir)
+    monkeypatch.setattr(smol_module, "_cleanup_orphaned_macos_data_dir", cleaned.append)
+
+    with pytest.raises(TimeoutExpired):
+        _CliMachine("/bin/smol", "pair-baseline", "runtime@sha256:digest", False)
+
+    assert calls[-1][1:3] == ["machine", "rm"]
+    assert cleaned == [data_dir]
+
+
+def test_cli_adapter_resolves_the_exact_macos_data_directory(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    expected = (
+        Path.home() / "Library" / "Caches" / "smolvm" / "vms" / "0123456789abcdef"
+    ).resolve()
+
+    def data_dir(command):
+        return CompletedProcess(command, 0, str(expected), "") if "data-dir" in command else None
+
+    monkeypatch.setattr(smol_module, "_macos", lambda: True)
+    monkeypatch.setattr(_CliMachine, "_run", staticmethod(_recording_run(calls, fail=data_dir)))
+
+    machine = _CliMachine("/bin/smol", "pair-baseline", "runtime@sha256:digest", False)
+
+    assert ["/bin/smol", "machine", "data-dir", "--name", "pair-baseline"] in calls
+    assert machine._data_dir == expected
+
+
+@pytest.mark.parametrize(
+    "stdout", ["", "/tmp/0123456789abcdef", "~/Library/Caches/smolvm/vms/not-hex"]
+)
+def test_cli_adapter_fails_closed_and_removes_the_machine_for_an_unexpected_data_dir(
+    monkeypatch, stdout
+) -> None:
+    calls: list[list[str]] = []
+
+    def data_dir(command):
+        return CompletedProcess(command, 0, stdout, "") if "data-dir" in command else None
+
+    monkeypatch.setattr(smol_module, "_macos", lambda: True)
+    monkeypatch.setattr(_CliMachine, "_run", staticmethod(_recording_run(calls, fail=data_dir)))
+
+    with pytest.raises(RuntimeError, match="data directory"):
+        _CliMachine("/bin/smol", "pair-baseline", "runtime@sha256:digest", False)
+
+    assert not any("start" in call for call in calls)
+    assert calls[-1][1:3] == ["machine", "rm"]
+
+
+def test_macos_orphan_cleanup_detaches_only_the_machines_image(monkeypatch, tmp_path) -> None:
+    data_dir = tmp_path / "0123456789abcdef"
+    image_path = data_dir / "pack" / "layers-cs.sparseimage"
+    image_path.parent.mkdir(parents=True)
+    image_path.write_bytes(b"disk")
+    removed: list[Path] = []
+    calls: list[list[str]] = []
+    info = plistlib.dumps(
+        {
+            "images": [
+                {
+                    "image-path": str(tmp_path / "other" / "layers-cs.sparseimage"),
+                    "system-entities": [{"dev-entry": "/dev/disk41"}],
+                },
+                {"image-path": str(image_path), "system-entities": [{"dev-entry": "/dev/disk42"}]},
+            ]
+        }
+    )
+
+    def run(command, **kwargs):
+        calls.append(command)
+        stdout = info if command[:2] == ["hdiutil", "info"] else ""
+        return CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(smol_module.subprocess, "run", run)
+    monkeypatch.setattr(smol_module.shutil, "rmtree", removed.append)
+
+    smol_module._cleanup_orphaned_macos_data_dir(data_dir)
+
+    assert ["hdiutil", "detach", "/dev/disk42", "-force"] in calls
+    assert ["hdiutil", "detach", "/dev/disk41", "-force"] not in calls
+    assert removed == [data_dir]

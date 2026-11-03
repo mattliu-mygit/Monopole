@@ -8,11 +8,13 @@ import io
 import json
 import logging
 import os
+import plistlib
 import re
 import secrets
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -123,24 +125,53 @@ class _CliMachine:
     def __init__(self, executable: str, name: str, image: str, network_enabled: bool) -> None:
         self._executable = executable
         self._name = name
+        self._data_dir: Path | None = None
         image_flag = "--from" if Path(image).is_file() else "--image"
         command = [executable, "machine", "create", "--name", name, image_flag, image]
         if network_enabled:
             command.append("--net")
-        created = self._run(command)
+        try:
+            created = self._run(command)
+        except BaseException:
+            self._cleanup_after_init_failure()  # a create that timed out may have made the machine
+            raise
         if created.returncode != 0:
+            self._cleanup_after_init_failure()
             raise RuntimeError(f"Smol machine creation failed: {_safe_process_error(created)}")
         try:
+            self._data_dir = self._resolve_data_dir()
             started = self._run([executable, "machine", "start", "--name", name, "--local"])
         except BaseException:
-            try:
-                self._run([executable, "machine", "rm", "--name", name, "--yes", "--local"])
-            except Exception:
-                pass
+            self._cleanup_after_init_failure()
             raise
         if started.returncode != 0:
-            self._run([executable, "machine", "rm", "--name", name, "--yes", "--local"])
+            self._cleanup_after_init_failure()
             raise RuntimeError(f"Smol machine startup failed: {_safe_process_error(started)}")
+
+    def _resolve_data_dir(self) -> Path | None:
+        """The machine's cache directory on macOS, which `machine rm` can leave behind with its
+        disk image still mounted. Anything but the expected cache path fails closed."""
+        if not _macos():
+            return None
+        result = self._run([self._executable, "machine", "data-dir", "--name", self._name])
+        if result.returncode != 0:
+            raise RuntimeError(f"Smol machine data directory failed: {_safe_process_error(result)}")
+        path = Path(result.stdout.strip()).resolve()
+        root = (Path.home() / "Library" / "Caches" / "smolvm" / "vms").resolve()
+        if path.parent != root or re.fullmatch(r"[0-9a-f]{16}", path.name) is None:
+            raise RuntimeError("Smol returned an unexpected machine data directory")
+        return path
+
+    def _cleanup_after_init_failure(self) -> None:
+        if self._data_dir is None:
+            try:
+                self._data_dir = self._resolve_data_dir()
+            except Exception:
+                pass
+        try:
+            self.delete()
+        except Exception:
+            pass
 
     @staticmethod
     def _run(command: list[str], *, env: dict[str, str] | None = None):
@@ -313,6 +344,10 @@ class _CliMachine:
         return bytes(value)
 
     def delete(self) -> None:
+        try:
+            self._run([self._executable, "machine", "stop", "--name", self._name, "--local"])
+        except Exception:
+            pass  # removal still runs; a machine that won't stop is removed anyway
         deleted = self._run(
             [
                 self._executable,
@@ -326,6 +361,47 @@ class _CliMachine:
         )
         if deleted.returncode != 0:
             raise RuntimeError(f"Smol machine cleanup failed: {_safe_process_error(deleted)}")
+        if self._data_dir is not None and self._data_dir.exists():
+            _cleanup_orphaned_macos_data_dir(self._data_dir)
+
+
+def _macos() -> bool:
+    return sys.platform == "darwin"
+
+
+def _cleanup_orphaned_macos_data_dir(data_dir: Path) -> None:
+    """Detach the deleted machine's disk image, which Smol CLI 1.6.13 leaves mounted on macOS,
+    then remove its cache directory."""
+    image_path = (data_dir / "pack" / "layers-cs.sparseimage").resolve()
+    info = subprocess.run(
+        ["hdiutil", "info", "-plist"], check=True, capture_output=True, timeout=30
+    )
+    for image in plistlib.loads(info.stdout).get("images", []):
+        if Path(image.get("image-path", "")).resolve() != image_path:
+            continue
+        devices = [
+            entity["dev-entry"]
+            for entity in image.get("system-entities", [])
+            if entity.get("dev-entry")
+        ]
+        if not devices:
+            raise RuntimeError("Smol orphaned disk image has no device")
+        for attempt in range(10):
+            detached = subprocess.run(
+                ["hdiutil", "detach", devices[0], "-force"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if detached.returncode == 0:
+                break
+            if attempt < 9:
+                time.sleep(0.5)
+        else:
+            raise RuntimeError(f"Smol disk cleanup failed: {_safe_process_error(detached)}")
+        break
+    shutil.rmtree(data_dir)
 
 
 def _safe_process_error(result) -> str:
