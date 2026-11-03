@@ -1104,7 +1104,7 @@ class RunStore:
                         f"current status is {current.value}"
                     )
                 yield
-            except Exception:
+            except BaseException:
                 self._conn.rollback()
                 raise
             else:

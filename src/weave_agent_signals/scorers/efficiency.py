@@ -64,7 +64,7 @@ def detect_error_loops(calls: list[ToolSpan], threshold: int = 3) -> list[ErrorL
         if avg_sim < 0.5:
             continue
 
-        failed = [t for t in group if t.status_code != "OK"]
+        failed = [t for t in group if t.status_code == "ERROR"]
         if len(failed) / len(group) < 0.6:
             continue
 

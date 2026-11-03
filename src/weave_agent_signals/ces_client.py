@@ -48,12 +48,6 @@ FIRST_STEP = "i.step_index = 0"
 _STATUS = {"completed": "OK", "aborted": "ERROR"}
 
 
-def iso(moment: datetime) -> str:
-    """The adapter's timestamp format, so string comparison in filters is time order."""
-    moment = moment.astimezone(timezone.utc)
-    return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
-
-
 def _ts(value: Any) -> datetime | None:
     """A Case timestamp as an aware datetime: UTC when it has no offset, None when unreadable."""
     if not isinstance(value, str) or not value:
@@ -241,7 +235,7 @@ def session_view(
         subagents = [
             SubagentSpan(
                 span_id=child,
-                agent_type=None,
+                agent_type=next((c["input"].get("agent_id") for c in child_cases), None),
                 tool_calls=[
                     _tool_span(c) for c in child_cases if c["input"].get("kind") == "tool_call"
                 ],
@@ -566,7 +560,7 @@ class CesClient:
                 raise
             # Workaround until the Trajectory-row route deploys; see ces_score_index.
             return [
-                (trajectory, {}, [_score_row(self.get_score(sid)) for sid in newest.values()])
+                (trajectory, {}, [row for sid in newest.values() if (row := self._indexed(sid))])
                 for trajectory, newest in self._index.newest(wanted).items()
             ]
         return [
@@ -597,6 +591,15 @@ class CesClient:
             key=lambda r: r["payload"]["details"].get("turn_started_at") or "", reverse=True
         )
         return records
+
+    def _indexed(self, score_id: str) -> dict | None:
+        """An indexed Score as a row, or None when CES no longer has it."""
+        try:
+            return _score_row(self.get_score(score_id))
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 404:
+                raise
+            return None
 
     def _scorer_name(self, scorer_id: str, version_id: str) -> str | None:
         """The Scorer version's name, or None when CES has no such version, so a Score from a

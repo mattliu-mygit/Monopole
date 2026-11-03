@@ -16,7 +16,12 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from weave_agent_signals.ces_catalog import Catalog
-from weave_agent_signals.ces_client import CesClient, CesSession, plan_judge_writes
+from weave_agent_signals.ces_client import (
+    CesClient,
+    CesSession,
+    plan_judge_writes,
+    session_or_none,
+)
 from weave_agent_signals.models import Score, SessionView, session_is_evaluable
 from weave_agent_signals.scorers import score_session, score_turn
 from weave_agent_signals.scorers.outcome import classify_command
@@ -121,7 +126,12 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
         if not session_is_evaluable(session.turns):
             continue
         sessions.append(session)
-        have_turns = {} if force else client.turn_scores(catalog, sid)
+        try:
+            have_turns = {} if force else client.turn_scores(catalog, sid)
+        except Exception as error:
+            log.warning("Could not read existing Scores for %s: %s", sid, error)
+            stats.errors += 1
+            continue
         for turn in session.turns:
             if turn.started_at < since or (until is not None and turn.started_at > until):
                 continue
@@ -266,7 +276,7 @@ def inspect(args: argparse.Namespace) -> int:
         else:
             epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
             session_ids = client.find_sessions(catalog, since=epoch, limit=args.recent)
-        sessions = [client.read_session(sid) for sid in session_ids]
+        sessions = [s for sid in session_ids if (s := session_or_none(client, sid)) is not None]
         session_rows = client.session_scores(catalog, session_ids) if args.scores else {}
         for session in sessions:
             turn_rows = client.turn_scores(catalog, session.conversation_id) if args.scores else {}

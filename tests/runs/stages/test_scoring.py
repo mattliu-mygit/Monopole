@@ -279,6 +279,7 @@ def test_missing_scores_are_written_and_persist_bounded_progress(store, monkeypa
         "scores_written": 2,
         "errors": 0,
         "turn_details": result["turn_details"],
+        "status_message": "Scoring complete: 2 scores written.",
     }
     assert result["turn_details"][0] == {
         "trace_id": "turn-with-a-",
@@ -393,6 +394,7 @@ def test_scoring_errors_persist_partial_result_then_raise(store, monkeypatch):
         "scores_written": 0,
         "errors": 1,
         "turn_details": [],
+        "status_message": "Scoring failed: 1 error; 0 scores written.",
     }
     assert updated.scoring_progress["status_message"] == (
         "Scoring failed: 1 error; 0 scores written."

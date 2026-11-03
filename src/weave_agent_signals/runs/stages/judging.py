@@ -702,7 +702,11 @@ def run_judging_stage(
         phase = value.pop("phase", None)
         message = value.pop("message", None)
         value.pop("raw_output", None)
-        progress(str(phase), str(message), **value)
+        try:
+            progress(str(phase), str(message), **value)
+        except ValueError as error:
+            # A client event the run's event schema doesn't know must not fail the judge call.
+            log.warning("Run %s skipped a judge activity event: %s", run_id, error)
 
     def fail_if_needed() -> None:
         if not state.failures:

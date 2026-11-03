@@ -434,6 +434,7 @@ def _finish_scoring(
             "scores_written": written,
             "errors": errors,
             "turn_details": turn_details,
+            "status_message": status_message,
         },
     )
     _record_event(

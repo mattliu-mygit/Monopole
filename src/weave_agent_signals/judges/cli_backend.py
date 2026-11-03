@@ -358,8 +358,15 @@ class CliJudgeClient:
 
     def _wait_before_retry(self, delay: float) -> None:
         """Back off before a retry, but stop at once when the call is cancelled."""
-        if self._abort_requested.wait(delay) or (self._cancel and self._cancel.is_set()):
-            raise InferenceCancelled("cancelled")
+        deadline = time.monotonic() + delay
+        while True:
+            if self._cancel and self._cancel.is_set():
+                raise InferenceCancelled("cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            if self._abort_requested.wait(min(remaining, 0.25)):
+                raise InferenceCancelled("cancelled")
 
     def chat_json(
         self,

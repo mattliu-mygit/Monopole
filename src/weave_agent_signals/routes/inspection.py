@@ -239,7 +239,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             }
         )
 
-    @router.get("/sessions/{conversation_id:path}")
+    @router.get("/sessions/{conversation_id}")
     def get_session(conversation_id: str) -> SessionDetailResponse:
         with ces_factory() as ces:
             session = session_or_none(ces.client, conversation_id)
