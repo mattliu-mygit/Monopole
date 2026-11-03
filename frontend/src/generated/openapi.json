@@ -1002,11 +1002,6 @@
       "FeedbackItemResponse": {
         "additionalProperties": true,
         "properties": {
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
           "feedback_type": {
             "title": "Feedback Type",
             "type": "string"
@@ -1022,8 +1017,7 @@
         "required": [
           "id",
           "feedback_type",
-          "payload",
-          "created_at"
+          "payload"
         ],
         "title": "FeedbackItemResponse",
         "type": "object"

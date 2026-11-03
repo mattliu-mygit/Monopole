@@ -639,11 +639,6 @@ export interface components {
         };
         /** FeedbackItemResponse */
         FeedbackItemResponse: {
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
             /** Feedback Type */
             feedback_type: string;
             /** Id */
