@@ -23,6 +23,7 @@ from weave_agent_signals.ces_catalog import (
     ScorerRef,
     ScorerSpec,
 )
+from weave_agent_signals.ces_score_index import ScoreIndex
 from weave_agent_signals.client import _get_api_key
 from weave_agent_signals.models import (
     ChatSpan,
@@ -79,6 +80,11 @@ def _tool_span(case: dict[str, Any], turn_id: str | None = None) -> ToolSpan:
         started_at=_ts(case_in.get("started_at")) or datetime.now(timezone.utc),
         ended_at=_ts(case_in.get("ended_at")),
     )
+
+
+def _score_row(score: dict[str, Any]) -> dict[str, Any]:
+    """A get-score result in the shape Evaluation rows return Scores."""
+    return {k: score.get(k) for k in ("score_id", "scorer_id", "scorer_version_id", "value")}
 
 
 def session_view(
@@ -208,12 +214,14 @@ class CesClient:
         namespace: str = "wandb",
         http: httpx.Client | None = None,
         sleep=time.sleep,
+        score_index: ScoreIndex | None = None,
     ):
         self.base = f"/v1/namespaces/{namespace}/scopes/{quote(scope_ref, safe='')}"
         self._http = http or httpx.Client(
             base_url=base_url.rstrip("/"), auth=("api", api_key or _get_api_key()), timeout=60.0
         )
         self._sleep = sleep
+        self._index = score_index or ScoreIndex()
 
     def close(self) -> None:
         self._http.close()
@@ -396,9 +404,18 @@ class CesClient:
     def session_scores(self, catalog: Catalog, trajectory_ids) -> dict[str, list[dict]]:
         """Scores on session Trajectories. The route has no filter, so this pages every row."""
         wanted = set(trajectory_ids)
-        rows = self._rows(
-            f"/evaluations/{catalog.sessions_evaluation_id}/trajectory-rows/search", {}
-        )
+        try:
+            rows = self._rows(
+                f"/evaluations/{catalog.sessions_evaluation_id}/trajectory-rows/search", {}
+            )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code not in (404, 405):
+                raise
+            # Workaround until the Trajectory-row route deploys; see ces_score_index.
+            return {
+                trajectory: [_score_row(self.get_score(score_id)) for score_id in newest.values()]
+                for trajectory, newest in self._index.newest(wanted).items()
+            }
         return {
             r["trajectory"]["trajectory_id"]: r.get("scores") or []
             for r in rows
@@ -456,4 +473,8 @@ class CesClient:
             body={"scores": body},
             key=f"score-v1:{pass_id}:{target_kind}:{target_id}",
         )
+        if target_kind == "trajectory":
+            self._index.record(
+                target_id, list(zip((b["scorer_id"] for b in body), result["score_ids"]))
+            )
         return result["score_ids"]
