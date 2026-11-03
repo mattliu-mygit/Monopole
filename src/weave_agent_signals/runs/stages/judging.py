@@ -719,7 +719,11 @@ def run_judging_stage(
                 return dependencies.store.get_judge_call(run_id, request_id)
 
             def record_call(call: JudgeCallRecord) -> object:
-                result = dependencies.store.record_judge_call(run_id, call)
+                try:
+                    result = dependencies.store.record_judge_call(run_id, call)
+                except RunStoreConflictError as error:
+                    _translate_cancel(dependencies.store, run_id, cancel, error)
+                    raise
                 with progress_lock:
                     if call.status == "succeeded" and _record_phase_call(
                         state, call.request_id, call.phase

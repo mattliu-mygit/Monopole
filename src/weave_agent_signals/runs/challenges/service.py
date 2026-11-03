@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -18,7 +17,7 @@ from weave_agent_signals.runs.challenges.contracts import (
     ChallengeResult,
     TaskMaterialPlan,
     TaskPreflightError,
-    Winner,
+    panel_winner,
 )
 from weave_agent_signals.runs.challenges.environment import CapturedEnvironment, RuntimeFile
 from weave_agent_signals.runs.challenges.inference import (
@@ -73,16 +72,6 @@ def _require_active(cancel_requested: Callable[[], bool]) -> None:
 def _presentation_order(candidate_id: str) -> tuple[ArmName, ArmName]:
     first_byte = hashlib.sha256(candidate_id.encode()).digest()[0]
     return ("candidate", "baseline") if first_byte % 2 == 0 else ("baseline", "candidate")
-
-
-def _panel_winner(verdicts) -> Winner:
-    counts = Counter(verdict.winner for verdict in verdicts)
-    majority = len(verdicts) // 2 + 1
-    if counts["candidate"] >= majority:
-        return "candidate"
-    if counts["baseline"] >= majority:
-        return "baseline"
-    return "tie"
 
 
 def _blinded_instruction_evidence(
@@ -364,7 +353,7 @@ def run_challenge(
     return ChallengeResult(
         candidate_id=candidate_id,
         status="complete",
-        winner=_panel_winner(verdicts),
+        winner=panel_winner(verdicts),
         reason=None,
         task=task,
         execution=environment.identity,

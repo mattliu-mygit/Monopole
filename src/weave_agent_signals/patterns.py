@@ -1,6 +1,6 @@
 """Pattern analysis: A/B leaderboards, trend detection, coaching digest.
 
-Operates on feedback records queried from Weave. All analysis is pure
+Operates on feedback-shaped records built from CES Scores. All analysis is pure
 computation — no API calls. The CLI orchestrates query → analyze → report.
 """
 

@@ -7,7 +7,6 @@ from typing import Any, Union
 
 # Prefix for every feedback type this system writes: weave_agent_signals.<scorer>
 FEEDBACK_PREFIX = "weave_agent_signals."
-TRACE_ROLE_ATTRIBUTE = "weave_agent_signals.trace_role"
 
 
 class TraceRole(StrEnum):
@@ -107,19 +106,6 @@ class TurnSpan:
 
 def session_is_evaluable(turns: list[TurnSpan]) -> bool:
     return bool(turns) and all(turn.trace_role is TraceRole.AGENT_SESSION for turn in turns)
-
-
-def filter_evaluable_turns(turns: list[TurnSpan]) -> list[TurnSpan]:
-    """Keep complete agent-session groups while preserving input turn order."""
-    grouped: dict[str, list[TurnSpan]] = {}
-    for turn in turns:
-        grouped.setdefault(turn.conversation_id, []).append(turn)
-    eligible = {
-        conversation_id
-        for conversation_id, session_turns in grouped.items()
-        if session_is_evaluable(session_turns)
-    }
-    return [turn for turn in turns if turn.conversation_id in eligible]
 
 
 @dataclass

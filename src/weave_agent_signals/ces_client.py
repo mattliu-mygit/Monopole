@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -130,7 +131,7 @@ def _score_row(score: dict[str, Any]) -> dict[str, Any]:
 
 
 def _feedback(target_id: str, case_input: dict, scores: list[dict], names: dict) -> list[dict]:
-    """One target's Scores as Weave-feedback-shaped records, so the analysis reads CES unchanged.
+    """One target's Scores as feedback-shaped records, the shape the analysis code takes.
 
     `names` maps (scorer_id, scorer_version_id) to the CES Scorer name. A `.details` Scorer
     supplies the tags, reason, and details of the value Scorer it shadows. The target Case
@@ -148,6 +149,8 @@ def _feedback(target_id: str, case_input: dict, scores: list[dict], names: dict)
             ids[name] = score["score_id"]
     records = []
     for name, value in values.items():
+        if not isinstance(value, (bool, int, float)) or not math.isfinite(value):
+            continue  # not a rating; one malformed Score must not break a whole read
         extra = details.get(name) if isinstance(details.get(name), dict) else {}
         detail = dict(extra.get("details") or {})
         detail.setdefault("config_version", case_input.get("config_version"))

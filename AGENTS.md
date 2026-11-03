@@ -73,7 +73,7 @@ then run all gates before declaring completion.
   comparable evidence, trends, coaching, and alerts
 - [`specs/04-evaluation-runs.md`](specs/04-evaluation-runs.md) — reproducible runs,
   review, and promotion
-- `src/weave_agent_signals/` — Weave I/O, evaluation, analysis, CLI, and API
+- `src/weave_agent_signals/` — CES I/O, evaluation, analysis, CLI, and API
 - `src/weave_agent_signals/runs/` — durable run, reflection, review, and
   promotion lifecycle
 - `frontend/src/features/` — run and reflection product behavior

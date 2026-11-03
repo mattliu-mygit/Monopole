@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from weave_agent_signals.ces_catalog import VERDICT, Catalog
@@ -103,3 +105,15 @@ def test_a_recording_failure_keeps_the_result_without_a_record(caplog):
 
     assert record_safely(result, unavailable) is result
     assert "was not recorded in CES: CES is down" in caplog.text
+
+
+def test_a_failed_adapter_command_logs_its_stderr(caplog):
+    result = _with_sessions(_result())
+
+    def adapter_fails():
+        raise subprocess.CalledProcessError(
+            2, ["weave-agent-adapter"], stderr="no evaluations state\n"
+        )
+
+    assert record_safely(result, adapter_fails) is result
+    assert "no evaluations state" in caplog.text

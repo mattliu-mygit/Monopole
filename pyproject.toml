@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "weave-agent-signals"
 version = "0.1.0"
-description = "Layered evaluation and human-reviewed instruction improvement for Weave traces"
+description = "Layered evaluation and human-reviewed instruction improvement for coding-agent sessions in CES"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

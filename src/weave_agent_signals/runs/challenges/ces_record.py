@@ -107,5 +107,12 @@ def record_safely(
         with ces_factory() as ces:
             return record_challenge(result, ces)
     except Exception as error:
-        _LOG.warning("challenge %s was not recorded in CES: %s", result.challenge_id, error)
+        # A failed adapter command says why only on stderr.
+        stderr = (getattr(error, "stderr", None) or "").strip()[-500:]
+        _LOG.warning(
+            "challenge %s was not recorded in CES: %s%s",
+            result.challenge_id,
+            error,
+            f": {stderr}" if stderr else "",
+        )
         return result

@@ -479,7 +479,7 @@ def cmd_reflect(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="weave-agent-signals",
-        description="Score agent traces from Weave",
+        description="Score coding-agent sessions in CES",
     )
     parser.add_argument("--entity", default="weave-team")
     parser.add_argument("--project", default="agent-sessions")
@@ -498,7 +498,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_back = subs.add_parser("backfill", help="Backfill scores for a date range")
     p_back.add_argument("--start", type=_parse_datetime, required=True)
     p_back.add_argument("--end", type=_parse_datetime, default=None)
-    p_back.add_argument("--page-size", type=int, default=500)
     p_back.add_argument("--force", action="store_true")
     ces_commands.add_arguments(p_back)
 
@@ -509,7 +508,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit",
         type=int,
         default=10,
-        help="Recent root turns used to discover complete sessions (default: 10)",
+        help="Most recent sessions to judge (default: 10)",
     )
     p_judge.add_argument(
         "--rubric",

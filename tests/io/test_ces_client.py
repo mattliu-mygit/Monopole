@@ -10,7 +10,7 @@ import pytest
 import respx
 
 from weave_agent_signals.ces_catalog import VERDICT, Catalog, ScorerSpec
-from weave_agent_signals.ces_client import CesClient, session_view
+from weave_agent_signals.ces_client import CesClient, _feedback, session_view
 from weave_agent_signals.ces_score_index import ScoreIndex
 from weave_agent_signals.models import Score
 
@@ -643,3 +643,17 @@ def test_cohort_feedback_searches_the_turns_of_all_sessions_at_once():
     assert json.loads(turns.calls.last.request.content)["filter"] == (
         'i.step_index = 0 AND (i.session_trajectory_id = "s1" OR i.session_trajectory_id = "s2")'
     )
+
+
+def test_a_score_that_is_not_a_rating_is_skipped():
+    names = {("sc", "v"): "efficiency", ("sc2", "v"): "outcome.test"}
+    scores = [
+        {"score_id": "1", "scorer_id": "sc", "scorer_version_id": "v", "value": "high"},
+        {"score_id": "2", "scorer_id": "sc2", "scorer_version_id": "v", "value": 0.5},
+    ]
+
+    records = _feedback("c1", {}, scores, names)
+
+    assert [(r["feedback_type"], r["payload"]["rating"]) for r in records] == [
+        ("weave_agent_signals.outcome.test", 0.5)
+    ]

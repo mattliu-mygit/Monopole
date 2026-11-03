@@ -14,6 +14,7 @@ from weave_agent_signals.runs.challenges.contracts import (
     RubricVerdict,
     TaskMaterial,
     TaskMaterialPlan,
+    panel_winner,
 )
 
 
@@ -356,3 +357,18 @@ def test_task_package_bounds_model_authored_collections(
 
     with pytest.raises(ValidationError, match="at most"):
         AuthoredTask.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("winners", "expected"),
+    [
+        (("candidate",), "candidate"),
+        (("candidate", "baseline"), "tie"),
+        (("baseline", "baseline", "candidate"), "baseline"),
+        (("tie", "candidate", "candidate"), "candidate"),
+    ],
+)
+def test_panel_winner_needs_a_strict_majority(winners, expected) -> None:
+    judges = [_judge(winner=winner, position=index + 1) for index, winner in enumerate(winners)]
+
+    assert panel_winner(judges) == expected

@@ -7,7 +7,7 @@ import json
 import math
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal, Self
 from urllib.parse import urlparse
@@ -385,6 +385,16 @@ class JudgeVerdict(_Contract):
         return self
 
 
+def panel_winner(judges: Sequence[JudgeVerdict]) -> Winner:
+    """The arm a strict majority of the panel chose, else a tie."""
+    counts = Counter(judge.winner for judge in judges)
+    majority = len(judges) // 2 + 1
+    for arm in ("baseline", "candidate"):
+        if counts[arm] >= majority:
+            return arm
+    return "tie"
+
+
 class ChallengeCesRecord(_Contract):
     """Where CES holds a challenge: each arm's session Case, their Comparison, and its verdict."""
 
@@ -428,13 +438,7 @@ class ChallengeResult(_Contract):
                 raise ValueError("complete challenge cannot contain infrastructure failure")
             if not self.judges:
                 raise ValueError("complete challenge requires judge evidence")
-            counts = Counter(judge.winner for judge in self.judges)
-            majority = len(self.judges) // 2 + 1
-            expected: Winner = "tie"
-            for arm in ("baseline", "candidate"):
-                if counts[arm] >= majority:
-                    expected = arm
-            if self.winner != expected:
+            if self.winner != panel_winner(self.judges):
                 raise ValueError("challenge winner does not match the strict panel majority")
         else:
             if self.reason is None:
