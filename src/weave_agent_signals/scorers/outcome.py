@@ -653,6 +653,8 @@ def _extract_command(span: ToolSpan) -> str | None:
 
 
 def _extract_exit_code(span: ToolSpan) -> int | None:
+    if span.exit_code is not None:
+        return span.exit_code
     try:
         result = json.loads(span.result)
     except (json.JSONDecodeError, TypeError):

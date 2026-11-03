@@ -47,6 +47,7 @@ class ToolSpan:
     status_code: str
     started_at: datetime
     ended_at: datetime | None
+    exit_code: int | None = None  # the command's exit code, when the harness recorded one
 
 
 @dataclass

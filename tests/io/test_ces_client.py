@@ -10,9 +10,10 @@ import pytest
 import respx
 
 from weave_agent_signals.ces_catalog import VERDICT, Catalog, ScorerSpec
-from weave_agent_signals.ces_client import CesClient, _feedback, session_view
+from weave_agent_signals.ces_client import CesClient, _feedback, _tool_span, session_view
 from weave_agent_signals.ces_score_index import ScoreIndex
 from weave_agent_signals.models import Score
+from weave_agent_signals.scorers.outcome import _extract_exit_code
 
 BASE = "http://ces.test/v1/namespaces/wandb/scopes/scope-1"
 
@@ -657,3 +658,66 @@ def test_a_score_that_is_not_a_rating_is_skipped():
     assert [(r["feedback_type"], r["payload"]["rating"]) for r in records] == [
         ("weave_agent_signals.outcome.test", 0.5)
     ]
+
+
+def test_session_view_skips_a_case_without_a_turn_and_reads_an_offsetless_time_as_utc():
+    stray = {"case_id": "c-stray", "input": {"kind": "user_message"}, "output": {}}
+    naive = _case("c-naive", "assistant_message", "t1", 9, started_at="2026-11-02T10:01:09.000")
+
+    view = session_view("traj-s", [*SESSION, stray, naive], {})
+
+    assert all(turn.started_at.tzinfo is not None for turn in view.turns)
+    assert "c-stray" not in {case_id for turn in view.turns for case_id in turn.case_ids}
+    assert "c-naive" in {case_id for turn in view.turns for case_id in turn.case_ids}
+
+
+def test_a_tool_calls_exit_code_reaches_the_outcome_scorers():
+    case = {
+        "case_id": "c-tool",
+        "input": {
+            "kind": "tool_call",
+            "tool_name": "Bash",
+            "started_at": "2026-11-02T10:00:00.000Z",
+        },
+        "output": {"status": "failed", "output": "1 failed", "exit_code": 2},
+    }
+
+    span = _tool_span(case)
+
+    assert span.exit_code == 2
+    assert _extract_exit_code(span) == 2
+
+
+@respx.mock
+def test_a_score_from_an_unknown_scorer_version_is_skipped():
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    respx.get(f"{BASE}/scorers/gone/versions/v").mock(return_value=httpx.Response(404, json={}))
+    respx.get(f"{BASE}/scorers/sc/versions/v").mock(
+        return_value=httpx.Response(200, json={"name": "efficiency"})
+    )
+    scores = [
+        {"score_id": "1", "scorer_id": "gone", "scorer_version_id": "v", "value": 0.1},
+        {"score_id": "2", "scorer_id": "sc", "scorer_version_id": "v", "value": 0.9},
+    ]
+
+    records = client._feedback_records([("c1", {}, scores)])
+
+    assert [r["feedback_type"] for r in records] == ["weave_agent_signals.efficiency"]
+
+
+@respx.mock
+def test_find_sessions_compares_times_not_strings_at_the_window_edge():
+    _catalog_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = client.ensure_catalog("ds-1")
+    rows = [
+        {"input": {"started_at": "2026-11-02T00:00:00+00:00", "session_trajectory_id": "s-edge"}},
+        {"input": {"started_at": "2026-11-01T23:59:59+00:00", "session_trajectory_id": "s-old"}},
+    ]
+    respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
+        return_value=httpx.Response(200, json={"rows": rows})
+    )
+
+    found = client.find_sessions(catalog, since=datetime(2026, 11, 2, tzinfo=timezone.utc))
+
+    assert found == ["s-edge"]

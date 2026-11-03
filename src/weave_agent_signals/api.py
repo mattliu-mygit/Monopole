@@ -103,18 +103,22 @@ def _build_default_dependencies(
     store = RunStore(db_path)
     executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="evaluation-run")
 
-    catalogs: list[Catalog] = []
+    # One catalog per CES Dataset, built once; the lock keeps concurrent stages from racing.
+    catalogs: dict[tuple[str, str, str], Catalog] = {}
+    catalog_lock = threading.Lock()
 
     def ces_factory() -> CesSession:
-        url, scope, dataset = ces_commands.ces_settings()
-        client = CesClient(url, scope)
+        settings = ces_commands.ces_settings()
+        client = CesClient(settings[0], settings[1])
         try:
-            if not catalogs:
-                catalogs.append(client.ensure_catalog(dataset))
+            with catalog_lock:
+                if settings not in catalogs:
+                    catalogs[settings] = client.ensure_catalog(settings[2])
+                catalog = catalogs[settings]
         except Exception:
             client.close()
             raise
-        return CesSession(client, catalogs[0])
+        return CesSession(client, catalog)
 
     def hydrate(cohort):
         return hydrate_turn_cohort(cohort, ces_factory=ces_factory)

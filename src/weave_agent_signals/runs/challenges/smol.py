@@ -46,7 +46,14 @@ _MAX_PROCESS_OUTPUT_BYTES = 200_000
 _MAX_PROCESS_CAPTURE_BYTES = 32 * 1024 * 1024
 _MAX_PROCESS_CAPTURE_FILE_BYTES = _MAX_PROCESS_CAPTURE_BYTES // 2
 _MAX_WORKSPACE_ARCHIVE_BYTES = 320 * 1024 * 1024
-_SESSION_DIRS = {"codex": "$HOME/.codex/sessions", "claude": "$HOME/.claude/projects"}
+# Each harness's own session files: Codex rollouts, and Claude Code's <project>/<session>.jsonl,
+# beside which older versions keep subagent transcripts named agent-*.jsonl.
+_SESSION_FILES = {
+    "codex": 'find "$HOME/.codex/sessions" -name "rollout-*.jsonl"',
+    "claude": (
+        'find "$HOME/.claude/projects" -mindepth 2 -maxdepth 2 -name "*.jsonl" ! -name "agent-*"'
+    ),
+}
 _MAX_SESSION_BYTES = 16 * 1024 * 1024
 _LOG = logging.getLogger(__name__)
 
@@ -349,15 +356,14 @@ def _is_execution_timeout(error: BaseException) -> bool:
 def _session_transcript(machine: Machine, environment: CapturedEnvironment) -> str | None:
     """The arm's harness session file, read so the arm can be logged to CES.
 
-    Each arm runs one session in a fresh machine, so the one top-level session file is the
-    arm's. A missing, oversized, or unreadable file leaves the arm unlogged, never failed."""
-    directory = _SESSION_DIRS[environment.identity.harness]
+    Each arm runs one session in a fresh machine; the newest session file is the arm's. A
+    missing, oversized, or unreadable file leaves the arm unlogged, never failed."""
     try:
         found = machine.exec(
             [
                 "/bin/sh",
                 "-c",
-                f'find "{directory}" -name "*.jsonl" -not -path "*/subagents/*" 2>/dev/null'
+                f"{_SESSION_FILES[environment.identity.harness]} -exec ls -t {{}} + 2>/dev/null"
                 " | head -1",
             ],
             ExecutionOptions(env=dict(environment.runtime_env), workdir=_WORKSPACE, timeout=60),

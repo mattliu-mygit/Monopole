@@ -56,9 +56,14 @@ def iso(moment: datetime) -> str:
 
 
 def _ts(value: Any) -> datetime | None:
+    """A Case timestamp as an aware datetime: UTC when it has no offset, None when unreadable."""
     if not isinstance(value, str) or not value:
         return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _int(value: Any) -> int:
@@ -86,6 +91,7 @@ def _tool_span(case: dict[str, Any], turn_id: str | None = None) -> ToolSpan:
         else "UNSET",
         started_at=_ts(case_in.get("started_at")) or datetime.now(timezone.utc),
         ended_at=_ts(case_in.get("ended_at")),
+        exit_code=exit_code if type(exit_code := out.get("exit_code")) is int else None,
     )
 
 
@@ -190,7 +196,12 @@ def session_view(
     carries the turn totals, and its ID is the turn's identity, where Weave used a
     trace ID. A subagent's Cases attach to the turn whose tool call launched it.
     """
-    members = [c for c in cases if c["input"].get("kind") != "session"]
+    # A Case without a turn ID, which the adapter never writes, has no turn to join.
+    members = [
+        c
+        for c in cases
+        if (c.get("input") or {}).get("turn_id") and c["input"].get("kind") != "session"
+    ]
     turns: dict[str, list[dict]] = {}
     for case in sorted(
         members,
@@ -498,7 +509,6 @@ class CesClient:
 
         CES filters can't range-compare string fields, so this reads turns newest first and
         stops at the first one before `since`. The adapter's timestamps sort in time order."""
-        lo, hi = iso(since), iso(until) if until is not None else None
         found, cursor = {}, None
         while True:
             body = {
@@ -512,14 +522,14 @@ class CesClient:
             )
             for row in page.get("rows") or []:
                 started, session = (
-                    row["input"].get("started_at"),
+                    _ts(row["input"].get("started_at")),
                     row["input"].get("session_trajectory_id"),
                 )
-                if not started:
+                if started is None:
                     continue  # a turn without a start time can't be placed in the window
-                if started < lo:
+                if started < since:
                     return list(found)
-                if session and (hi is None or started <= hi):
+                if session and (until is None or started <= until):
                     found.setdefault(session, None)
                     if limit is not None and len(found) >= limit:
                         return list(found)
@@ -571,14 +581,22 @@ class CesClient:
             for score in scores:
                 key = (score["scorer_id"], score["scorer_version_id"])
                 if key not in names:
-                    names[key] = self._request("GET", f"/scorers/{key[0]}/versions/{key[1]}")[
-                        "name"
-                    ]
+                    names[key] = self._scorer_name(*key)
         records = [record for target in targets for record in _feedback(*target, names)]
         records.sort(
             key=lambda r: r["payload"]["details"].get("turn_started_at") or "", reverse=True
         )
         return records
+
+    def _scorer_name(self, scorer_id: str, version_id: str) -> str | None:
+        """The Scorer version's name, or None when CES has no such version, so a Score from a
+        deleted or foreign Scorer is skipped instead of failing the whole read."""
+        try:
+            return self._request("GET", f"/scorers/{scorer_id}/versions/{version_id}")["name"]
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 404:
+                raise
+            return None
 
     def read_all_scores(self, catalog: Catalog, limit: int | None = None) -> list[dict]:
         """Turn and session Scores, newest turn first, as feedback-shaped records.
