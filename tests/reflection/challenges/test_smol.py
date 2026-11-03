@@ -615,3 +615,18 @@ def test_cli_adapter_removes_created_machine_when_start_raises(monkeypatch) -> N
         "--yes",
         "--local",
     ]
+
+
+@pytest.mark.parametrize("value", ["smol 1.6.12", "smol 1.5.99", "1.6.13", "smol 1.6", ""])
+def test_an_old_or_unreadable_smol_cli_version_is_rejected(value):
+    from weave_agent_signals.runs.challenges import smol
+
+    with pytest.raises(RuntimeError, match="1.6.13 or newer"):
+        smol._validate_smol_cli_version(value)
+
+
+@pytest.mark.parametrize("value", ["smol 1.6.13", "smol 1.7.0", "smol 2.0.0"])
+def test_a_current_smol_cli_version_is_accepted(value):
+    from weave_agent_signals.runs.challenges import smol
+
+    smol._validate_smol_cli_version(value)

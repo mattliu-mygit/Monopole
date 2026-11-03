@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -43,6 +44,8 @@ _RUNTIME_ARCHIVE = "/tmp/runtime-files.tar"
 _FINAL_ARCHIVE = "/root/.monopole-final-workspace.tar"
 _MAX_TRANSCRIPT_CHARACTERS = 200_000
 _MAX_PROCESS_OUTPUT_BYTES = 200_000
+# The oldest Smol CLI the challenge sandbox is verified against.
+_MIN_SMOL_CLI_VERSION = (1, 6, 13)
 _MAX_PROCESS_CAPTURE_BYTES = 32 * 1024 * 1024
 _MAX_PROCESS_CAPTURE_FILE_BYTES = _MAX_PROCESS_CAPTURE_BYTES // 2
 _MAX_WORKSPACE_ARCHIVE_BYTES = 320 * 1024 * 1024
@@ -301,13 +304,22 @@ def _capture_limit_reached(*streams) -> bool:
 
 
 def _smol_executable() -> str:
-    discovered = shutil.which("smol")
-    if discovered is not None:
-        return discovered
-    installed = os.path.expanduser("~/.local/bin/smol")
-    if os.path.isfile(installed) and os.access(installed, os.X_OK):
-        return installed
-    raise RuntimeError("Smol CLI is unavailable; install it from smolmachines.com")
+    executable = shutil.which("smol") or os.path.expanduser("~/.local/bin/smol")
+    if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
+        raise RuntimeError("Smol CLI is unavailable; install it from smolmachines.com")
+    version = subprocess.run(
+        [executable, "--version"], check=False, capture_output=True, text=True, timeout=10
+    )
+    if version.returncode != 0:
+        raise RuntimeError("Smol CLI version could not be resolved")
+    _validate_smol_cli_version(version.stdout.strip())
+    return executable
+
+
+def _validate_smol_cli_version(value: str) -> None:
+    match = re.fullmatch(r"smol (\d+)\.(\d+)\.(\d+)", value)
+    if match is None or tuple(map(int, match.groups())) < _MIN_SMOL_CLI_VERSION:
+        raise RuntimeError("Smol CLI 1.6.13 or newer is required")
 
 
 def _create_machine(name: str, image: str, network_enabled: bool) -> Machine:
