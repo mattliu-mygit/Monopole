@@ -13,7 +13,11 @@ from typing import Any
 
 from weave_agent_signals.ces_client import CesSession, plan_judge_writes
 from weave_agent_signals.judges.inference import ChatClient
-from weave_agent_signals.judges.plan import build_canonical_judging_plan, judging_plan_totals
+from weave_agent_signals.judges.plan import (
+    JudgingPlan,
+    build_canonical_judging_plan,
+    judging_plan_totals,
+)
 from weave_agent_signals.judges.records import JudgeCallRecord
 from weave_agent_signals.judges.runner import (
     JudgeExecutionError,
@@ -503,6 +507,138 @@ def _stamp(
     )
 
 
+def _pin_plan(
+    store: RunStore,
+    current: Run,
+    cancel: threading.Event,
+    sessions: Mapping[str, SessionView],
+    config: EffectiveRunConfig,
+) -> tuple[Run, JudgingPlan]:
+    """Pin the judging plan for the cohort, or reuse the one a resumed run already pinned."""
+    built_plan = build_canonical_judging_plan(
+        list(sessions.values()),
+        cohort_id=current.turn_cohort["cohort_id"],
+        rubrics=config.rubrics,
+        judge_models=config.models.judges,
+        context_policy=config.judging_context,
+    )
+    try:
+        current = store.pin_judging_plan(current.run_id, built_plan)
+    except RunStoreConflictError as error:
+        _translate_cancel(store, current.run_id, cancel, error)
+        raise
+    if current.judging_plan is None:  # pragma: no cover - pin_judging_plan just returned it
+        raise RuntimeError("Judging plan was not pinned")
+    return current, current.judging_plan
+
+
+def _initial_state(store: RunStore, run_id: str, plan: JudgingPlan) -> _State:
+    """Progress counters for the plan, counting calls a resumed run already finished."""
+    totals = judging_plan_totals(plan)
+    state = _State(
+        planned_rubrics=totals["planned_rubrics"],
+        minimum_reviewer_attempts=totals["minimum_reviewer_attempts"],
+        maximum_reviewer_attempts=totals["maximum_reviewer_attempts"],
+        maximum_digest_steps=totals["maximum_digest_calls"],
+        maximum_window_steps=totals["maximum_window_calls"],
+        maximum_merge_steps=totals["maximum_merge_calls"],
+    )
+    for call in store.list_judge_calls(run_id):
+        if call.status == "succeeded":
+            _record_phase_call(state, call.request_id, call.phase)
+    return state
+
+
+def _failure_message(state: _State, config: EffectiveRunConfig) -> str:
+    """One line naming the first failed rubric and what each of its reviewers did."""
+    failure = state.failure_details[0]
+    rubric_id = str(failure.get("rubric") or "Rubric")
+    rubric_label = next(
+        (rubric.label for rubric in config.rubrics if rubric.id == rubric_id),
+        rubric_id,
+    )
+    model_labels = {judge.id: judge.label for judge in config.models.judges}
+    outcomes: list[str] = []
+    for attempt in failure.get("attempts", []):
+        if not isinstance(attempt, Mapping):
+            continue
+        model_id = str(attempt.get("requested_model") or "reviewer")
+        label = model_labels.get(model_id, model_id)
+        status = attempt.get("status")
+        if status == "succeeded":
+            score = attempt.get("score")
+            outcomes.append(
+                f"{label} scored {score:g}" if isinstance(score, float) else f"{label} succeeded"
+            )
+        elif status == "abstained":
+            outcomes.append(f"{label} abstained")
+        elif status == "skipped":
+            outcomes.append(f"{label} skipped")
+        else:
+            error_type = str(attempt.get("error_type") or "provider error")
+            requests = attempt.get("transport_request_count")
+            request_note = (
+                f" after {requests} provider requests"
+                if type(requests) is int and requests > 0
+                else ""
+            )
+            detail = attempt.get("message")
+            detail_note = f": {detail}" if isinstance(detail, str) and detail else ""
+            outcomes.append(f"{label} failed {error_type}{request_note}{detail_note}")
+    message = f"{rubric_label} failed"
+    if outcomes:
+        message += ": " + "; ".join(outcomes)
+    if len(state.failures) > 1:
+        message += f"; {len(state.failures) - 1} additional rubric failures"
+    return message
+
+
+def _connect_clients(chat_clients, cancel: threading.Event, activity) -> None:
+    """Let each judge client see cancellation and report its activity, when it supports them."""
+    for chat_client in chat_clients:
+        set_cancel = getattr(chat_client, "set_cancel", None)
+        if callable(set_cancel):
+            set_cancel(cancel)
+        set_activity = getattr(chat_client, "set_activity", None)
+        if callable(set_activity):
+            set_activity(activity)
+
+
+def _write_judge_scores(
+    dependencies: JudgingDependencies,
+    run_id: str,
+    cancel: threading.Event,
+    state: _State,
+    *,
+    force: bool,
+    progress,
+) -> None:
+    """Write the accepted judge Scores inside the cancellation barrier, counting failures."""
+    with dependencies.ces_factory() as ces:
+        catalog, writes = plan_judge_writes(ces.client, ces.catalog, state.pending, force=force)
+        _active(dependencies.store, run_id, cancel)
+        if not writes:
+            return
+        progress(
+            "score_writes_started",
+            f"Writing {sum(map(len, writes.values()))} judge score(s)",
+            coverage_complete=True,
+        )
+        _active(dependencies.store, run_id, cancel)
+        try:
+            with dependencies.store.external_write_barrier(run_id, RunStatus.JUDGING):
+                for sid, scores in writes.items():
+                    try:
+                        ces.client.write_scores(catalog, run_id, "trajectory", sid, scores)
+                        state.scores_written += len(scores)
+                    except Exception as error:
+                        state.write_failure_count += len(scores)
+                        log.warning("Run %s judge score write failed: %s", run_id, error)
+        except RunStoreConflictError as error:
+            _translate_cancel(dependencies.store, run_id, cancel, error)
+            raise
+
+
 def run_judging_stage(
     run: Run,
     config: EffectiveRunConfig,
@@ -519,35 +655,9 @@ def run_judging_stage(
     turns, sessions = dependencies.hydrate_cohort(current.turn_cohort)
     _active(dependencies.store, run_id, cancel)
 
-    built_plan = build_canonical_judging_plan(
-        list(sessions.values()),
-        cohort_id=current.turn_cohort["cohort_id"],
-        rubrics=config.rubrics,
-        judge_models=config.models.judges,
-        context_policy=config.judging_context,
-    )
-    try:
-        current = dependencies.store.pin_judging_plan(run_id, built_plan)
-    except RunStoreConflictError as error:
-        _translate_cancel(dependencies.store, run_id, cancel, error)
-        raise
-    plan = current.judging_plan
-    if plan is None:  # pragma: no cover - pin_judging_plan just returned it
-        raise RuntimeError("Judging plan was not pinned")
+    current, plan = _pin_plan(dependencies.store, current, cancel, sessions, config)
     _active(dependencies.store, run_id, cancel)
-
-    totals = judging_plan_totals(plan)
-    state = _State(
-        planned_rubrics=totals["planned_rubrics"],
-        minimum_reviewer_attempts=totals["minimum_reviewer_attempts"],
-        maximum_reviewer_attempts=totals["maximum_reviewer_attempts"],
-        maximum_digest_steps=totals["maximum_digest_calls"],
-        maximum_window_steps=totals["maximum_window_calls"],
-        maximum_merge_steps=totals["maximum_merge_calls"],
-    )
-    for call in dependencies.store.list_judge_calls(run_id):
-        if call.status == "succeeded":
-            _record_phase_call(state, call.request_id, call.phase)
+    state = _initial_state(dependencies.store, run_id, plan)
 
     initial_progress = current.judging_progress or {}
     current_phase = str(initial_progress.get("phase") or "waiting")
@@ -597,51 +707,7 @@ def run_judging_stage(
     def fail_if_needed() -> None:
         if not state.failures:
             return
-        failure = state.failure_details[0]
-        rubric_id = str(failure.get("rubric") or "Rubric")
-        rubric_label = next(
-            (rubric.label for rubric in config.rubrics if rubric.id == rubric_id),
-            rubric_id,
-        )
-        model_labels = {judge.id: judge.label for judge in config.models.judges}
-        outcomes: list[str] = []
-        for attempt in failure.get("attempts", []):
-            if not isinstance(attempt, Mapping):
-                continue
-            model_id = str(attempt.get("requested_model") or "reviewer")
-            label = model_labels.get(model_id, model_id)
-            status = attempt.get("status")
-            if status == "succeeded":
-                score = attempt.get("score")
-                outcomes.append(
-                    f"{label} scored {score:g}"
-                    if isinstance(score, float)
-                    else f"{label} succeeded"
-                )
-            elif status == "abstained":
-                outcomes.append(f"{label} abstained")
-            elif status == "skipped":
-                outcomes.append(f"{label} skipped")
-            else:
-                error_type = str(attempt.get("error_type") or "provider error")
-                requests = attempt.get("transport_request_count")
-                request_note = (
-                    f" after {requests} provider requests"
-                    if type(requests) is int and requests > 0
-                    else ""
-                )
-                detail = attempt.get("message")
-                detail_note = f": {detail}" if isinstance(detail, str) and detail else ""
-                outcomes.append(f"{label} failed {error_type}{request_note}{detail_note}")
-        message = f"{rubric_label} failed"
-        if outcomes:
-            message += ": " + "; ".join(outcomes)
-        if len(state.failures) > 1:
-            message += f"; {len(state.failures) - 1} additional rubric failures"
-        progress(
-            "judging_failed",
-            message,
-        )
+        progress("judging_failed", _failure_message(state, config))
         failed = state.payload(
             plan.plan_id,
             phase=current_phase,
@@ -669,13 +735,7 @@ def run_judging_stage(
             for judge in config.models.judges
             if has_applicable_reviewers
         }
-        for chat_client in chat_clients.values():
-            set_cancel = getattr(chat_client, "set_cancel", None)
-            if callable(set_cancel):
-                set_cancel(cancel)
-            set_activity = getattr(chat_client, "set_activity", None)
-            if callable(set_activity):
-                set_activity(record_activity)
+        _connect_clients(chat_clients.values(), cancel, record_activity)
         for session_plan in plan.sessions:
             conversation_id = session_plan.conversation_id
             session = sessions.get(conversation_id)
@@ -753,30 +813,9 @@ def run_judging_stage(
     fail_if_needed()
 
     if state.pending:
-        with dependencies.ces_factory() as ces:
-            catalog, writes = plan_judge_writes(
-                ces.client, ces.catalog, state.pending, force=config.force
-            )
-            _active(dependencies.store, run_id, cancel)
-            if writes:
-                progress(
-                    "score_writes_started",
-                    f"Writing {sum(map(len, writes.values()))} judge score(s)",
-                    coverage_complete=True,
-                )
-                _active(dependencies.store, run_id, cancel)
-                try:
-                    with dependencies.store.external_write_barrier(run_id, RunStatus.JUDGING):
-                        for sid, scores in writes.items():
-                            try:
-                                ces.client.write_scores(catalog, run_id, "trajectory", sid, scores)
-                                state.scores_written += len(scores)
-                            except Exception as error:
-                                state.write_failure_count += len(scores)
-                                log.warning("Run %s judge score write failed: %s", run_id, error)
-                except RunStoreConflictError as error:
-                    _translate_cancel(dependencies.store, run_id, cancel, error)
-                    raise
+        _write_judge_scores(
+            dependencies, run_id, cancel, state, force=config.force, progress=progress
+        )
 
     _active(dependencies.store, run_id, cancel)
     message = (
