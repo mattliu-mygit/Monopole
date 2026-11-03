@@ -48,6 +48,7 @@ class ToolSpan:
     started_at: datetime
     ended_at: datetime | None
     exit_code: int | None = None  # the command's exit code, when the harness recorded one
+    permission_decision: str | None = None  # "approved" or "not_approved", when the harness asked
 
 
 @dataclass

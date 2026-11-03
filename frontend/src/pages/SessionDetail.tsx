@@ -281,6 +281,17 @@ function TurnCard({ turn, index, feedback, rubrics }: { turn: TurnDetail; index:
                       <span className={tc.status_code === 'OK' || tc.status_code === 'UNSET' ? 'text-green-600' : 'text-red-600'}>
                         {tc.status_code}
                       </span>
+                      {tc.exit_code != null && (
+                        <span className={tc.exit_code === 0 ? 'text-gray-500' : 'text-red-600'}>
+                          exit {tc.exit_code}
+                        </span>
+                      )}
+                      {tc.permission_decision === 'not_approved' && (
+                        <span className="rounded bg-red-100 px-1 text-red-700">denied</span>
+                      )}
+                      {tc.permission_decision === 'approved' && (
+                        <span className="text-gray-500">approved</span>
+                      )}
                       {tc.started_at && tc.ended_at && (
                         <span className="ml-auto text-gray-400">
                           {formatDuration(tc.started_at, tc.ended_at)}

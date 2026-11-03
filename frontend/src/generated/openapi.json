@@ -5196,6 +5196,28 @@
             ],
             "title": "Ended At"
           },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "permission_decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permission Decision"
+          },
           "result": {
             "title": "Result",
             "type": "string"

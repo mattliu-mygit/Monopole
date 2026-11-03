@@ -1956,6 +1956,10 @@ export interface components {
             arguments: string;
             /** Ended At */
             ended_at: string | null;
+            /** Exit Code */
+            exit_code?: number | null;
+            /** Permission Decision */
+            permission_decision?: string | null;
             /** Result */
             result: string;
             /** Span Id */

@@ -685,13 +685,19 @@ def test_a_tool_calls_exit_code_reaches_the_outcome_scorers():
             "tool_name": "Bash",
             "started_at": "2026-11-02T10:00:00.000Z",
         },
-        "output": {"status": "failed", "output": "1 failed", "exit_code": 2},
+        "output": {
+            "status": "failed",
+            "output": "1 failed",
+            "exit_code": 2,
+            "permission_decision": "approved",
+        },
     }
 
     span = _tool_span(case)
 
     assert span.exit_code == 2
     assert _extract_exit_code(span) == 2
+    assert span.permission_decision == "approved"
 
 
 @respx.mock

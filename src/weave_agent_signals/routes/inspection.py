@@ -105,6 +105,8 @@ def _turn_json(turn: TurnSpan, *, include_children: bool = False) -> dict:
                         "status_code": item.status_code,
                         "started_at": (item.started_at.isoformat() if item.started_at else None),
                         "ended_at": item.ended_at.isoformat() if item.ended_at else None,
+                        "exit_code": item.exit_code,
+                        "permission_decision": item.permission_decision,
                     }
                     for item in turn.tool_calls
                 ],

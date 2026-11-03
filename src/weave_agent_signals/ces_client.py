@@ -85,6 +85,9 @@ def _tool_span(case: dict[str, Any], turn_id: str | None = None) -> ToolSpan:
         started_at=_ts(case_in.get("started_at")) or datetime.now(timezone.utc),
         ended_at=_ts(case_in.get("ended_at")),
         exit_code=exit_code if type(exit_code := out.get("exit_code")) is int else None,
+        permission_decision=decision
+        if isinstance(decision := out.get("permission_decision"), str)
+        else None,
     )
 
 

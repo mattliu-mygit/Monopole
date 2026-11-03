@@ -167,4 +167,32 @@ describe('SessionDetail disclosures', () => {
     expect(turnButton.getAttribute('aria-expanded')).toBe('true')
     expect(document.getElementById(turnButton.getAttribute('aria-controls')!)).not.toBeNull()
   })
+
+  it('marks a denied tool call and shows its exit code', async () => {
+    const session: SessionDetailData = await api.getSession('conversation-1')
+    api.getSession.mockResolvedValue({
+      ...session,
+      turns: [{
+        ...session.turns[0],
+        tool_call_count: 1,
+        tool_calls: [{
+          span_id: 'tool-1',
+          tool_name: 'Bash',
+          arguments: '{"command":"rm -rf build"}',
+          result: '',
+          status_code: 'ERROR',
+          started_at: '2026-07-14T18:00:10Z',
+          ended_at: '2026-07-14T18:00:11Z',
+          exit_code: 1,
+          permission_decision: 'not_approved',
+        }],
+      }],
+    })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Turn 1/ }))
+
+    expect(screen.getByText('denied')).not.toBeNull()
+    expect(screen.getByText('exit 1')).not.toBeNull()
+  })
 })

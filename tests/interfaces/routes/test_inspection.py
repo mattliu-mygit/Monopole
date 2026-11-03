@@ -250,6 +250,8 @@ def test_session_detail_returns_children_and_splits_session_and_turn_scores():
             status_code="ERROR",
             started_at=datetime(2026, 7, 14, 12, tzinfo=timezone.utc),
             ended_at=None,
+            exit_code=1,
+            permission_decision="not_approved",
         )
     )
     backend.feedback = [
@@ -261,7 +263,12 @@ def test_session_detail_returns_children_and_splits_session_and_turn_scores():
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["turns"][0]["tool_calls"][0]["tool_name"] == "Bash"
+    tool = body["turns"][0]["tool_calls"][0]
+    assert (tool["tool_name"], tool["exit_code"], tool["permission_decision"]) == (
+        "Bash",
+        1,
+        "not_approved",
+    )
     assert [item["feedback_type"] for item in body["session_scores"]] == [
         "weave_agent_signals.efficiency.session"
     ]

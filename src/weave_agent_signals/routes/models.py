@@ -581,6 +581,8 @@ class ToolCallResponse(ResponseModel):
     status_code: str
     started_at: str | None
     ended_at: str | None
+    exit_code: int | None = None
+    permission_decision: str | None = None
 
 
 class ChatSpanResponse(ResponseModel):
