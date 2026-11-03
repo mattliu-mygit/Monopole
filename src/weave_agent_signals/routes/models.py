@@ -193,6 +193,7 @@ class ScoringResultResponse(ResponseModel):
     sessions_scored: int
     scores_written: int
     errors: int
+    status_message: str | None = None
     turn_details: list[ScoringTurnDetailResponse]
 
 

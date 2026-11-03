@@ -4479,6 +4479,17 @@
             "title": "Sessions Scored",
             "type": "integer"
           },
+          "status_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Message"
+          },
           "turn_details": {
             "items": {
               "$ref": "#/components/schemas/ScoringTurnDetailResponse"

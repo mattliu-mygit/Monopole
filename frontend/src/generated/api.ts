@@ -1768,6 +1768,8 @@ export interface components {
             scores_written: number;
             /** Sessions Scored */
             sessions_scored: number;
+            /** Status Message */
+            status_message?: string | null;
             /** Turn Details */
             turn_details: components["schemas"]["ScoringTurnDetailResponse"][];
             /** Turns Scored */

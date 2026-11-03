@@ -226,6 +226,7 @@ def route_context(tmp_path):
                 "sessions_scored": 0,
                 "scores_written": 0,
                 "errors": 0,
+                "status_message": "Scoring complete: 0 scores written.",
                 "turn_details": [],
             },
         )
@@ -298,6 +299,7 @@ def test_run_routes_accept_exact_setup_contract_and_return_pinned_run(route_cont
         "sessions_scored": 0,
         "scores_written": 0,
         "errors": 0,
+        "status_message": "Scoring complete: 0 scores written.",
         "turn_details": [],
     }
     assert client.get("/api/runs").json()["runs"] == [
