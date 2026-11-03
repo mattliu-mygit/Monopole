@@ -559,7 +559,6 @@ class SessionSummaryResponse(ResponseModel):
     config_version: str | None
     git_branch: str | None
     total_tokens: int
-    total_tool_calls: int
     input_preview: str | None
     signal_evidence: list[SignalEvidenceResponse]
     # Only when the request asks for them, since estimating every listed session costs time.

@@ -165,7 +165,6 @@ def _session_summary(conversation_id: str, turns: list[TurnSpan]) -> dict:
         "config_version": first.config_version,
         "git_branch": first.git_branch,
         "total_tokens": sum(turn.input_tokens + turn.output_tokens for turn in ordered),
-        "total_tool_calls": sum(len(turn.tool_calls) for turn in ordered),
         "input_preview": first.user_input,
     }
 
@@ -207,24 +206,26 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             )
             visible: list[tuple[dict, list[TurnSpan]]] = []
             read = 0
-            for sid in session_ids:
-                if len(visible) == limit:
-                    break
-                read += 1
-                session = session_or_none(ces.client, sid)
-                if session is None or not session_is_evaluable(session.turns):
-                    continue
-                in_window = [
-                    turn
-                    for turn in session.turns
-                    if turn.started_at >= since_value
-                    and (until_value is None or turn.started_at <= until_value)
-                ]
-                if in_window:
-                    summary = _session_summary(sid, in_window)
-                    if include_estimates:
+            # Turn rows only: a session's steps and subagents can take hundreds of reads.
+            while read < len(session_ids) and len(visible) < limit:
+                batch = session_ids[read : read + limit - len(visible)]
+                read += len(batch)
+                for sid, turns in ces.client.session_turns(ces.catalog, batch).items():
+                    if not session_is_evaluable(turns):
+                        continue
+                    in_window = [
+                        turn
+                        for turn in turns
+                        if turn.started_at >= since_value
+                        and (until_value is None or turn.started_at <= until_value)
+                    ]
+                    if in_window:
+                        visible.append((_session_summary(sid, in_window), in_window))
+            if include_estimates:
+                for summary, _turns in visible:
+                    session = session_or_none(ces.client, summary["conversation_id"])
+                    if session is not None:
                         summary["judging_token_estimates"] = _judging_token_estimates(session.turns)
-                    visible.append((summary, in_window))
             feedback = _by_target(
                 ces.client.cohort_scores(ces.catalog, [s["conversation_id"] for s, _ in visible])
                 if visible

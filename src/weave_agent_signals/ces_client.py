@@ -12,8 +12,9 @@ import hashlib
 import json
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -43,6 +44,8 @@ from weave_agent_signals.models import (
 ATTEMPTS = 3
 MAX_RETRY_AFTER_S = 30.0
 PAGE_LIMIT = 1000
+# Independent reads (one session's turn rows, one subagent's Cases) run this many at once.
+CONCURRENT_READS = 16
 # A turn's row is its first Case; the adapter numbers each turn's Cases from 0.
 FIRST_STEP = "i.step_index = 0"
 _STATUS = {"completed": "OK", "aborted": "ERROR"}
@@ -316,6 +319,61 @@ def session_or_none(client: CesClient, trajectory_id: str) -> SessionView | None
         raise
 
 
+def _child_ids(cases: list[dict]) -> list[str]:
+    return [child for case in cases for child in case.get("child_trajectory_ids") or []]
+
+
+def _own_turn_rows(rows: list[dict]) -> list[dict]:
+    """A session's own turn rows in turn order. Subagent turns carry an agent ID, and the
+    session Case is not a turn, as in `session_view`."""
+    own = [
+        r
+        for r in rows
+        if r["input"].get("turn_id")
+        and r["input"].get("kind") != "session"
+        and r["input"].get("agent_id") is None
+    ]
+    return sorted(own, key=lambda r: _int(r["input"].get("turn_index")))
+
+
+def turn_from_row(trajectory_id: str, row: dict) -> TurnSpan:
+    """A turn from its row, the turn's first Case, which carries the turn totals. The turn's
+    other steps aren't read, so it has no tool calls, model calls, or subagents, and it ends
+    its recorded duration after it starts."""
+    first, totals = row["input"], row.get("output") or {}
+    started = _ts(first.get("started_at")) or datetime.now(timezone.utc)
+    duration = totals.get("turn_duration_ms")
+    user_input = first.get("text") if first.get("kind") == "user_message" else None
+    return TurnSpan(
+        trace_id=row["case_id"],
+        conversation_id=trajectory_id,
+        started_at=started,
+        ended_at=started + timedelta(milliseconds=duration)
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool)
+        else None,
+        model=first.get("model"),
+        input_tokens=_int(totals.get("turn_input_tokens")),
+        output_tokens=_int(totals.get("turn_output_tokens")),
+        cache_read_tokens=_int(totals.get("turn_cache_read_tokens")),
+        status_code=_STATUS.get(totals.get("turn_status"), "UNSET"),
+        config_version=first.get("config_version"),
+        git_branch=first.get("git_branch"),
+        effort_level=first.get("effort"),
+        session_id=first.get("session_id"),
+        steering_count=_int(totals.get("turn_steering_count")),
+        denial_count=_int(totals.get("turn_denial_count")),
+        tool_error_count=_int(totals.get("turn_tool_error_count")),
+        events=[],
+        tool_calls=[],
+        chat_spans=[],
+        subagents=[],
+        user_input=user_input,
+        assistant_output=None,
+        trace_role=resolve_trace_role(first.get("trace_role"), user_input),
+        case_ids=[row["case_id"]],
+    )
+
+
 def _turns_of(session_id: str) -> str:
     """A rows/search filter for one session's turns. Deployed CES filters join predicates with
     AND only, without OR or parentheses, so each session takes its own search."""
@@ -347,6 +405,7 @@ class CesClient:
         http: httpx.Client | None = None,
         sleep=time.sleep,
         score_index: ScoreIndex | None = None,
+        scorer_names: dict[tuple[str, str], str] | None = None,
     ):
         self.base = f"/v1/namespaces/{namespace}/scopes/{quote(scope_ref, safe='')}"
         self._http = http or httpx.Client(
@@ -354,7 +413,8 @@ class CesClient:
         )
         self._sleep = sleep
         self._index = score_index or ScoreIndex()
-        self._scorer_names: dict[tuple[str, str], str] = {}  # a Scorer version's name never changes
+        # A Scorer version's name never changes, so callers may share one cache across clients.
+        self._scorer_names = {} if scorer_names is None else scorer_names
 
     def close(self) -> None:
         self._http.close()
@@ -397,19 +457,32 @@ class CesClient:
                 return cases
 
     def read_session(self, trajectory_id: str) -> SessionView:
-        """S's Cases plus every subagent Trajectory below it, as Monopole turns."""
+        """S's Cases plus every subagent Trajectory below it, as Monopole turns. Each level of
+        subagents is read concurrently; a session can have hundreds."""
         cases = self.trajectory_cases(trajectory_id)
         children: dict[str, list[dict]] = {}
-        pending = [child for case in cases for child in case.get("child_trajectory_ids") or []]
-        while pending:
-            child = pending.pop(0)
-            if child in children:
-                continue
-            children[child] = self.trajectory_cases(child)
-            pending.extend(
-                c for case in children[child] for c in case.get("child_trajectory_ids") or []
-            )
+        level = _child_ids(cases)
+        with ThreadPoolExecutor(max_workers=CONCURRENT_READS) as pool:
+            while level := [c for c in dict.fromkeys(level) if c not in children]:
+                children.update(zip(level, pool.map(self.trajectory_cases, level)))
+                level = [c for child in level for c in _child_ids(children[child])]
         return session_view(trajectory_id, cases, children)
+
+    def _session_turn_rows(self, catalog: Catalog, session_ids: list[str]) -> dict[str, list]:
+        """Each session's turn rows with their Scores, subagent turns included, read
+        concurrently."""
+        path = f"/evaluations/{catalog.turns_evaluation_id}/rows/search"
+        with ThreadPoolExecutor(max_workers=CONCURRENT_READS) as pool:
+            found = pool.map(lambda sid: self._rows(path, {"filter": _turns_of(sid)}), session_ids)
+            return dict(zip(session_ids, found))
+
+    def session_turns(self, catalog: Catalog, session_ids: list[str]) -> dict[str, list[TurnSpan]]:
+        """Each session's own turns from its turn rows, without the steps and subagents that
+        `read_session` reads. One search per session, which is enough to list sessions."""
+        return {
+            sid: [turn_from_row(sid, row) for row in _own_turn_rows(rows)]
+            for sid, rows in self._session_turn_rows(catalog, session_ids).items()
+        }
 
     def _rows(self, path: str, body: dict, limit: int | None = None) -> list[dict]:
         rows, cursor = [], None
@@ -562,9 +635,13 @@ class CesClient:
             if error.response.status_code not in (404, 405):
                 raise
             # Workaround until the Trajectory-row route deploys; see ces_score_index.
+            newest = self._index.newest(wanted)
+            ids = [score_id for scores in newest.values() for score_id in scores.values()]
+            with ThreadPoolExecutor(max_workers=CONCURRENT_READS) as pool:
+                found = dict(zip(ids, pool.map(self._indexed, ids)))
             return [
-                (trajectory, {}, [row for sid in newest.values() if (row := self._indexed(sid))])
-                for trajectory, newest in self._index.newest(wanted).items()
+                (trajectory, {}, [row for sid in scores.values() if (row := found[sid])])
+                for trajectory, scores in newest.items()
             ]
         return [
             (
@@ -632,13 +709,11 @@ class CesClient:
 
     def cohort_scores(self, catalog: Catalog, session_ids: list[str]) -> list[dict]:
         """The Scores on these sessions and their turns, as feedback-shaped records."""
-        targets = []
-        for sid in session_ids:
-            rows = self._rows(
-                f"/evaluations/{catalog.turns_evaluation_id}/rows/search",
-                {"filter": _turns_of(sid)},
-            )
-            targets += [(r["case_id"], r["input"], r.get("scores") or []) for r in rows]
+        targets = [
+            (r["case_id"], r["input"], r.get("scores") or [])
+            for rows in self._session_turn_rows(catalog, session_ids).values()
+            for r in rows
+        ]
         return self._score_records(targets + self._session_targets(catalog, set(session_ids)))
 
     def get_score(self, score_id: str) -> dict:

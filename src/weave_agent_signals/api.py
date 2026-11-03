@@ -106,10 +106,11 @@ def _build_default_dependencies(
     # One catalog per CES Dataset, built once; the lock keeps concurrent stages from racing.
     catalogs: dict[tuple[str, str, str], Catalog] = {}
     catalog_lock = threading.Lock()
+    scorer_names: dict[tuple[str, str], str] = {}
 
     def ces_factory() -> CesSession:
         settings = ces_commands.ces_settings()
-        client = CesClient(settings[0], settings[1])
+        client = CesClient(settings[0], settings[1], scorer_names=scorer_names)
         try:
             with catalog_lock:
                 if settings not in catalogs:

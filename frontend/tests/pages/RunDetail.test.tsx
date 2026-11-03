@@ -216,7 +216,6 @@ const session: SessionSummary = {
   config_version: null,
   git_branch: null,
   total_tokens: 100,
-  total_tool_calls: 2,
   input_preview: 'Evaluate this session',
   signal_evidence: [],
 }

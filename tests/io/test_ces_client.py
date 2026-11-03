@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -646,7 +646,7 @@ def test_cohort_scores_searches_each_sessions_turns_with_an_and_only_filter():
 
     client.cohort_scores(Catalog("ev-turns", "ev-sessions", {}), ["s1", "s2"])
 
-    assert [json.loads(call.request.content)["filter"] for call in turns.calls] == [
+    assert sorted(json.loads(call.request.content)["filter"] for call in turns.calls) == [
         'i.step_index = 0 AND i.session_trajectory_id = "s1"',
         'i.step_index = 0 AND i.session_trajectory_id = "s2"',
     ]
@@ -818,3 +818,108 @@ def test_turn_scores_are_keyed_by_each_turns_first_case():
     scores = client.turn_scores(Catalog("ev-turns", "ev-sessions", {}), "traj-s")
 
     assert scores == {"c1": [{"score_id": "x"}], "c5": []}
+
+
+def _row(case_id, *, kind, turn_id, turn_index, text=None, duration=None, agent_id=None):
+    return {
+        "case_id": case_id,
+        "input": {
+            "kind": kind,
+            "turn_id": turn_id,
+            "turn_index": turn_index,
+            "step_index": 0,
+            "started_at": f"2026-11-02T10:0{turn_index}:00.000Z",
+            "text": text,
+            "agent_id": agent_id,
+            "model": "gpt-6",
+            "session_id": "sess-1",
+            "trace_role": "agent_session",
+        },
+        "output": {
+            "turn_input_tokens": 7,
+            "turn_output_tokens": 3,
+            "turn_status": "completed",
+            **({"turn_duration_ms": duration} if duration is not None else {}),
+        },
+        "scores": [],
+    }
+
+
+@respx.mock
+def test_session_turns_reads_turn_rows_and_keeps_only_the_sessions_own_turns():
+    def search(request):
+        if '"traj-s"' not in json.loads(request.content)["filter"]:
+            return httpx.Response(200, json={"rows": []})
+        rows = [
+            _row(
+                "c-t2", kind="user_message", turn_id="t2", turn_index=2, text="next", duration=2000
+            ),
+            _row("c-sub", kind="user_message", turn_id="k1", turn_index=0, agent_id="explorer"),
+            _row("c-t1", kind="compaction", turn_id="t1", turn_index=1),
+            _row("c-session", kind="session", turn_id=None, turn_index=0),
+        ]
+        return httpx.Response(200, json={"rows": rows})
+
+    respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(side_effect=search)
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+
+    turns = client.session_turns(Catalog("ev-turns", "ev-sessions", {}), ["traj-s", "traj-x"])
+
+    assert list(turns) == ["traj-s", "traj-x"]
+    assert turns["traj-x"] == []
+    first, second = turns["traj-s"]
+    assert (first.trace_id, first.user_input, first.ended_at) == ("c-t1", None, None)
+    assert (second.trace_id, second.user_input, second.input_tokens, second.status_code) == (
+        "c-t2",
+        "next",
+        7,
+        "OK",
+    )
+    assert second.ended_at - second.started_at == timedelta(seconds=2)
+
+
+@respx.mock
+def test_read_session_reads_each_subagent_once_in_launch_order():
+    root = [
+        _case("c1", "user_message", "t1", 0, text="go"),
+        _case(
+            "c2", "tool_call", "t1", 1, children=["traj-a", "traj-b", "traj-a"], tool_name="Task"
+        ),
+    ]
+    respx.get(f"{BASE}/trajectories/traj-s/cases").mock(
+        return_value=httpx.Response(200, json={"cases": root})
+    )
+    reads = {
+        name: respx.get(f"{BASE}/trajectories/{name}/cases").mock(
+            return_value=httpx.Response(200, json={"cases": cases})
+        )
+        for name, cases in {
+            "traj-a": [_case("a1", "tool_call", "k1", 0, children=["traj-c"], tool_name="Task")],
+            "traj-b": [_case("b1", "tool_call", "k1", 0, children=["traj-c"], tool_name="Task")],
+            "traj-c": [_case("n1", "tool_call", "n1", 0, tool_name="Bash")],
+        }.items()
+    }
+
+    view = CesClient("http://ces.test", "scope-1", api_key="k").read_session("traj-s")
+
+    assert [s.span_id for s in view.turns[0].subagents] == ["traj-a", "traj-b", "traj-c"]
+    assert {name: route.call_count for name, route in reads.items()} == {
+        "traj-a": 1,
+        "traj-b": 1,
+        "traj-c": 1,
+    }
+
+
+@respx.mock
+def test_clients_sharing_a_scorer_name_cache_look_each_version_up_once():
+    version = respx.get(f"{BASE}/scorers/sc-1/versions/v-1").mock(
+        return_value=httpx.Response(200, json={"name": "efficiency"})
+    )
+    names: dict[tuple[str, str], str] = {}
+    score = {"score_id": "s-1", "scorer_id": "sc-1", "scorer_version_id": "v-1", "value": 0.5}
+
+    for _ in range(2):
+        client = CesClient("http://ces.test", "scope-1", api_key="k", scorer_names=names)
+        assert client._score_records([("case-1", {}, [score])])[0]["target_id"] == "case-1"
+
+    assert version.call_count == 1

@@ -4896,10 +4896,6 @@
             "title": "Total Tokens",
             "type": "integer"
           },
-          "total_tool_calls": {
-            "title": "Total Tool Calls",
-            "type": "integer"
-          },
           "turn_count": {
             "title": "Turn Count",
             "type": "integer"
@@ -4917,7 +4913,6 @@
           "config_version",
           "git_branch",
           "total_tokens",
-          "total_tool_calls",
           "input_preview",
           "signal_evidence"
         ],

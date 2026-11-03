@@ -1864,8 +1864,6 @@ export interface components {
             started_at: string | null;
             /** Total Tokens */
             total_tokens: number;
-            /** Total Tool Calls */
-            total_tool_calls: number;
             /** Turn Count */
             turn_count: number;
         };
