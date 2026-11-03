@@ -240,6 +240,7 @@ def session_view(
                 user_input=user_input,
                 assistant_output=next((a for a in reversed(answers) if a), None),
                 trace_role=resolve_trace_role(first.get("trace_role"), user_input),
+                case_ids=[c["case_id"] for c in steps],
             )
         )
     first_turn = built[0] if built else None

@@ -158,6 +158,7 @@ def test_a_session_becomes_turns_with_tools_chats_events_and_nested_subagents():
         ["compaction"],
     )
     assert second.subagents == []
+    assert (first.case_ids, second.case_ids) == (["c1", "c2", "c3", "c4"], ["c5", "c6"])
 
 
 @respx.mock

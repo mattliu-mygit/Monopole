@@ -106,6 +106,7 @@ class TurnSpan:
     user_input: str | None = None
     assistant_output: str | None = None
     trace_role: TraceRole = TraceRole.AGENT_SESSION
+    case_ids: list[str] = field(default_factory=list)  # CES: the turn's member Cases, in step order
 
     def ref_for(self, entity: str = ENTITY, project: str = PROJECT) -> str:
         return f"weave:///{entity}/{project}/agent_turn/{self.trace_id}"
