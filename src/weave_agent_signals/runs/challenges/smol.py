@@ -452,7 +452,7 @@ def _smol_executable() -> str:
 
 
 def _validate_smol_cli_version(value: str) -> None:
-    match = re.fullmatch(r"smol (\d+)\.(\d+)\.(\d+)", value)
+    match = re.match(r"smol (\d+)\.(\d+)\.(\d+)\b", value)  # 1.32 appends "(engine smolvm ...)"
     if match is None or tuple(map(int, match.groups())) < _MIN_SMOL_CLI_VERSION:
         raise RuntimeError("Smol CLI 1.6.13 or newer is required")
 

@@ -682,7 +682,9 @@ def test_an_old_or_unreadable_smol_cli_version_is_rejected(value):
         smol._validate_smol_cli_version(value)
 
 
-@pytest.mark.parametrize("value", ["smol 1.6.13", "smol 1.7.0", "smol 2.0.0"])
+@pytest.mark.parametrize(
+    "value", ["smol 1.6.13", "smol 1.7.0", "smol 2.0.0", "smol 1.32.2 (engine smolvm 1.32.2)"]
+)
 def test_a_current_smol_cli_version_is_accepted(value):
     from weave_agent_signals.runs.challenges import smol
 
