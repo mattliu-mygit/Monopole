@@ -207,7 +207,7 @@ function TurnCard({ turn, index, feedback, rubrics }: { turn: TurnDetail; index:
           )}
 
           <div>
-            <h4 className="text-sm font-medium text-gray-700 mb-1">Span Details</h4>
+            <h4 className="text-sm font-medium text-gray-700 mb-1">Turn Details</h4>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
               <div className="bg-gray-50 rounded p-2">
                 <span className="text-gray-500">Input tokens</span>
@@ -249,7 +249,7 @@ function TurnCard({ turn, index, feedback, rubrics }: { turn: TurnDetail; index:
           {turn.chat_spans.length > 0 && (
             <div>
               <h4 className="text-sm font-medium text-gray-700 mb-1">
-                Chat Spans ({turn.chat_spans.length})
+                Model Calls ({turn.chat_spans.length})
               </h4>
               <div className="space-y-1">
                 {turn.chat_spans.map((cs) => (
@@ -323,7 +323,7 @@ function TurnCard({ turn, index, feedback, rubrics }: { turn: TurnDetail; index:
 
           {feedback.length > 0 && (
             <div>
-              <h4 className="text-sm font-medium text-gray-700 mb-1">Feedback</h4>
+              <h4 className="text-sm font-medium text-gray-700 mb-1">Scores</h4>
               <div className="space-y-2">
                 {feedback.map((fb) => (
                   <FeedbackDetail key={fb.id} fb={fb} rubrics={rubrics} />

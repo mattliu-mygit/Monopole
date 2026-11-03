@@ -8,7 +8,7 @@ afterEach(cleanup)
 
 const evidence = [
   {
-    signal: 'user-frustration',
+    signal: 'efficiency',
     version: 'v1',
     rating: 0.5,
     reason: 'The user sounds dissatisfied.',
@@ -16,7 +16,7 @@ const evidence = [
     turn_started_at: '2026-07-15T12:00:00Z',
   },
   {
-    signal: 'low-quality-response',
+    signal: 'judge.verification',
     version: 'v1',
     rating: 0.25,
     reason: 'The response does not answer the request.',
@@ -24,7 +24,7 @@ const evidence = [
     turn_started_at: '2026-07-15T12:01:00Z',
   },
   {
-    signal: 'user-frustration',
+    signal: 'efficiency',
     version: 'v1',
     rating: 0.25,
     reason: 'The user explicitly says they are frustrated.',
@@ -34,15 +34,16 @@ const evidence = [
 ]
 
 describe('SignalCallout', () => {
-  it('shows one review recommendation with the lowest rating and distinct signals', () => {
+  it('shows the lowest rating, each low scorer once, and the lowest Score\'s reason', () => {
     render(<SignalCallout evidence={evidence} />)
 
     const callout = screen.getByLabelText(/signal review recommendation/i)
     expect(callout.textContent).toContain('Needs review')
     expect(callout.textContent).toContain('0.25')
-    expect(callout.textContent).toContain('user frustration')
-    expect(callout.textContent).toContain('low quality response')
-    expect(callout.textContent?.match(/user frustration/g)).toHaveLength(1)
+    expect(callout.textContent).toContain('efficiency')
+    expect(callout.textContent).toContain('judge.verification')
+    expect(callout.textContent?.match(/efficiency/g)).toHaveLength(1)
+    expect(callout.getAttribute('title')).toBe('The response does not answer the request.')
   })
 
   it('renders nothing without low Signal evidence', () => {

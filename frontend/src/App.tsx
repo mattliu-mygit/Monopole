@@ -19,7 +19,7 @@ function Layout() {
     <div className="flex min-h-screen flex-col md:h-screen md:flex-row">
       <nav className="flex w-full shrink-0 flex-row flex-wrap gap-1 bg-gray-900 p-4 text-white md:w-56 md:flex-col md:flex-nowrap">
         <div className="mb-2 w-full text-sm font-semibold uppercase tracking-wider text-gray-400 md:mb-4">
-          Weave Agent Signals
+          Monopole
         </div>
         {navItems.map((item) => (
           <NavLink

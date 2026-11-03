@@ -61,7 +61,7 @@ describe('Sessions', () => {
       .toBe('/sessions/session%2Fwith%20space')
   })
 
-  it('shows the returned total and counts older sessions omitted by truncation', async () => {
+  it('says older sessions are not shown when the list is truncated', async () => {
     api.getSessions.mockResolvedValue({
       sessions: [
         session('newest-session', 'Newest session'),
@@ -73,14 +73,14 @@ describe('Sessions', () => {
     })
     renderPage()
 
-    expect(await screen.findByText(/showing the newest 2 of 5 sessions/i)).not.toBeNull()
-    expect(screen.getByText(/3 older sessions are omitted/i)).not.toBeNull()
+    expect(await screen.findByText(/showing the newest 2 sessions/i)).not.toBeNull()
+    expect(screen.getByText(/older sessions in this window are not/i)).not.toBeNull()
   })
 
   it('calls out sessions with low hydrated signal evidence', async () => {
     const flagged = session('flagged-session', 'Needs attention')
     flagged.signal_evidence = [{
-      signal: 'repeated-or-rephrased-request',
+      signal: 'implicit.repeated_request',
       version: 'v1',
       rating: 0.25,
       reason: 'The user repeated the request.',
@@ -97,6 +97,6 @@ describe('Sessions', () => {
 
     expect(await screen.findByText(/Needs review/)).not.toBeNull()
     expect(screen.getByText(/0\.25/)).not.toBeNull()
-    expect(screen.getByText(/repeated or rephrased request/)).not.toBeNull()
+    expect(screen.getByText(/implicit\.repeated_request/)).not.toBeNull()
   })
 })

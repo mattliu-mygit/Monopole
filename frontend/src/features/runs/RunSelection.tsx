@@ -6,7 +6,6 @@ export interface RunSelectionProps {
   until: string
   sessions: SessionSummary[]
   selectedSessionIds: string[]
-  totalSessions: number
   loading?: boolean
   error?: string | null
   truncated?: boolean
@@ -31,7 +30,6 @@ export default function RunSelection({
   until,
   sessions,
   selectedSessionIds,
-  totalSessions,
   loading = false,
   error = null,
   truncated = false,
@@ -93,8 +91,8 @@ export default function RunSelection({
 
         {truncated && (
           <p className="mb-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
-            Showing {sessions.length} of {totalSessions} sessions. Only displayed sessions are
-            available to select.
+            Showing the newest {sessions.length} sessions. Only displayed sessions are available to
+            select.
           </p>
         )}
         {loading && (

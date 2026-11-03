@@ -46,7 +46,7 @@ describe('RunSelection', () => {
   it('calls out sessions with low hydrated signal evidence', () => {
     const flaggedSessions = structuredClone(sessions)
     flaggedSessions[0].signal_evidence = [{
-      signal: 'user-frustration',
+      signal: 'efficiency',
       version: 'v1',
       rating: 0.5,
       reason: 'The user expressed frustration.',
@@ -60,7 +60,6 @@ describe('RunSelection', () => {
         until="2026-07-14"
         sessions={flaggedSessions}
         selectedSessionIds={[]}
-        totalSessions={2}
         onSinceChange={vi.fn()}
         onUntilChange={vi.fn()}
         onSessionIdsChange={vi.fn()}
@@ -69,7 +68,7 @@ describe('RunSelection', () => {
 
     expect(screen.getByText(/Needs review/)).not.toBeNull()
     expect(screen.getByText(/0\.50/)).not.toBeNull()
-    expect(screen.getByText(/user frustration/)).not.toBeNull()
+    expect(screen.getByText(/efficiency/)).not.toBeNull()
   })
 
   it('reports controlled date and session changes without owning run configuration', () => {
@@ -83,7 +82,6 @@ describe('RunSelection', () => {
         until="2026-07-14"
         sessions={sessions}
         selectedSessionIds={['session-one']}
-        totalSessions={2}
         onSinceChange={onSinceChange}
         onUntilChange={onUntilChange}
         onSessionIdsChange={onSessionIdsChange}
@@ -111,7 +109,6 @@ describe('RunSelection', () => {
       since: '2026-07-07',
       until: '2026-07-14',
       selectedSessionIds: [] as string[],
-      totalSessions: 7,
       onSinceChange: vi.fn(),
       onUntilChange: vi.fn(),
       onSessionIdsChange: vi.fn(),
@@ -130,10 +127,10 @@ describe('RunSelection', () => {
       />,
     )
     expect(screen.getByRole('alert').textContent).toContain('Session lookup failed')
-    expect(screen.getByText(/Showing 2 of 7 sessions/)).not.toBeNull()
+    expect(screen.getByText(/Showing the newest 2 sessions/)).not.toBeNull()
     expect(screen.getByText(/Only displayed sessions are available to select/)).not.toBeNull()
 
-    rerender(<RunSelection {...baseProps} sessions={[]} totalSessions={0} />)
+    rerender(<RunSelection {...baseProps} sessions={[]} />)
     expect(screen.getByText('No sessions found in this range.')).not.toBeNull()
   })
 
@@ -145,7 +142,6 @@ describe('RunSelection', () => {
         until="2026-07-14"
         sessions={sessions}
         selectedSessionIds={['session-two']}
-        totalSessions={2}
         error="Session lookup failed"
         onRetry={onRetry}
         onSinceChange={vi.fn()}

@@ -28,6 +28,9 @@ from weave_agent_signals.routes.models import (
 _SIGNAL_THRESHOLD = 0.5
 
 
+SESSION_SCAN_FACTOR = 3
+
+
 def _by_target(records: list[dict]) -> dict[str, list[dict]]:
     grouped: dict[str, list[dict]] = {}
     for record in records:
@@ -192,14 +195,19 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             raise _date_error(error) from error
         since_value = since_value or (datetime.now(timezone.utc) - timedelta(hours=168))
         with ces_factory() as ces:
-            # Newest activity first, so reading stops once `limit` sessions are found.
+            # Newest activity first, so reading stops once `limit` sessions are found. Sessions
+            # that can't be evaluated are skipped, and the scan reads at most SESSION_SCAN_FACTOR
+            # times `limit` of them, so one request's CES reads stay bounded.
+            scan = limit * SESSION_SCAN_FACTOR
             session_ids = ces.client.find_sessions(
-                ces.catalog, since=since_value, until=until_value
+                ces.catalog, since=since_value, until=until_value, limit=scan
             )
             visible: list[tuple[dict, list[TurnSpan]]] = []
+            read = 0
             for sid in session_ids:
                 if len(visible) == limit:
                     break
+                read += 1
                 session = session_or_none(ces.client, sid)
                 if session is None or not session_is_evaluable(session.turns):
                     continue
@@ -222,7 +230,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             {
                 "sessions": [summary for summary, _turns in visible],
                 "total": len(session_ids),
-                "truncated": len(session_ids) > len(visible),
+                "truncated": read < len(session_ids) or len(session_ids) == scan,
                 "limit": limit,
             }
         )

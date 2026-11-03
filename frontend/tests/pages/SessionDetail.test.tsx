@@ -64,7 +64,7 @@ beforeEach(() => {
       subagents: [],
     }],
     signal_evidence: [{
-      signal: 'user-frustration',
+      signal: 'efficiency',
       version: 'v1',
       rating: 0.25,
       reason: 'The user explicitly says they are frustrated.',
@@ -115,7 +115,6 @@ beforeEach(() => {
           ],
         },
       },
-      created_at: '2026-07-14T18:02:00Z',
     }],
     turn_feedback: {},
   }
@@ -138,7 +137,7 @@ describe('SessionDetail disclosures', () => {
     renderPage()
 
     expect(
-      await screen.findByLabelText('Signal review recommendation: 0.25; user frustration'),
+      await screen.findByLabelText('Signal review recommendation: 0.25; efficiency'),
     ).not.toBeNull()
     expect(await screen.findByText('Session Scores')).not.toBeNull()
   })

@@ -33,8 +33,6 @@ export default function Sessions() {
   })
 
   const sessions = data?.sessions ?? []
-  const total = data?.total ?? sessions.length
-  const omitted = Math.max(total - sessions.length, 0)
 
   return (
     <div>
@@ -58,11 +56,13 @@ export default function Sessions() {
         <p className="mb-3 text-sm text-gray-500">
           {data.truncated ? (
             <>
-              Showing the newest {sessions.length} of {total} sessions.{' '}
-              {omitted} older session{omitted === 1 ? ' is' : 's are'} omitted.
+              Showing the newest {sessions.length} sessions. Older sessions in this window are not
+              shown.
             </>
           ) : (
-            <>Showing {sessions.length} of {total} sessions.</>
+            <>
+              Showing {sessions.length} session{sessions.length === 1 ? '' : 's'}.
+            </>
           )}
         </p>
       )}

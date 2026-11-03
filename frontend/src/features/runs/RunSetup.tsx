@@ -129,7 +129,7 @@ export default function RunSetup({
   const untilInstant = dayBoundary(until, true, timezone) ?? undefined
   const sessionsQuery = useQuery({
     queryKey: ['sessions-for-run', sinceInstant, untilInstant, timezone],
-    queryFn: () => getSessions({ since: sinceInstant, until: untilInstant, timezone }),
+    queryFn: () => getSessions({ since: sinceInstant, until: untilInstant, timezone, limit: 100 }),
   })
   const sessions = sessionsQuery.data?.sessions ?? []
   const selectedSessions = sessions.filter((session) =>
@@ -187,7 +187,6 @@ export default function RunSetup({
         until={until}
         sessions={sessions}
         selectedSessionIds={selectedIds}
-        totalSessions={sessionsQuery.data?.total ?? sessions.length}
         truncated={Boolean(sessionsQuery.data?.truncated)}
         loading={sessionsQuery.isLoading}
         error={sessionsQuery.error instanceof Error ? sessionsQuery.error.message : null}
