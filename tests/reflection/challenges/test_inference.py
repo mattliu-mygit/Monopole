@@ -522,3 +522,32 @@ def test_pairwise_judge_redacts_instruction_variants_and_fits_model_capacity() -
     assert payload["arm-1"]["artifact_changes"] == []
     assert "AGENTS.md" not in rendered
     assert ".codex" not in rendered
+
+
+def test_blinding_redacts_instruction_text_copied_into_an_artifact_diff() -> None:
+    from weave_agent_signals.runs.challenges import inference
+
+    arm = _arm("candidate", "worked").model_copy(
+        update={
+            "artifact_changes": (
+                ArtifactChange(
+                    path="notes.md",
+                    action="modified",
+                    before_digest="sha256:before",
+                    after_digest="sha256:after",
+                    diff="+always run the candidate checklist",
+                ),
+            )
+        }
+    )
+
+    blinded = inference._blinded_arm(
+        arm,
+        transcript_characters=1_000,
+        artifact_diff_characters=1_000,
+        artifact_change_limit=5,
+        instruction_paths=frozenset({"/root/.codex/AGENTS.md"}),
+        instruction_contents=("always run the candidate checklist",),
+    )
+
+    assert "candidate checklist" not in blinded["artifact_changes"][0]["diff"]

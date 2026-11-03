@@ -149,13 +149,12 @@ def _author_responses():
     return [_material_response(), _author_response()]
 
 
-def _judge_response(winner: str, model: str):
-    scores = {
-        "candidate": (1.0, 0.5),
-        "baseline": (0.5, 1.0),
-        "tie": (0.75, 0.75),
-    }[winner]
-    presented_winner = {"candidate": "arm-1", "baseline": "arm-2", "tie": "tie"}[winner]
+def _judge_response(winner: str, model: str, *, flipped: bool = False):
+    """A judge's answer for `winner`. A flipped judge saw the arms in the other order, as every
+    second judge on a panel does."""
+    first, second = ("baseline", "candidate") if flipped else ("candidate", "baseline")
+    scores = {first: (1.0, 0.5), second: (0.5, 1.0), "tie": (0.75, 0.75)}[winner]
+    presented_winner = {first: "arm-1", second: "arm-2", "tie": "tie"}[winner]
     return (
         {
             "task_valid": True,
@@ -179,7 +178,7 @@ def _judge_response(winner: str, model: str):
 def test_challenge_runs_ordered_user_panel_and_requires_strict_majority() -> None:
     author_client = _Client(_author_responses())
     first_judge_client = _Client([_judge_response("candidate", "gpt-5.6-sol")])
-    second_judge_client = _Client([_judge_response("baseline", "claude-sonnet-5")])
+    second_judge_client = _Client([_judge_response("baseline", "claude-sonnet-5", flipped=True)])
     runner = _Runner((_arm("baseline"), _arm("candidate")))
     snapshot = WorkspaceSnapshot((WorkspaceFile("README.md", b"same"),))
 
@@ -467,7 +466,7 @@ def test_challenge_candidate_majority_recommends_b() -> None:
     judge_client = _Client(
         [
             _judge_response("candidate", "gpt-5.6-sol"),
-            _judge_response("candidate", "claude-sonnet-5"),
+            _judge_response("candidate", "claude-sonnet-5", flipped=True),
             _judge_response("baseline", "claude-haiku-4-5"),
         ]
     )

@@ -559,17 +559,16 @@ def _blinded_arm(
     instruction_paths: frozenset[str],
     instruction_contents: Sequence[str],
 ) -> dict[str, object]:
-    transcript = _redact_instruction_content(
-        arm.transcript,
-        (*_instruction_path_variants(tuple(instruction_paths)), *instruction_contents),
-    )
+    targets = (*_instruction_path_variants(tuple(instruction_paths)), *instruction_contents)
+    transcript = _redact_instruction_content(arm.transcript, targets)
     remaining = artifact_diff_characters
     changes: list[dict[str, object]] = []
     public_changes = tuple(
         item for item in arm.artifact_changes if item.path not in instruction_paths
     )
     for item in public_changes[:artifact_change_limit]:
-        diff = item.diff[:remaining]
+        # An agent can copy its instructions into another file, which would name its arm.
+        diff = _redact_instruction_content(item.diff, targets)[:remaining]
         remaining -= len(diff)
         changes.append(
             {

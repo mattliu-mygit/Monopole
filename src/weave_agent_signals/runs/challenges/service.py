@@ -300,7 +300,7 @@ def run_challenge(
     )
     try:
         verdicts = []
-        for judge in judges:
+        for index, judge in enumerate(judges):
             _require_active(cancel_requested)
             verdicts.append(
                 judge_pair(
@@ -310,7 +310,8 @@ def run_challenge(
                     baseline=baseline_result,
                     candidate=candidate_result,
                     rubrics=rubrics,
-                    presentation_order=order,
+                    # Alternate the arm order across the panel so position bias averages out.
+                    presentation_order=order if index % 2 == 0 else (order[1], order[0]),
                     blinded_instruction_paths=instruction_paths,
                     blinded_instruction_contents=instruction_contents,
                 )
