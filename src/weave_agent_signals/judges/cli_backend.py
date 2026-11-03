@@ -97,9 +97,9 @@ _RETRYABLE_PATTERNS = [
     "internal server error",
     " 500",
     " 502",
-    "503",
+    " 503",
     " 504",
-    "429",
+    " 429",
 ]
 
 MAX_CLI_RETRIES = 2
@@ -221,6 +221,9 @@ def _codex_compatible_schema(value: Any) -> Any:
 
 def _is_retryable(output: str) -> bool:
     lower = _process_diagnostic(output).lower()
+    # The host's own timeout already spent the whole budget; retrying would spend it again.
+    if "process timed out after" in lower:
+        return False
     return any(p in lower for p in _RETRYABLE_PATTERNS)
 
 
@@ -352,6 +355,11 @@ class CliJudgeClient:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+
+    def _wait_before_retry(self, delay: float) -> None:
+        """Back off before a retry, but stop at once when the call is cancelled."""
+        if self._abort_requested.wait(delay) or (self._cancel and self._cancel.is_set()):
+            raise InferenceCancelled("cancelled")
 
     def chat_json(
         self,
@@ -607,7 +615,7 @@ class CliJudgeClient:
                             model,
                             delay,
                         )
-                        time.sleep(delay)
+                        self._wait_before_retry(delay)
                         continue
                     self._emit_activity(
                         {
@@ -729,7 +737,7 @@ class CliJudgeClient:
                 )
                 delay = RETRY_BASE_DELAY * (2**attempt)
                 log.info("Retryable error for %s, waiting %.0fs...", model, delay)
-                time.sleep(delay)
+                self._wait_before_retry(delay)
                 continue
             self._emit_activity(
                 {

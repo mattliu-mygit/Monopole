@@ -1077,7 +1077,7 @@ def test_process_cancellation_is_not_converted_to_a_retry(tmp_path, monkeypatch)
     run.assert_called_once()
 
 
-def test_hard_process_timeout_retries_and_preserves_diagnostics(tmp_path, monkeypatch):
+def test_hard_process_timeout_does_not_retry_and_preserves_diagnostics(tmp_path, monkeypatch):
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
     monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
@@ -1094,12 +1094,11 @@ def test_hard_process_timeout_retries_and_preserves_diagnostics(tmp_path, monkey
 
     monkeypatch.setattr(client, "_build", build)
 
-    with pytest.raises(RuntimeError, match="error_category=retryable_process_error") as captured:
+    with pytest.raises(RuntimeError, match="error_category=process_error") as captured:
         client.chat_json(model="gpt-5.1", messages=_msgs())
 
-    assert getattr(captured.value, "_transport_request_count", None) == 2
-    assert [event["phase"] for event in activity] == ["transport_retry", "transport_failed"]
-    assert all(event["retry_reason"] == "timeout" for event in activity)
+    assert getattr(captured.value, "_transport_request_count", None) == 1
+    assert [event["phase"] for event in activity] == ["transport_failed"]
     assert all(isinstance(event["exit_code"], int) for event in activity)
     assert client._procs == set()
 
