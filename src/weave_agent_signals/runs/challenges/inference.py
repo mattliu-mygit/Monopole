@@ -25,10 +25,14 @@ from weave_agent_signals.runs.challenges.contracts import (
     RubricVerdict,
     TaskMaterial,
     TaskMaterialPlan,
+    TaskPreflightError,
     Winner,
     validate_public_git_url,
 )
-from weave_agent_signals.runs.challenges.preparation import resolve_repository_head
+from weave_agent_signals.runs.challenges.preparation import (
+    resolve_repository_head,
+    validate_task_workspace,
+)
 from weave_agent_signals.runs.challenges.workspace import WorkspaceSnapshot
 
 _INFERENCE_SAFETY_TOKENS = 1_024
@@ -404,18 +408,6 @@ def author_task(
             ),
         },
     ]
-    if _input_tokens(task_messages, TASK_SCHEMA, token_counter=author.token_counter) > _input_limit(
-        author, max_output_tokens=1_024
-    ):
-        raise ValueError("task author input cannot fit the configured model context")
-
-    parsed, response = client.chat_json(
-        model=author.provider_model,
-        messages=task_messages,
-        temperature=0.0,
-        max_tokens=1_024,
-        response_schema=TASK_SCHEMA,
-    )
     expected = {
         "prompt",
         "goal",
@@ -425,21 +417,56 @@ def author_task(
         "required_executables",
         "requires_git_metadata",
     }
-    value = _strict_object(parsed, expected, "task author response")
-    return AuthoredTask(
-        prompt=value["prompt"],
-        goal=value["goal"],
-        setup_mode=material_plan.setup_mode,
-        materials=material_plan.materials,
-        judging_criteria=tuple(value["judging_criteria"]),
-        start_checks=tuple(value["start_checks"]),
-        required_files=tuple(value["required_files"]),
-        required_executables=tuple(value["required_executables"]),
-        requires_git_metadata=value["requires_git_metadata"],
-        workspace_digest=workspace_digest,
-        author_model=response.model,
-        author_backend=client.backend,
-    )
+    for attempt in range(2):
+        if _input_tokens(
+            task_messages, TASK_SCHEMA, token_counter=author.token_counter
+        ) > _input_limit(author, max_output_tokens=1_024):
+            raise ValueError("task author input cannot fit the configured model context")
+        parsed, response = client.chat_json(
+            model=author.provider_model,
+            messages=task_messages,
+            temperature=0.0,
+            max_tokens=1_024,
+            response_schema=TASK_SCHEMA,
+        )
+        value = _strict_object(parsed, expected, "task author response")
+        task = AuthoredTask(
+            prompt=value["prompt"],
+            goal=value["goal"],
+            setup_mode=material_plan.setup_mode,
+            materials=material_plan.materials,
+            judging_criteria=tuple(value["judging_criteria"]),
+            start_checks=tuple(value["start_checks"]),
+            required_files=tuple(value["required_files"]),
+            required_executables=tuple(value["required_executables"]),
+            requires_git_metadata=value["requires_git_metadata"],
+            workspace_digest=workspace_digest,
+            author_model=response.model,
+            author_backend=client.backend,
+        )
+        try:
+            validate_task_workspace(
+                workspace if initial_workspace is None else initial_workspace, task
+            )
+        except TaskPreflightError as error:
+            if attempt == 0:
+                # One correction round: the author sees why its task can't start here. A second
+                # invalid task is returned for the caller's own preflight to reject.
+                task_messages += [
+                    {
+                        "role": "assistant",
+                        "content": json.dumps(value, sort_keys=True, separators=(",", ":")),
+                    },
+                    {
+                        "role": "user",
+                        "content": "The previous task failed deterministic workspace validation: "
+                        f"{error}. Return one corrected task that references only paths in "
+                        "initial_workspace_manifest.",
+                    },
+                ]
+                continue
+        return task
+    raise AssertionError("unreachable")
 
 
 def _judge_schema(rubrics: Sequence[Rubric]) -> JsonSchemaSpec:

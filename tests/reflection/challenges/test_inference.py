@@ -594,3 +594,51 @@ def test_pairwise_judge_accepts_rubrics_in_another_order() -> None:
         "judge.verification",
         "judge.tool_choice",
     ]
+
+
+def _authored(required_file: str):
+    return (
+        {
+            "prompt": f"Update {required_file}.",
+            "goal": "The requested update is complete.",
+            "judging_criteria": ["The requested file is updated."],
+            "start_checks": ["The required file is present."],
+            "required_files": [required_file],
+            "required_executables": ["python"],
+            "requires_git_metadata": False,
+        },
+        "claude-sonnet-5",
+    )
+
+
+def _author_task_with(client) -> object:
+    workspace = WorkspaceSnapshot((WorkspaceFile("README.md", b"same\n"),))
+    return author_task(
+        client,
+        author=_author(),
+        coaching_digest="Agents often assumed files existed without checking.",
+        material_plan=TaskMaterialPlan(setup_mode="prepared_workspace"),
+        workspace_digest=workspace.digest,
+        workspace=workspace,
+        initial_workspace=workspace,
+    )
+
+
+def test_task_author_corrects_one_task_that_names_a_missing_file() -> None:
+    client = _Client([_authored("missing.py"), _authored("README.md")])
+
+    task = _author_task_with(client)
+
+    assert task.required_files == ("README.md",)
+    assert len(client.calls) == 2
+    retry = str(client.calls[1]["messages"])
+    assert "prepared workspace is missing required files: missing.py" in retry
+
+
+def test_task_author_returns_a_second_invalid_task_for_preflight_to_reject() -> None:
+    client = _Client([_authored("missing.py"), _authored("still-missing.py")])
+
+    task = _author_task_with(client)
+
+    assert task.required_files == ("still-missing.py",)
+    assert len(client.calls) == 2
