@@ -128,7 +128,7 @@ def test_a_session_read_failure_aborts_before_inference(ces, monkeypatch):
     make_client.assert_not_called()
 
 
-def test_direct_cli_buffers_all_sessions_and_writes_nothing_on_later_failure(ces, monkeypatch):
+def test_direct_cli_writes_finished_reviews_when_a_later_session_fails(ces, monkeypatch):
     inference = MagicMock()
     inference.__enter__.return_value = inference
     score = Score("judge.session_outcome", 0.75, [], {"review_status": "complete"}, "session")
@@ -145,7 +145,7 @@ def test_direct_cli_buffers_all_sessions_and_writes_nothing_on_later_failure(ces
     monkeypatch.setattr(cli, "judge_session", judge)
 
     assert cli.cmd_judge(_args(rubric="judge.session_outcome")) == 1
-    write.assert_not_called()
+    write.assert_called_once()
 
 
 def test_sessions_to_judge_keeps_only_agent_sessions_with_turns():

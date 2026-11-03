@@ -150,11 +150,9 @@ def cmd_judge(args: argparse.Namespace) -> int:
             print("No eligible agent sessions found.")
             return 0
         judging_plan, pending, errors = _judge_sessions(args, sessions, judges, selected_rubrics)
-        written = (
-            0
-            if errors
-            else ces_commands.write_judge_scores(client, catalog, pending, force=args.force)
-        )
+        # Finished reviews are written even when another session failed, so a rerun doesn't pay
+        # to judge them again; a failed session writes nothing and the failure is reported.
+        written = ces_commands.write_judge_scores(client, catalog, pending, force=args.force)
     return _report_judging(judging_plan, pending, written, errors)
 
 
