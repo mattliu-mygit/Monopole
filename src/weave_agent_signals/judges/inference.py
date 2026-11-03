@@ -438,6 +438,26 @@ class InferenceClient:
         )
         self._activity = threading.local()
         self._schema_recovery: set[tuple[str, str]] = set()
+        self._cancel: threading.Event | None = None
+        self._aborted = threading.Event()
+
+    def set_cancel(self, cancel: threading.Event) -> None:
+        self._cancel = cancel
+
+    def abort(self) -> None:
+        """Stop waiting between retries and close the connection, which ends a request in flight."""
+        self._aborted.set()
+        self._http.close()
+
+    def _wait(self, delay: float) -> None:
+        """Back off before a retry unless the run was cancelled or aborted, before or during it."""
+        self._raise_if_cancelled()
+        time.sleep(delay)
+        self._raise_if_cancelled()
+
+    def _raise_if_cancelled(self) -> None:
+        if self._aborted.is_set() or (self._cancel is not None and self._cancel.is_set()):
+            raise InferenceCancelled("cancelled")
 
     def set_activity(self, callback: Callable[[dict[str, object]], None]) -> None:
         self._activity.callback = callback
@@ -536,7 +556,7 @@ class InferenceClient:
                         request_count,
                         max_attempts,
                     )
-                    time.sleep(base_delay)
+                    self._wait(base_delay)
                     continue
                 error._transport_request_count = request_count  # type: ignore[attr-defined]
                 self._emit_activity(
@@ -606,7 +626,7 @@ class InferenceClient:
                     request_count,
                     max_attempts,
                 )
-                time.sleep(delay)
+                self._wait(delay)
                 continue
             if resp.status_code in {500, 502, 503, 504} and request_count < max_attempts:
                 elapsed = time.monotonic() - started
@@ -635,7 +655,7 @@ class InferenceClient:
                     request_count,
                     max_attempts,
                 )
-                time.sleep(base_delay)
+                self._wait(base_delay)
                 continue
             try:
                 resp.raise_for_status()
