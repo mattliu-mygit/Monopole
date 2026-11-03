@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -1095,24 +1096,18 @@ def test_reflection_records_exact_writer_evaluator_and_bundle_provenance():
     assert result.recommended_candidate_id == candidate.candidate_id
     assert result.baseline_won is False
 
-    assert ReflectionResult.from_dict(result.to_dict()) == result
+    candidate = result.candidates[0]
 
-    mismatched = result.to_dict()
-    mismatched["candidates"][0]["score"] = 0.81
+    def with_candidate(**changes):
+        return replace(result, candidates=(replace(candidate, **changes),))
+
     with pytest.raises(ValueError, match="matching evaluator record"):
-        ReflectionResult.from_dict(mismatched)
-
+        with_candidate(score=0.81)
     for field in ("resolved_writer_model", "resolved_writer_family"):
-        mismatched = result.to_dict()
-        mismatched["candidates"][0][field] = "contradictory"
         with pytest.raises(ValueError, match="writer provenance"):
-            ReflectionResult.from_dict(mismatched)
-
-    mismatched = result.to_dict()
-    mismatched["candidates"][0]["rationale"] = "contradictory"
+            with_candidate(**{field: "contradictory"})
     with pytest.raises(ValueError, match="matching evaluator rationale"):
-        ReflectionResult.from_dict(mismatched)
-
+        with_candidate(rationale="contradictory")
     for field in (
         "requested_model",
         "requested_family",
@@ -1121,10 +1116,8 @@ def test_reflection_records_exact_writer_evaluator_and_bundle_provenance():
         "resolved_family",
         "resolved_backend",
     ):
-        mismatched = result.to_dict()
-        mismatched["candidates"][0]["evaluation"][field] = "contradictory"
         with pytest.raises(ValueError, match="authoritative baseline evaluator identity"):
-            ReflectionResult.from_dict(mismatched)
+            with_candidate(evaluation=replace(candidate.evaluation, **{field: "contradictory"}))
 
 
 def test_reflection_recomputes_the_winner_from_evaluated_scores():
@@ -1200,7 +1193,6 @@ def test_paired_challenge_replaces_provisional_prediction_for_recommendation(
     assert verified.provisional_candidate_id == candidate_id
     assert verified.recommended_candidate_id == (candidate_id if recommended else None)
     assert verified.baseline_won is baseline_won
-    assert ReflectionResult.from_dict(verified.to_dict()) == verified
 
 
 def test_result_rejects_candidate_revision_equal_to_baseline():
@@ -1226,13 +1218,20 @@ def test_result_rejects_candidate_revision_equal_to_baseline():
         candidate_budget=1,
         optimizer=optimize,
     )
-    tampered = result.to_dict()
-    tampered["candidates"][0]["bundle"] = baseline.to_dict()
-    tampered["candidates"][0]["evaluation"]["target_revision"] = baseline.revision
-    tampered["generation_attempts"][0]["candidate_revision"] = baseline.revision
+    candidate, attempt = result.candidates[0], result.generation_attempts[0]
 
     with pytest.raises(ValueError, match="baseline"):
-        ReflectionResult.from_dict(tampered)
+        replace(
+            result,
+            candidates=(
+                replace(
+                    candidate,
+                    bundle=baseline,
+                    evaluation=replace(candidate.evaluation, target_revision=baseline.revision),
+                ),
+            ),
+            generation_attempts=(replace(attempt, candidate_revision=baseline.revision),),
+        )
 
 
 def test_evaluator_failure_is_retained_in_progress_before_raising():

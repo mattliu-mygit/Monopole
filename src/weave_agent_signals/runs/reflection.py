@@ -168,12 +168,6 @@ def _usage(value: Mapping[str, Any] | None) -> Mapping[str, int]:
     return MappingProxyType(copied)
 
 
-def _strict_data(value: Mapping[str, Any], model: type[Any], label: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != {item.name for item in fields(model)}:
-        raise ValueError(f"invalid {label}")
-    return dict(value)
-
-
 def _json_value(value: Any) -> Any:
     if isinstance(value, BundleSnapshot):
         return value.to_dict()
@@ -366,13 +360,6 @@ class EvaluatorRecord:
         object.__setattr__(self, "score", _score(self.score))
         object.__setattr__(self, "usage", _usage(self.usage))
 
-    def to_dict(self) -> dict[str, Any]:
-        return _model_dict(self)
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> EvaluatorRecord:
-        return cls(**_strict_data(value, cls, "evaluator record"))
-
 
 def _evaluator_identity(record: EvaluatorRecord) -> tuple[str, ...]:
     return (
@@ -455,15 +442,6 @@ class GenerationAttempt:
             raise ValueError("unsuccessful attempts require error_type and error")
         object.__setattr__(self, "usage", _usage(self.usage))
 
-    def to_dict(self) -> dict[str, Any]:
-        return _model_dict(self)
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> GenerationAttempt:
-        data = _strict_data(value, cls, "generation attempt")
-        data["requested_writer"] = ModelDescriptor.model_validate(data["requested_writer"])
-        return cls(**data)
-
 
 @dataclass(frozen=True)
 class ReflectionCandidate:
@@ -506,17 +484,6 @@ class ReflectionCandidate:
             raise ValueError("candidate must retain one evaluator record")
         if self.evaluation.target_revision != self.bundle.revision:
             raise ValueError("candidate evaluator record targets another revision")
-
-    def to_dict(self) -> dict[str, Any]:
-        return _model_dict(self)
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> ReflectionCandidate:
-        data = _strict_data(value, cls, "reflection candidate")
-        data["bundle"] = BundleSnapshot.from_dict(data["bundle"])
-        data["requested_writer"] = ModelDescriptor.model_validate(data["requested_writer"])
-        data["evaluation"] = EvaluatorRecord.from_dict(data["evaluation"])
-        return cls(**data)
 
 
 @dataclass(frozen=True)
@@ -659,24 +626,6 @@ class ReflectionResult:
             recommended_candidate_id=recommended,
             baseline_won=recommended is None,
         )
-
-    def to_dict(self) -> dict[str, Any]:
-        return _model_dict(self)
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> ReflectionResult:
-        data = _strict_data(value, cls, "reflection result")
-        data["baseline"] = BundleSnapshot.from_dict(data["baseline"])
-        data["baseline_evaluation"] = EvaluatorRecord.from_dict(data["baseline_evaluation"])
-        data["candidates"] = tuple(
-            ReflectionCandidate.from_dict(item) for item in data["candidates"]
-        )
-        data["generation_attempts"] = tuple(
-            GenerationAttempt.from_dict(item) for item in data["generation_attempts"]
-        )
-        if data["challenge"] is not None:
-            data["challenge"] = ChallengeResult.from_dict(data["challenge"])
-        return cls(**data)
 
 
 def _has_eligible_signal(feedback: Sequence[Mapping[str, Any]]) -> bool:
