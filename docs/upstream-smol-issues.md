@@ -141,3 +141,29 @@ requesting cancellation from running until the guest command completed. The
 equivalent CLI subprocess could be terminated immediately by the host.
 
 Status: Monopole uses a CLI subprocess for long-running agent execution.
+
+## CLI 1.32.2 observations
+
+Environment: Apple Silicon macOS, CLI 1.32.2 (engine smolvm 1.32.2), observed
+2026-11-03.
+
+- `smol --version` prints `smol 1.32.2 (engine smolvm 1.32.2)`. Monopole reads
+  the leading version and ignores the rest.
+- A machine created with `--net` cannot pull an image from a registry on the
+  host loopback. `smol machine start` fails with `crane manifest failed: ...
+  dial tcp [::1]:5001: connect: permission denied` for both `localhost` and
+  `127.0.0.1`; the same machine created without `--net` pulls the image.
+  `smol pack create --image` pulls the same way and fails the same way.
+- `smol pack create` needs `mkfs.ext4` (`brew install e2fsprogs`, which is
+  keg-only, so put `$(brew --prefix e2fsprogs)/sbin` on `PATH`) and a smolvm
+  binary as the artifact stub. The CLI bundle does not include one; pass the
+  `smolvm` file from the matching smolvm release with `--stub`, which
+  `--help` does not list.
+- Chunked file transfer and macOS cleanup work: an 800 KB file round-tripped
+  byte for byte, and after deletion no disk image stayed attached and the
+  cache directory was gone.
+
+Status: a local runtime is built by creating a machine from a public base image
+with `--net`, installing the harness CLI inside it, stopping it, and packing it
+with `smol pack create --from-vm <name> --stub <smolvm>`. The resulting
+`.smolmachine` file is used as the runtime `image` with its file digest.
