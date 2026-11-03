@@ -222,7 +222,10 @@ A and B. In `agent_bootstrap` mode, fetched files are authoring context only;
 both agents receive the same pinned material specification and must perform the
 requested clone or other repository setup themselves. A prepared task cannot
 require Git metadata. Exact required files are checked against the common
-initial snapshot, and one disposable sandbox verifies the pinned harness and
+initial snapshot. The task author checks its own task against that snapshot
+first and gets one corrective attempt when the task names a missing file; a
+second invalid task remains visible in the run and fails closed before sandbox
+preflight. One disposable sandbox verifies the pinned harness and
 required executable names before either arm starts. Fetch, file-preflight, or
 capability-preflight failure invalidates the task without running A or B. The
 product does not choose a different harness by task category; coding and
@@ -233,10 +236,17 @@ arbitrary host commands.
 The service creates two concurrent local Smol Machines microVMs from one
 content-addressed OCI image or digest-authenticated local `.smolmachine`
 artifact. Each receives a private copy of the same prepared or bootstrap
-workspace snapshot, parent environment, declared config and credential files,
+workspace snapshot, allowlisted environment, declared config and credential files,
 network policy, timeout, and command. The image digest pins the remaining
 toolchain and filesystem. A gets
 the captured managed Markdown; B gets exactly the provisional bundle changes.
+The Smol CLI owns machine lifecycle and agent execution, because the SDK cannot
+create a local machine from the pinned image. Files move in fixed-offset
+chunks through retried guest commands that pass the payload in secret
+environment variables, never in process arguments, stdin, or `machine cp`.
+Host-side cancellation stops a transfer between chunks. On macOS, deleting a
+machine also detaches its disk image and removes its exact cache directory
+([upstream observations](../docs/upstream-smol-issues.md)).
 Managed paths beneath the configured workspace remain in `/workspace`;
 managed paths beneath the host home are mirrored at the corresponding guest
 home path. Materialization proves that these declared Markdown paths are the
@@ -247,7 +257,7 @@ That identity selects the Codex or Claude CLI command; the guest CLI version
 must equal the pinned host version before either task counts. The immutable
 runtime image supplies the CLI, repository toolchain, and excluded dependency
 trees. Explicit runtime files reproduce local CLI configuration or stored
-credentials without persisting their contents. Every inherited environment
+credentials without persisting their contents. Every forwarded environment
 value and runtime file is named and content-hashed in the execution identity.
 
 Both agent processes receive the same task package and run until they exit or

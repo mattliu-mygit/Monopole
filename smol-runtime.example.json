@@ -9,5 +9,6 @@
     "HOME": "/root",
     "PWD": "/workspace"
   },
+  "passthrough_environment": [],
   "runtime_files": []
 }

@@ -47,11 +47,13 @@ _RUNTIME_ARCHIVE = "/tmp/runtime-files.tar"
 _FINAL_ARCHIVE = "/root/.monopole-final-workspace.tar"
 _MAX_TRANSCRIPT_CHARACTERS = 200_000
 _MAX_PROCESS_OUTPUT_BYTES = 200_000
-# Smol CLI 1.6.6 held each finished guest command open for seconds; 1.6.13 returns at once.
+# Smol CLI 1.6.6 held each finished guest command open for seconds; 1.6.13 returns at once
+# (docs/upstream-smol-issues.md).
 _MIN_SMOL_CLI_VERSION = (1, 6, 13)
 # Files go into a machine as base64 in secret env vars and come back out through dd, in 90 KiB
 # chunks, each step retried: Smol CLI 1.6.13's stdin upload and `machine cp` can report success
-# without writing the file, and an exec can fail intermittently without a diagnostic.
+# without writing the file, and an exec can fail intermittently without a diagnostic
+# (docs/upstream-smol-issues.md).
 _FILE_CHUNK_BYTES = 90 * 1024
 _FILE_WRITE_BATCH_CHUNKS = 6
 _FILE_TRANSFER_ATTEMPTS = 3

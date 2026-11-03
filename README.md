@@ -20,7 +20,8 @@ development mode.
 - [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
 - Node.js `20.19.x` or `22.12+` and npm
 - Apple Silicon macOS, or Linux with KVM, for local paired verification
-- The self-contained [Smol CLI](https://smolmachines.com/docs/installation)
+- The self-contained [Smol CLI](https://smolmachines.com/docs/installation), version
+  `1.6.13` or newer
 - The CES Dataset that `weave-agent-adapter evaluations setup` created
 
 Clone the repository if you have not already:
@@ -91,12 +92,21 @@ The image may be an OCI `@sha256:` reference or an absolute local
 `.smolmachine` artifact whose bytes match `image_digest`. A local artifact also
 supports offline/no-network evaluations. It must contain the same Codex and/or
 Claude CLI, repository toolchain, and tools used by the recorded agent. The
-service copies the source workspace into each VM without a live host mount. It
-also copies every server environment variable into both arms, applies the
-declared guest `HOME` and `PWD`, and may copy explicit host config or credential
-files through `runtime_files`. Those files are written only inside each
-disposable VM; persisted evidence contains their hashes, not their contents.
-Keep the runtime file local and never commit credentials.
+service copies the source workspace into each VM without a live host mount.
+Each arm's environment holds only the shell basics (`PATH`, `LANG`, `LC_ALL`,
+`LC_CTYPE`, `TERM`, `TZ`), the harness API keys (`ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `WANDB_API_KEY`) when the server has them, the names listed in
+`passthrough_environment`, and the values in `environment_overrides`, such as
+the guest `HOME` and `PWD`. Other server variables, such as cloud or
+source-control tokens, stay on the host. Explicit host config or credential
+files may be copied through `runtime_files`. Those files are written only
+inside each disposable VM; persisted evidence contains their hashes, not their
+contents. Keep the runtime file local and never commit credentials.
+
+Monopole drives the Smol CLI rather than its SDK, moves files through bounded,
+retried guest commands rather than the CLI's stdin and copy paths, and detaches
+each deleted machine's disk image on macOS. The reasons are in
+[docs/upstream-smol-issues.md](docs/upstream-smol-issues.md).
 
 Managed instruction files inside the configured workspace stay under
 `/workspace`. Managed files under the host home, such as `~/.codex/AGENTS.md`,
@@ -105,7 +115,7 @@ and cache directories omitted from the frozen source are also omitted from
 final artifact capture, so installs do not dominate comparison evidence.
 
 The same runtime is used for coding and research tasks. Enable network only
-when the evaluated agent should retain network access; inherited credentials
+when the evaluated agent should retain network access; forwarded credentials
 are reachable by the sandboxed agent when network is enabled.
 
 ### 6. Start the API and UI
