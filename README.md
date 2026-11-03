@@ -169,7 +169,7 @@ Run `uv run weave-agent-signals COMMAND --help` for arguments and defaults.
 | `score` | Score recent turns and sessions deterministically |
 | `backfill` | Paginate and score a historical date range |
 | `judge` | Run sliding-window session model rubrics |
-| `inspect` | Inspect recent trace/session detail and feedback |
+| `inspect` | Inspect recent sessions and their Scores |
 | `analyze` | Summarize scores, cohorts, trends, and coaching |
 | `monitor` | Alert on new significant regressions |
 | `reflect` | Preview candidate instruction bundles and diffs |

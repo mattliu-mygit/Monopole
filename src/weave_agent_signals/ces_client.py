@@ -310,6 +310,16 @@ def session_view(
     )
 
 
+def session_or_none(client: CesClient, trajectory_id: str) -> SessionView | None:
+    """The session, or None when CES has no such session Trajectory."""
+    try:
+        return client.read_session(trajectory_id)
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code == 404:
+            return None
+        raise
+
+
 def _turns_of(session_ids: list[str]) -> str:
     """A rows/search filter for the turns of these sessions."""
     either = " OR ".join(f"i.session_trajectory_id = {json.dumps(sid)}" for sid in session_ids)

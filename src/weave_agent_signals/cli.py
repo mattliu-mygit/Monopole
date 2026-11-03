@@ -127,18 +127,6 @@ def _resolve_reflection_models(
     return writer, evaluator
 
 
-def cmd_score(args: argparse.Namespace) -> int:
-    return ces_commands.score(args)
-
-
-def cmd_backfill(args: argparse.Namespace) -> int:
-    return ces_commands.backfill(args)
-
-
-def cmd_inspect(args: argparse.Namespace) -> int:
-    return ces_commands.inspect(args)
-
-
 def cmd_judge(args: argparse.Namespace) -> int:
     since = args.since or (datetime.now(timezone.utc) - timedelta(hours=24))
     judges = _resolve_judge_panel(args)
@@ -676,10 +664,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     handlers = {
-        "score": cmd_score,
-        "backfill": cmd_backfill,
+        "score": ces_commands.score,
+        "backfill": ces_commands.backfill,
         "judge": cmd_judge,
-        "inspect": cmd_inspect,
+        "inspect": ces_commands.inspect,
         "analyze": cmd_analyze,
         "monitor": cmd_monitor,
         "reflect": cmd_reflect,

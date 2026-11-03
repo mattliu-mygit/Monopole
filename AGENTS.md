@@ -92,7 +92,7 @@ arguments and defaults.
 - `score` — deterministic recent scoring
 - `backfill` — paginated historical scoring
 - `judge` — sliding-window session rubric inference
-- `inspect` — read-only trace and feedback inspection
+- `inspect` — read-only session and Score inspection
 - `analyze` — summary, cohort, trend, and coaching analysis
 - `monitor` — deduplicated regression alerts
 - `reflect` — proposal preview only
@@ -111,8 +111,8 @@ product behavior; standalone reflection does not mutate managed files.
 - Payloads include scorer version and score time; scorer-specific data belongs
   under `payload.details`.
 - Trend ordering uses `details.turn_started_at`, not write time.
-- `--force` queries matching scorer-plus-ref feedback, creates the new row, then
-  purges every prior match only after creation succeeds.
+- `--force` writes newer Scores under a new pass; nothing is purged, and reads take
+  the newest Score per Scorer.
 - Evaluation runs pin exact trace identities and configuration before work.
 - Judging pins its context policy, complete raw-turn coverage, reviewer-specific
   window plans, and digest/window/merge protocol before inference.

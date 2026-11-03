@@ -1,4 +1,4 @@
-"""`score`, `backfill`, and `inspect` over CES sessions (`--backend ces`).
+"""`score`, `backfill`, and `inspect` over CES sessions.
 
 Sessions are the adapter's session Trajectories. Each pass writes under its own pass
 ID, so `--force` writes newer Scores and reads return the newest Score per scorer.

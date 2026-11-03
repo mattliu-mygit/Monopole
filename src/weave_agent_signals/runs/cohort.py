@@ -9,9 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-import httpx
-
-from weave_agent_signals.ces_client import CesSession
+from weave_agent_signals.ces_client import CesSession, session_or_none
 from weave_agent_signals.judges.families import model_family
 from weave_agent_signals.models import SessionView, TurnSpan, session_is_evaluable
 from weave_agent_signals.runs.store import DataSelection
@@ -153,16 +151,6 @@ def _build_cohort(turns: list[TurnSpan]) -> dict[str, Any]:
     }
 
 
-def _read_session(ces: CesSession, trajectory_id: str) -> SessionView | None:
-    """The session, or None when CES has no such session Trajectory."""
-    try:
-        return ces.client.read_session(trajectory_id)
-    except httpx.HTTPStatusError as error:
-        if error.response.status_code == 404:
-            return None
-        raise
-
-
 def discover_turn_cohort(
     selection: DataSelection,
     *,
@@ -172,7 +160,7 @@ def discover_turn_cohort(
 
     since, until = _selection_bounds(selection)
     with ces_factory() as ces:
-        sessions = {sid: _read_session(ces, sid) for sid in selection.session_ids}
+        sessions = {sid: session_or_none(ces.client, sid) for sid in selection.session_ids}
 
     filtered: list[TurnSpan] = []
     for session in sessions.values():
@@ -321,7 +309,7 @@ def hydrate_turn_cohort(
     turn_entries, session_entries = _validated_cohort(cohort)
     with ces_factory() as ces:
         live = {
-            entry["conversation_id"]: _read_session(ces, entry["conversation_id"])
+            entry["conversation_id"]: session_or_none(ces.client, entry["conversation_id"])
             for entry in session_entries
         }
     gone = sorted(sid for sid, session in live.items() if session is None)

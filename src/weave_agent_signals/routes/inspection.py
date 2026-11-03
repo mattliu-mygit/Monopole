@@ -6,13 +6,12 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import get_args
 
-import httpx
 from fastapi import APIRouter, HTTPException, Query
 
-from weave_agent_signals.ces_client import CesSession
+from weave_agent_signals.ces_client import CesSession, session_or_none
 from weave_agent_signals.judges.tokens import TokenCounterName, count_tokens
 from weave_agent_signals.judges.windowing import render_raw_turn
-from weave_agent_signals.models import FEEDBACK_PREFIX, SessionView, TurnSpan, session_is_evaluable
+from weave_agent_signals.models import FEEDBACK_PREFIX, TurnSpan, session_is_evaluable
 from weave_agent_signals.patterns import (
     ab_leaderboard,
     aggregate_scores,
@@ -66,15 +65,6 @@ def _signal_evidence(
             item["turn_id"],
         ),
     )
-
-
-def _read_session(ces: CesSession, trajectory_id: str) -> SessionView | None:
-    try:
-        return ces.client.read_session(trajectory_id)
-    except httpx.HTTPStatusError as error:
-        if error.response.status_code == 404:
-            return None
-        raise
 
 
 def _turn_json(turn: TurnSpan, *, include_children: bool = False) -> dict:
@@ -210,7 +200,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             for sid in session_ids:
                 if len(visible) == limit:
                     break
-                session = _read_session(ces, sid)
+                session = session_or_none(ces.client, sid)
                 if session is None or not session_is_evaluable(session.turns):
                     continue
                 in_window = [
@@ -240,7 +230,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
     @router.get("/sessions/{conversation_id:path}")
     def get_session(conversation_id: str) -> SessionDetailResponse:
         with ces_factory() as ces:
-            session = _read_session(ces, conversation_id)
+            session = session_or_none(ces.client, conversation_id)
             if session is None or not session_is_evaluable(session.turns):
                 message = (
                     "session not found"

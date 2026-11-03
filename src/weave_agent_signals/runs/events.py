@@ -227,16 +227,8 @@ def _details(stage: RunEventStage, value: Mapping[str, Any]) -> dict[str, JsonVa
     return result
 
 
-def normalize_scoring_details(value: Mapping[str, Any]) -> dict[str, JsonValue]:
-    return _details("scoring", value)
-
-
 def normalize_judging_details(value: Mapping[str, Any]) -> dict[str, JsonValue]:
     return _details("judging", value)
-
-
-def normalize_reflection_details(value: Mapping[str, Any]) -> dict[str, JsonValue]:
-    return _details("reflecting", value)
 
 
 def sanitize_event(
@@ -261,7 +253,5 @@ __all__ = [
     "RunEvent",
     "RunEventDraft",
     "normalize_judging_details",
-    "normalize_reflection_details",
-    "normalize_scoring_details",
     "sanitize_event",
 ]
