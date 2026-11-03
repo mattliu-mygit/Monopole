@@ -167,7 +167,7 @@ def test_inspect_prints_a_session_with_its_scores(fake, capsys):
         ]
     }
 
-    assert _run("inspect", "--session", "s1", "--feedback") == 0
+    assert _run("inspect", "--session", "s1", "--scores") == 0
 
     out = capsys.readouterr().out
     assert "Session s1" in out and "Turns: 2" in out

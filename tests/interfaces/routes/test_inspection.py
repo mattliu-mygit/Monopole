@@ -239,7 +239,7 @@ def test_low_turn_scores_with_a_reason_become_signal_evidence():
     ]
 
 
-def test_session_detail_returns_children_and_splits_session_and_turn_feedback():
+def test_session_detail_returns_children_and_splits_session_and_turn_scores():
     client, backend = _client()
     backend.turns[0].tool_calls.append(
         ToolSpan(
@@ -262,10 +262,10 @@ def test_session_detail_returns_children_and_splits_session_and_turn_feedback():
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["turns"][0]["tool_calls"][0]["tool_name"] == "Bash"
-    assert [item["feedback_type"] for item in body["session_feedback"]] == [
+    assert [item["feedback_type"] for item in body["session_scores"]] == [
         "weave_agent_signals.efficiency.session"
     ]
-    assert list(body["turn_feedback"]) == ["trace-a"]
+    assert list(body["turn_scores"]) == ["trace-a"]
     assert [item["signal"] for item in body["signal_evidence"]] == ["outcome.test"]
     assert set(body["judging_token_estimates"])
 

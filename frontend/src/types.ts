@@ -4,7 +4,7 @@ import type { components } from './generated/api'
 type Schemas = components['schemas']
 
 export type TurnDetail = Schemas['TurnDetailResponse']
-export type FeedbackItem = Schemas['FeedbackItemResponse']
+export type ScoreItem = Schemas['ScoreItemResponse']
 export type SignalEvidence = Schemas['SignalEvidenceResponse']
 export type SessionSummary = Schemas['SessionSummaryResponse']
 export type SessionDetail = Schemas['SessionDetailResponse']

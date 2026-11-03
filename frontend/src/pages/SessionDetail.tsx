@@ -5,7 +5,7 @@ import PageHeader from '../components/PageHeader'
 import ScoreBadge from '../components/ScoreBadge'
 import SignalCallout from '../components/SignalCallout'
 import { getSession, getRubrics } from '../api'
-import type { TurnDetail, FeedbackItem, ReviewAttempt, RubricDescriptor } from '../types'
+import type { TurnDetail, ScoreItem, ReviewAttempt, RubricDescriptor } from '../types'
 
 function formatDuration(start: string | null, end: string | null): string {
   if (!start) return '—'
@@ -24,7 +24,7 @@ function formatTokens(n: number): string {
   return n.toLocaleString()
 }
 
-function feedbackScore(fb: FeedbackItem): number {
+function scoreValue(fb: ScoreItem): number {
   return fb.payload.rating
 }
 
@@ -40,7 +40,7 @@ function scorerLabel(feedbackType: string): string {
   return feedbackType.replace(/^weave_agent_signals\./, '')
 }
 
-function FeedbackDetail({ fb, rubrics }: { fb: FeedbackItem; rubrics: RubricDescriptor[] }) {
+function ScoreDetail({ fb, rubrics }: { fb: ScoreItem; rubrics: RubricDescriptor[] }) {
   const scorer = scorerLabel(fb.feedback_type)
   const rubric = rubrics.find(r => r.id === scorer)
   const reason = fb.payload.reason
@@ -147,7 +147,7 @@ function FeedbackDetail({ fb, rubrics }: { fb: FeedbackItem; rubrics: RubricDesc
   )
 }
 
-function TurnCard({ turn, index, feedback, rubrics }: { turn: TurnDetail; index: number; feedback: FeedbackItem[]; rubrics: RubricDescriptor[] }) {
+function TurnCard({ turn, index, feedback, rubrics }: { turn: TurnDetail; index: number; feedback: ScoreItem[]; rubrics: RubricDescriptor[] }) {
   const [expanded, setExpanded] = useState(false)
   const detailsId = useId()
   const totalTokens = turn.input_tokens + turn.output_tokens + turn.cache_read_tokens
@@ -189,7 +189,7 @@ function TurnCard({ turn, index, feedback, rubrics }: { turn: TurnDetail; index:
         {feedback.length > 0 && (
           <div className="flex flex-wrap gap-1 mt-2">
             {feedback.map((fb) => (
-              <ScoreBadge key={fb.id} scorer={fb.feedback_type} value={feedbackScore(fb)} />
+              <ScoreBadge key={fb.id} scorer={fb.feedback_type} value={scoreValue(fb)} />
             ))}
           </div>
         )}
@@ -326,7 +326,7 @@ function TurnCard({ turn, index, feedback, rubrics }: { turn: TurnDetail; index:
               <h4 className="text-sm font-medium text-gray-700 mb-1">Scores</h4>
               <div className="space-y-2">
                 {feedback.map((fb) => (
-                  <FeedbackDetail key={fb.id} fb={fb} rubrics={rubrics} />
+                  <ScoreDetail key={fb.id} fb={fb} rubrics={rubrics} />
                 ))}
               </div>
             </div>
@@ -422,12 +422,12 @@ export default function SessionDetail() {
         </div>
       )}
 
-      {session.session_feedback.length > 0 && (
+      {session.session_scores.length > 0 && (
         <div className="mb-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-3">Session Scores</h2>
           <div className="space-y-2">
-            {session.session_feedback.map((fb) => (
-              <FeedbackDetail key={fb.id} fb={fb} rubrics={rubrics} />
+            {session.session_scores.map((fb) => (
+              <ScoreDetail key={fb.id} fb={fb} rubrics={rubrics} />
             ))}
           </div>
         </div>
@@ -441,7 +441,7 @@ export default function SessionDetail() {
               key={turn.trace_id}
               turn={turn}
               index={i}
-              feedback={session.turn_feedback[turn.trace_id] ?? []}
+              feedback={session.turn_scores[turn.trace_id] ?? []}
               rubrics={rubrics}
             />
           ))}

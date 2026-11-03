@@ -652,37 +652,6 @@ export interface components {
             /** Workspace Digest */
             workspace_digest: string;
         };
-        /** FeedbackItemResponse */
-        FeedbackItemResponse: {
-            /** Feedback Type */
-            feedback_type: string;
-            /** Id */
-            id: string;
-            payload: components["schemas"]["FeedbackPayloadResponse"];
-        } & {
-            [key: string]: unknown;
-        };
-        /** FeedbackPayloadResponse */
-        FeedbackPayloadResponse: {
-            /**
-             * Details
-             * @default {}
-             */
-            details: {
-                [key: string]: unknown;
-            };
-            /** Rating */
-            rating: number;
-            /** Reason */
-            reason?: string | null;
-            /**
-             * Tags
-             * @default []
-             */
-            tags: string[];
-        } & {
-            [key: string]: unknown;
-        };
         /** GenerationAttemptResponse */
         GenerationAttemptResponse: {
             /** Attempt Id */
@@ -1706,6 +1675,37 @@ export interface components {
             /** Target Id */
             target_id: string;
         };
+        /** ScoreItemResponse */
+        ScoreItemResponse: {
+            /** Feedback Type */
+            feedback_type: string;
+            /** Id */
+            id: string;
+            payload: components["schemas"]["ScorePayloadResponse"];
+        } & {
+            [key: string]: unknown;
+        };
+        /** ScorePayloadResponse */
+        ScorePayloadResponse: {
+            /**
+             * Details
+             * @default {}
+             */
+            details: {
+                [key: string]: unknown;
+            };
+            /** Rating */
+            rating: number;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Tags
+             * @default []
+             */
+            tags: string[];
+        } & {
+            [key: string]: unknown;
+        };
         /** ScoreSummaryResponse */
         ScoreSummaryResponse: {
             /** Binary */
@@ -1808,17 +1808,17 @@ export interface components {
             judging_token_estimates: {
                 [key: string]: components["schemas"]["JudgingTokenEstimateResponse"];
             };
-            /** Session Feedback */
-            session_feedback: components["schemas"]["FeedbackItemResponse"][];
+            /** Session Scores */
+            session_scores: components["schemas"]["ScoreItemResponse"][];
             /** Signal Evidence */
             signal_evidence: components["schemas"]["SignalEvidenceResponse"][];
             /** Total Tokens */
             total_tokens: number;
             /** Turn Count */
             turn_count: number;
-            /** Turn Feedback */
-            turn_feedback: {
-                [key: string]: components["schemas"]["FeedbackItemResponse"][];
+            /** Turn Scores */
+            turn_scores: {
+                [key: string]: components["schemas"]["ScoreItemResponse"][];
             };
             /** Turns */
             turns: components["schemas"]["TurnDetailResponse"][];

@@ -1039,68 +1039,6 @@
         "title": "ExecutionIdentity",
         "type": "object"
       },
-      "FeedbackItemResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "feedback_type": {
-            "title": "Feedback Type",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "payload": {
-            "$ref": "#/components/schemas/FeedbackPayloadResponse"
-          }
-        },
-        "required": [
-          "id",
-          "feedback_type",
-          "payload"
-        ],
-        "title": "FeedbackItemResponse",
-        "type": "object"
-      },
-      "FeedbackPayloadResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "details": {
-            "additionalProperties": true,
-            "default": {},
-            "title": "Details",
-            "type": "object"
-          },
-          "rating": {
-            "title": "Rating",
-            "type": "number"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason"
-          },
-          "tags": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "title": "Tags",
-            "type": "array"
-          }
-        },
-        "required": [
-          "rating"
-        ],
-        "title": "FeedbackPayloadResponse",
-        "type": "object"
-      },
       "GenerationAttemptResponse": {
         "additionalProperties": false,
         "properties": {
@@ -4358,6 +4296,68 @@
         "title": "ScopeDescriptorResponse",
         "type": "object"
       },
+      "ScoreItemResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "feedback_type": {
+            "title": "Feedback Type",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/ScorePayloadResponse"
+          }
+        },
+        "required": [
+          "id",
+          "feedback_type",
+          "payload"
+        ],
+        "title": "ScoreItemResponse",
+        "type": "object"
+      },
+      "ScorePayloadResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "details": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Details",
+            "type": "object"
+          },
+          "rating": {
+            "title": "Rating",
+            "type": "number"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "tags": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rating"
+        ],
+        "title": "ScorePayloadResponse",
+        "type": "object"
+      },
       "ScoreSummaryResponse": {
         "additionalProperties": false,
         "properties": {
@@ -4671,11 +4671,11 @@
             "title": "Judging Token Estimates",
             "type": "object"
           },
-          "session_feedback": {
+          "session_scores": {
             "items": {
-              "$ref": "#/components/schemas/FeedbackItemResponse"
+              "$ref": "#/components/schemas/ScoreItemResponse"
             },
-            "title": "Session Feedback",
+            "title": "Session Scores",
             "type": "array"
           },
           "signal_evidence": {
@@ -4693,14 +4693,14 @@
             "title": "Turn Count",
             "type": "integer"
           },
-          "turn_feedback": {
+          "turn_scores": {
             "additionalProperties": {
               "items": {
-                "$ref": "#/components/schemas/FeedbackItemResponse"
+                "$ref": "#/components/schemas/ScoreItemResponse"
               },
               "type": "array"
             },
-            "title": "Turn Feedback",
+            "title": "Turn Scores",
             "type": "object"
           },
           "turns": {
@@ -4719,8 +4719,8 @@
           "turn_count",
           "judging_token_estimates",
           "turns",
-          "session_feedback",
-          "turn_feedback",
+          "session_scores",
+          "turn_scores",
           "signal_evidence"
         ],
         "title": "SessionDetailResponse",

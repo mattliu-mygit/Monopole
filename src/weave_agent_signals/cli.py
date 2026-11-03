@@ -518,7 +518,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_insp = subs.add_parser("inspect", help="Inspect turns or sessions")
     p_insp.add_argument("--recent", type=int, default=None)
     p_insp.add_argument("--session", type=str, default=None)
-    p_insp.add_argument("--feedback", action="store_true", help="Show feedback/scores")
+    p_insp.add_argument(
+        "--scores", "--feedback", action="store_true", help="Show each session's and turn's Scores"
+    )
     ces_commands.add_arguments(p_insp)
 
     # analyze

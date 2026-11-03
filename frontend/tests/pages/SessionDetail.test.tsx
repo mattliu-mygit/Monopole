@@ -71,7 +71,7 @@ beforeEach(() => {
       turn_id: 'trace-1234567890',
       turn_started_at: '2026-07-14T18:00:00Z',
     }],
-    session_feedback: [{
+    session_scores: [{
       id: 'feedback-1',
       feedback_type: 'weave_agent_signals.judge.verification',
       payload: {
@@ -116,7 +116,7 @@ beforeEach(() => {
         },
       },
     }],
-    turn_feedback: {},
+    turn_scores: {},
   }
   api.getSession.mockResolvedValue(session)
   api.getRubrics.mockResolvedValue({

@@ -263,8 +263,8 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                 "turn_count": len(session.turns),
                 "judging_token_estimates": _judging_token_estimates(session.turns),
                 "turns": [_turn_json(turn, include_children=True) for turn in session.turns],
-                "session_feedback": feedback.get(conversation_id, []),
-                "turn_feedback": {
+                "session_scores": feedback.get(conversation_id, []),
+                "turn_scores": {
                     turn.trace_id: feedback[turn.trace_id]
                     for turn in session.turns
                     if feedback.get(turn.trace_id)

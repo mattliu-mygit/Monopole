@@ -598,7 +598,7 @@ class SubagentResponse(ResponseModel):
     tool_call_count: int
 
 
-class FeedbackPayloadResponse(BaseModel):
+class ScorePayloadResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     rating: float
@@ -607,12 +607,12 @@ class FeedbackPayloadResponse(BaseModel):
     reason: str | None = None
 
 
-class FeedbackItemResponse(BaseModel):
+class ScoreItemResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     id: str
     feedback_type: str
-    payload: FeedbackPayloadResponse
+    payload: ScorePayloadResponse
 
 
 class TurnDetailResponse(ResponseModel):
@@ -649,8 +649,8 @@ class SessionDetailResponse(ResponseModel):
     turn_count: int
     judging_token_estimates: dict[TokenCounterName, JudgingTokenEstimateResponse]
     turns: list[TurnDetailResponse]
-    session_feedback: list[FeedbackItemResponse]
-    turn_feedback: dict[str, list[FeedbackItemResponse]]
+    session_scores: list[ScoreItemResponse]
+    turn_scores: dict[str, list[ScoreItemResponse]]
     signal_evidence: list[SignalEvidenceResponse]
 
 

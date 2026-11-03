@@ -267,17 +267,15 @@ def inspect(args: argparse.Namespace) -> int:
             epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
             session_ids = client.find_sessions(catalog, since=epoch, limit=args.recent)
         sessions = [client.read_session(sid) for sid in session_ids]
-        session_rows = client.session_scores(catalog, session_ids) if args.feedback else {}
+        session_rows = client.session_scores(catalog, session_ids) if args.scores else {}
         for session in sessions:
-            turn_rows = (
-                client.turn_scores(catalog, session.conversation_id) if args.feedback else {}
-            )
+            turn_rows = client.turn_scores(catalog, session.conversation_id) if args.scores else {}
             _print_session(
                 catalog,
                 session,
                 turn_rows,
                 session_rows.get(session.conversation_id, []),
-                args.feedback,
+                args.scores,
             )
     return 0
 
