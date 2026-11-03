@@ -274,6 +274,10 @@ class RunService:
 
         next_stage: RunStatus | None = None
         try:
+            # A cancel that committed before the event was registered had no event to set.
+            if self.get(run_id).status is RunStatus.CANCELLED:
+                log.info("Run %s cancelled before %s started", run_id, stage.value)
+                return
             configuration_error = _configuration_error(run)
             if configuration_error is not None:
                 self._fail_active(run_id, stage, configuration_error)

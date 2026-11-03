@@ -330,6 +330,25 @@ def test_find_sessions_reads_newest_first_and_stops_before_since():
 
 
 @respx.mock
+def test_find_sessions_skips_a_turn_without_a_start_time_instead_of_stopping():
+    _catalog_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = client.ensure_catalog("ds-1")
+    rows = [
+        {"input": {"session_trajectory_id": "s-unstamped"}},
+        {"input": {"started_at": "2026-11-03T10:00:00.000Z", "session_trajectory_id": "s-in"}},
+        {"input": {"started_at": "2026-11-01T10:00:00.000Z", "session_trajectory_id": "s-old"}},
+    ]
+    respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
+        return_value=httpx.Response(200, json={"rows": rows})
+    )
+
+    found = client.find_sessions(catalog, since=datetime(2026, 11, 2, tzinfo=timezone.utc))
+
+    assert found == ["s-in"]
+
+
+@respx.mock
 def test_session_scores_keep_only_the_requested_trajectories():
     _catalog_routes()
     client = CesClient("http://ces.test", "scope-1", api_key="k")

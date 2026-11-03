@@ -106,6 +106,9 @@ def _write(
 def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=None):
     """Score each session's turns in the window, then the session. Returns (stats, sessions)."""
     pass_id, stats, sessions = str(uuid.uuid4()), _Stats(), []
+    session_ids = list(session_ids)
+    # One read for every session: the session-row read pages all session rows each time.
+    have_sessions = {} if force else client.session_scores(catalog, session_ids)
     for sid in session_ids:
         if limit is not None and stats.turns >= limit:
             break
@@ -147,11 +150,7 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
                     git_branch=session.git_branch,
                     run_time=run_time,
                 )
-            have = (
-                set()
-                if force
-                else catalog.scored(client.session_scores(catalog, [sid]).get(sid, []))
-            )
+            have = catalog.scored(have_sessions.get(sid, []))
             _write(client, catalog, pass_id, "trajectory", sid, scores, have, force, stats)
             stats.sessions += 1
         except Exception as error:

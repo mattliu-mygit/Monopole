@@ -497,9 +497,11 @@ class CesClient:
             )
             for row in page.get("rows") or []:
                 started, session = (
-                    row["input"].get("started_at") or "",
+                    row["input"].get("started_at"),
                     row["input"].get("session_trajectory_id"),
                 )
+                if not started:
+                    continue  # a turn without a start time can't be placed in the window
                 if started < lo:
                     return list(found)
                 if session and (hi is None or started <= hi):

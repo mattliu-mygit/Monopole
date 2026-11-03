@@ -504,6 +504,22 @@ def test_restart_fails_a_manual_pause_pinned_to_an_old_pipeline(store, tmp_path)
     assert "pipeline version" in recovered.error.lower()
 
 
+def test_a_cancel_committed_before_the_stage_registers_still_stops_the_stage(store):
+    service, scoring, _, _ = _service(store)
+    run = _configured(service)
+
+    class CancelOnRegister(dict):
+        def __setitem__(self, run_id, event):
+            store.cancel_if_safe(run_id)
+            super().__setitem__(run_id, event)
+
+    service._cancel_events = CancelOnRegister()
+    advanced = service.advance(run.run_id)
+
+    assert service.get(advanced.run_id).status is RunStatus.CANCELLED
+    assert scoring.calls == []
+
+
 def test_stage_failure_is_recorded_but_cancellation_is_not_rewritten(store):
     failing = StageSpy(store, error=RuntimeError("judge transport failed"))
     service, _, _, _ = _service(store, scoring=failing)

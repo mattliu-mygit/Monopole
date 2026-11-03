@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timezone
 
 import pytest
 
@@ -60,6 +61,7 @@ class FakeCes:
     def __init__(self, turn_rows=None, session_rows=None):
         self.turn_rows, self.session_rows = turn_rows or {}, session_rows or {}
         self.writes: list[tuple] = []
+        self.session_score_reads: list[list[str]] = []
         self.closed = False
 
     def find_sessions(self, catalog, *, since, until=None, limit=None):
@@ -72,6 +74,7 @@ class FakeCes:
         return self.turn_rows
 
     def session_scores(self, catalog, trajectory_ids):
+        self.session_score_reads.append(list(trajectory_ids))
         return {t: self.session_rows.get(t, []) for t in trajectory_ids}
 
     def write_scores(self, catalog, pass_id, kind, target, scores):
@@ -128,6 +131,21 @@ def test_an_existing_score_is_skipped_unless_forced(fake):
     assert [names for *_, names in first] == [[], ["implicit.completion"]]
     assert [names for *_, names in second] == [["outcome.test"], ["implicit.completion"]]
     assert first[0][0] != second[0][0]
+
+
+def test_scoring_reads_existing_session_scores_once_for_all_sessions():
+    client = FakeCes()
+
+    ces_commands._score_sessions(
+        client,
+        Catalog("ev-t", "ev-s", {}),
+        ["s1", "s2"],
+        since=datetime(2000, 1, 1, tzinfo=timezone.utc),
+        until=None,
+        force=False,
+    )
+
+    assert client.session_score_reads == [["s1", "s2"]]
 
 
 def test_backfill_reports_bash_coverage(fake, capsys):
