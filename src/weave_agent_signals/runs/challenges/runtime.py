@@ -56,6 +56,10 @@ class RuntimeFileSource(BaseModel):
         return self
 
 
+BASE_ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ")
+HARNESS_CREDENTIALS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "WANDB_API_KEY")
+
+
 class SandboxRuntime(BaseModel):
     """Platform runtime inputs that are identical for A and B."""
 
@@ -69,6 +73,8 @@ class SandboxRuntime(BaseModel):
     network_enabled: StrictBool
     environment_overrides: dict[StrictStr, StrictStr]
     runtime_files: tuple[RuntimeFileSource, ...] = ()
+    # Host variables beyond the defaults that arms need, named explicitly.
+    passthrough_environment: tuple[StrictStr, ...] = ()
 
     @model_validator(mode="after")
     def validate_runtime(self) -> SandboxRuntime:
@@ -104,9 +110,15 @@ class SandboxRuntime(BaseModel):
         self,
         parent: Mapping[str, str] | None = None,
     ) -> Mapping[str, str]:
-        """Copy every parent variable, then apply declared guest path corrections."""
+        """The host variables an arm may see, then the declared guest path corrections.
 
-        values = dict(os.environ if parent is None else parent)
+        Only the shell basics, the harnesses' API credentials, and names the runtime declares
+        reach the guest, so other host secrets, such as cloud or source-control tokens, stay out
+        of a machine where an agent runs, possibly with network access."""
+
+        source = os.environ if parent is None else parent
+        names = (*BASE_ENVIRONMENT, *HARNESS_CREDENTIALS, *self.passthrough_environment)
+        values = {name: source[name] for name in names if name in source}
         values.update(self.environment_overrides)
         return MappingProxyType(values)
 

@@ -35,18 +35,24 @@ def _document(tmp_path, **updates):
     return path
 
 
-def test_runtime_inherits_every_parent_variable_and_applies_guest_overrides(
+def test_runtime_passes_only_allowed_host_variables_and_applies_guest_overrides(
     tmp_path,
     monkeypatch,
 ):
     monkeypatch.setenv("WANDB_API_KEY", "secret")
     monkeypatch.setenv("HOST_ONLY_SETTING", "value")
+    monkeypatch.setenv("GITHUB_TOKEN", "host-token")
 
     runtime = load_sandbox_runtime(_document(tmp_path))
     environment = runtime.environment()
+    declared = runtime.model_copy(
+        update={"passthrough_environment": ("HOST_ONLY_SETTING",)}
+    ).environment()
 
     assert environment["WANDB_API_KEY"] == "secret"
-    assert environment["HOST_ONLY_SETTING"] == "value"
+    assert "HOST_ONLY_SETTING" not in environment
+    assert "GITHUB_TOKEN" not in environment
+    assert declared["HOST_ONLY_SETTING"] == "value"
     assert environment["HOME"] == "/root"
     assert environment["PWD"] == "/workspace"
     assert runtime.workspace_root == tmp_path.resolve()
