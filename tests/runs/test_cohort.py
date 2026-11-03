@@ -64,7 +64,7 @@ class FakeCes:
     def __exit__(self, *_args):
         self.closed = True
 
-    def read_session(self, trajectory_id: str) -> SessionView:
+    def read_session(self, trajectory_id: str, *, subagents: bool = True) -> SessionView:
         self.reads.append(trajectory_id)
         turns = [turn for turn in self.turns if turn.conversation_id == trajectory_id]
         if not turns:

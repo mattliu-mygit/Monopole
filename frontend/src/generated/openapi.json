@@ -4657,20 +4657,6 @@
             ],
             "title": "Git Branch"
           },
-          "judging_token_estimates": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/JudgingTokenEstimateResponse"
-            },
-            "propertyNames": {
-              "enum": [
-                "utf8_bytes_div_3",
-                "o200k_base",
-                "o200k_harmony"
-              ]
-            },
-            "title": "Judging Token Estimates",
-            "type": "object"
-          },
           "session_scores": {
             "items": {
               "$ref": "#/components/schemas/ScoreItemResponse"
@@ -4717,7 +4703,6 @@
           "git_branch",
           "total_tokens",
           "turn_count",
-          "judging_token_estimates",
           "turns",
           "session_scores",
           "turn_scores",
@@ -4977,8 +4962,15 @@
             "type": "string"
           },
           "tool_call_count": {
-            "title": "Tool Call Count",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Call Count"
           }
         },
         "required": [
@@ -5481,6 +5473,23 @@
           "subagents"
         ],
         "title": "TurnDetailResponse",
+        "type": "object"
+      },
+      "TurnSubagentsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "subagents": {
+            "items": {
+              "$ref": "#/components/schemas/SubagentResponse"
+            },
+            "title": "Subagents",
+            "type": "array"
+          }
+        },
+        "required": [
+          "subagents"
+        ],
+        "title": "TurnSubagentsResponse",
         "type": "object"
       },
       "ValidationError": {
@@ -6472,6 +6481,57 @@
           }
         },
         "summary": "Get Session",
+        "tags": [
+          "inspection"
+        ]
+      }
+    },
+    "/api/sessions/{conversation_id}/turns/{trace_id}/subagents": {
+      "get": {
+        "operationId": "get_turn_subagents_api_sessions__conversation_id__turns__trace_id__subagents_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "trace_id",
+            "required": true,
+            "schema": {
+              "title": "Trace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnSubagentsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Turn Subagents",
         "tags": [
           "inspection"
         ]

@@ -10,6 +10,7 @@ import { renderWithQueryClient } from '../support/render'
 const api = vi.hoisted(() => ({
   getSession: vi.fn(),
   getRubrics: vi.fn(),
+  getTurnSubagents: vi.fn(),
 }))
 vi.mock('../../src/api', () => api)
 
@@ -33,11 +34,6 @@ beforeEach(() => {
     git_branch: 'main',
     total_tokens: 30,
     turn_count: 1,
-    judging_token_estimates: {
-      utf8_bytes_div_3: { total_tokens: 30, largest_turn_tokens: 30, turn_tokens: [30] },
-      o200k_base: { total_tokens: 25, largest_turn_tokens: 25, turn_tokens: [25] },
-      o200k_harmony: { total_tokens: 25, largest_turn_tokens: 25, turn_tokens: [25] },
-    },
     turns: [{
       trace_id: 'trace-1234567890',
       conversation_id: 'conversation-1',
@@ -194,5 +190,29 @@ describe('SessionDetail disclosures', () => {
 
     expect(screen.getByText('denied')).not.toBeNull()
     expect(screen.getByText('exit 1')).not.toBeNull()
+  })
+
+  it("loads a turn's subagents only when asked", async () => {
+    const session: SessionDetailData = await api.getSession('conversation-1')
+    api.getSession.mockResolvedValue({
+      ...session,
+      turns: [{
+        ...session.turns[0],
+        subagent_count: 1,
+        subagents: [{ span_id: 'traj-sub', agent_type: null, tool_call_count: null }],
+      }],
+    })
+    api.getTurnSubagents.mockResolvedValue({
+      subagents: [{ span_id: 'traj-sub', agent_type: 'explorer', tool_call_count: 3 }],
+    })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Turn 1/ }))
+    expect(api.getTurnSubagents).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Load details' }))
+
+    expect(await screen.findByText('explorer')).not.toBeNull()
+    expect(screen.getByText('3 tool calls')).not.toBeNull()
+    expect(api.getTurnSubagents).toHaveBeenCalledWith('conversation-1', 'trace-1234567890')
   })
 })

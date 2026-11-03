@@ -923,3 +923,49 @@ def test_clients_sharing_a_scorer_name_cache_look_each_version_up_once():
         assert client._score_records([("case-1", {}, [score])])[0]["target_id"] == "case-1"
 
     assert version.call_count == 1
+
+
+@respx.mock
+def test_read_session_without_subagents_names_them_without_reading_them():
+    respx.get(f"{BASE}/trajectories/traj-s/cases").mock(
+        return_value=httpx.Response(200, json={"cases": SESSION})
+    )
+    child = respx.get(f"{BASE}/trajectories/traj-a/cases").mock(
+        return_value=httpx.Response(200, json={"cases": AGENT_A})
+    )
+
+    view = CesClient("http://ces.test", "scope-1", api_key="k").read_session(
+        "traj-s", subagents=False
+    )
+
+    [subagent] = view.turns[0].subagents
+    assert (subagent.span_id, subagent.agent_type, subagent.tool_calls) == ("traj-a", None, [])
+    assert child.call_count == 0
+
+
+@respx.mock
+def test_turn_subagents_reads_only_that_turns_subagents():
+    root = [
+        _case("c1", "user_message", "t1", 0, text="go"),
+        _case("c2", "tool_call", "t1", 1, children=["traj-a"], tool_name="Task"),
+        _case("c3", "user_message", "t2", 0, text="more"),
+        _case("c4", "tool_call", "t2", 1, children=["traj-b"], tool_name="Task"),
+    ]
+    respx.get(f"{BASE}/trajectories/traj-s/cases").mock(
+        return_value=httpx.Response(200, json={"cases": root})
+    )
+    first = respx.get(f"{BASE}/trajectories/traj-a/cases").mock(
+        return_value=httpx.Response(200, json={"cases": AGENT_B})
+    )
+    second = respx.get(f"{BASE}/trajectories/traj-b/cases").mock(
+        return_value=httpx.Response(200, json={"cases": AGENT_B})
+    )
+    respx.get(f"{BASE}/trajectories/traj-gone/cases").mock(return_value=httpx.Response(404))
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+
+    subagents = client.turn_subagents("traj-s", "c3")
+
+    assert [(s.span_id, len(s.tool_calls)) for s in subagents] == [("traj-b", 1)]
+    assert (first.call_count, second.call_count) == (0, 1)
+    assert client.turn_subagents("traj-s", "c4") is None  # a turn is named by its first Case
+    assert client.turn_subagents("traj-gone", "c1") is None

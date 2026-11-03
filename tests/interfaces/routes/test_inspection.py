@@ -7,7 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from weave_agent_signals.models import SessionView, ToolSpan, TraceRole, TurnSpan
+from weave_agent_signals.models import SessionView, SubagentSpan, ToolSpan, TraceRole, TurnSpan
 from weave_agent_signals.routes.inspection import create_inspection_router
 
 
@@ -97,7 +97,7 @@ class FakeCes:
         newest = sorted(in_window, key=lambda turn: turn.started_at, reverse=True)
         return list(dict.fromkeys(turn.conversation_id for turn in newest))
 
-    def read_session(self, trajectory_id):
+    def read_session(self, trajectory_id, *, subagents=True):
         turns = sorted(
             (turn for turn in self.turns if turn.conversation_id == trajectory_id),
             key=lambda turn: turn.started_at,
@@ -106,6 +106,17 @@ class FakeCes:
             request = httpx.Request("GET", "http://ces.test")
             raise httpx.HTTPStatusError("missing", request=request, response=httpx.Response(404))
         return SessionView(trajectory_id, turns, "config-v1", "main")
+
+    def turn_subagents(self, trajectory_id, turn_case_id):
+        turn = next(
+            (
+                t
+                for t in self.turns
+                if t.conversation_id == trajectory_id and t.trace_id == turn_case_id
+            ),
+            None,
+        )
+        return None if turn is None else turn.subagents
 
     def session_turns(self, _catalog, session_ids):
         return {
@@ -283,7 +294,7 @@ def test_session_detail_returns_children_and_splits_session_and_turn_scores():
     ]
     assert list(body["turn_scores"]) == ["trace-a"]
     assert [item["signal"] for item in body["signal_evidence"]] == ["outcome.test"]
-    assert set(body["judging_token_estimates"])
+    assert "judging_token_estimates" not in body
 
 
 def test_empty_analysis_is_stable():
@@ -315,3 +326,39 @@ def test_session_listing_includes_judge_token_estimates_only_when_asked():
         "o200k_base",
         "o200k_harmony",
     }
+
+
+def test_session_detail_names_subagents_without_their_counts():
+    client, backend = _client()
+    backend.turns[0].subagents.append(SubagentSpan(span_id="traj-sub", agent_type=None))
+
+    response = client.get("/api/sessions/session-one")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["turns"][0]["subagents"] == [
+        {"span_id": "traj-sub", "agent_type": None, "tool_call_count": None}
+    ]
+
+
+def test_turn_subagents_route_counts_a_turns_subagents_and_404s_for_other_cases():
+    client, backend = _client()
+    tool = ToolSpan(
+        span_id="tool-1",
+        tool_name="Bash",
+        arguments="ls",
+        result="",
+        status_code="OK",
+        started_at=None,
+        ended_at=None,
+    )
+    backend.turns[0].subagents.append(
+        SubagentSpan(span_id="traj-sub", agent_type="explorer", tool_calls=[tool])
+    )
+
+    found = client.get("/api/sessions/session-one/turns/trace-a/subagents")
+    missing = client.get("/api/sessions/session-one/turns/trace-b/subagents")
+
+    assert found.json() == {
+        "subagents": [{"span_id": "traj-sub", "agent_type": "explorer", "tool_call_count": 1}]
+    }
+    assert (missing.status_code, missing.json()["detail"]["code"]) == (404, "turn_not_found")

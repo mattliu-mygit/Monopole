@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import PageHeader from '../components/PageHeader'
 import ScoreBadge from '../components/ScoreBadge'
 import SignalCallout from '../components/SignalCallout'
-import { getSession, getRubrics } from '../api'
+import { getSession, getRubrics, getTurnSubagents } from '../api'
 import type { TurnDetail, ScoreItem, ReviewAttempt, RubricDescriptor } from '../types'
 
 function formatDuration(start: string | null, end: string | null): string {
@@ -143,6 +143,49 @@ function ScoreDetail({ fb, rubrics }: { fb: ScoreItem; rubrics: RubricDescriptor
         </div>
       )}
 
+    </div>
+  )
+}
+
+// The session view names each subagent without reading it, since a turn can launch hundreds;
+// their types and tool calls load on request.
+function Subagents({ turn }: { turn: TurnDetail }) {
+  const [requested, setRequested] = useState(false)
+  const details = useQuery({
+    queryKey: ['turn-subagents', turn.conversation_id, turn.trace_id],
+    queryFn: () => getTurnSubagents(turn.conversation_id, turn.trace_id),
+    enabled: requested,
+  })
+  const subagents = details.data?.subagents ?? turn.subagents
+  const unread = !details.data && turn.subagents.some((sa) => sa.tool_call_count === null)
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-1">
+        <h4 className="text-sm font-medium text-gray-700">Subagents ({subagents.length})</h4>
+        {unread && (
+          <button
+            type="button"
+            onClick={() => setRequested(true)}
+            disabled={details.isFetching}
+            className="text-xs text-blue-600 hover:underline disabled:text-gray-400"
+          >
+            {details.isFetching ? 'Loading…' : 'Load details'}
+          </button>
+        )}
+      </div>
+      {details.error && (
+        <p className="text-xs text-red-600 mb-1" role="alert">{(details.error as Error).message}</p>
+      )}
+      {!unread && (
+        <div className="space-y-1">
+          {subagents.map((sa) => (
+            <div key={sa.span_id} className="flex items-center gap-3 text-xs bg-gray-50 rounded p-2">
+              <span className="font-mono text-gray-800">{sa.agent_type ?? 'unknown'}</span>
+              <span className="text-gray-500">{sa.tool_call_count} tool calls</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -316,21 +359,7 @@ function TurnCard({ turn, index, feedback, rubrics }: { turn: TurnDetail; index:
             </div>
           )}
 
-          {turn.subagents.length > 0 && (
-            <div>
-              <h4 className="text-sm font-medium text-gray-700 mb-1">
-                Subagents ({turn.subagents.length})
-              </h4>
-              <div className="space-y-1">
-                {turn.subagents.map((sa) => (
-                  <div key={sa.span_id} className="flex items-center gap-3 text-xs bg-gray-50 rounded p-2">
-                    <span className="font-mono text-gray-800">{sa.agent_type ?? 'unknown'}</span>
-                    <span className="text-gray-500">{sa.tool_call_count} tool calls</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          {turn.subagents.length > 0 && <Subagents turn={turn} />}
 
           {feedback.length > 0 && (
             <div>

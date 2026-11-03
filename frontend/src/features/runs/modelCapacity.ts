@@ -1,4 +1,4 @@
-import type { ModelCatalog, ModelDescriptor, SessionDetail } from '../../types'
+import type { JudgingTokenEstimates, ModelCatalog, ModelDescriptor } from '../../types'
 
 export interface ModelCapacityEstimate {
   fits: boolean | null
@@ -6,7 +6,7 @@ export interface ModelCapacityEstimate {
   estimatedChunks: number | null
 }
 
-type SessionTokens = Pick<SessionDetail, 'judging_token_estimates'>
+type SessionTokens = { judging_token_estimates: JudgingTokenEstimates }
 type ContextPolicy = ModelCatalog['judging_context']
 
 function partitionCoreTokens(

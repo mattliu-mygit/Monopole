@@ -8,6 +8,7 @@ export type RunTransport = components['schemas']['RunResponse']
 export type RunListTransport = components['schemas']['RunListResponse']
 export type SessionListTransport = components['schemas']['SessionListResponse']
 export type SessionDetailTransport = components['schemas']['SessionDetailResponse']
+export type TurnSubagentsTransport = components['schemas']['TurnSubagentsResponse']
 
 export type PromoteRequestTransport =
   paths['/api/runs/{run_id}/promote']['post']['requestBody']['content']['application/json']

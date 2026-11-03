@@ -67,7 +67,7 @@ class FakeCes:
     def find_sessions(self, catalog, *, since, until=None, limit=None):
         return ["s1"]
 
-    def read_session(self, trajectory_id):
+    def read_session(self, trajectory_id, *, subagents=True):
         return SESSION
 
     def turn_scores(self, catalog, trajectory_id):

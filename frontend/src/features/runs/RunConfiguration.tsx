@@ -1,8 +1,8 @@
 import type {
   ModelCatalog,
   ModelDescriptor,
+  JudgingTokenEstimates,
   RubricCatalog,
-  SessionDetail,
 } from '../../types'
 import {
   estimateModelCapacity,
@@ -19,7 +19,7 @@ export interface RunConfigurationProps {
   state: RunConfigState
   models: ModelCatalog
   rubrics: RubricCatalog
-  sessions?: readonly Pick<SessionDetail, 'judging_token_estimates'>[]
+  sessions?: readonly { judging_token_estimates: JudgingTokenEstimates }[]
   disabled?: boolean
   onAction: (action: RunConfigAction) => void
 }

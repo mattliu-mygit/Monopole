@@ -279,6 +279,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{conversation_id}/turns/{trace_id}/subagents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Turn Subagents */
+        get: operations["get_turn_subagents_api_sessions__conversation_id__turns__trace_id__subagents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1804,10 +1821,6 @@ export interface components {
             conversation_id: string | null;
             /** Git Branch */
             git_branch: string | null;
-            /** Judging Token Estimates */
-            judging_token_estimates: {
-                [key: string]: components["schemas"]["JudgingTokenEstimateResponse"];
-            };
             /** Session Scores */
             session_scores: components["schemas"]["ScoreItemResponse"][];
             /** Signal Evidence */
@@ -1889,7 +1902,7 @@ export interface components {
             /** Span Id */
             span_id: string;
             /** Tool Call Count */
-            tool_call_count: number;
+            tool_call_count: number | null;
         };
         /** SuccessfulReflectionResultResponse */
         SuccessfulReflectionResultResponse: {
@@ -2037,6 +2050,11 @@ export interface components {
             trace_id: string;
             /** User Input */
             user_input: string | null;
+        };
+        /** TurnSubagentsResponse */
+        TurnSubagentsResponse: {
+            /** Subagents */
+            subagents: components["schemas"]["SubagentResponse"][];
         };
         /** ValidationError */
         ValidationError: {
@@ -2660,6 +2678,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_turn_subagents_api_sessions__conversation_id__turns__trace_id__subagents_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                trace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnSubagentsResponse"];
                 };
             };
             /** @description Validation Error */

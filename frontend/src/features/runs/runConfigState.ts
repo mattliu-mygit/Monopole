@@ -2,12 +2,12 @@ import type {
   ModelCatalog,
   ModelDescriptor,
   RubricCatalog,
+  JudgingTokenEstimates,
   RunConfig,
-  SessionDetail,
 } from '../../types'
 import { estimateModelCapacity } from './modelCapacity'
 
-type SessionTokens = Pick<SessionDetail, 'judging_token_estimates'>
+type SessionTokens = { judging_token_estimates: JudgingTokenEstimates }
 
 export type ChoiceSource = 'recommended' | 'automatic' | 'overridden'
 export interface Choice<T> { value: T; source: ChoiceSource }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ModelDescriptor, SessionDetail } from '../../src/types'
+import type { JudgingTokenEstimates, ModelDescriptor } from '../../src/types'
 import { estimateModelCapacity } from '../../src/features/runs/modelCapacity'
 
 const policy = {
@@ -47,7 +47,7 @@ function session(
     }
     return values
   })(),
-): Pick<SessionDetail, 'judging_token_estimates'> {
+): { judging_token_estimates: JudgingTokenEstimates } {
   return {
     judging_token_estimates: {
       utf8_bytes_div_3: { total_tokens: totalTokens, largest_turn_tokens: largestTurnTokens, turn_tokens: turnTokens },

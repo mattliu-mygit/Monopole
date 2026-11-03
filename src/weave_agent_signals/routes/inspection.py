@@ -23,6 +23,7 @@ from weave_agent_signals.routes.models import (
     AnalysisResponse,
     SessionDetailResponse,
     SessionListResponse,
+    TurnSubagentsResponse,
 )
 
 _SIGNAL_THRESHOLD = 0.5
@@ -68,6 +69,14 @@ def _signal_evidence(
             item["turn_id"],
         ),
     )
+
+
+def _subagent_json(item, *, read: bool = True) -> dict:
+    return {
+        "span_id": item.span_id,
+        "agent_type": item.agent_type,
+        "tool_call_count": len(item.tool_calls) if read else None,
+    }
 
 
 def _turn_json(turn: TurnSpan, *, include_children: bool = False) -> dict:
@@ -121,14 +130,8 @@ def _turn_json(turn: TurnSpan, *, include_children: bool = False) -> dict:
                     }
                     for item in turn.chat_spans
                 ],
-                "subagents": [
-                    {
-                        "span_id": item.span_id,
-                        "agent_type": item.agent_type,
-                        "tool_call_count": len(item.tool_calls),
-                    }
-                    for item in turn.subagents
-                ],
+                # The session view doesn't read subagents; a turn's are read on request.
+                "subagents": [_subagent_json(item, read=False) for item in turn.subagents],
             }
         )
     return value
@@ -245,7 +248,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
     @router.get("/sessions/{conversation_id}")
     def get_session(conversation_id: str) -> SessionDetailResponse:
         with ces_factory() as ces:
-            session = session_or_none(ces.client, conversation_id)
+            session = session_or_none(ces.client, conversation_id, subagents=False)
             if session is None or not session_is_evaluable(session.turns):
                 message = (
                     "session not found"
@@ -264,7 +267,6 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                 "git_branch": session.git_branch,
                 "total_tokens": session.total_tokens,
                 "turn_count": len(session.turns),
-                "judging_token_estimates": _judging_token_estimates(session.turns),
                 "turns": [_turn_json(turn, include_children=True) for turn in session.turns],
                 "session_scores": feedback.get(conversation_id, []),
                 "turn_scores": {
@@ -274,6 +276,19 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                 },
                 "signal_evidence": _signal_evidence(session.turns, feedback),
             }
+        )
+
+    @router.get("/sessions/{conversation_id}/turns/{trace_id}/subagents")
+    def get_turn_subagents(conversation_id: str, trace_id: str) -> TurnSubagentsResponse:
+        with ces_factory() as ces:
+            subagents = ces.client.turn_subagents(conversation_id, trace_id)
+        if subagents is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "turn_not_found", "message": "turn not found"},
+            )
+        return TurnSubagentsResponse.model_validate(
+            {"subagents": [_subagent_json(item) for item in subagents]}
         )
 
     @router.get("/analyze")

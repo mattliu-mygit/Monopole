@@ -1,6 +1,7 @@
 import type {
   SessionSummary,
   SessionDetail,
+  TurnSubagents,
   Run,
   RunSummary,
   ModelCatalog,
@@ -17,6 +18,7 @@ import type {
   RunTransport,
   SessionDetailTransport,
   SessionListTransport,
+  TurnSubagentsTransport,
 } from './transport'
 
 const BASE = import.meta.env.VITE_API_URL || ''
@@ -94,6 +96,12 @@ export function getSessions(
 export function getSession(conversationId: string): Promise<SessionDetail> {
   return apiFetch<SessionDetailTransport>(
     `/api/sessions/${encodeURIComponent(conversationId)}`,
+  )
+}
+
+export function getTurnSubagents(conversationId: string, traceId: string): Promise<TurnSubagents> {
+  return apiFetch<TurnSubagentsTransport>(
+    `/api/sessions/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(traceId)}/subagents`,
   )
 }
 

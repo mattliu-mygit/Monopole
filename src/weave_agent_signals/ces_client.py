@@ -309,10 +309,12 @@ def session_view(
     )
 
 
-def session_or_none(client: CesClient, trajectory_id: str) -> SessionView | None:
+def session_or_none(
+    client: CesClient, trajectory_id: str, *, subagents: bool = True
+) -> SessionView | None:
     """The session, or None when CES has no such session Trajectory."""
     try:
-        return client.read_session(trajectory_id)
+        return client.read_session(trajectory_id, subagents=subagents)
     except httpx.HTTPStatusError as error:
         if error.response.status_code == 404:
             return None
@@ -456,17 +458,43 @@ class CesClient:
             if not cursor:
                 return cases
 
-    def read_session(self, trajectory_id: str) -> SessionView:
-        """S's Cases plus every subagent Trajectory below it, as Monopole turns. Each level of
-        subagents is read concurrently; a session can have hundreds."""
+    def read_session(self, trajectory_id: str, *, subagents: bool = True) -> SessionView:
+        """S's Cases plus every subagent Trajectory below it, as Monopole turns. Without
+        `subagents`, the subagents S launched are named but not read, so they have no type or
+        tool calls; a session can have hundreds."""
         cases = self.trajectory_cases(trajectory_id)
+        launched = _child_ids(cases)
+        children = self._descendants(launched) if subagents else {c: [] for c in launched}
+        return session_view(trajectory_id, cases, children)
+
+    def _descendants(self, roots: list[str]) -> dict[str, list[dict]]:
+        """The Cases of these subagent Trajectories and every one below them, in launch order,
+        each level read concurrently."""
         children: dict[str, list[dict]] = {}
-        level = _child_ids(cases)
+        level = roots
         with ThreadPoolExecutor(max_workers=CONCURRENT_READS) as pool:
             while level := [c for c in dict.fromkeys(level) if c not in children]:
                 children.update(zip(level, pool.map(self.trajectory_cases, level)))
                 level = [c for child in level for c in _child_ids(children[child])]
-        return session_view(trajectory_id, cases, children)
+        return children
+
+    def turn_subagents(self, trajectory_id: str, turn_case_id: str) -> list[SubagentSpan] | None:
+        """The subagents one turn of S launched, nested ones included, read in full. None when
+        S doesn't exist or has no turn whose first Case is `turn_case_id`."""
+        try:
+            cases = self.trajectory_cases(trajectory_id)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 404:
+                raise
+            return None
+        turn_id = next(
+            ((c.get("input") or {}).get("turn_id") for c in cases if c["case_id"] == turn_case_id),
+            None,
+        )
+        steps = [c for c in cases if turn_id and (c.get("input") or {}).get("turn_id") == turn_id]
+        view = session_view(trajectory_id, steps, self._descendants(_child_ids(steps)))
+        turn = next(iter(view.turns), None)
+        return turn.subagents if turn is not None and turn.trace_id == turn_case_id else None
 
     def _session_turn_rows(self, catalog: Catalog, session_ids: list[str]) -> dict[str, list]:
         """Each session's turn rows with their Scores, subagent turns included, read

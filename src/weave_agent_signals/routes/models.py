@@ -596,7 +596,12 @@ class ChatSpanResponse(ResponseModel):
 class SubagentResponse(ResponseModel):
     span_id: str
     agent_type: str | None
-    tool_call_count: int
+    # None until the subagent's Cases are read; the session view defers that.
+    tool_call_count: int | None
+
+
+class TurnSubagentsResponse(ResponseModel):
+    subagents: list[SubagentResponse]
 
 
 class ScorePayloadResponse(BaseModel):
@@ -648,7 +653,6 @@ class SessionDetailResponse(ResponseModel):
     git_branch: str | None
     total_tokens: int
     turn_count: int
-    judging_token_estimates: dict[TokenCounterName, JudgingTokenEstimateResponse]
     turns: list[TurnDetailResponse]
     session_scores: list[ScoreItemResponse]
     turn_scores: dict[str, list[ScoreItemResponse]]

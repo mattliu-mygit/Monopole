@@ -8,6 +8,8 @@ export type ScoreItem = Schemas['ScoreItemResponse']
 export type SignalEvidence = Schemas['SignalEvidenceResponse']
 export type SessionSummary = Schemas['SessionSummaryResponse']
 export type SessionDetail = Schemas['SessionDetailResponse']
+export type TurnSubagents = Schemas['TurnSubagentsResponse']
+export type JudgingTokenEstimates = NonNullable<SessionSummary['judging_token_estimates']>
 
 export type ScoreSummary = Schemas['ScoreSummaryResponse']
 export type ABEntry = Schemas['ABEntryResponse']
