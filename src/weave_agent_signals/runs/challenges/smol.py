@@ -58,6 +58,9 @@ _FILE_CHUNK_BYTES = 90 * 1024
 _FILE_WRITE_BATCH_CHUNKS = 6
 _FILE_TRANSFER_ATTEMPTS = 3
 _TRANSFER_GUEST_ENV = "MONOPOLE_TRANSFER_CHUNK"
+# The CLI enforces `--timeout` itself; the host stops waiting this long after it, in case the
+# CLI hangs.
+_HOST_TIMEOUT_GRACE_SECONDS = 60
 _MAX_PROCESS_CAPTURE_BYTES = 32 * 1024 * 1024
 _MAX_PROCESS_CAPTURE_FILE_BYTES = _MAX_PROCESS_CAPTURE_BYTES // 2
 _MAX_WORKSPACE_ARCHIVE_BYTES = 320 * 1024 * 1024
@@ -199,12 +202,18 @@ class _CliMachine:
         """Run one file-transfer step, retrying a failed attempt."""
         for attempt in range(_FILE_TRANSFER_ATTEMPTS):
             _require_active(cancel_requested)
-            result = self.exec(
-                command,
-                ExecutionOptions(
-                    env=secrets or {}, workdir="/", timeout=30, cancel_requested=cancel_requested
-                ),
-            )
+            try:
+                result = self.exec(
+                    command,
+                    ExecutionOptions(
+                        env=secrets or {},
+                        workdir="/",
+                        timeout=30,
+                        cancel_requested=cancel_requested,
+                    ),
+                )
+            except TimeoutError:
+                result = _CliExecResult(124, "", "timed out")  # retried like any failed step
             _require_active(cancel_requested)
             if result.exit_code == 0:
                 return result
@@ -250,10 +259,8 @@ class _CliMachine:
         argv = [self._executable, "machine", "exec", "--name", self._name, "--local"]
         child_env = dict(os.environ)
         if options is not None:
-            # Scoped to the machine, so arms running at once never share host variable names.
-            scope = hashlib.sha256(self._name.encode()).hexdigest()[:12].upper()
             for index, (name, value) in enumerate(sorted(options.env.items())):
-                host_name = f"MONOPOLE_SMOL_{scope}_ENV_{index}"
+                host_name = f"MONOPOLE_SMOL_ENV_{index}"
                 child_env[host_name] = value
                 argv.extend(("--secret-env", f"{name}={host_name}"))
             argv.extend(("--workdir", options.workdir, "--timeout", str(options.timeout)))
@@ -277,6 +284,7 @@ class _CliMachine:
                     stderr=stderr_file,
                     env=child_env,
                 )
+                deadline = time.monotonic() + options.timeout + _HOST_TIMEOUT_GRACE_SECONDS
                 while True:
                     try:
                         process.communicate(timeout=0.25)
@@ -298,7 +306,8 @@ class _CliMachine:
                                 process.kill()
                                 process.wait()
                             raise RuntimeError("Smol agent process exceeded the host capture limit")
-                        if not options.cancel_requested():
+                        cancelled = options.cancel_requested()
+                        if not cancelled and time.monotonic() < deadline:
                             continue
                         process.terminate()
                         try:
@@ -306,7 +315,9 @@ class _CliMachine:
                         except subprocess.TimeoutExpired:
                             process.kill()
                             process.wait()
-                        raise ChallengeCancelled()
+                        if cancelled:
+                            raise ChallengeCancelled()
+                        raise TimeoutError("Smol CLI did not return after its timeout")
         if result.returncode == 124:
             raise TimeoutError("Smol agent execution reached its timeout")
         return _CliExecResult(result.returncode, result.stdout, result.stderr)

@@ -241,10 +241,9 @@ network policy, timeout, and command. The image digest pins the remaining
 toolchain and filesystem. A gets
 the captured managed Markdown; B gets exactly the provisional bundle changes.
 The Smol CLI owns machine lifecycle and agent execution, because the SDK cannot
-create a local machine from the pinned image. Files move in fixed-offset
-chunks through retried guest commands that pass the payload in secret
-environment variables, never in process arguments, stdin, or `machine cp`.
-Host-side cancellation stops a transfer between chunks. On macOS, deleting a
+create a local machine from the pinned image. File payloads never appear in
+process arguments, file transfer avoids the CLI's unreliable stdin and copy
+paths, and cancellation stops a transfer between steps. On macOS, deleting a
 machine also detaches its disk image and removes its exact cache directory
 ([upstream observations](../docs/upstream-smol-issues.md)).
 Managed paths beneath the configured workspace remain in `/workspace`;

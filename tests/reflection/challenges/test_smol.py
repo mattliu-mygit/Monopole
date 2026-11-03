@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import io
 import plistlib
 import re
@@ -64,9 +63,11 @@ class _FakeMachine:
         self.deleted = False
         self.writes: dict[str, bytes] = {}
         self.calls: list[tuple[list[str], object]] = []
+        self.cancel_checks: list[tuple[str, object]] = []
 
-    def write_file(self, path: str, data: bytes, mode: int | None = None, **_) -> None:
+    def write_file(self, path: str, data: bytes, mode=None, *, cancel_requested=None) -> None:
         self.writes[path] = data
+        self.cancel_checks.append((path, cancel_requested))
 
     def exec(self, command: list[str], options=None):
         self.calls.append((command, options))
@@ -91,7 +92,8 @@ class _FakeMachine:
             return _ExecResult(stdout=f"{self.session_path}\n" if self.session_path else "")
         raise AssertionError(command)
 
-    def read_file(self, path: str, **_) -> bytes:
+    def read_file(self, path: str, *, cancel_requested=None) -> bytes:
+        self.cancel_checks.append((path, cancel_requested))
         if path == self.session_path:
             return f'{{"session": "{self.name}"}}\n'.encode()
         assert path == "/root/.monopole-final-workspace.tar"
@@ -465,7 +467,7 @@ def test_cli_adapter_uses_local_machine_and_secret_environment_references(monkey
         "--net",
     ]
     exec_argv, exec_env = popen_calls[0]
-    host_name = f"MONOPOLE_SMOL_{hashlib.sha256(b'pair-baseline').hexdigest()[:12].upper()}_ENV_0"
+    host_name = "MONOPOLE_SMOL_ENV_0"
     assert "--local" in exec_argv
     assert f"TOKEN={host_name}" in exec_argv
     assert "secret-value" not in exec_argv
@@ -522,6 +524,7 @@ def test_cli_adapter_transfers_files_in_chunks_through_secret_environment(monkey
     secrets = [secret for _, options in copies for secret in options.env.values()]
     assert all(secret not in " ".join(command) for command, _ in copies for secret in secrets)
     assert all(len(secret) < 128 * 1024 for secret in secrets)
+    assert all(command[2].startswith("set -e; ") for command, _ in copies)
     assert (["chmod", "600", "/tmp/workspace.tar"], "/") in [
         (command, options.workdir) for command, options in calls
     ]
@@ -764,7 +767,12 @@ def test_cli_adapter_resolves_the_exact_macos_data_directory(monkeypatch) -> Non
 
 
 @pytest.mark.parametrize(
-    "stdout", ["", "/tmp/0123456789abcdef", "~/Library/Caches/smolvm/vms/not-hex"]
+    "stdout",
+    [
+        "",
+        "/tmp/0123456789abcdef",
+        str(Path.home() / "Library" / "Caches" / "smolvm" / "vms" / "not-hex"),
+    ],
 )
 def test_cli_adapter_fails_closed_and_removes_the_machine_for_an_unexpected_data_dir(
     monkeypatch, stdout
@@ -816,3 +824,175 @@ def test_macos_orphan_cleanup_detaches_only_the_machines_image(monkeypatch, tmp_
     assert ["hdiutil", "detach", "/dev/disk42", "-force"] in calls
     assert ["hdiutil", "detach", "/dev/disk41", "-force"] not in calls
     assert removed == [data_dir]
+
+
+def _keep_running() -> bool:
+    return False
+
+
+def test_runner_passes_its_cancel_check_to_every_pair_file_transfer() -> None:
+    baseline, candidate = _snapshots()
+    barrier = threading.Barrier(2)
+    machines: list[_FakeMachine] = []
+
+    def factory(name: str, _image: str, _network: bool):
+        snapshot = baseline if name.endswith("baseline") else candidate
+        machines.append(_FakeMachine(name, snapshot.archive, barrier))
+        return machines[-1]
+
+    SmolMachineRunner(machine_factory=factory).run_pair(
+        baseline=baseline,
+        candidate=candidate,
+        task=_task(),
+        environment=_environment(),
+        baseline_runtime_files=(RuntimeFile("/root/.codex/AGENTS.md", b"baseline", 0o600),),
+        candidate_runtime_files=(RuntimeFile("/root/.codex/AGENTS.md", b"candidate", 0o600),),
+        cancel_requested=_keep_running,
+    )
+
+    for machine in machines:
+        transfers = dict(machine.cancel_checks)
+        assert set(transfers) >= {
+            "/tmp/workspace.tar",
+            "/tmp/runtime-files.tar",
+            "/root/.monopole-final-workspace.tar",
+        }
+        assert all(
+            check is _keep_running
+            for path, check in transfers.items()
+            if path != machine.session_path
+        )
+
+
+def test_runner_preflight_passes_its_cancel_check_to_file_transfers() -> None:
+    snapshot = WorkspaceSnapshot((WorkspaceFile("task/app.py", b"print('ready')\n"),))
+    machines: list[_FakeMachine] = []
+
+    def factory(name: str, _image: str, _network: bool):
+        machines.append(
+            _FakeMachine(
+                name,
+                snapshot.archive,
+                threading.Barrier(1),
+                missing_executables=frozenset({"node"}),
+            )
+        )
+        return machines[-1]
+
+    task = AuthoredTask(
+        prompt="Update task/app.py.",
+        goal="The update is verified.",
+        required_files=("task/app.py",),
+        required_executables=("node",),
+        workspace_digest="sha256:source",
+        author_model="author",
+        author_backend="cli",
+    )
+
+    with pytest.raises(RuntimeError, match="node"):
+        SmolMachineRunner(machine_factory=factory).preflight(
+            workspace=snapshot,
+            task=task,
+            environment=_environment(),
+            cancel_requested=_keep_running,
+        )
+
+    [machine] = machines
+    assert machine.cancel_checks
+    assert all(check is _keep_running for _, check in machine.cancel_checks)
+
+
+@pytest.mark.parametrize(
+    ("version", "accepted"), [("smol 1.6.12\n", False), ("smol 1.6.13\n", True)]
+)
+def test_smol_executable_enforces_the_minimum_cli_version(
+    monkeypatch, tmp_path, version, accepted
+) -> None:
+    executable = tmp_path / "smol"
+    executable.write_text("#!/bin/sh\n")
+    executable.chmod(0o755)
+    monkeypatch.setattr(smol_module.shutil, "which", lambda _name: str(executable))
+    monkeypatch.setattr(
+        smol_module.subprocess,
+        "run",
+        lambda command, **_: CompletedProcess(command, 0, version, ""),
+    )
+
+    if accepted:
+        assert smol_module._smol_executable() == str(executable)
+    else:
+        with pytest.raises(RuntimeError, match="1.6.13 or newer"):
+            smol_module._smol_executable()
+
+
+@pytest.mark.parametrize(
+    ("chunk", "error"),
+    [(base64.b64encode(b"half").decode(), "truncated"), ("aGFsZg==!!", "invalid base64")],
+)
+def test_cli_read_rejects_a_short_or_corrupt_chunk(monkeypatch, chunk, error) -> None:
+    def exec_(self, command, options=None):
+        if command[:3] == ["stat", "-c", "%s"]:
+            return _ExecResult(stdout="8")
+        return _ExecResult(stdout=chunk)
+
+    machine = _machine_with_exec(monkeypatch, exec_)
+
+    with pytest.raises(RuntimeError, match=error):
+        machine.read_file("/tmp/result.tar")
+
+
+def test_cli_transfer_retries_a_timed_out_chunk(monkeypatch) -> None:
+    attempts = 0
+
+    def exec_(self, command, options=None):
+        nonlocal attempts
+        if _is_copy(command):
+            attempts += 1
+            if attempts == 1:
+                raise TimeoutError("Smol agent execution reached its timeout")
+        return _ExecResult()
+
+    monkeypatch.setattr(smol_module.time, "sleep", lambda _seconds: None)
+    machine = _machine_with_exec(monkeypatch, exec_)
+
+    machine.write_file("/tmp/workspace.tar", b"archive")
+
+    assert attempts == 2
+
+
+def test_cli_exec_stops_waiting_when_the_cli_outlives_its_timeout(monkeypatch) -> None:
+    ticks = iter(range(0, 1_000_000, 50))
+
+    class Process:
+        returncode = None
+        terminated = False
+        polls = 0
+
+        def communicate(self, timeout):
+            self.polls += 1
+            assert self.polls < 1_000, "exec kept waiting past its deadline"
+            raise TimeoutExpired("smol", timeout)
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    process = Process()
+    monkeypatch.setattr(
+        _CliMachine,
+        "_run",
+        staticmethod(lambda command, *, env=None: CompletedProcess(command, 0, "", "")),
+    )
+    monkeypatch.setattr(_CliMachine, "_popen", staticmethod(lambda command, **_: process))
+    machine = _CliMachine("/bin/smol", "pair-baseline", "runtime@sha256:digest", False)
+    monkeypatch.setattr(smol_module.time, "monotonic", lambda: next(ticks))
+
+    with pytest.raises(TimeoutError, match="did not return"):
+        machine.exec(["true"], ExecutionOptions(env={}, workdir="/", timeout=30))
+
+    assert process.terminated
