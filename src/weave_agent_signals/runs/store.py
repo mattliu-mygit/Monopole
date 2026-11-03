@@ -283,18 +283,20 @@ def _encode_turn_cohort(turn_cohort: Mapping[str, Any]) -> str:
         raise ValueError("turn cohort must have a cohort_id")
 
     trace_ids: set[str] = set()
-    refs: set[str] = set()
+    case_ids: set[str] = set()
     for turn in turns:
         if not isinstance(turn, dict):
             raise ValueError("turn cohort entries must be JSON objects")
         trace_id = turn.get("trace_id")
-        weave_ref = turn.get("weave_ref")
+        turn_case_ids = turn.get("case_ids")
         conversation_id = turn.get("conversation_id")
-        if not all(
-            isinstance(value, str) and value for value in (trace_id, weave_ref, conversation_id)
+        if not all(isinstance(value, str) and value for value in (trace_id, conversation_id)) or (
+            not isinstance(turn_case_ids, list)
+            or not turn_case_ids
+            or not all(isinstance(value, str) and value for value in turn_case_ids)
         ):
-            raise ValueError("turn cohort entries require trace_id, weave_ref, and conversation_id")
-        if trace_id in trace_ids or weave_ref in refs:
+            raise ValueError("turn cohort entries require trace_id, case_ids, and conversation_id")
+        if trace_id in trace_ids or case_ids & set(turn_case_ids):
             raise ValueError("turn cohort entries must be unique")
         evaluated_model = turn.get("model")
         evaluated_family = turn.get("model_family")
@@ -305,7 +307,7 @@ def _encode_turn_cohort(turn_cohort: Mapping[str, Any]) -> str:
         if not isinstance(evaluated_family, str) or not evaluated_family.strip():
             raise ValueError("turn cohort model family must be a nonblank string")
         trace_ids.add(trace_id)
-        refs.add(weave_ref)
+        case_ids.update(turn_case_ids)
     return _encode_json_object(cohort, "turn cohort")
 
 

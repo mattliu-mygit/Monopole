@@ -79,6 +79,15 @@ class Catalog:
     def evaluation_for(self, target_kind: str) -> str:
         return self.turns_evaluation_id if target_kind == "case" else self.sessions_evaluation_id
 
+    def scored(self, rows: list[dict]) -> set[str]:
+        """Names of the scorers whose value Score appears among a target's Score rows."""
+        names = self.by_scorer_id()
+        return {
+            names[r["scorer_id"]][0]
+            for r in rows
+            if r["scorer_id"] in names and not names[r["scorer_id"]][1]
+        }
+
     def by_scorer_id(self) -> dict[str, tuple[str, bool]]:
         """CES scorer ID → (Monopole scorer name, whether it is the details Scorer)."""
         found = {}

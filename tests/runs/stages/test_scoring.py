@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
+from weave_agent_signals.ces_catalog import DETAILS_SUFFIX, DETERMINISTIC, Catalog, ScorerRef
 from weave_agent_signals.judges.families import model_family
 from weave_agent_signals.models import Score, SessionView, ToolSpan, TurnSpan
 from weave_agent_signals.run_config import RunConfig, resolve_run_config
@@ -103,7 +104,7 @@ def _sessions(turns: list[TurnSpan]) -> dict[str, SessionView]:
 def _cohort(turns: list[TurnSpan]) -> dict:
     sessions = _sessions(turns)
     return {
-        "schema_version": 1,
+        "schema_version": 3,
         "pinned_at": "2026-07-14T12:30:00+00:00",
         "cohort_id": "sha256:test-cohort",
         "turn_count": len(turns),
@@ -111,7 +112,7 @@ def _cohort(turns: list[TurnSpan]) -> dict:
         "turns": [
             {
                 "trace_id": turn.trace_id,
-                "weave_ref": turn.ref_for(),
+                "case_ids": [turn.trace_id],
                 "conversation_id": turn.conversation_id,
                 "started_at": turn.started_at.isoformat(),
                 "model": turn.model,
@@ -122,7 +123,6 @@ def _cohort(turns: list[TurnSpan]) -> dict:
         "sessions": [
             {
                 "conversation_id": conversation_id,
-                "weave_ref": session.ref_for(),
                 "turn_count": len(session.turns),
             }
             for conversation_id, session in sessions.items()
@@ -165,22 +165,31 @@ def _start(store: RunStore, turns: list[TurnSpan], *, force: bool = False):
     return run, effective
 
 
-class TrackingClient:
-    entity = "weave-team"
-    project = "agent-sessions"
+CATALOG = Catalog(
+    "ev-turns",
+    "ev-sessions",
+    {
+        s.name: ScorerRef(s, f"sc-{s.name}", "v", f"sc-{s.name}{DETAILS_SUFFIX}", "v")
+        for s in DETERMINISTIC
+    },
+)
+
+
+class TrackingCes:
+    """A CesSession stand-in that records reads and writes in order."""
 
     def __init__(
         self,
-        existing: dict[tuple[str, str], list[dict]] | None = None,
+        existing: dict[tuple[str, str], list[str]] | None = None,
         *,
         write_error: Exception | None = None,
-        delete_error: Exception | None = None,
     ):
         self.existing = existing or {}
         self.write_error = write_error
-        self.delete_error = delete_error
         self.events: list[tuple[str, object]] = []
         self.inside_barrier = False
+        self.client = self
+        self.catalog = CATALOG
 
     def __enter__(self):
         return self
@@ -188,80 +197,78 @@ class TrackingClient:
     def __exit__(self, *_args):
         return None
 
-    def query_existing_feedback_batch(self, refs: list[str]):
-        self.events.append(("query", tuple(refs)))
-        return self.existing
+    def _rows(self, kind: str, target: str) -> list[dict]:
+        return [{"scorer_id": f"sc-{name}"} for name in self.existing.get((kind, target), [])]
 
-    def delete_feedback_ids(self, feedback: list[dict]) -> None:
-        assert self.inside_barrier
-        self.events.append(("delete", tuple(item["id"] for item in feedback)))
-        if self.delete_error is not None:
-            raise self.delete_error
+    def turn_scores(self, catalog, trajectory_id):
+        self.events.append(("query", ("case", trajectory_id)))
+        return {
+            target: self._rows(kind, target) for kind, target in self.existing if kind == "case"
+        }
 
-    def write_score(self, score: Score, ref: str) -> dict:
+    def session_scores(self, catalog, trajectory_ids):
+        self.events.append(("query", ("trajectory", tuple(trajectory_ids))))
+        return {sid: self._rows("trajectory", sid) for sid in trajectory_ids}
+
+    def write_scores(self, catalog, pass_id, kind, target_id, scores):
         assert self.inside_barrier
-        self.events.append(("write", (score, ref)))
+        self.events.append(("write", (pass_id, kind, target_id, list(scores))))
         if self.write_error is not None:
             raise self.write_error
-        return {"id": f"written-{score.scorer}"}
+        return [f"id-{score.scorer}" for score in scores]
 
 
 def _dependencies(
     store: RunStore,
-    client: TrackingClient,
+    ces: TrackingCes,
     turns: list[TurnSpan],
 ) -> tuple[ScoringDependencies, Mock]:
     hydrate = Mock(return_value=(turns, _sessions(turns)))
     dependencies = ScoringDependencies(
         store=store,
-        client_factory=lambda: client,
+        ces_factory=lambda: ces,
         hydrate_cohort=hydrate,
     )
     return dependencies, hydrate
 
 
-def _track_barrier(store: RunStore, client: TrackingClient, monkeypatch) -> None:
+def _track_barrier(store: RunStore, ces: TrackingCes, monkeypatch) -> None:
     original = store.external_write_barrier
 
     @contextmanager
     def tracked(run_id: str, status: RunStatus) -> Iterator[None]:
         with original(run_id, status):
-            client.inside_barrier = True
+            ces.inside_barrier = True
             try:
                 yield
             finally:
-                client.inside_barrier = False
+                ces.inside_barrier = False
 
     monkeypatch.setattr(store, "external_write_barrier", tracked)
 
 
-def test_missing_feedback_is_written_and_persists_bounded_progress(store, monkeypatch):
+def _events(ces: TrackingCes) -> list[str]:
+    return [event for event, _ in ces.events]
+
+
+def test_missing_scores_are_written_and_persist_bounded_progress(store, monkeypatch):
     turn = _turn(
         "turn-with-a-long-trace-id",
         user_input="x" * 140,
         tools=10,
     )
     run, effective = _start(store, [turn])
-    client = TrackingClient()
-    dependencies, hydrate = _dependencies(store, client, [turn])
-    _track_barrier(store, client, monkeypatch)
-    monkeypatch.setattr(
-        scoring_stage,
-        "score_turn",
-        lambda _turn: [_score("outcome.test")],
-    )
+    ces = TrackingCes()
+    dependencies, hydrate = _dependencies(store, ces, [turn])
+    _track_barrier(store, ces, monkeypatch)
+    monkeypatch.setattr(scoring_stage, "score_turn", lambda _turn: [_score("outcome.test")])
     monkeypatch.setattr(
         scoring_stage,
         "score_session",
         lambda _session: [_score("efficiency.session", granularity="session")],
     )
 
-    run_scoring_stage(
-        run,
-        effective,
-        threading.Event(),
-        dependencies=dependencies,
-    )
+    run_scoring_stage(run, effective, threading.Event(), dependencies=dependencies)
 
     updated = store.get(run.run_id)
     assert updated is not None
@@ -273,8 +280,7 @@ def test_missing_feedback_is_written_and_persists_bounded_progress(store, monkey
         "errors": 0,
         "turn_details": result["turn_details"],
     }
-    detail = result["turn_details"][0]
-    assert detail == {
+    assert result["turn_details"][0] == {
         "trace_id": "turn-with-a-",
         "conversation_id": "conversation",
         "model": "gpt-5.6-sol",
@@ -291,153 +297,85 @@ def test_missing_feedback_is_written_and_persists_bounded_progress(store, monkey
     assert updated.scoring_progress["written"] == 2
     assert updated.scoring_progress["turn_details"] == result["turn_details"]
     hydrate.assert_called_once_with(run.turn_cohort)
-    queried_refs = next(value for event, value in client.events if event == "query")
-    assert queried_refs == (turn.ref_for(), _sessions([turn])[turn.conversation_id].ref_for())
-    writes = [value for event, value in client.events if event == "write"]
-    assert len(writes) == 2
-    assert all(score.metadata["config_version"] == "config-v1" for score, _ in writes)
+    assert [value for event, value in ces.events if event == "query"] == [
+        ("case", turn.conversation_id),
+        ("trajectory", (turn.conversation_id,)),
+    ]
+    writes = sorted((value for event, value in ces.events if event == "write"), key=lambda w: w[1])
+    assert [(pass_id, kind, target) for pass_id, kind, target, _ in writes] == [
+        (run.run_id, "case", turn.trace_id),
+        (run.run_id, "trajectory", turn.conversation_id),
+    ]
+    assert all(s.metadata["config_version"] == "config-v1" for *_, scores in writes for s in scores)
 
 
-def test_force_creates_before_purging_all_prior_feedback(store, monkeypatch):
+def test_force_writes_newer_scores_without_reading_existing_ones(store, monkeypatch):
     turn = _turn("turn-1", conversation_id="conversation-1")
     run, effective = _start(store, [turn], force=True)
-    turn_type = "weave_agent_signals.outcome.test"
-    client = TrackingClient(
-        {
-            (turn.ref_for(), turn_type): [
-                {"id": "old-turn"},
-                {"id": "duplicate-turn"},
-            ],
-        }
-    )
-    dependencies, _ = _dependencies(store, client, [turn])
-    _track_barrier(store, client, monkeypatch)
-    monkeypatch.setattr(
-        scoring_stage,
-        "score_turn",
-        lambda _turn: [_score("outcome.test")],
-    )
-    monkeypatch.setattr(
-        scoring_stage,
-        "score_session",
-        lambda _session: [],
-    )
+    ces = TrackingCes({("case", turn.trace_id): ["outcome.test"]})
+    dependencies, _ = _dependencies(store, ces, [turn])
+    _track_barrier(store, ces, monkeypatch)
+    monkeypatch.setattr(scoring_stage, "score_turn", lambda _turn: [_score("outcome.test")])
+    monkeypatch.setattr(scoring_stage, "score_session", lambda _session: [])
 
-    run_scoring_stage(
-        run,
-        effective,
-        threading.Event(),
-        dependencies=dependencies,
-    )
+    run_scoring_stage(run, effective, threading.Event(), dependencies=dependencies)
 
-    mutations = [(event, value) for event, value in client.events if event != "query"]
-    assert [event for event, _ in mutations] == ["write", "delete"]
-    _, ref = mutations[0][1]
-    assert ref == turn.ref_for()
-    assert mutations[1] == ("delete", ("old-turn", "duplicate-turn"))
+    assert _events(ces) == ["write"]
+    pass_id, kind, target, scores = ces.events[0][1]
+    assert (pass_id, kind, target, [s.scorer for s in scores]) == (
+        run.run_id,
+        "case",
+        turn.trace_id,
+        ["outcome.test"],
+    )
     assert store.get(run.run_id).scoring_result["scores_written"] == 1
 
 
-def test_force_create_failure_preserves_all_prior_feedback(store, monkeypatch):
+def test_a_failed_write_counts_each_of_its_scores_as_an_error(store, monkeypatch):
     turn = _turn("turn-1", conversation_id="conversation-1")
     run, effective = _start(store, [turn], force=True)
-    client = TrackingClient(
-        {
-            (turn.ref_for(), "weave_agent_signals.outcome.test"): [
-                {"id": "old-turn"},
-                {"id": "duplicate-turn"},
-            ]
-        },
-        write_error=RuntimeError("create failed"),
-    )
-    dependencies, _ = _dependencies(store, client, [turn])
-    _track_barrier(store, client, monkeypatch)
+    ces = TrackingCes(write_error=RuntimeError("create failed"))
+    dependencies, _ = _dependencies(store, ces, [turn])
+    _track_barrier(store, ces, monkeypatch)
     monkeypatch.setattr(scoring_stage, "score_turn", lambda _turn: [_score("outcome.test")])
     monkeypatch.setattr(scoring_stage, "score_session", lambda _session: [])
 
     with pytest.raises(RuntimeError, match="Scoring completed with 1 error"):
-        run_scoring_stage(
-            run,
-            effective,
-            threading.Event(),
-            dependencies=dependencies,
-        )
+        run_scoring_stage(run, effective, threading.Event(), dependencies=dependencies)
 
-    assert [event for event, _ in client.events] == ["query", "write"]
+    assert _events(ces) == ["write"]
     result = store.get(run.run_id).scoring_result
-    assert result["scores_written"] == 0
-    assert result["errors"] == 1
+    assert (result["scores_written"], result["errors"]) == (0, 1)
 
 
-def test_prior_cleanup_failure_reports_partial_success(store, monkeypatch):
-    turn = _turn("turn-1", conversation_id="conversation-1")
-    run, effective = _start(store, [turn], force=True)
-    client = TrackingClient(
-        {
-            (turn.ref_for(), "weave_agent_signals.outcome.test"): [
-                {"id": "old-turn"},
-                {"id": "duplicate-turn"},
-            ]
-        },
-        delete_error=RuntimeError("cleanup failed"),
-    )
-    dependencies, _ = _dependencies(store, client, [turn])
-    _track_barrier(store, client, monkeypatch)
-    monkeypatch.setattr(scoring_stage, "score_turn", lambda _turn: [_score("outcome.test")])
-    monkeypatch.setattr(scoring_stage, "score_session", lambda _session: [])
-
-    with pytest.raises(RuntimeError, match="Scoring completed with 1 error"):
-        run_scoring_stage(
-            run,
-            effective,
-            threading.Event(),
-            dependencies=dependencies,
-        )
-
-    assert [event for event, _ in client.events] == ["query", "write", "delete"]
-    result = store.get(run.run_id).scoring_result
-    assert result["scores_written"] == 1
-    assert result["errors"] == 1
-
-
-def test_existing_feedback_is_always_queried_and_skipped_without_force(store, monkeypatch):
+def test_existing_scores_are_read_and_skipped_without_force(store, monkeypatch):
     turn = _turn("turn-1", conversation_id="conversation-1")
     run, effective = _start(store, [turn])
-    session = _sessions([turn])[turn.conversation_id]
-    client = TrackingClient(
+    ces = TrackingCes(
         {
-            (turn.ref_for(), "weave_agent_signals.outcome.test"): [{"id": "old-turn"}],
-            (session.ref_for(), "weave_agent_signals.efficiency.session"): [{"id": "old-session"}],
+            ("case", turn.trace_id): ["outcome.test"],
+            ("trajectory", turn.conversation_id): ["efficiency.session"],
         }
     )
-    dependencies, _ = _dependencies(store, client, [turn])
-    monkeypatch.setattr(
-        scoring_stage,
-        "score_turn",
-        lambda _turn: [_score("outcome.test")],
-    )
+    dependencies, _ = _dependencies(store, ces, [turn])
+    monkeypatch.setattr(scoring_stage, "score_turn", lambda _turn: [_score("outcome.test")])
     monkeypatch.setattr(
         scoring_stage,
         "score_session",
         lambda _session: [_score("efficiency.session", granularity="session")],
     )
 
-    run_scoring_stage(
-        run,
-        effective,
-        threading.Event(),
-        dependencies=dependencies,
-    )
+    run_scoring_stage(run, effective, threading.Event(), dependencies=dependencies)
 
-    assert [event for event, _ in client.events] == ["query"]
+    assert _events(ces) == ["query", "query"]
     assert store.get(run.run_id).scoring_result["scores_written"] == 0
 
 
 def test_scoring_errors_persist_partial_result_then_raise(store, monkeypatch):
     turn = _turn("turn-1", conversation_id="conversation-1")
     run, effective = _start(store, [turn])
-    client = TrackingClient()
-    dependencies, _ = _dependencies(store, client, [turn])
+    ces = TrackingCes()
+    dependencies, _ = _dependencies(store, ces, [turn])
     monkeypatch.setattr(
         scoring_stage,
         "score_turn",
@@ -446,12 +384,7 @@ def test_scoring_errors_persist_partial_result_then_raise(store, monkeypatch):
     monkeypatch.setattr(scoring_stage, "score_session", lambda _session: [])
 
     with pytest.raises(RuntimeError, match="Scoring completed with 1 error"):
-        run_scoring_stage(
-            run,
-            effective,
-            threading.Event(),
-            dependencies=dependencies,
-        )
+        run_scoring_stage(run, effective, threading.Event(), dependencies=dependencies)
 
     updated = store.get(run.run_id)
     assert updated.scoring_result == {
@@ -467,13 +400,13 @@ def test_scoring_errors_persist_partial_result_then_raise(store, monkeypatch):
     assert updated.scoring_succeeded is False
 
 
-def test_cancellation_race_before_write_barrier_preserves_feedback_and_progress(store, monkeypatch):
+def test_cancellation_race_before_write_barrier_writes_nothing_and_keeps_progress(
+    store, monkeypatch
+):
     turn = _turn("turn-1", conversation_id="conversation-1")
     run, effective = _start(store, [turn], force=True)
-    client = TrackingClient(
-        {(turn.ref_for(), "weave_agent_signals.outcome.test"): [{"id": "existing"}]}
-    )
-    dependencies, _ = _dependencies(store, client, [turn])
+    ces = TrackingCes()
+    dependencies, _ = _dependencies(store, ces, [turn])
     original = store.external_write_barrier
 
     def cancel_then_barrier(run_id: str, status: RunStatus):
@@ -481,27 +414,18 @@ def test_cancellation_race_before_write_barrier_preserves_feedback_and_progress(
         return original(run_id, status)
 
     monkeypatch.setattr(store, "external_write_barrier", cancel_then_barrier)
-    monkeypatch.setattr(
-        scoring_stage,
-        "score_turn",
-        lambda _turn: [_score("outcome.test")],
-    )
+    monkeypatch.setattr(scoring_stage, "score_turn", lambda _turn: [_score("outcome.test")])
     monkeypatch.setattr(scoring_stage, "score_session", lambda _session: [])
 
     with pytest.raises(StageCancelled):
-        run_scoring_stage(
-            run,
-            effective,
-            threading.Event(),
-            dependencies=dependencies,
-        )
+        run_scoring_stage(run, effective, threading.Event(), dependencies=dependencies)
 
     updated = store.get(run.run_id)
     assert updated.status is RunStatus.CANCELLED
     assert updated.scoring_result is None
     assert updated.scoring_progress["scored"] == 1
     assert updated.scoring_progress["written"] == 0
-    assert [event for event, _ in client.events] == ["query"]
+    assert _events(ces) == []
 
 
 def test_cancellation_retains_progress_for_turns_already_scored(store, monkeypatch):
@@ -510,8 +434,8 @@ def test_cancellation_retains_progress_for_turns_already_scored(store, monkeypat
         _turn("turn-2", conversation_id="conversation-1", minute=1),
     ]
     run, effective = _start(store, turns)
-    client = TrackingClient()
-    dependencies, _ = _dependencies(store, client, turns)
+    ces = TrackingCes()
+    dependencies, _ = _dependencies(store, ces, turns)
     cancel = threading.Event()
     calls = 0
 
@@ -533,4 +457,4 @@ def test_cancellation_retains_progress_for_turns_already_scored(store, monkeypat
     assert updated.scoring_result is None
     assert updated.scoring_progress["scored"] == 1
     assert len(updated.scoring_progress["turn_details"]) == 1
-    assert [event for event, _ in client.events] == ["query"]
+    assert "write" not in _events(ces)

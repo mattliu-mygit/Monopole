@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from weave_agent_signals.ces_client import CesSession
 from weave_agent_signals.judges.inference import ChatClient, InferenceCancelled
 from weave_agent_signals.patterns import is_evaluation_feedback_eligible
 from weave_agent_signals.run_config import EffectiveRunConfig, ModelDescriptor
@@ -64,7 +65,7 @@ Clock = Callable[[], datetime]
 @dataclass(frozen=True)
 class ReflectionDependencies:
     store: RunStore
-    client_factory: Callable[[], AbstractContextManager[Any]]
+    ces_factory: Callable[[], CesSession]
     adapter_factory: Callable[[], ReflectionTargetAdapter]
     writer_client_factory: Callable[[ModelDescriptor], AbstractContextManager[ChatClient]]
     evaluator_client_factory: Callable[[ModelDescriptor], AbstractContextManager[ChatClient]]
@@ -257,20 +258,25 @@ def _feedback_identity(feedback: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _cohort_refs(cohort: Mapping[str, Any]) -> list[str]:
+def _cohort_targets(cohort: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+    """The CES targets a pinned cohort's Scores sit on: each turn's first Case, then each
+    session Trajectory. Returns (targets, session IDs)."""
     turns = cohort.get("turns")
     sessions = cohort.get("sessions")
     if not isinstance(turns, list) or not isinstance(sessions, list):
         raise ValueError("Pinned cohort has invalid turn or session identities")
-    refs: list[str] = []
-    for item in [*turns, *sessions]:
-        weave_ref = item.get("weave_ref") if isinstance(item, Mapping) else None
-        if not isinstance(weave_ref, str) or not weave_ref:
-            raise ValueError("Pinned cohort entries require weave_ref")
-        refs.append(weave_ref)
-    if len(refs) != len(set(refs)):
-        raise ValueError("Pinned cohort references must be unique")
-    return refs
+    targets: list[str] = []
+    for item, key in [
+        *((t, "trace_id") for t in turns),
+        *((s, "conversation_id") for s in sessions),
+    ]:
+        target = item.get(key) if isinstance(item, Mapping) else None
+        if not isinstance(target, str) or not target:
+            raise ValueError(f"Pinned cohort entries require {key}")
+        targets.append(target)
+    if len(targets) != len(set(targets)):
+        raise ValueError("Pinned cohort targets must be unique")
+    return targets, targets[len(turns) :]
 
 
 def _selected_feedback(
@@ -444,13 +450,13 @@ def _execute_reflection_stage(
     if not isinstance(cohort, Mapping):
         raise ValueError(f"Run {run.run_id} has no pinned turn cohort")
 
-    refs = _cohort_refs(cohort)
+    refs, session_ids = _cohort_targets(cohort)
     recorder.record(
         "loading_feedback",
         "Loading evaluation feedback for the pinned cohort",
     )
-    with dependencies.client_factory() as client:
-        records = client.query_feedback_for_refs(refs)
+    with dependencies.ces_factory() as ces:
+        records = ces.client.cohort_feedback(ces.catalog, session_ids)
     if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
         raise ValueError("Feedback query must return a list of objects")
     feedback, identities = _selected_feedback(records, refs)

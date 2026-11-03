@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from weave_agent_signals.client import WeaveClient
+from weave_agent_signals.ces_client import CesSession, plan_judge_writes
 from weave_agent_signals.judges.inference import ChatClient
 from weave_agent_signals.judges.plan import build_canonical_judging_plan, judging_plan_totals
 from weave_agent_signals.judges.records import JudgeCallRecord
@@ -45,7 +45,7 @@ _Target = SessionView
 @dataclass(frozen=True)
 class JudgingDependencies:
     store: RunStore
-    client_factory: Callable[[], WeaveClient]
+    ces_factory: Callable[[], CesSession]
     chat_client_factory: Callable[[PositionedJudge], AbstractContextManager[ChatClient]]
     hydrate_cohort: Callable[
         [Mapping[str, Any]],
@@ -505,10 +505,6 @@ def _run_unit(
     )
 
 
-def _ref(target: _Target, client: WeaveClient) -> str:
-    return target.ref_for(client.entity, client.project)
-
-
 def _stamp(
     score: Score,
     target: _Target,
@@ -775,44 +771,27 @@ def run_judging_stage(
     fail_if_needed()
 
     if state.pending:
-        with dependencies.client_factory() as client:
-            refs = list(dict.fromkeys(_ref(target, client) for _, target in state.pending))
-            existing = client.query_existing_feedback_batch(refs)
+        with dependencies.ces_factory() as ces:
+            catalog, writes = plan_judge_writes(
+                ces.client, ces.catalog, state.pending, force=config.force
+            )
             _active(dependencies.store, run_id, cancel)
-            writes: list[tuple[Score, str, list[dict]]] = []
-            for score, target in state.pending:
-                ref = _ref(target, client)
-                prior = existing.get((ref, f"weave_agent_signals.{score.scorer}"), [])
-                if prior and not config.force:
-                    continue
-                writes.append((score, ref, prior))
             if writes:
                 progress(
                     "score_writes_started",
-                    f"Writing {len(writes)} judge score(s)",
+                    f"Writing {sum(map(len, writes.values()))} judge score(s)",
                     coverage_complete=True,
                 )
                 _active(dependencies.store, run_id, cancel)
                 try:
                     with dependencies.store.external_write_barrier(run_id, RunStatus.JUDGING):
-                        for score, ref, prior in writes:
+                        for sid, scores in writes.items():
                             try:
-                                client.write_score(score, ref)
-                                state.scores_written += 1
+                                ces.client.write_scores(catalog, run_id, "trajectory", sid, scores)
+                                state.scores_written += len(scores)
                             except Exception as error:
-                                state.write_failure_count += 1
+                                state.write_failure_count += len(scores)
                                 log.warning("Run %s judge score write failed: %s", run_id, error)
-                                continue
-                            try:
-                                if prior:
-                                    client.delete_feedback_ids(prior)
-                            except Exception as error:
-                                state.write_failure_count += 1
-                                log.warning(
-                                    "Run %s prior judge feedback cleanup failed: %s",
-                                    run_id,
-                                    error,
-                                )
                 except RunStoreConflictError as error:
                     _translate_cancel(dependencies.store, run_id, cancel, error)
                     raise

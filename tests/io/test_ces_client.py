@@ -244,7 +244,7 @@ def test_scores_and_their_details_go_in_one_request_keyed_by_pass_and_target():
     request = route.calls.last.request
     body = json.loads(request.content)
     assert ids == ["s1", "s2"]
-    assert request.headers["Idempotency-Key"] == "score-v1:pass-1:case:c1"
+    assert request.headers["Idempotency-Key"].startswith("score-v2:pass-1:case:c1:")
     assert [s["value"] for s in body["scores"]][0] == 1.0
     assert body["scores"][1]["value"]["tags"] == ["fast"]
     assert {s["target"]["id"] for s in body["scores"]} == {"c1"}

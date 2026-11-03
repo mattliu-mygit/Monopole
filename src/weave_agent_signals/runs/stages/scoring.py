@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from weave_agent_signals.client import WeaveClient
+from weave_agent_signals.ces_client import CesSession
 from weave_agent_signals.models import Score, SessionView, TurnSpan
 from weave_agent_signals.run_config import EffectiveRunConfig
 from weave_agent_signals.runs.events import sanitize_event
@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ScoringDependencies:
     store: RunStore
-    client_factory: Callable[[], WeaveClient]
+    ces_factory: Callable[[], CesSession]
     hydrate_cohort: Callable[
         [Mapping[str, Any]],
         tuple[list[TurnSpan], dict[str, SessionView]],
@@ -165,16 +165,19 @@ def _turn_detail(turn: TurnSpan, scores: list[Score]) -> dict[str, Any]:
     }
 
 
+Target = tuple[str, str]  # (CES target kind, target ID)
+
+
 def _queue_scores(
     scores: list[Score],
     *,
-    ref: str,
+    target: Target,
     config_version: str | None,
     git_branch: str | None,
     run_time: Any,
-    existing_feedback: Mapping[tuple[str, str], list[dict]],
+    existing: set[str],
     force: bool,
-    pending_writes: list[tuple[Score, str, list[dict]]],
+    pending_writes: dict[Target, list[Score]],
 ) -> None:
     for score in scores:
         score.stamp(
@@ -182,39 +185,34 @@ def _queue_scores(
             git_branch=git_branch,
             run_time=run_time,
         )
-        feedback_type = f"weave_agent_signals.{score.scorer}"
-        existing = existing_feedback.get((ref, feedback_type), [])
-        if existing and not force:
+        if score.scorer in existing and not force:
             continue
-        pending_writes.append((score, ref, existing))
+        pending_writes.setdefault(target, []).append(score)
 
 
 def _write_scores(
-    client: WeaveClient,
-    pending_writes: list[tuple[Score, str, list[dict]]],
+    ces: CesSession,
+    pending_writes: dict[Target, list[Score]],
     *,
     run_id: str,
 ) -> tuple[int, int]:
+    """Write each target's Scores in one request keyed by the run, so a retried stage
+    replays them instead of adding copies. Reads return the newest Score per scorer,
+    so a forced rerun needs no purge."""
     if not pending_writes:
         return 0, 0
 
-    def write(item: tuple[Score, str, list[dict]]) -> tuple[int, int]:
-        score, ref, prior = item
+    def write(item: tuple[Target, list[Score]]) -> tuple[int, int]:
+        (kind, target_id), scores = item
         try:
-            client.write_score(score, ref)
+            ces.client.write_scores(ces.catalog, run_id, kind, target_id, scores)
         except Exception as exc:
             log.warning("Run %s score write failed: %s", run_id, exc)
-            return 0, 1
-        try:
-            if prior:
-                client.delete_feedback_ids(prior)
-        except Exception as exc:
-            log.warning("Run %s prior feedback cleanup failed: %s", run_id, exc)
-            return 1, 1
-        return 1, 0
+            return 0, len(scores)
+        return len(scores), 0
 
     with ThreadPoolExecutor(max_workers=min(10, len(pending_writes))) as pool:
-        results = list(pool.map(write, pending_writes))
+        results = list(pool.map(write, pending_writes.items()))
     return sum(written for written, _ in results), sum(errors for _, errors in results)
 
 
@@ -254,14 +252,18 @@ def run_scoring_stage(
         ),
     )
 
-    with dependencies.client_factory() as client:
-        refs = [turn.ref_for(client.entity, client.project) for turn in turns]
-        refs.extend(session.ref_for(client.entity, client.project) for session in sessions.values())
-        existing_feedback = client.query_existing_feedback_batch(refs)
+    with dependencies.ces_factory() as ces:
+        existing: dict[Target, set[str]] = {}
+        if not config.force:
+            for sid in sessions:
+                for case_id, rows in ces.client.turn_scores(ces.catalog, sid).items():
+                    existing[("case", case_id)] = ces.catalog.scored(rows)
+            for sid, rows in ces.client.session_scores(ces.catalog, list(sessions)).items():
+                existing[("trajectory", sid)] = ces.catalog.scored(rows)
         _require_active(dependencies.store, run.run_id, cancel)
 
         errors = 0
-        pending_writes: list[tuple[Score, str, list[dict]]] = []
+        pending_writes: dict[Target, list[Score]] = {}
         for index, turn in enumerate(turns):
             _require_active(dependencies.store, run.run_id, cancel)
             try:
@@ -269,11 +271,11 @@ def run_scoring_stage(
                 turn_details.append(_turn_detail(turn, scores))
                 _queue_scores(
                     scores,
-                    ref=turn.ref_for(client.entity, client.project),
+                    target=("case", turn.trace_id),
                     config_version=turn.config_version,
                     git_branch=turn.git_branch,
                     run_time=turn.started_at,
-                    existing_feedback=existing_feedback,
+                    existing=existing.get(("case", turn.trace_id), set()),
                     force=config.force,
                     pending_writes=pending_writes,
                 )
@@ -334,11 +336,11 @@ def run_scoring_stage(
                 scores = score_session(session)
                 _queue_scores(
                     scores,
-                    ref=session.ref_for(client.entity, client.project),
+                    target=("trajectory", session.conversation_id),
                     config_version=session.config_version,
                     git_branch=session.git_branch,
                     run_time=session.turns[0].started_at if session.turns else None,
-                    existing_feedback=existing_feedback,
+                    existing=existing.get(("trajectory", session.conversation_id), set()),
                     force=config.force,
                     pending_writes=pending_writes,
                 )
@@ -360,7 +362,7 @@ def run_scoring_stage(
                 turns,
                 scored=len(turns),
                 written=0,
-                status_message=f"Writing {len(pending_writes)} scores...",
+                status_message=f"Writing {sum(map(len, pending_writes.values()))} scores...",
                 turn_details=turn_details,
             ),
         )
@@ -374,7 +376,7 @@ def run_scoring_stage(
                     RunStatus.SCORING,
                 ):
                     written, write_errors = _write_scores(
-                        client,
+                        ces,
                         pending_writes,
                         run_id=run.run_id,
                     )

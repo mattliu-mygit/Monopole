@@ -68,7 +68,7 @@ def _cohort() -> dict[str, Any]:
         "turns": [
             {
                 "trace_id": "turn-1",
-                "weave_ref": "weave:///turn-1",
+                "case_ids": ["turn-1"],
                 "conversation_id": "conv-1",
                 "started_at": "2026-07-14T00:00:00+00:00",
                 "model": "gpt-5.6-sol",
@@ -78,7 +78,6 @@ def _cohort() -> dict[str, Any]:
         "sessions": [
             {
                 "conversation_id": "conv-1",
-                "weave_ref": "weave:///session-1",
                 "turn_count": 1,
             }
         ],
@@ -146,7 +145,7 @@ def _reflecting_run(
 def _feedback() -> dict[str, Any]:
     return {
         "id": "feedback-1",
-        "weave_ref": "weave:///turn-1",
+        "weave_ref": "turn-1",
         "feedback_type": "weave_agent_signals.outcome.test",
         "payload": {"rating": 0.3, "details": {"rationale": "No tests."}},
     }
@@ -154,7 +153,7 @@ def _feedback() -> dict[str, Any]:
 
 def _session_feedback() -> dict[str, Any]:
     feedback = _feedback()
-    feedback["weave_ref"] = "weave:///session-1"
+    feedback["weave_ref"] = "conv-1"
     feedback["feedback_type"] = "weave_agent_signals.judge.verification"
     feedback["payload"] = {
         "rating": 0.3,
@@ -211,10 +210,14 @@ def _audit_only_judge_feedback(kind: str) -> dict[str, Any]:
     return feedback
 
 
-class WeaveClient:
+class CesFeedback:
+    """A CesSession stand-in whose client returns fixed feedback records for a cohort."""
+
     def __init__(self, feedback: list[dict[str, Any]]) -> None:
         self.feedback = feedback
-        self.queried_refs: list[str] | None = None
+        self.queried_sessions: list[str] | None = None
+        self.client = self
+        self.catalog = None
 
     def __enter__(self):
         return self
@@ -222,8 +225,8 @@ class WeaveClient:
     def __exit__(self, *_args):
         return None
 
-    def query_feedback_for_refs(self, refs):
-        self.queried_refs = list(refs)
+    def cohort_feedback(self, _catalog, session_ids):
+        self.queried_sessions = list(session_ids)
         return list(self.feedback)
 
 
@@ -469,10 +472,10 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
     run, config = _reflecting_run(store)
     baseline = bundle_from_content_map({"CLAUDE.md": "old"}, scope=SCOPE)
     adapter = Adapter(baseline)
-    weave = WeaveClient(
+    weave = CesFeedback(
         [
             _session_feedback(),
-            {**_session_feedback(), "id": "ignored", "weave_ref": "weave:///other"},
+            {**_session_feedback(), "id": "ignored", "weave_ref": "other"},
             {
                 **_session_feedback(),
                 "id": "foreign",
@@ -511,7 +514,7 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
 
     dependencies = ReflectionDependencies(
         store=store,
-        client_factory=lambda: weave,
+        ces_factory=lambda: weave,
         adapter_factory=lambda: adapter,
         writer_client_factory=lambda descriptor: nullcontext(writer_client),
         evaluator_client_factory=lambda descriptor: nullcontext(evaluator_client),
@@ -528,7 +531,7 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
         dependencies=dependencies,
     )
 
-    assert weave.queried_refs == ["weave:///turn-1", "weave:///session-1"]
+    assert weave.queried_sessions == ["conv-1"]
     assert adapter.capture_calls == 1
     assert len(calls) == 1
     assert calls[0]["baseline"] is baseline
@@ -552,7 +555,7 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
     feedback_identity = updated.reflection_input.feedback[0].model_dump(mode="json")
     assert feedback_identity == {
         "id": "feedback-1",
-        "weave_ref": "weave:///session-1",
+        "weave_ref": "conv-1",
         "feedback_type": "weave_agent_signals.judge.verification",
         "digest": feedback_identity["digest"],
     }
@@ -595,7 +598,7 @@ def test_stage_applies_paired_challenge_before_initializing_review(
     run, config = _reflecting_run(store)
     baseline = bundle_from_content_map({"CLAUDE.md": "old"}, scope=SCOPE)
     adapter = Adapter(baseline)
-    weave = WeaveClient([_session_feedback()])
+    weave = CesFeedback([_session_feedback()])
     writer_client = ModelClient()
     evaluator_client = ModelClient()
     evaluator_descriptors = []
@@ -614,7 +617,7 @@ def test_stage_applies_paired_challenge_before_initializing_review(
 
     dependencies = ReflectionDependencies(
         store=store,
-        client_factory=lambda: weave,
+        ces_factory=lambda: weave,
         adapter_factory=lambda: adapter,
         writer_client_factory=lambda _descriptor: nullcontext(writer_client),
         evaluator_client_factory=evaluator_factory,
@@ -655,7 +658,7 @@ def test_stage_fails_closed_when_provisional_candidate_has_no_challenge_runner(s
 
     dependencies = ReflectionDependencies(
         store=store,
-        client_factory=lambda: WeaveClient([_session_feedback()]),
+        ces_factory=lambda: CesFeedback([_session_feedback()]),
         adapter_factory=lambda: Adapter(baseline),
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -701,7 +704,7 @@ def test_all_invalid_stage_result_persists_audit_without_review(store):
 
     dependencies = ReflectionDependencies(
         store=store,
-        client_factory=lambda: WeaveClient([_feedback()]),
+        ces_factory=lambda: CesFeedback([_feedback()]),
         adapter_factory=lambda: Adapter(baseline),
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -739,7 +742,7 @@ def test_stage_failure_progress_keeps_actionable_evaluator_message(store):
     message = "Proposal evaluator failed: W&B credits are disabled"
     dependencies = ReflectionDependencies(
         store=store,
-        client_factory=lambda: WeaveClient([_feedback()]),
+        ces_factory=lambda: CesFeedback([_feedback()]),
         adapter_factory=lambda: Adapter(baseline),
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -764,7 +767,7 @@ def test_stage_failure_progress_does_not_persist_arbitrary_exception_text(store)
     secret = "SENTINEL_PRIVATE_MODEL_OUTPUT"
     dependencies = ReflectionDependencies(
         store=store,
-        client_factory=lambda: WeaveClient([_feedback()]),
+        ces_factory=lambda: CesFeedback([_feedback()]),
         adapter_factory=lambda: Adapter(baseline),
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -807,7 +810,7 @@ def test_stage_sanitizes_failures_across_the_full_reflection_boundary(
     run, config = _reflecting_run(store)
     baseline = bundle_from_content_map({"CLAUDE.md": "old"}, scope=SCOPE)
     adapter = Adapter(baseline)
-    weave = WeaveClient([_feedback()])
+    weave = CesFeedback([_feedback()])
     secret = f"SENTINEL_{failure_point.upper()}_OUTPUT"
     raw_error = RuntimeError(secret)
 
@@ -834,7 +837,7 @@ def test_stage_sanitizes_failures_across_the_full_reflection_boundary(
     elif failure_point == "adapter_contract":
         monkeypatch.setattr(adapter, "contract_manifest", fail)
     elif failure_point == "feedback_io":
-        monkeypatch.setattr(weave, "query_feedback_for_refs", fail)
+        monkeypatch.setattr(weave, "cohort_feedback", fail)
     elif failure_point == "baseline_capture":
         monkeypatch.setattr(adapter, "capture", fail)
     elif failure_point == "input_pinning":
@@ -848,7 +851,7 @@ def test_stage_sanitizes_failures_across_the_full_reflection_boundary(
 
     dependencies = ReflectionDependencies(
         store=store,
-        client_factory=client_factory,
+        ces_factory=client_factory,
         adapter_factory=adapter_factory,
         writer_client_factory=writer_client_factory,
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -878,7 +881,7 @@ def test_reflection_input_pins_target_registry_manifest(store):
 
     first = ReflectionDependencies(
         store=store,
-        client_factory=lambda: WeaveClient([_feedback()]),
+        ces_factory=lambda: CesFeedback([_feedback()]),
         adapter_factory=lambda: adapter,
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -894,7 +897,7 @@ def test_reflection_input_pins_target_registry_manifest(store):
     changed_manifest = _manifest("sha256:changed")
     second = ReflectionDependencies(
         store=store,
-        client_factory=lambda: WeaveClient([_feedback()]),
+        ces_factory=lambda: CesFeedback([_feedback()]),
         adapter_factory=lambda: Adapter(baseline, changed_manifest),
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -917,14 +920,14 @@ def test_stage_reuses_pinned_baseline_instead_of_recapturing_on_resume(store):
     changed = bundle_from_content_map({"CLAUDE.md": "changed"}, scope=SCOPE)
     first_adapter = Adapter(original)
     second_adapter = Adapter(changed)
-    weave = WeaveClient([_feedback()])
+    weave = CesFeedback([_feedback()])
 
     def interrupted(**_kwargs):
         raise RuntimeError("process interrupted after inputs were pinned")
 
     first = ReflectionDependencies(
         store=store,
-        client_factory=lambda: weave,
+        ces_factory=lambda: weave,
         adapter_factory=lambda: first_adapter,
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -948,7 +951,7 @@ def test_stage_reuses_pinned_baseline_instead_of_recapturing_on_resume(store):
 
     second = ReflectionDependencies(
         store=store,
-        client_factory=lambda: weave,
+        ces_factory=lambda: weave,
         adapter_factory=lambda: second_adapter,
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -972,12 +975,12 @@ def test_stage_reuses_pinned_baseline_instead_of_recapturing_on_resume(store):
 def test_stage_cancellation_before_input_capture_writes_nothing(store):
     run, config = _reflecting_run(store)
     adapter = Adapter(bundle_from_content_map({"CLAUDE.md": "old"}, scope=SCOPE))
-    weave = WeaveClient([_feedback()])
+    weave = CesFeedback([_feedback()])
     cancel = threading.Event()
     cancel.set()
     dependencies = ReflectionDependencies(
         store=store,
-        client_factory=lambda: weave,
+        ces_factory=lambda: weave,
         adapter_factory=lambda: adapter,
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -989,7 +992,7 @@ def test_stage_cancellation_before_input_capture_writes_nothing(store):
         run_reflection_stage(run, config, cancel, dependencies=dependencies)
 
     updated = store.get(run.run_id)
-    assert weave.queried_refs is None
+    assert weave.queried_sessions is None
     assert adapter.capture_calls == 0
     assert updated.reflection_input is None
     assert updated.reflecting_result is None
@@ -1001,7 +1004,7 @@ def test_stage_translates_reflector_cancellation_without_finalizing(store):
     adapter = Adapter(bundle_from_content_map({"CLAUDE.md": "old"}, scope=SCOPE))
     dependencies = ReflectionDependencies(
         store=store,
-        client_factory=lambda: WeaveClient([_feedback()]),
+        ces_factory=lambda: CesFeedback([_feedback()]),
         adapter_factory=lambda: adapter,
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -1029,7 +1032,7 @@ def test_stage_records_no_feedback_without_opening_model_clients(store):
     opened: list[str] = []
     dependencies = ReflectionDependencies(
         store=store,
-        client_factory=lambda: WeaveClient([]),
+        ces_factory=lambda: CesFeedback([]),
         adapter_factory=lambda: Adapter(baseline),
         writer_client_factory=lambda _descriptor: opened.append("writer"),
         evaluator_client_factory=lambda _descriptor: opened.append("evaluator"),
@@ -1078,7 +1081,7 @@ def test_zero_applicable_judging_pins_no_judge_feedback_identity(store):
     baseline = bundle_from_content_map({"CLAUDE.md": "old"}, scope=SCOPE)
     dependencies = ReflectionDependencies(
         store=store,
-        client_factory=lambda: WeaveClient([]),
+        ces_factory=lambda: CesFeedback([]),
         adapter_factory=lambda: Adapter(baseline),
         writer_client_factory=lambda _descriptor: pytest.fail("writer must not open"),
         evaluator_client_factory=lambda _descriptor: pytest.fail("evaluator must not open"),
@@ -1110,7 +1113,7 @@ def test_stage_treats_audit_only_judge_feedback_as_no_reflection_evidence(store,
     digest_calls: list[list[dict[str, Any]]] = []
     dependencies = ReflectionDependencies(
         store=store,
-        client_factory=lambda: WeaveClient([_audit_only_judge_feedback(kind)]),
+        ces_factory=lambda: CesFeedback([_audit_only_judge_feedback(kind)]),
         adapter_factory=lambda: Adapter(baseline),
         writer_client_factory=lambda _descriptor: opened.append("writer"),
         evaluator_client_factory=lambda _descriptor: opened.append("evaluator"),
@@ -1150,7 +1153,7 @@ def test_stage_pins_and_passes_only_eligible_reflection_feedback(store):
 
     dependencies = ReflectionDependencies(
         store=store,
-        client_factory=lambda: WeaveClient(records),
+        ces_factory=lambda: CesFeedback(records),
         adapter_factory=lambda: Adapter(baseline),
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -1179,7 +1182,7 @@ def test_resume_ignores_changes_to_unusable_judge_audit_rows(store):
 
     first = ReflectionDependencies(
         store=store,
-        client_factory=lambda: WeaveClient(records),
+        ces_factory=lambda: CesFeedback(records),
         adapter_factory=lambda: Adapter(baseline),
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -1194,7 +1197,7 @@ def test_resume_ignores_changes_to_unusable_judge_audit_rows(store):
     reflected: list[list[dict[str, Any]]] = []
     second = ReflectionDependencies(
         store=store,
-        client_factory=lambda: WeaveClient([changed_audit, _deterministic_feedback()]),
+        ces_factory=lambda: CesFeedback([changed_audit, _deterministic_feedback()]),
         adapter_factory=lambda: Adapter(baseline),
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -1224,7 +1227,7 @@ def test_stage_finalizes_persisted_evidence_without_rerunning_inference(store):
     adapter = Adapter(baseline)
     pinning = ReflectionDependencies(
         store=store,
-        client_factory=lambda: WeaveClient([_feedback()]),
+        ces_factory=lambda: CesFeedback([_feedback()]),
         adapter_factory=lambda: adapter,
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -1242,7 +1245,7 @@ def test_stage_finalizes_persisted_evidence_without_rerunning_inference(store):
     )
     dependencies = ReflectionDependencies(
         store=store,
-        client_factory=lambda: pytest.fail("feedback must not be queried"),
+        ces_factory=lambda: pytest.fail("feedback must not be queried"),
         adapter_factory=lambda: adapter,
         writer_client_factory=lambda _descriptor: pytest.fail("writer must not run"),
         evaluator_client_factory=lambda _descriptor: pytest.fail("evaluator must not run"),
@@ -1269,7 +1272,7 @@ def test_stage_revalidates_pinned_policy_before_finalizing_persisted_result(stor
     first_adapter = Adapter(baseline)
     first = ReflectionDependencies(
         store=store,
-        client_factory=lambda: WeaveClient([_feedback()]),
+        ces_factory=lambda: CesFeedback([_feedback()]),
         adapter_factory=lambda: first_adapter,
         writer_client_factory=lambda _descriptor: nullcontext(ModelClient()),
         evaluator_client_factory=lambda _descriptor: nullcontext(ModelClient()),
@@ -1288,7 +1291,7 @@ def test_stage_revalidates_pinned_policy_before_finalizing_persisted_result(stor
     changed_adapter = Adapter(baseline, _manifest("sha256:changed"))
     second = ReflectionDependencies(
         store=store,
-        client_factory=lambda: pytest.fail("feedback must not be queried"),
+        ces_factory=lambda: pytest.fail("feedback must not be queried"),
         adapter_factory=lambda: changed_adapter,
         writer_client_factory=lambda _descriptor: pytest.fail("writer must not run"),
         evaluator_client_factory=lambda _descriptor: pytest.fail("evaluator must not run"),

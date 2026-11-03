@@ -8,9 +8,10 @@ Trajectory. The adapter's `specs/EVALUATIONS_CASE_CONTRACT.md` defines the field
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
@@ -24,6 +25,7 @@ from weave_agent_signals.ces_catalog import (
     Catalog,
     ScorerRef,
     ScorerSpec,
+    judge_spec,
 )
 from weave_agent_signals.ces_score_index import ScoreIndex
 from weave_agent_signals.models import (
@@ -83,6 +85,42 @@ def _tool_span(case: dict[str, Any], turn_id: str | None = None) -> ToolSpan:
     )
 
 
+def _digest(body: dict[str, Any]) -> str:
+    """Part of a write's Idempotency-Key, so a retry with the same Scores replays them and a
+    retry with changed content, such as a judge's new scored_at, writes newer ones."""
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+def plan_judge_writes(
+    client: CesClient, catalog: Catalog, pending: list, *, force: bool
+) -> tuple[Catalog, dict[str, list[Score]]]:
+    """Judge Scores to write, by session Trajectory, and the catalog that holds their Scorers.
+
+    Only finished reviews (review_status complete) write: a degraded or failed review leaves
+    the session's last finished Scores in place. Each rubric and panel has its own Scorer.
+    Without `force`, a panel Scorer that already has a Score on the session is skipped."""
+    by_session: dict[str, list[Score]] = {}
+    specs = {}
+    for score, session in pending:
+        if score.metadata.get("review_status") != "complete":
+            continue
+        spec = judge_spec(score.scorer, score.metadata)
+        specs[spec.name] = spec
+        by_session.setdefault(session.conversation_id, []).append(replace(score, scorer=spec.name))
+    if not by_session:
+        return catalog, {}
+    catalog = client.add_scorers(catalog, tuple(specs.values()))
+    existing = {} if force else client.session_scores(catalog, list(by_session))
+    writes = {}
+    for sid, scores in by_session.items():
+        have = catalog.scored(existing.get(sid, []))
+        todo = [score for score in scores if force or score.scorer not in have]
+        if todo:
+            writes[sid] = todo
+    return catalog, writes
+
+
 def _score_row(score: dict[str, Any]) -> dict[str, Any]:
     """A get-score result in the shape Evaluation rows return Scores."""
     return {k: score.get(k) for k in ("score_id", "scorer_id", "scorer_version_id", "value")}
@@ -95,7 +133,7 @@ def _feedback(target_id: str, case_input: dict, scores: list[dict], names: dict)
     supplies the tags, reason, and details of the value Scorer it shadows. The target Case
     fills in the config, branch, and start time when the details lack them. A judge Scorer
     named `<rubric>.panel-<digest>` reports as its rubric."""
-    values, details = {}, {}
+    values, details, ids = {}, {}, {}
     for score in scores:
         name = names.get((score["scorer_id"], score["scorer_version_id"]))
         if name is None:
@@ -104,6 +142,7 @@ def _feedback(target_id: str, case_input: dict, scores: list[dict], names: dict)
             details[name[: -len(DETAILS_SUFFIX)]] = score["value"]
         else:
             values[name] = score["value"]
+            ids[name] = score["score_id"]
     records = []
     for name, value in values.items():
         extra = details.get(name) if isinstance(details.get(name), dict) else {}
@@ -127,6 +166,7 @@ def _feedback(target_id: str, case_input: dict, scores: list[dict], names: dict)
         rubric = name.split(".panel-")[0]
         records.append(
             {
+                "id": ids[name],
                 "feedback_type": f"weave_agent_signals.{rubric}",
                 "weave_ref": target_id,
                 "payload": payload,
@@ -464,9 +504,9 @@ class CesClient:
         )
         return {r["case_id"]: r.get("scores") or [] for r in rows}
 
-    def session_scores(self, catalog: Catalog, trajectory_ids) -> dict[str, list[dict]]:
-        """Scores on session Trajectories. The route has no filter, so this pages every row."""
-        wanted = set(trajectory_ids)
+    def _session_targets(self, catalog: Catalog, wanted=None) -> list[tuple[str, dict, list]]:
+        """(Trajectory ID, session Case input, Score rows) for each session Trajectory, or only
+        the wanted ones. The route has no filter, so this pages every row."""
         try:
             rows = self._rows(
                 f"/evaluations/{catalog.sessions_evaluation_id}/trajectory-rows/search", {}
@@ -475,48 +515,26 @@ class CesClient:
             if error.response.status_code not in (404, 405):
                 raise
             # Workaround until the Trajectory-row route deploys; see ces_score_index.
-            return {
-                trajectory: [_score_row(self.get_score(score_id)) for score_id in newest.values()]
+            return [
+                (trajectory, {}, [_score_row(self.get_score(sid)) for sid in newest.values()])
                 for trajectory, newest in self._index.newest(wanted).items()
-            }
-        return {
-            r["trajectory"]["trajectory_id"]: r.get("scores") or []
-            for r in rows
-            if r["trajectory"]["trajectory_id"] in wanted
-        }
-
-    def read_all_scores(self, catalog: Catalog) -> list[dict]:
-        """Every turn and session Score, newest run first, as feedback-shaped records."""
-        turn_rows = self._rows(
-            f"/evaluations/{catalog.turns_evaluation_id}/rows/search",
-            {"filter": "i.step_index = 0"},
-        )
-        targets = [(r["case_id"], r["input"], r.get("scores") or []) for r in turn_rows]
-        try:
-            session_rows = self._rows(
-                f"/evaluations/{catalog.sessions_evaluation_id}/trajectory-rows/search", {}
+            ]
+        return [
+            (
+                r["trajectory"]["trajectory_id"],
+                (r.get("root_case") or {}).get("input") or {},
+                r.get("scores") or [],
             )
-            targets += [
-                (
-                    r["trajectory"]["trajectory_id"],
-                    (r.get("root_case") or {}).get("input") or {},
-                    r.get("scores") or [],
-                )
-                for r in session_rows
-                if not r["trajectory"].get("depth")
-            ]
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code not in (404, 405):
-                raise
-            # Workaround until the Trajectory-row route deploys; see ces_score_index.
-            targets += [
-                (
-                    trajectory,
-                    {},
-                    [_score_row(self.get_score(score_id)) for score_id in newest.values()],
-                )
-                for trajectory, newest in self._index.newest().items()
-            ]
+            for r in rows
+            if not r["trajectory"].get("depth")
+            and (wanted is None or r["trajectory"]["trajectory_id"] in wanted)
+        ]
+
+    def session_scores(self, catalog: Catalog, trajectory_ids) -> dict[str, list[dict]]:
+        """Score rows on session Trajectories, by Trajectory ID."""
+        return {t: scores for t, _, scores in self._session_targets(catalog, set(trajectory_ids))}
+
+    def _feedback_records(self, targets: list[tuple[str, dict, list]]) -> list[dict]:
         names: dict[tuple[str, str], str] = {}
         for _, _, scores in targets:
             for score in scores:
@@ -530,6 +548,26 @@ class CesClient:
             key=lambda r: r["payload"]["details"].get("turn_started_at") or "", reverse=True
         )
         return records
+
+    def read_all_scores(self, catalog: Catalog) -> list[dict]:
+        """Every turn and session Score, newest run first, as feedback-shaped records."""
+        turn_rows = self._rows(
+            f"/evaluations/{catalog.turns_evaluation_id}/rows/search",
+            {"filter": "i.step_index = 0"},
+        )
+        targets = [(r["case_id"], r["input"], r.get("scores") or []) for r in turn_rows]
+        return self._feedback_records(targets + self._session_targets(catalog))
+
+    def cohort_feedback(self, catalog: Catalog, session_ids: list[str]) -> list[dict]:
+        """The Scores on these sessions and their turns, as feedback-shaped records."""
+        targets = []
+        for sid in session_ids:
+            rows = self._rows(
+                f"/evaluations/{catalog.turns_evaluation_id}/rows/search",
+                {"filter": f'i.session_trajectory_id = "{sid}" AND i.step_index = 0'},
+            )
+            targets += [(r["case_id"], r["input"], r.get("scores") or []) for r in rows]
+        return self._feedback_records(targets + self._session_targets(catalog, set(session_ids)))
 
     def get_score(self, score_id: str) -> dict:
         return self._request("GET", f"/scores/{score_id}")
@@ -580,7 +618,7 @@ class CesClient:
             "POST",
             "/scores",
             body={"scores": body},
-            key=f"score-v1:{pass_id}:{target_kind}:{target_id}",
+            key=f"score-v2:{pass_id}:{target_kind}:{target_id}:{_digest({'scores': body})}",
         )
         if target_kind == "trajectory":
             self._index.record(

@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
+from weave_agent_signals.ces_catalog import Catalog, ScorerRef, judge_spec
 from weave_agent_signals.judges import runner
 from weave_agent_signals.judges.inference import InferenceCancelled
 from weave_agent_signals.judges.plan import build_canonical_judging_plan
@@ -114,7 +115,7 @@ def _setup(
     )
     effective = resolve_run_config(request, model_catalog=models, rubric_catalog=rubrics)
     cohort = {
-        "schema_version": 1,
+        "schema_version": 3,
         "pinned_at": now_iso(),
         "cohort_id": "cohort",
         "turn_count": 1 + len(extra_turns),
@@ -122,7 +123,7 @@ def _setup(
         "turns": [
             {
                 "trace_id": "turn-1",
-                "weave_ref": turn.ref_for(),
+                "case_ids": ["turn-1"],
                 "conversation_id": "session-1",
                 "started_at": turn.started_at.isoformat(),
                 "model": "agent",
@@ -131,7 +132,7 @@ def _setup(
             *[
                 {
                     "trace_id": extra.trace_id,
-                    "weave_ref": extra.ref_for(),
+                    "case_ids": [extra.trace_id],
                     "conversation_id": extra.conversation_id,
                     "started_at": extra.started_at.isoformat(),
                     "model": "agent",
@@ -141,17 +142,8 @@ def _setup(
             ],
         ],
         "sessions": [
-            {"conversation_id": "session-1", "weave_ref": session.ref_for(), "turn_count": 1},
-            *[
-                {
-                    "conversation_id": extra.conversation_id,
-                    "weave_ref": SessionView(
-                        extra.conversation_id, [extra], "cfg", "main"
-                    ).ref_for(),
-                    "turn_count": 1,
-                }
-                for extra in extra_turns
-            ],
+            {"conversation_id": "session-1", "turn_count": 1},
+            *[{"conversation_id": extra.conversation_id, "turn_count": 1} for extra in extra_turns],
         ],
     }
     created = store.create()
@@ -174,16 +166,19 @@ def now_iso() -> str:
     return datetime(2026, 7, 15, tzinfo=timezone.utc).isoformat()
 
 
-class _Weave:
-    entity = "weave-team"
-    project = "agent-sessions"
+CATALOG = Catalog("ev-turns", "ev-sessions", {})
 
-    def __init__(self, *, existing=None, fail_write_at=None, fail_delete=False):
+
+class _Ces:
+    """A CesSession stand-in that records each session's write request."""
+
+    def __init__(self, *, existing=None, fail_write_at=None):
         self.writes = []
         self.events = []
         self.existing = existing or {}
         self.fail_write_at = fail_write_at
-        self.fail_delete = fail_delete
+        self.client = self
+        self.catalog = CATALOG
 
     def __enter__(self):
         return self
@@ -191,19 +186,32 @@ class _Weave:
     def __exit__(self, *_args):
         return None
 
-    def query_existing_feedback_batch(self, _refs):
-        return self.existing
+    def add_scorers(self, catalog, specs):
+        refs = {
+            spec.name: ScorerRef(spec, f"sc-{spec.name}", "v", f"sc-{spec.name}.details", "v")
+            for spec in specs
+        }
+        return Catalog(
+            catalog.turns_evaluation_id, catalog.sessions_evaluation_id, {**catalog.scorers, **refs}
+        )
 
-    def write_score(self, score, ref):
-        self.events.append(("write", score.scorer))
-        if self.fail_write_at == len(self.writes) + 1:
+    def session_scores(self, catalog, trajectory_ids):
+        return {
+            sid: [{"scorer_id": f"sc-{name}"} for name in self.existing.get(sid, [])]
+            for sid in trajectory_ids
+        }
+
+    def write_scores(self, catalog, pass_id, kind, target_id, scores):
+        names = [score.scorer for score in scores]
+        self.events.append(("write", names))
+        if self.fail_write_at == len(self.events):
             raise RuntimeError("write failed")
-        self.writes.append((score, ref))
+        self.writes.append((pass_id, kind, target_id, names))
+        return []
 
-    def delete_feedback_ids(self, rows):
-        self.events.append(("delete", rows))
-        if self.fail_delete:
-            raise RuntimeError("delete failed")
+
+def _panel(rubric_id: str) -> str:
+    return judge_spec(rubric_id, _scores_for((rubric_id,))[0].metadata).name
 
 
 class _ActivityChat:
@@ -220,7 +228,7 @@ class _ActivityChat:
 
 def test_stage_persists_calls_buffers_scores_and_writes_only_session_refs(store, monkeypatch):
     run, effective, turn, session = _setup(store)
-    weave = _Weave()
+    ces = _Ces()
 
     def fake_judge(_session, _client, **kwargs):
         call = _judge_call()
@@ -232,6 +240,7 @@ def test_stage_persists_calls_buffers_scores_and_writes_only_session_refs(store,
                 0.75,
                 ["good_outcome"],
                 {
+                    "review_status": "complete",
                     "attempts": [],
                     "behavioral_feedback": [
                         {"success": "done", "problem": None, "desired_behavior": None}
@@ -245,16 +254,17 @@ def test_stage_persists_calls_buffers_scores_and_writes_only_session_refs(store,
     monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", fake_judge)
     dependencies = JudgingDependencies(
         store,
-        lambda: weave,
+        lambda: ces,
         lambda _judge: context(None),
         lambda _cohort: ([turn], {"session-1": session}),
     )
     run_judging_stage(run, effective, threading.Event(), dependencies=dependencies)
     current = store.get(run.run_id)
     assert current is not None and store.list_judge_calls(run.run_id) == [_judge_call()]
-    assert len(weave.writes) == 1
-    assert "/agent_conversation/" in weave.writes[0][1]
-    assert "/agent_turn/" not in weave.writes[0][1]
+    assert [(pass_id, kind, target) for pass_id, kind, target, _ in ces.writes] == [
+        (run.run_id, "trajectory", "session-1")
+    ]
+    assert ces.writes[0][3][0].startswith("judge.session_outcome.panel-")
     assert current.judging_result["coverage_complete"] is True
 
 
@@ -311,7 +321,7 @@ def test_stage_persists_safe_semantic_and_transport_activity(store, monkeypatch)
     monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", fake_judge)
     deps = JudgingDependencies(
         store,
-        _Weave,
+        _Ces,
         lambda _judge: context(chat),
         lambda _: ([turn], {"session-1": session}),
     )
@@ -353,7 +363,7 @@ def context(value):
 
 def test_stage_does_not_write_partial_scores_when_any_session_rubric_fails(store, monkeypatch):
     run, effective, turn, session = _setup(store)
-    weave = _Weave()
+    ces = _Ces()
     failure = runner.JudgeFailure("judge.session_outcome", "offline", "ReviewFailed", ())
 
     def fail(*_args, **_kwargs):
@@ -362,13 +372,13 @@ def test_stage_does_not_write_partial_scores_when_any_session_rubric_fails(store
     monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", fail)
     deps = JudgingDependencies(
         store,
-        lambda: weave,
+        lambda: ces,
         lambda _judge: context(None),
         lambda _cohort: ([turn], {"session-1": session}),
     )
     with pytest.raises(runner.JudgeExecutionError):
         run_judging_stage(run, effective, threading.Event(), dependencies=deps)
-    assert weave.writes == []
+    assert ces.writes == []
 
 
 def test_stage_preserves_successful_reviewer_count_for_failed_panel(store, monkeypatch):
@@ -397,7 +407,7 @@ def test_stage_preserves_successful_reviewer_count_for_failed_panel(store, monke
     monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", fail)
     deps = JudgingDependencies(
         store,
-        _Weave,
+        _Ces,
         lambda _judge: context(None),
         lambda _cohort: ([turn], {"session-1": session}),
     )
@@ -435,7 +445,7 @@ def test_stage_stops_remaining_sessions_after_first_review_failure(store, monkey
     monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", fail)
     deps = JudgingDependencies(
         store,
-        _Weave,
+        _Ces,
         lambda _judge: context(None),
         lambda _cohort: (
             [turn, second_turn],
@@ -451,7 +461,7 @@ def test_stage_stops_remaining_sessions_after_first_review_failure(store, monkey
 
 def test_stage_completes_unanimous_abstention_without_writing_feedback(store, monkeypatch):
     run, effective, turn, session = _setup(store)
-    weave = _Weave()
+    ces = _Ces()
     outcome = runner.JudgeNotEvaluable("judge.session_outcome", ())
 
     def abstain(*_args, **_kwargs):
@@ -460,7 +470,7 @@ def test_stage_completes_unanimous_abstention_without_writing_feedback(store, mo
     monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", abstain)
     deps = JudgingDependencies(
         store,
-        lambda: weave,
+        lambda: ces,
         lambda _judge: context(None),
         lambda _cohort: ([turn], {"session-1": session}),
     )
@@ -471,7 +481,7 @@ def test_stage_completes_unanimous_abstention_without_writing_feedback(store, mo
     assert result["not_evaluable_rubrics"] == 1
     assert result["failure_count"] == 0
     assert result["coverage_complete"] is True
-    assert weave.writes == []
+    assert ces.writes == []
 
 
 def test_stage_with_no_applicable_reviewers_avoids_chat_and_judge_feedback(store, monkeypatch):
@@ -483,10 +493,10 @@ def test_stage_with_no_applicable_reviewers_avoids_chat_and_judge_feedback(store
 
     monkeypatch.setattr("weave_agent_signals.judges.plan.build_window_plan", inapplicable)
     chat_factory = Mock(side_effect=AssertionError("chat backend must not be created"))
-    weave = _Weave()
+    ces = _Ces()
     deps = JudgingDependencies(
         store,
-        lambda: weave,
+        lambda: ces,
         chat_factory,
         lambda _cohort: ([turn], {"session-1": session}),
     )
@@ -497,18 +507,26 @@ def test_stage_with_no_applicable_reviewers_avoids_chat_and_judge_feedback(store
     assert result["not_evaluable_rubrics"] == 1
     assert result["reviewer_attempts_completed"] == 0
     assert result["attempt_summaries"][0]["attempts"][0]["status"] == "skipped"
-    assert weave.writes == []
+    assert ces.writes == []
 
 
 def test_stage_passes_exact_pinned_plan_and_context_to_runner(store, monkeypatch):
     run, effective, turn, session = _setup(store)
     captured = Mock(
-        return_value=[Score("judge.session_outcome", 0.75, [], {"attempts": []}, "session")]
+        return_value=[
+            Score(
+                "judge.session_outcome",
+                0.75,
+                [],
+                {"review_status": "complete", "attempts": []},
+                "session",
+            )
+        ]
     )
     monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", captured)
     deps = JudgingDependencies(
         store,
-        _Weave,
+        _Ces,
         lambda _judge: context(None),
         lambda _cohort: ([turn], {"session-1": session}),
     )
@@ -531,7 +549,7 @@ def test_stage_persists_unique_call_progress_before_mid_session_cancellation(sto
     monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", cancel_after_call)
     deps = JudgingDependencies(
         store,
-        _Weave,
+        _Ces,
         lambda _judge: context(None),
         lambda _cohort: ([turn], {"session-1": session}),
     )
@@ -548,7 +566,7 @@ def test_stage_honors_cancellation_before_inference(store):
     cancel.set()
     deps = JudgingDependencies(
         store,
-        _Weave,
+        _Ces,
         lambda _judge: context(None),
         lambda _cohort: ([turn], {"session-1": session}),
     )
@@ -559,7 +577,7 @@ def test_stage_honors_cancellation_before_inference(store):
 def test_stage_cancellation_after_inference_blocks_external_writes(store, monkeypatch):
     run, effective, turn, session = _setup(store)
     cancel = threading.Event()
-    weave = _Weave()
+    ces = _Ces()
 
     def finish_then_cancel(*_args, **_kwargs):
         cancel.set()
@@ -568,18 +586,18 @@ def test_stage_cancellation_after_inference_blocks_external_writes(store, monkey
     monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", finish_then_cancel)
     deps = JudgingDependencies(
         store,
-        lambda: weave,
+        lambda: ces,
         lambda _judge: context(None),
         lambda _: ([turn], {"session-1": session}),
     )
     with pytest.raises(StageCancelled):
         run_judging_stage(run, effective, cancel, dependencies=deps)
-    assert weave.writes == []
+    assert ces.writes == []
 
 
 def test_durable_cancellation_race_at_write_barrier_becomes_stage_cancelled(store, monkeypatch):
     run, effective, turn, session = _setup(store)
-    weave = _Weave()
+    ces = _Ces()
     monkeypatch.setattr(
         "weave_agent_signals.runs.stages.judging.judge_session",
         lambda *_args, **_kwargs: _scores_for(("judge.session_outcome",)),
@@ -593,7 +611,7 @@ def test_durable_cancellation_race_at_write_barrier_becomes_stage_cancelled(stor
     monkeypatch.setattr(store, "external_write_barrier", cancel_then_barrier)
     deps = JudgingDependencies(
         store,
-        lambda: weave,
+        lambda: ces,
         lambda _judge: context(None),
         lambda _: ([turn], {"session-1": session}),
     )
@@ -602,95 +620,116 @@ def test_durable_cancellation_race_at_write_barrier_becomes_stage_cancelled(stor
     current = store.get(run.run_id)
     assert current.status is RunStatus.CANCELLED
     assert current.judging_result is None
-    assert weave.writes == []
+    assert ces.writes == []
 
 
 def _scores_for(rubric_ids: tuple[str, ...]) -> list[Score]:
-    return [Score(rubric_id, 0.75, [], {"attempts": []}, "session") for rubric_id in rubric_ids]
-
-
-def test_force_writes_new_score_before_deleting_prior_feedback(store, monkeypatch):
-    run, effective, turn, session = _setup(store, force=True)
-    ref = session.ref_for("weave-team", "agent-sessions")
-    feedback_type = "weave_agent_signals.judge.session_outcome"
-    weave = _Weave(existing={(ref, feedback_type): [{"id": "old"}]})
-    monkeypatch.setattr(
-        "weave_agent_signals.runs.stages.judging.judge_session",
-        lambda *_args, **_kwargs: _scores_for(("judge.session_outcome",)),
-    )
-    deps = JudgingDependencies(
-        store,
-        lambda: weave,
-        lambda _judge: context(None),
-        lambda _: ([turn], {"session-1": session}),
-    )
-    run_judging_stage(run, effective, threading.Event(), dependencies=deps)
-    assert weave.events == [
-        ("write", "judge.session_outcome"),
-        ("delete", [{"id": "old"}]),
+    return [
+        Score(rubric_id, 0.75, [], {"review_status": "complete", "attempts": []}, "session")
+        for rubric_id in rubric_ids
     ]
 
 
-def test_force_create_failure_preserves_prior_feedback(store, monkeypatch):
-    run, effective, turn, session = _setup(store, force=True)
-    ref = session.ref_for("weave-team", "agent-sessions")
-    feedback_type = "weave_agent_signals.judge.session_outcome"
-    weave = _Weave(existing={(ref, feedback_type): [{"id": "old"}]}, fail_write_at=1)
+def _deps(store, ces, turns, sessions):
+    return JudgingDependencies(
+        store,
+        lambda: ces,
+        lambda _judge: context(None),
+        lambda _: (turns, sessions),
+    )
+
+
+def test_an_existing_panel_score_is_skipped_unless_forced(store, monkeypatch):
     monkeypatch.setattr(
         "weave_agent_signals.runs.stages.judging.judge_session",
         lambda *_args, **_kwargs: _scores_for(("judge.session_outcome",)),
     )
-    deps = JudgingDependencies(
-        store,
-        lambda: weave,
-        lambda _judge: context(None),
-        lambda _: ([turn], {"session-1": session}),
+    existing = {"session-1": [_panel("judge.session_outcome")]}
+
+    run, effective, turn, session = _setup(store)
+    ces = _Ces(existing=existing)
+    run_judging_stage(
+        run,
+        effective,
+        threading.Event(),
+        dependencies=_deps(store, ces, [turn], {"session-1": session}),
     )
-    with pytest.raises(RuntimeError, match="write incomplete"):
-        run_judging_stage(run, effective, threading.Event(), dependencies=deps)
-    assert weave.events == [("write", "judge.session_outcome")]
+    assert ces.events == []
 
-
-def test_force_cleanup_failure_reports_incomplete_after_new_score_exists(store, monkeypatch):
     run, effective, turn, session = _setup(store, force=True)
-    ref = session.ref_for("weave-team", "agent-sessions")
-    feedback_type = "weave_agent_signals.judge.session_outcome"
-    weave = _Weave(existing={(ref, feedback_type): [{"id": "old"}]}, fail_delete=True)
+    ces = _Ces(existing=existing)
+    run_judging_stage(
+        run,
+        effective,
+        threading.Event(),
+        dependencies=_deps(store, ces, [turn], {"session-1": session}),
+    )
+    assert ces.events == [("write", [_panel("judge.session_outcome")])]
+
+
+def test_an_unfinished_review_writes_no_score(store, monkeypatch):
+    run, effective, turn, session = _setup(store)
+    degraded = _scores_for(("judge.session_outcome",))
+    degraded[0].metadata["review_status"] = "degraded"
+    monkeypatch.setattr(
+        "weave_agent_signals.runs.stages.judging.judge_session",
+        lambda *_args, **_kwargs: degraded,
+    )
+    ces = _Ces()
+
+    run_judging_stage(
+        run,
+        effective,
+        threading.Event(),
+        dependencies=_deps(store, ces, [turn], {"session-1": session}),
+    )
+
+    assert ces.events == []
+
+
+def test_force_write_failure_reports_incomplete(store, monkeypatch):
+    run, effective, turn, session = _setup(store, force=True)
+    ces = _Ces(fail_write_at=1)
     monkeypatch.setattr(
         "weave_agent_signals.runs.stages.judging.judge_session",
         lambda *_args, **_kwargs: _scores_for(("judge.session_outcome",)),
     )
-    deps = JudgingDependencies(
-        store,
-        lambda: weave,
-        lambda _judge: context(None),
-        lambda _: ([turn], {"session-1": session}),
-    )
+
     with pytest.raises(RuntimeError, match="write incomplete"):
-        run_judging_stage(run, effective, threading.Event(), dependencies=deps)
-    assert len(weave.writes) == 1
-    assert [event[0] for event in weave.events] == ["write", "delete"]
+        run_judging_stage(
+            run,
+            effective,
+            threading.Event(),
+            dependencies=_deps(store, ces, [turn], {"session-1": session}),
+        )
+
+    assert ces.events == [("write", [_panel("judge.session_outcome")])]
+    assert ces.writes == []
 
 
-def test_partial_write_failure_reports_incomplete_after_attempting_all_scores(store, monkeypatch):
-    rubric_ids = ("judge.session_outcome", "judge.session_autonomy")
-    run, effective, turn, session = _setup(store, rubric_ids=rubric_ids)
-    weave = _Weave(fail_write_at=2)
+def test_partial_write_failure_reports_incomplete_after_attempting_every_session(
+    store, monkeypatch
+):
+    run, effective, turn, session = _setup(store, extra_session_ids=("session-2",))
+    extra = replace(turn, trace_id="turn-2", conversation_id="session-2", session_id="sid-2")
+    sessions = {"session-1": session, "session-2": SessionView("session-2", [extra], "cfg", "main")}
+    ces = _Ces(fail_write_at=1)
     monkeypatch.setattr(
         "weave_agent_signals.runs.stages.judging.judge_session",
-        lambda *_args, **_kwargs: _scores_for(rubric_ids),
+        lambda *_args, **_kwargs: _scores_for(("judge.session_outcome",)),
     )
-    deps = JudgingDependencies(
-        store,
-        lambda: weave,
-        lambda _judge: context(None),
-        lambda _: ([turn], {"session-1": session}),
-    )
+
     with pytest.raises(RuntimeError, match="write incomplete"):
-        run_judging_stage(run, effective, threading.Event(), dependencies=deps)
+        run_judging_stage(
+            run,
+            effective,
+            threading.Event(),
+            dependencies=_deps(store, ces, [turn, extra], sessions),
+        )
+
     current = store.get(run.run_id)
     assert current.judging_result["write_failure_count"] == 1
-    assert len(weave.writes) == 1
+    assert [target for _, _, target, _ in ces.writes] == ["session-2"]
 
 
 def test_resumed_call_progress_is_reconstructed_and_not_double_counted(store, monkeypatch):
@@ -710,9 +749,10 @@ def test_resumed_call_progress_is_reconstructed_and_not_double_counted(store, mo
         0.75,
         [],
         {
+            "review_status": "complete",
             "attempts": [
                 {"steps": [{"phase": "digest", "artifact_id": call.request_id, "reused": True}]}
-            ]
+            ],
         },
         "session",
     )
@@ -722,7 +762,7 @@ def test_resumed_call_progress_is_reconstructed_and_not_double_counted(store, mo
     )
     deps = JudgingDependencies(
         store,
-        _Weave,
+        _Ces,
         lambda _judge: context(None),
         lambda _: ([turn], {"session-1": session}),
     )
@@ -745,7 +785,7 @@ def test_failure_and_attempt_summaries_are_bounded(store, monkeypatch):
     monkeypatch.setattr("weave_agent_signals.runs.stages.judging.judge_session", fail)
     deps = JudgingDependencies(
         store,
-        _Weave,
+        _Ces,
         lambda _judge: context(None),
         lambda _: ([turn], {"session-1": session}),
     )

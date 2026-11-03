@@ -159,7 +159,7 @@ def route_context(tmp_path):
             "turns": [
                 {
                     "trace_id": "trace-1",
-                    "weave_ref": ("weave:///weave-team/agent-sessions/agent_turn/trace-1"),
+                    "case_ids": ["trace-1"],
                     "conversation_id": conversation_id,
                     "started_at": "2026-07-14T11:00:00+00:00",
                     "model": None,
@@ -169,9 +169,6 @@ def route_context(tmp_path):
             "sessions": [
                 {
                     "conversation_id": conversation_id,
-                    "weave_ref": (
-                        f"weave:///weave-team/agent-sessions/agent_conversation/{conversation_id}"
-                    ),
                     "turn_count": 1,
                 }
             ],

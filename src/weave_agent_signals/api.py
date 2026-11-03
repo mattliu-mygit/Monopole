@@ -125,7 +125,7 @@ def _build_default_dependencies(
 
     scoring_dependencies = ScoringDependencies(
         store=store,
-        client_factory=client_factory,
+        ces_factory=ces_factory,
         hydrate_cohort=hydrate,
     )
 
@@ -152,7 +152,7 @@ def _build_default_dependencies(
             cancel,
             dependencies=JudgingDependencies(
                 store=store,
-                client_factory=client_factory,
+                ces_factory=ces_factory,
                 chat_client_factory=lambda judge: _chat_client(
                     judge.provider,
                     entity=entity,
@@ -179,7 +179,7 @@ def _build_default_dependencies(
     runtime = load_sandbox_runtime(sandbox_runtime)
     reflection_dependencies = ReflectionDependencies(
         store=store,
-        client_factory=client_factory,
+        ces_factory=ces_factory,
         adapter_factory=lambda: TargetPromoter(registry),
         writer_client_factory=model_client,
         evaluator_client_factory=model_client,

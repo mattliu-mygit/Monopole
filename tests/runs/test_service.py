@@ -127,7 +127,7 @@ def _cohort() -> dict:
         "turns": [
             {
                 "trace_id": "trace-1",
-                "weave_ref": "weave:///weave-team/agent-sessions/agent_turn/trace-1",
+                "case_ids": ["trace-1"],
                 "conversation_id": "session-1",
                 "started_at": "2026-07-14T11:00:00+00:00",
                 "model": "claude-sonnet-5",
@@ -137,7 +137,6 @@ def _cohort() -> dict:
         "sessions": [
             {
                 "conversation_id": "session-1",
-                "weave_ref": ("weave:///weave-team/agent-sessions/agent_conversation/session-1"),
                 "turn_count": 1,
             }
         ],
@@ -530,17 +529,22 @@ def test_reflection_stage_failure_exposes_only_safe_error_through_run_service(st
     baseline = bundle_from_content_map({"AGENTS.md": "old"}, scope=scope)
 
     class FeedbackClient:
+        catalog = None
+
+        def __init__(self):
+            self.client = self
+
         def __enter__(self):
             return self
 
         def __exit__(self, *_args):
             return None
 
-        def query_feedback_for_refs(self, _refs):
+        def cohort_feedback(self, _catalog, _session_ids):
             return [
                 {
                     "id": "feedback-1",
-                    "weave_ref": _cohort()["turns"][0]["weave_ref"],
+                    "weave_ref": _cohort()["turns"][0]["trace_id"],
                     "feedback_type": "weave_agent_signals.outcome.test",
                     "payload": {"rating": 0.2, "details": {}},
                 }
@@ -562,7 +566,7 @@ def test_reflection_stage_failure_exposes_only_safe_error_through_run_service(st
 
     dependencies = ReflectionDependencies(
         store=store,
-        client_factory=FeedbackClient,
+        ces_factory=FeedbackClient,
         adapter_factory=Adapter,
         writer_client_factory=lambda _descriptor: nullcontext(object()),
         evaluator_client_factory=lambda _descriptor: nullcontext(object()),

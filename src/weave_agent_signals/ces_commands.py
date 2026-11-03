@@ -13,11 +13,10 @@ import logging
 import os
 import uuid
 from collections import Counter
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
-from weave_agent_signals.ces_catalog import Catalog, judge_spec
-from weave_agent_signals.ces_client import CesClient, CesSession
+from weave_agent_signals.ces_catalog import Catalog
+from weave_agent_signals.ces_client import CesClient, CesSession, plan_judge_writes
 from weave_agent_signals.models import Score, SessionView, session_is_evaluable
 from weave_agent_signals.scorers import score_session, score_turn
 from weave_agent_signals.scorers.outcome import classify_command
@@ -99,15 +98,6 @@ class _Stats:
         self.tags: list[str] = []
 
 
-def _scored_names(catalog: Catalog, rows: list[dict]) -> set[str]:
-    names = catalog.by_scorer_id()
-    return {
-        names[r["scorer_id"]][0]
-        for r in rows
-        if r["scorer_id"] in names and not names[r["scorer_id"]][1]
-    }
-
-
 def _write(
     client, catalog, pass_id, kind, target, scores: list[Score], have: set[str], force, stats
 ) -> None:
@@ -149,7 +139,7 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
                         git_branch=turn.git_branch,
                         run_time=turn.started_at,
                     )
-                have = _scored_names(catalog, have_turns.get(turn.trace_id, []))
+                have = catalog.scored(have_turns.get(turn.trace_id, []))
                 _write(client, catalog, pass_id, "case", turn.trace_id, scores, have, force, stats)
             except Exception as error:
                 stats.errors += 1
@@ -166,7 +156,7 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
             have = (
                 set()
                 if force
-                else _scored_names(catalog, client.session_scores(catalog, [sid]).get(sid, []))
+                else catalog.scored(client.session_scores(catalog, [sid]).get(sid, []))
             )
             _write(client, catalog, pass_id, "trajectory", sid, scores, have, force, stats)
             stats.sessions += 1
@@ -312,27 +302,12 @@ def sessions_to_judge(
 
 
 def write_judge_scores(client, catalog: Catalog, pending: list, *, force: bool) -> int:
-    """Write each finished review's Score under its panel's Scorer. Returns the count written.
-
-    A degraded or failed review writes nothing: its partial results stay in the judge call
-    records, and the session keeps the Scores of its last finished review."""
-    by_session: dict[str, list[Score]] = {}
-    specs = {}
-    for score, session in pending:
-        if score.metadata.get("review_status") != "complete":
-            continue
-        spec = judge_spec(score.scorer, score.metadata)
-        specs[spec.name] = spec
-        by_session.setdefault(session.conversation_id, []).append(replace(score, scorer=spec.name))
-    if not by_session:
-        return 0
-    catalog = client.add_scorers(catalog, tuple(specs.values()))
-    existing = {} if force else client.session_scores(catalog, list(by_session))
-    pass_id, stats = str(uuid.uuid4()), _Stats()
-    for sid, scores in by_session.items():
-        have = _scored_names(catalog, existing.get(sid, []))
-        _write(client, catalog, pass_id, "trajectory", sid, scores, have, force, stats)
-    return stats.written
+    """Write each finished review's Score under its panel's Scorer. Returns the count written."""
+    catalog, writes = plan_judge_writes(client, catalog, pending, force=force)
+    pass_id = str(uuid.uuid4())
+    for sid, scores in writes.items():
+        client.write_scores(catalog, pass_id, "trajectory", sid, scores)
+    return sum(map(len, writes.values()))
 
 
 def read_feedback(args: argparse.Namespace) -> list[dict]:

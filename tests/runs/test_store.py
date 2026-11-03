@@ -79,7 +79,7 @@ def _turn_cohort(*trace_ids: str) -> dict:
     turns = [
         {
             "trace_id": trace_id,
-            "weave_ref": f"weave:///weave-team/agent-sessions/agent_turn/{trace_id}",
+            "case_ids": [trace_id],
             "conversation_id": "conv-1",
             "started_at": f"2026-07-{position:02d}T12:00:00+00:00",
             "model": None,
@@ -97,7 +97,6 @@ def _turn_cohort(*trace_ids: str) -> dict:
         "sessions": [
             {
                 "conversation_id": "conv-1",
-                "weave_ref": "weave:///weave-team/agent-sessions/agent_conversation/conv-1",
                 "turn_count": len(turns),
             }
         ],
