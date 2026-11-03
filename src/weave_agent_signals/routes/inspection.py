@@ -32,7 +32,7 @@ _SIGNAL_THRESHOLD = 0.5
 def _by_target(records: list[dict]) -> dict[str, list[dict]]:
     grouped: dict[str, list[dict]] = {}
     for record in records:
-        grouped.setdefault(record["weave_ref"], []).append(record)
+        grouped.setdefault(record["target_id"], []).append(record)
     return grouped
 
 

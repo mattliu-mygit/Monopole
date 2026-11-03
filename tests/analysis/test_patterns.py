@@ -36,7 +36,7 @@ def _fb(
             },
             "granularity": "turn",
         },
-        "weave_ref": f"weave:///e/p/agent_turn/{conversation_id}",
+        "target_id": f"weave:///e/p/agent_turn/{conversation_id}",
     }
 
 

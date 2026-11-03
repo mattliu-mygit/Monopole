@@ -238,12 +238,12 @@ def _record_result(
 
 def _feedback_identity(feedback: Mapping[str, Any]) -> dict[str, Any]:
     feedback_id = feedback.get("id")
-    weave_ref = feedback.get("weave_ref")
+    target_id = feedback.get("target_id")
     feedback_type = feedback.get("feedback_type")
     if not all(
-        isinstance(value, str) and value for value in (feedback_id, weave_ref, feedback_type)
+        isinstance(value, str) and value for value in (feedback_id, target_id, feedback_type)
     ):
-        raise ValueError("Reflection feedback requires id, weave_ref, and feedback_type")
+        raise ValueError("Reflection feedback requires id, target_id, and feedback_type")
     canonical = json.dumps(
         dict(feedback),
         sort_keys=True,
@@ -252,7 +252,7 @@ def _feedback_identity(feedback: Mapping[str, Any]) -> dict[str, Any]:
     )
     return {
         "id": feedback_id,
-        "weave_ref": weave_ref,
+        "target_id": target_id,
         "feedback_type": feedback_type,
         "digest": f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}",
     }
@@ -287,12 +287,12 @@ def _selected_feedback(
     selected = [
         item
         for item in records
-        if item.get("weave_ref") in valid_refs and is_evaluation_feedback_eligible(item)
+        if item.get("target_id") in valid_refs and is_evaluation_feedback_eligible(item)
     ]
     identified = [(item, _feedback_identity(item)) for item in selected]
     identified.sort(
         key=lambda pair: (
-            pair[1]["weave_ref"],
+            pair[1]["target_id"],
             pair[1]["feedback_type"],
             pair[1]["id"],
             pair[1]["digest"],

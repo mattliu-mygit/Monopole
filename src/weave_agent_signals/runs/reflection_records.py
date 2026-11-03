@@ -48,7 +48,7 @@ def _usage(value: dict[str, int]) -> dict[str, int]:
 
 class FeedbackIdentity(_Record):
     id: str = Field(min_length=1)
-    weave_ref: str = Field(min_length=1)
+    target_id: str = Field(min_length=1)
     feedback_type: str = Field(min_length=1)
     digest: str
 

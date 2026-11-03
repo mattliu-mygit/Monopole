@@ -504,7 +504,7 @@ def test_read_all_scores_turns_ces_rows_into_feedback_records(tmp_path):
 
     judge, turn = client.read_all_scores(catalog)
 
-    assert (turn["feedback_type"], turn["weave_ref"], turn["payload"]["rating"]) == (
+    assert (turn["feedback_type"], turn["target_id"], turn["payload"]["rating"]) == (
         "weave_agent_signals.efficiency",
         "c1",
         0.9,
@@ -514,7 +514,7 @@ def test_read_all_scores_turns_ces_rows_into_feedback_records(tmp_path):
         "cfg1",
     )
     assert turn["payload"]["details"]["turn_started_at"] == "2026-11-02T10:00:00.000Z"
-    assert (judge["feedback_type"], judge["weave_ref"]) == (
+    assert (judge["feedback_type"], judge["target_id"]) == (
         "weave_agent_signals.judge.tool_choice",
         "s1",
     )

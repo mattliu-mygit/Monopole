@@ -162,7 +162,7 @@ def test_epoch9_reflection_input_discards_verified_redundant_counts() -> None:
         "feedback": [
             {
                 "id": "feedback-1",
-                "weave_ref": "weave:///trace-1",
+                "target_id": "weave:///trace-1",
                 "feedback_type": "weave_agent_signals.correctness",
                 "digest": "sha256:" + "a" * 64,
             }

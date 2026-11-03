@@ -145,7 +145,7 @@ def _reflecting_run(
 def _feedback() -> dict[str, Any]:
     return {
         "id": "feedback-1",
-        "weave_ref": "turn-1",
+        "target_id": "turn-1",
         "feedback_type": "weave_agent_signals.outcome.test",
         "payload": {"rating": 0.3, "details": {"rationale": "No tests."}},
     }
@@ -153,7 +153,7 @@ def _feedback() -> dict[str, Any]:
 
 def _session_feedback() -> dict[str, Any]:
     feedback = _feedback()
-    feedback["weave_ref"] = "conv-1"
+    feedback["target_id"] = "conv-1"
     feedback["feedback_type"] = "weave_agent_signals.judge.verification"
     feedback["payload"] = {
         "rating": 0.3,
@@ -475,7 +475,7 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
     weave = CesFeedback(
         [
             _session_feedback(),
-            {**_session_feedback(), "id": "ignored", "weave_ref": "other"},
+            {**_session_feedback(), "id": "ignored", "target_id": "other"},
             {
                 **_session_feedback(),
                 "id": "foreign",
@@ -555,7 +555,7 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
     feedback_identity = updated.reflection_input.feedback[0].model_dump(mode="json")
     assert feedback_identity == {
         "id": "feedback-1",
-        "weave_ref": "conv-1",
+        "target_id": "conv-1",
         "feedback_type": "weave_agent_signals.judge.verification",
         "digest": feedback_identity["digest"],
     }

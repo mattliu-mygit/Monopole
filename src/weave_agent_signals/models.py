@@ -1,13 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, Union
-from urllib.parse import quote
-
-ENTITY = "weave-team"
-PROJECT = "agent-sessions"
 
 # Prefix for every feedback type this system writes: weave_agent_signals.<scorer>
 FEEDBACK_PREFIX = "weave_agent_signals."
@@ -108,9 +104,6 @@ class TurnSpan:
     trace_role: TraceRole = TraceRole.AGENT_SESSION
     case_ids: list[str] = field(default_factory=list)  # CES: the turn's member Cases, in step order
 
-    def ref_for(self, entity: str = ENTITY, project: str = PROJECT) -> str:
-        return f"weave:///{entity}/{project}/agent_turn/{self.trace_id}"
-
 
 def session_is_evaluable(turns: list[TurnSpan]) -> bool:
     return bool(turns) and all(turn.trace_role is TraceRole.AGENT_SESSION for turn in turns)
@@ -136,10 +129,6 @@ class SessionView:
     config_version: str | None
     git_branch: str | None
 
-    def ref_for(self, entity: str = ENTITY, project: str = PROJECT) -> str:
-        encoded_id = quote(self.conversation_id, safe="")
-        return f"weave:///{entity}/{project}/agent_conversation/{encoded_id}"
-
     @property
     def total_tokens(self) -> int:
         return sum(t.input_tokens + t.output_tokens for t in self.turns)
@@ -160,23 +149,3 @@ class Score:
         self.metadata.setdefault("git_branch", git_branch)
         if run_time is not None:
             self.metadata.setdefault("turn_started_at", run_time.isoformat())
-
-    def to_feedback_payload(self, ref: str, project_id: str) -> dict[str, Any]:
-        rating = float(self.value) if isinstance(self.value, bool) else self.value
-        payload = {
-            "scorer_version": "v1",
-            "scored_at": datetime.now(timezone.utc).isoformat(),
-            "rating": rating,
-            "tags": self.tags,
-            "reason": self.reason,
-            "granularity": self.granularity,
-            "details": self.metadata,
-        }
-        if self.confidence is not None:
-            payload["confidence"] = self.confidence
-        return {
-            "project_id": project_id,
-            "weave_ref": ref,
-            "feedback_type": f"{FEEDBACK_PREFIX}{self.scorer}",
-            "payload": payload,
-        }

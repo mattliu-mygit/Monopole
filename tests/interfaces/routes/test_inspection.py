@@ -54,7 +54,7 @@ def _record(target: str, scorer: str, rating: float, reason: str = "") -> dict:
     return {
         "id": f"score-{target}-{scorer}",
         "feedback_type": f"weave_agent_signals.{scorer}",
-        "weave_ref": target,
+        "target_id": target,
         "payload": {"rating": rating, "reason": reason, "scorer_version": "v1", "tags": []},
     }
 
@@ -112,7 +112,7 @@ class FakeCes:
         targets = set(session_ids) | {
             turn.trace_id for turn in self.turns if turn.conversation_id in session_ids
         }
-        return [record for record in self.feedback if record["weave_ref"] in targets]
+        return [record for record in self.feedback if record["target_id"] in targets]
 
     def read_all_scores(self, _catalog):
         return list(self.all_scores)

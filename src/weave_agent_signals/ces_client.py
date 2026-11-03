@@ -168,7 +168,7 @@ def _feedback(target_id: str, case_input: dict, scores: list[dict], names: dict)
             {
                 "id": ids[name],
                 "feedback_type": f"weave_agent_signals.{rubric}",
-                "weave_ref": target_id,
+                "target_id": target_id,
                 "payload": payload,
             }
         )

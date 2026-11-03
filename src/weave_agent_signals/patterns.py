@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from itertools import islice
 from typing import Any, Mapping
-from urllib.parse import unquote
 
 from weave_agent_signals.judges.review import PANEL_CONTRACT_VERSION
 from weave_agent_signals.models import FEEDBACK_PREFIX
@@ -317,7 +316,7 @@ def ab_leaderboard(feedback: list[dict]) -> list[ABResult]:
     results = []
     for config, config_feedback in sorted(by_config.items()):
         scores = aggregate_scores(config_feedback)
-        refs = {fb.get("weave_ref") for fb in config_feedback} - {None, ""}
+        refs = {fb.get("target_id") for fb in config_feedback} - {None, ""}
         results.append(
             ABResult(
                 config_version=config,
@@ -501,11 +500,10 @@ def _bounded_text(value: object, limit: int) -> str | None:
 
 
 def _session_id(feedback: dict) -> str:
-    weave_ref = feedback.get("weave_ref")
-    if not isinstance(weave_ref, str):
+    target_id = feedback.get("target_id")
+    if not isinstance(target_id, str):
         return "unknown"
-    identifier = unquote(weave_ref.rstrip("/").rsplit("/", 1)[-1])
-    return _bounded_text(identifier.replace("`", "'"), _MAX_ID_CHARS) or "unknown"
+    return _bounded_text(target_id.replace("`", "'"), _MAX_ID_CHARS) or "unknown"
 
 
 def _bounded_id(value: object) -> str | None:
