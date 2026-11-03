@@ -27,11 +27,14 @@ export class ApiError extends Error {
 
   constructor(status: number, body: string, detail: unknown) {
     const message =
-      detail && typeof detail === 'object' && 'message' in detail &&
-      typeof detail.message === 'string'
-        ? detail.message
-        : body
-    super(`API ${status}: ${message}`)
+      typeof detail === 'string' && detail !== body
+        ? detail
+        : detail && typeof detail === 'object' && 'message' in detail &&
+            typeof detail.message === 'string'
+          ? detail.message
+          : body
+    // An upstream error page can be long HTML; the banner needs only its start.
+    super(`API ${status}: ${message.slice(0, 300)}`)
     this.name = 'ApiError'
     this.status = status
     this.detail = detail

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  ApiError,
   advanceRun,
   createRun,
   deleteRun,
@@ -307,5 +308,16 @@ describe('run API request contracts', () => {
         contents,
       }),
     })
+  })
+})
+
+
+describe('ApiError', () => {
+  it('shows a string detail as is and only the start of a long raw body', () => {
+    expect(new ApiError(404, '{"detail":"Not found"}', 'Not found').message).toBe(
+      'API 404: Not found',
+    )
+    const page = `<html>${'x'.repeat(1000)}`
+    expect(new ApiError(502, page, page).message).toBe(`API 502: ${page.slice(0, 300)}`)
   })
 })

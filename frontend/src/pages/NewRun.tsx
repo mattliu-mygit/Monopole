@@ -38,7 +38,6 @@ export default function NewRun() {
     }) => {
       const created = await createRun()
       queryClient.setQueryData(['run', created.run_id], created)
-      navigate(`/runs/${created.run_id}`)
       await setRunSelection(created.run_id, selection)
       await setRunConfig(created.run_id, config)
       await setAutoRun(created.run_id, autoRun)
@@ -47,6 +46,8 @@ export default function NewRun() {
     onSuccess: (run) => {
       queryClient.setQueryData(['run', run.run_id], run)
       void queryClient.invalidateQueries({ queryKey: ['runs'] })
+      // Navigate only after setup finished, so a failed step is shown here instead of lost.
+      navigate(`/runs/${run.run_id}`)
     },
   })
   const catalogError = modelsQuery.error ?? rubricsQuery.error
