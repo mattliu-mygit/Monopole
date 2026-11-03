@@ -17,7 +17,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from weave_agent_signals import ces_commands
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
+from weave_agent_signals.ces_catalog import Catalog
+from weave_agent_signals.ces_client import CesClient, CesSession
 from weave_agent_signals.client import WeaveClient
 from weave_agent_signals.judges.cli_backend import CliJudgeClient
 from weave_agent_signals.judges.inference import ChatClient, InferenceClient
@@ -104,8 +107,21 @@ def _build_default_dependencies(
     def client_factory() -> WeaveClient:
         return WeaveClient(entity=entity, project=project)
 
+    catalogs: list[Catalog] = []
+
+    def ces_factory() -> CesSession:
+        url, scope, dataset = ces_commands.ces_settings()
+        client = CesClient(url, scope)
+        try:
+            if not catalogs:
+                catalogs.append(client.ensure_catalog(dataset))
+        except Exception:
+            client.close()
+            raise
+        return CesSession(client, catalogs[0])
+
     def hydrate(cohort):
-        return hydrate_turn_cohort(cohort, client_factory=client_factory)
+        return hydrate_turn_cohort(cohort, ces_factory=ces_factory)
 
     scoring_dependencies = ScoringDependencies(
         store=store,
@@ -187,12 +203,7 @@ def _build_default_dependencies(
         store=store,
         build_model_catalog=build_model_catalog,
         build_rubric_catalog=build_rubric_catalog,
-        discover_cohort=lambda selection: discover_turn_cohort(
-            selection,
-            client_factory=client_factory,
-            entity=entity,
-            project=project,
-        ),
+        discover_cohort=lambda selection: discover_turn_cohort(selection, ces_factory=ces_factory),
         scoring_stage=scoring_stage,
         judging_stage=judging_stage,
         reflection_stage=reflection_stage,

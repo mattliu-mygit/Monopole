@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 
 from weave_agent_signals.judges.families import model_family
@@ -11,11 +12,13 @@ from weave_agent_signals.models import SessionView, TraceRole, TurnSpan
 from weave_agent_signals.runs.cohort import discover_turn_cohort, hydrate_turn_cohort
 from weave_agent_signals.runs.store import DataSelection
 
+STARTED = datetime(2026, 7, 13, 12, tzinfo=timezone.utc)
+
 
 def _turn(
     trace_id: str,
     conversation_id: str,
-    started_at: datetime,
+    started_at: datetime = STARTED,
     *,
     model: str | None = "gpt-5.6-sol",
     trace_role: TraceRole = TraceRole.AGENT_SESSION,
@@ -29,7 +32,7 @@ def _turn(
         input_tokens=10,
         output_tokens=5,
         cache_read_tokens=0,
-        status_code="SUCCESS",
+        status_code="OK",
         config_version="config-v1",
         git_branch="main",
         effort_level="medium",
@@ -42,29 +45,18 @@ def _turn(
         chat_spans=[],
         subagents=[],
         trace_role=trace_role,
+        case_ids=[trace_id, f"{trace_id}/reply"],
     )
 
 
-class FakeClient:
-    def __init__(
-        self,
-        *,
-        discovered: list[TurnSpan] | None = None,
-        hydrated: list[TurnSpan] | None = None,
-        entity: str = "weave-team",
-        project: str = "agent-sessions",
-        hydrate_model: str | None = None,
-    ):
-        self.discovered = list(discovered or [])
-        self.hydrated = list(hydrated if hydrated is not None else self.discovered)
-        self.entity = entity
-        self.project = project
-        self.hydrate_model = hydrate_model
-        self.paginated_calls: list[dict] = []
-        self.trace_id_calls: list[list[str]] = []
-        self.session_calls: list[str] = []
-        self.hydration_calls: list[list[str]] = []
+class FakeCes:
+    """A CesSession stand-in whose client serves sessions by session Trajectory ID."""
+
+    def __init__(self, *turns: TurnSpan):
+        self.turns = list(turns)
+        self.reads: list[str] = []
         self.closed = False
+        self.client = self
 
     def __enter__(self):
         return self
@@ -72,24 +64,13 @@ class FakeClient:
     def __exit__(self, *_args):
         self.closed = True
 
-    def query_turns_paginated(self, **kwargs):
-        self.paginated_calls.append(kwargs)
-        return list(self.discovered)
-
-    def query_turns_by_trace_ids(self, trace_ids):
-        self.trace_id_calls.append(list(trace_ids))
-        return list(self.hydrated)
-
-    def query_session(self, conversation_id):
-        self.session_calls.append(conversation_id)
-        turns = [turn for turn in self.discovered if turn.conversation_id == conversation_id]
-        return SessionView(conversation_id, turns, "config-v1", "main")
-
-    def hydrate_turns_batch(self, turns):
-        self.hydration_calls.append([turn.trace_id for turn in turns])
-        if self.hydrate_model is not None:
-            for turn in turns:
-                turn.model = self.hydrate_model
+    def read_session(self, trajectory_id: str) -> SessionView:
+        self.reads.append(trajectory_id)
+        turns = [turn for turn in self.turns if turn.conversation_id == trajectory_id]
+        if not turns:
+            request = httpx.Request("GET", "http://ces.test")
+            raise httpx.HTTPStatusError("missing", request=request, response=httpx.Response(404))
+        return SessionView(trajectory_id, turns, "config-v1", "main")
 
 
 def _selection(*session_ids: str, since: str | None = None, until: str | None = None):
@@ -101,338 +82,162 @@ def _selection(*session_ids: str, since: str | None = None, until: str | None = 
     )
 
 
-def test_discover_turn_cohort_is_stable_and_pins_exact_hydrated_identity():
-    started = datetime(2026, 7, 13, 12, tzinfo=timezone.utc)
-    first = _turn("turn-b", "session/2", started, model="claude-sonnet-5")
-    second = _turn("turn-a", "session/1", started, model=None)
-    client = FakeClient(
-        discovered=[first, second],
-        entity="custom-entity",
-        project="custom-project",
-    )
+def _discover(ces: FakeCes, *session_ids: str, **bounds) -> dict:
+    return discover_turn_cohort(_selection(*session_ids, **bounds), ces_factory=lambda: ces)
 
-    def hydrate_models(turns):
-        client.hydration_calls.append([turn.trace_id for turn in turns])
-        next(turn for turn in turns if turn.trace_id == "turn-a").model = "gpt-5.6-sol"
 
-    client.hydrate_turns_batch = hydrate_models
-    cohort = discover_turn_cohort(
-        _selection("session/1", "session/2"),
-        client_factory=lambda: client,
-        entity="custom-entity",
-        project="custom-project",
-    )
+def test_discover_turn_cohort_is_stable_and_pins_case_ids():
+    first = _turn("turn-b", "session-2", model="claude-sonnet-5")
+    second = _turn("turn-a", "session-1")
+    ces = FakeCes(first, second)
 
-    assert cohort["schema_version"] == 2
-    assert cohort["turn_count"] == 2
-    assert cohort["session_count"] == 2
+    cohort = _discover(ces, "session-1", "session-2")
+
+    assert (cohort["schema_version"], cohort["turn_count"], cohort["session_count"]) == (3, 2, 2)
     assert [entry["trace_id"] for entry in cohort["turns"]] == ["turn-a", "turn-b"]
     assert cohort["turns"][0] == {
         "trace_id": "turn-a",
-        "weave_ref": "weave:///custom-entity/custom-project/agent_turn/turn-a",
-        "conversation_id": "session/1",
-        "started_at": started.isoformat(),
+        "case_ids": ["turn-a", "turn-a/reply"],
+        "conversation_id": "session-1",
+        "started_at": STARTED.isoformat(),
         "model": "gpt-5.6-sol",
         "model_family": model_family("gpt-5.6-sol"),
         "effort_level": "medium",
     }
     assert cohort["sessions"] == [
-        {
-            "conversation_id": "session/1",
-            "weave_ref": ("weave:///custom-entity/custom-project/agent_conversation/session%2F1"),
-            "turn_count": 1,
-        },
-        {
-            "conversation_id": "session/2",
-            "weave_ref": ("weave:///custom-entity/custom-project/agent_conversation/session%2F2"),
-            "turn_count": 1,
-        },
+        {"conversation_id": "session-1", "turn_count": 1},
+        {"conversation_id": "session-2", "turn_count": 1},
     ]
     assert cohort["cohort_id"].startswith("sha256:")
-    assert client.hydration_calls == [["turn-b", "turn-a"]]
-    assert client.closed is True
+    assert ces.closed is True
 
-    repeat_client = FakeClient(discovered=[second, first])
-    repeat = discover_turn_cohort(
-        _selection("session/1", "session/2"),
-        client_factory=lambda: repeat_client,
-        entity="custom-entity",
-        project="custom-project",
-    )
-    assert repeat["cohort_id"] == cohort["cohort_id"]
-    assert repeat["turns"] == cohort["turns"]
-    assert repeat["sessions"] == cohort["sessions"]
+    repeat = _discover(FakeCes(second, first), "session-1", "session-2")
+    assert (repeat["cohort_id"], repeat["turns"]) == (cohort["cohort_id"], cohort["turns"])
 
 
-def test_discover_turn_cohort_filters_exact_aware_dates_and_sessions():
-    lower = datetime(2026, 7, 13, 7, tzinfo=timezone.utc)
-    upper = datetime(2026, 7, 14, 6, 59, 59, 999999, tzinfo=timezone.utc)
-    client = FakeClient(
-        discovered=[
-            _turn("before", "allowed", lower - timedelta(microseconds=1)),
-            _turn("lower", "allowed", lower),
-            _turn("other-session", "other", lower + timedelta(hours=1)),
-            _turn("upper", "allowed", upper),
-            _turn("after", "allowed", upper + timedelta(microseconds=1)),
-        ]
+def test_discover_turn_cohort_reads_each_selected_session_in_full_and_filters_dates():
+    early = _turn("early", "session-1", STARTED - timedelta(days=2))
+    inside = _turn("inside", "session-1")
+    late = _turn("late", "session-1", STARTED + timedelta(days=2))
+    ces = FakeCes(early, inside, late)
+
+    cohort = _discover(
+        ces,
+        "session-1",
+        since=(STARTED - timedelta(hours=1)).isoformat(),
+        until=(STARTED + timedelta(hours=1)).isoformat(),
     )
 
-    cohort = discover_turn_cohort(
-        _selection(
-            "allowed",
-            since="2026-07-13T00:00:00-07:00",
-            until="2026-07-13T23:59:59.999999-07:00",
-        ),
-        client_factory=lambda: client,
-        entity="weave-team",
-        project="agent-sessions",
+    assert [entry["trace_id"] for entry in cohort["turns"]] == ["inside"]
+    assert ces.reads == ["session-1"]
+
+
+@pytest.mark.parametrize("selected", [("session-1", "session-gone"), ("session-1", "session-late")])
+def test_discover_turn_cohort_requires_every_selected_session(selected):
+    ces = FakeCes(
+        _turn("turn-1", "session-1"), _turn("late", "session-late", STARTED + timedelta(days=3))
     )
 
-    assert [entry["trace_id"] for entry in cohort["turns"]] == ["lower", "upper"]
-    assert client.paginated_calls == [{"page_size": 500, "since": lower}]
-
-
-def test_discover_turn_cohort_requires_every_selected_session():
-    started = datetime(2026, 7, 13, 12, tzinfo=timezone.utc)
-    client = FakeClient(discovered=[_turn("turn-1", "present", started)])
-
-    with pytest.raises(ValueError, match="missing selected sessions: absent"):
-        discover_turn_cohort(
-            _selection("present", "absent"),
-            client_factory=lambda: client,
-            entity="weave-team",
-            project="agent-sessions",
-        )
-
-    assert client.hydration_calls == []
+    with pytest.raises(ValueError, match=f"missing selected sessions: {selected[1]}"):
+        _discover(ces, *selected, until=(STARTED + timedelta(hours=1)).isoformat())
 
 
 @pytest.mark.parametrize(
     "turns",
     [
+        [_turn("eval-1", "session-1", trace_role=TraceRole.SIGNAL_EVALUATION)],
         [
-            _turn(
-                "signal",
-                "selected",
-                datetime(2026, 7, 13, 12, tzinfo=timezone.utc),
-                trace_role=TraceRole.SIGNAL_EVALUATION,
-            )
-        ],
-        [
-            _turn("agent", "selected", datetime(2026, 7, 13, 12, tzinfo=timezone.utc)),
-            _turn(
-                "judge",
-                "selected",
-                datetime(2026, 7, 13, 13, tzinfo=timezone.utc),
-                trace_role=TraceRole.JUDGE_EVALUATION,
-            ),
+            _turn("agent-1", "session-1"),
+            _turn("eval-1", "session-1", trace_role=TraceRole.SIGNAL_EVALUATION),
         ],
     ],
 )
-def test_discover_turn_cohort_rejects_non_agent_or_mixed_sessions_before_hydration(turns):
-    client = FakeClient(discovered=turns)
+def test_discover_turn_cohort_rejects_non_agent_or_mixed_sessions(turns):
+    with pytest.raises(ValueError, match="selected sessions are not evaluable: session-1"):
+        _discover(FakeCes(*turns), "session-1")
+
+
+def test_discover_turn_cohort_checks_roles_outside_the_selected_dates():
+    agent = _turn("agent-1", "session-1")
+    evaluator = _turn(
+        "eval-1",
+        "session-1",
+        STARTED - timedelta(days=5),
+        trace_role=TraceRole.SIGNAL_EVALUATION,
+    )
 
     with pytest.raises(ValueError, match="not evaluable"):
-        discover_turn_cohort(
-            _selection("selected"),
-            client_factory=lambda: client,
-            entity="weave-team",
-            project="agent-sessions",
-        )
-
-    assert client.hydration_calls == []
+        _discover(FakeCes(agent, evaluator), "session-1", since=STARTED.isoformat())
 
 
-def test_discover_turn_cohort_checks_roles_outside_selected_date_range():
-    client = FakeClient(
-        discovered=[
-            _turn(
-                "judge-before-range",
-                "selected",
-                datetime(2026, 7, 13, 11, tzinfo=timezone.utc),
-                trace_role=TraceRole.JUDGE_EVALUATION,
-            ),
-            _turn(
-                "agent-in-range",
-                "selected",
-                datetime(2026, 7, 13, 12, tzinfo=timezone.utc),
-            ),
-        ]
-    )
+def test_hydrate_turn_cohort_restores_pinned_order_and_ignores_later_turns():
+    first = _turn("turn-1", "session-1")
+    second = _turn("turn-2", "session-2", STARTED + timedelta(minutes=5))
+    cohort = _discover(FakeCes(first, second), "session-1", "session-2")
+    added = _turn("turn-3", "session-1", STARTED + timedelta(hours=1))
 
-    with pytest.raises(ValueError, match="selected sessions are not evaluable: selected"):
-        discover_turn_cohort(
-            _selection("selected", since="2026-07-13T12:00:00+00:00"),
-            client_factory=lambda: client,
-            entity="weave-team",
-            project="agent-sessions",
-        )
-
-    assert client.session_calls == ["selected"]
-    assert client.hydration_calls == []
-
-
-def test_discover_turn_cohort_uses_unbounded_paginated_query():
-    started = datetime(2026, 7, 1, tzinfo=timezone.utc)
-    turns = [
-        _turn(f"turn-{index:04d}", "large-session", started + timedelta(seconds=index))
-        for index in range(1_201)
-    ]
-    client = FakeClient(discovered=list(reversed(turns)))
-
-    cohort = discover_turn_cohort(
-        _selection("large-session"),
-        client_factory=lambda: client,
-        entity="weave-team",
-        project="agent-sessions",
-    )
-
-    assert cohort["turn_count"] == 1_201
-    assert client.paginated_calls == [{"page_size": 500, "since": None}]
-    assert client.hydration_calls == [[turn.trace_id for turn in reversed(turns)]]
-
-
-def test_hydrate_turn_cohort_restores_pinned_order_and_session_views():
-    started = datetime(2026, 7, 13, 12, tzinfo=timezone.utc)
-    first = _turn("turn-1", "session-1", started)
-    second = _turn("turn-2", "session-1", started + timedelta(minutes=1))
-    discovery = FakeClient(discovered=[first, second])
-    cohort = discover_turn_cohort(
-        _selection("session-1"),
-        client_factory=lambda: discovery,
-        entity="weave-team",
-        project="agent-sessions",
-    )
-    hydration = FakeClient(hydrated=[second, first])
-
-    turns, sessions = hydrate_turn_cohort(
-        cohort,
-        client_factory=lambda: hydration,
-    )
+    turns, sessions = hydrate_turn_cohort(cohort, ces_factory=lambda: FakeCes(added, second, first))
 
     assert [turn.trace_id for turn in turns] == ["turn-1", "turn-2"]
-    assert hydration.trace_id_calls == [["turn-1", "turn-2"]]
-    assert hydration.hydration_calls == [["turn-1", "turn-2"]]
-    assert list(sessions) == ["session-1"]
-    assert isinstance(sessions["session-1"], SessionView)
-    assert sessions["session-1"].turns == turns
-    assert sessions["session-1"].config_version == "config-v1"
-    assert sessions["session-1"].git_branch == "main"
+    assert {sid: [t.trace_id for t in s.turns] for sid, s in sessions.items()} == {
+        "session-1": ["turn-1"],
+        "session-2": ["turn-2"],
+    }
 
 
-def test_hydrate_turn_cohort_fails_closed_for_missing_or_duplicate_trace():
-    started = datetime(2026, 7, 13, 12, tzinfo=timezone.utc)
-    pinned = _turn("turn-1", "session-1", started)
-    discovery = FakeClient(discovered=[pinned])
-    cohort = discover_turn_cohort(
-        _selection("session-1"),
-        client_factory=lambda: discovery,
-        entity="weave-team",
-        project="agent-sessions",
-    )
+def test_hydrate_turn_cohort_fails_closed_for_a_missing_session_or_turn():
+    first = _turn("turn-1", "session-1")
+    second = _turn("turn-2", "session-1", STARTED + timedelta(minutes=5))
+    other = _turn("turn-3", "session-2")
+    cohort = _discover(FakeCes(first, second, other), "session-1", "session-2")
 
-    missing = FakeClient(hydrated=[])
-    with pytest.raises(RuntimeError, match="missing trace IDs: turn-1"):
-        hydrate_turn_cohort(cohort, client_factory=lambda: missing)
-
-    duplicate = FakeClient(hydrated=[pinned, replace(pinned)])
-    with pytest.raises(RuntimeError, match="duplicate trace IDs: turn-1"):
-        hydrate_turn_cohort(cohort, client_factory=lambda: duplicate)
+    with pytest.raises(RuntimeError, match="sessions are missing: session-2"):
+        hydrate_turn_cohort(cohort, ces_factory=lambda: FakeCes(first, second))
+    with pytest.raises(RuntimeError, match="missing trace IDs: turn-2"):
+        hydrate_turn_cohort(cohort, ces_factory=lambda: FakeCes(first, other))
 
 
-def test_hydrate_turn_cohort_rejects_role_drift_before_child_hydration():
-    started = datetime(2026, 7, 13, 12, tzinfo=timezone.utc)
-    original = _turn("turn-1", "session-1", started)
-    cohort = discover_turn_cohort(
-        _selection("session-1"),
-        client_factory=lambda: FakeClient(discovered=[original]),
-        entity="weave-team",
-        project="agent-sessions",
-    )
-    changed = _turn(
-        "turn-1",
-        "session-1",
-        started,
-        trace_role=TraceRole.REFLECTION_EVALUATION,
-    )
-    client = FakeClient(hydrated=[changed])
+def test_hydrate_turn_cohort_rejects_sessions_that_stopped_being_evaluable():
+    pinned = _turn("turn-1", "session-1")
+    cohort = _discover(FakeCes(pinned), "session-1")
+    drifted = replace(pinned, trace_role=TraceRole.SIGNAL_EVALUATION)
 
-    with pytest.raises(RuntimeError, match="not evaluable"):
-        hydrate_turn_cohort(cohort, client_factory=lambda: client)
-
-    assert client.hydration_calls == []
+    with pytest.raises(RuntimeError, match="not evaluable: session-1"):
+        hydrate_turn_cohort(cohort, ces_factory=lambda: FakeCes(drifted))
 
 
-@pytest.mark.parametrize("changed_field", ["conversation", "started_at", "model", "effort_level"])
-def test_hydrate_turn_cohort_fails_when_live_metadata_or_model_identity_changes(
-    changed_field,
-):
-    started = datetime(2026, 7, 13, 12, tzinfo=timezone.utc)
-    pinned = _turn("turn-1", "session-1", started)
-    discovery = FakeClient(discovered=[pinned])
-    cohort = discover_turn_cohort(
-        _selection("session-1"),
-        client_factory=lambda: discovery,
-        entity="weave-team",
-        project="agent-sessions",
-    )
-    changed = replace(pinned)
-    if changed_field == "conversation":
-        changed.conversation_id = "different-session"
-    elif changed_field == "started_at":
-        changed.started_at += timedelta(seconds=1)
-    elif changed_field == "model":
-        changed.model = "claude-sonnet-5"
-    else:
-        changed.effort_level = "high"
-
-    client = FakeClient(hydrated=[changed])
-    with pytest.raises(RuntimeError, match="metadata changed for trace IDs: turn-1"):
-        hydrate_turn_cohort(cohort, client_factory=lambda: client)
-
-
-def test_hydrate_turn_cohort_checks_model_identity_after_child_hydration():
-    started = datetime(2026, 7, 13, 12, tzinfo=timezone.utc)
-    pinned = _turn("turn-1", "session-1", started, model="gpt-5.6-sol")
-    discovery = FakeClient(discovered=[pinned])
-    cohort = discover_turn_cohort(
-        _selection("session-1"),
-        client_factory=lambda: discovery,
-        entity="weave-team",
-        project="agent-sessions",
-    )
-    fetched = replace(pinned)
-    client = FakeClient(hydrated=[fetched], hydrate_model="claude-sonnet-5")
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"model": "claude-sonnet-5"},
+        {"effort_level": "high"},
+        {"started_at": STARTED + timedelta(seconds=1)},
+        {"case_ids": ["turn-1", "turn-1/other"]},
+    ],
+)
+def test_hydrate_turn_cohort_fails_when_pinned_metadata_or_case_ids_change(change):
+    pinned = _turn("turn-1", "session-1")
+    cohort = _discover(FakeCes(pinned), "session-1")
 
     with pytest.raises(RuntimeError, match="metadata changed for trace IDs: turn-1"):
-        hydrate_turn_cohort(cohort, client_factory=lambda: client)
+        hydrate_turn_cohort(cohort, ces_factory=lambda: FakeCes(replace(pinned, **change)))
 
 
-def test_hydrate_turn_cohort_rejects_missing_or_tampered_pinned_metadata_before_io():
-    started = datetime(2026, 7, 13, 12, tzinfo=timezone.utc)
-    pinned = _turn("turn-1", "session-1", started)
-    discovery = FakeClient(discovered=[pinned])
-    cohort = discover_turn_cohort(
-        _selection("session-1"),
-        client_factory=lambda: discovery,
-        entity="weave-team",
-        project="agent-sessions",
-    )
-    tampered = deepcopy(cohort)
-    tampered["turns"][0].pop("model_family")
-    client = FakeClient(hydrated=[pinned])
+@pytest.mark.parametrize("field", ["model_family", "case_ids"])
+def test_hydrate_turn_cohort_rejects_missing_or_tampered_pinned_metadata_before_io(field):
+    pinned = _turn("turn-1", "session-1")
+    tampered = deepcopy(_discover(FakeCes(pinned), "session-1"))
+    tampered["turns"][0].pop(field)
+    ces = FakeCes(pinned)
 
     with pytest.raises(RuntimeError, match="invalid pinned turn cohort"):
-        hydrate_turn_cohort(tampered, client_factory=lambda: client)
-    assert client.trace_id_calls == []
+        hydrate_turn_cohort(tampered, ces_factory=lambda: ces)
+    assert ces.reads == []
 
 
 def test_discover_turn_cohort_uses_plain_value_errors_for_invalid_selection():
-    client = FakeClient(discovered=[])
+    ces = FakeCes()
+
     with pytest.raises(ValueError, match="timezone offset"):
-        discover_turn_cohort(
-            _selection("session-1", since="2026-07-13T00:00:00"),
-            client_factory=lambda: client,
-            entity="weave-team",
-            project="agent-sessions",
-        )
+        _discover(ces, "session-1", since="2026-07-13T00:00:00")
+    assert ces.reads == []

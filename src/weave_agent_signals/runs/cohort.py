@@ -9,12 +9,14 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from weave_agent_signals.client import WeaveClient
+import httpx
+
+from weave_agent_signals.ces_client import CesSession
 from weave_agent_signals.judges.families import model_family
 from weave_agent_signals.models import SessionView, TurnSpan, session_is_evaluable
 from weave_agent_signals.runs.store import DataSelection
 
-_COHORT_SCHEMA_VERSION = 2
+_COHORT_SCHEMA_VERSION = 3
 _COHORT_KEYS = {
     "schema_version",
     "cohort_id",
@@ -26,14 +28,16 @@ _COHORT_KEYS = {
 }
 _TURN_KEYS = {
     "trace_id",
-    "weave_ref",
+    "case_ids",
     "conversation_id",
     "started_at",
     "model",
     "model_family",
     "effort_level",
 }
-_SESSION_KEYS = {"conversation_id", "weave_ref", "turn_count"}
+# A turn's trace_id is its first CES Case, and a session's conversation_id is its session
+# Trajectory. Cases never change, so pinned Case IDs always read back the same content.
+_SESSION_KEYS = {"conversation_id", "turn_count"}
 
 
 def _selection_boundary(value: str | None) -> datetime | None:
@@ -95,51 +99,45 @@ def _session_views(turns: list[TurnSpan]) -> dict[str, SessionView]:
     return sessions
 
 
-def _build_cohort(
-    turns: list[TurnSpan],
-    *,
-    entity: str,
-    project: str,
-) -> dict[str, Any]:
+def _turn_entry(turn: TurnSpan) -> dict[str, Any]:
+    return {
+        "trace_id": turn.trace_id,
+        "case_ids": list(turn.case_ids),
+        "conversation_id": turn.conversation_id,
+        "started_at": turn.started_at.isoformat(),
+        "model": turn.model,
+        "model_family": model_family(turn.model or ""),
+        "effort_level": turn.effort_level,
+    }
+
+
+def _session_entries(sessions: Mapping[str, SessionView]) -> list[dict[str, Any]]:
+    return [
+        {"conversation_id": conversation_id, "turn_count": len(session.turns)}
+        for conversation_id, session in sessions.items()
+    ]
+
+
+def _build_cohort(turns: list[TurnSpan]) -> dict[str, Any]:
     if not turns:
         raise ValueError("selection matched no turns")
-    if not entity.strip() or not project.strip():
-        raise ValueError("entity and project must be nonblank")
 
     ordered = sorted(turns, key=lambda turn: (turn.started_at, turn.trace_id))
     trace_ids: set[str] = set()
-    weave_refs: set[str] = set()
+    case_ids: set[str] = set()
     for turn in ordered:
         _require_aware_turn(turn)
         if not turn.trace_id or not turn.conversation_id:
             raise ValueError("cohort turns require trace and conversation IDs")
-        weave_ref = turn.ref_for(entity, project)
-        if turn.trace_id in trace_ids or weave_ref in weave_refs:
+        if not turn.case_ids or turn.case_ids[0] != turn.trace_id:
+            raise ValueError("cohort turns require their CES Case IDs")
+        if turn.trace_id in trace_ids or case_ids & set(turn.case_ids):
             raise ValueError("cohort turn identities must be unique")
         trace_ids.add(turn.trace_id)
-        weave_refs.add(weave_ref)
+        case_ids.update(turn.case_ids)
 
-    sessions = _session_views(ordered)
-    turn_entries = [
-        {
-            "trace_id": turn.trace_id,
-            "weave_ref": turn.ref_for(entity, project),
-            "conversation_id": turn.conversation_id,
-            "started_at": turn.started_at.isoformat(),
-            "model": turn.model,
-            "model_family": model_family(turn.model or ""),
-            "effort_level": turn.effort_level,
-        }
-        for turn in ordered
-    ]
-    session_entries = [
-        {
-            "conversation_id": conversation_id,
-            "weave_ref": session.ref_for(entity, project),
-            "turn_count": len(session.turns),
-        }
-        for conversation_id, session in sessions.items()
-    ]
+    turn_entries = [_turn_entry(turn) for turn in ordered]
+    session_entries = _session_entries(_session_views(ordered))
     identity = {
         "schema_version": _COHORT_SCHEMA_VERSION,
         "turn_count": len(turn_entries),
@@ -155,47 +153,49 @@ def _build_cohort(
     }
 
 
+def _read_session(ces: CesSession, trajectory_id: str) -> SessionView | None:
+    """The session, or None when CES has no such session Trajectory."""
+    try:
+        return ces.client.read_session(trajectory_id)
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code == 404:
+            return None
+        raise
+
+
 def discover_turn_cohort(
     selection: DataSelection,
     *,
-    client_factory: Callable[[], WeaveClient],
-    entity: str,
-    project: str,
+    ces_factory: Callable[[], CesSession],
 ) -> dict[str, Any]:
-    """Resolve a mutable selection to one content-addressed hydrated cohort."""
+    """Resolve a mutable selection of session Trajectories to one content-addressed cohort."""
 
     since, until = _selection_bounds(selection)
-    query_since = since.astimezone(timezone.utc) if since is not None else None
-    selected_sessions = set(selection.session_ids)
+    with ces_factory() as ces:
+        sessions = {sid: _read_session(ces, sid) for sid in selection.session_ids}
 
-    with client_factory() as client:
-        turns = client.query_turns_paginated(page_size=500, since=query_since)
-        filtered: list[TurnSpan] = []
-        for turn in turns:
+    filtered: list[TurnSpan] = []
+    for session in sessions.values():
+        for turn in session.turns if session is not None else ():
             _require_aware_turn(turn)
             if since is not None and turn.started_at < since:
                 continue
             if until is not None and turn.started_at > until:
                 continue
-            if turn.conversation_id not in selected_sessions:
-                continue
             filtered.append(turn)
-        if not filtered:
-            raise ValueError("selection matched no turns")
-        discovered_sessions = {turn.conversation_id for turn in filtered}
-        missing_sessions = sorted(selected_sessions - discovered_sessions)
-        if missing_sessions:
-            raise ValueError("missing selected sessions: " + ", ".join(missing_sessions))
-        ineligible = [
-            conversation_id
-            for conversation_id in sorted(selected_sessions)
-            if not session_is_evaluable(client.query_session(conversation_id).turns)
-        ]
-        if ineligible:
-            raise ValueError("selected sessions are not evaluable: " + ", ".join(ineligible))
-        client.hydrate_turns_batch(filtered)
+    if not filtered:
+        raise ValueError("selection matched no turns")
+    discovered_sessions = {turn.conversation_id for turn in filtered}
+    missing_sessions = sorted(set(selection.session_ids) - discovered_sessions)
+    if missing_sessions:
+        raise ValueError("missing selected sessions: " + ", ".join(missing_sessions))
+    ineligible = sorted(
+        sid for sid, session in sessions.items() if not session_is_evaluable(session.turns)
+    )
+    if ineligible:
+        raise ValueError("selected sessions are not evaluable: " + ", ".join(ineligible))
 
-    return _build_cohort(filtered, entity=entity, project=project)
+    return _build_cohort(filtered)
 
 
 def _parse_aware_timestamp(value: object, label: str) -> datetime:
@@ -231,33 +231,41 @@ def _validated_cohort(
         raise RuntimeError("invalid pinned turn cohort: session count")
 
     seen_traces: set[str] = set()
-    seen_refs: set[str] = set()
+    seen_cases: set[str] = set()
     parsed_turns: list[tuple[datetime, str]] = []
     session_counts: dict[str, int] = {}
     for entry in turn_entries:
         if not isinstance(entry, dict) or set(entry) != _TURN_KEYS:
             raise RuntimeError("invalid pinned turn cohort: turn metadata")
         trace_id = entry.get("trace_id")
-        weave_ref = entry.get("weave_ref")
+        case_ids = entry.get("case_ids")
         conversation_id = entry.get("conversation_id")
         model = entry.get("model")
         family = entry.get("model_family")
         effort_level = entry.get("effort_level")
-        if not all(
-            isinstance(item, str) and item
-            for item in (trace_id, weave_ref, conversation_id, family)
-        ):
+        if not all(isinstance(item, str) and item for item in (trace_id, conversation_id, family)):
             raise RuntimeError("invalid pinned turn cohort: turn metadata")
+        if (
+            not isinstance(case_ids, list)
+            or not case_ids
+            or not all(isinstance(case_id, str) and case_id for case_id in case_ids)
+            or case_ids[0] != trace_id
+        ):
+            raise RuntimeError("invalid pinned turn cohort: case IDs")
         if model is not None and (not isinstance(model, str) or not model):
             raise RuntimeError("invalid pinned turn cohort: model")
         if effort_level is not None and (not isinstance(effort_level, str) or not effort_level):
             raise RuntimeError("invalid pinned turn cohort: effort level")
         if family != model_family(model or ""):
             raise RuntimeError("invalid pinned turn cohort: model family")
-        if trace_id in seen_traces or weave_ref in seen_refs:
+        if (
+            trace_id in seen_traces
+            or seen_cases & set(case_ids)
+            or len(set(case_ids)) != len(case_ids)
+        ):
             raise RuntimeError("invalid pinned turn cohort: duplicate turn identity")
         seen_traces.add(trace_id)
-        seen_refs.add(weave_ref)
+        seen_cases.update(case_ids)
         parsed_turns.append(
             (_parse_aware_timestamp(entry.get("started_at"), "turn started_at"), trace_id)
         )
@@ -270,13 +278,10 @@ def _validated_cohort(
         if not isinstance(entry, dict) or set(entry) != _SESSION_KEYS:
             raise RuntimeError("invalid pinned turn cohort: session metadata")
         conversation_id = entry.get("conversation_id")
-        weave_ref = entry.get("weave_ref")
         turn_count = entry.get("turn_count")
         if (
             not isinstance(conversation_id, str)
             or not conversation_id
-            or not isinstance(weave_ref, str)
-            or not weave_ref
             or type(turn_count) is not int
             or turn_count < 1
             or conversation_id in seen_sessions
@@ -306,78 +311,51 @@ def _validated_cohort(
 def hydrate_turn_cohort(
     cohort: Mapping[str, Any],
     *,
-    client_factory: Callable[[], WeaveClient],
+    ces_factory: Callable[[], CesSession],
 ) -> tuple[list[TurnSpan], dict[str, SessionView]]:
-    """Hydrate exactly the pinned traces and reject any identity drift."""
+    """Read exactly the pinned turns back from CES and reject any identity drift.
+
+    Turns added to a pinned session after pinning are ignored, because the pin lists
+    Case IDs. A pinned session or turn that CES no longer returns fails closed."""
 
     turn_entries, session_entries = _validated_cohort(cohort)
-    trace_ids = [entry["trace_id"] for entry in turn_entries]
+    with ces_factory() as ces:
+        live = {
+            entry["conversation_id"]: _read_session(ces, entry["conversation_id"])
+            for entry in session_entries
+        }
+    gone = sorted(sid for sid, session in live.items() if session is None)
+    if gone:
+        raise RuntimeError("Pinned turn cohort sessions are missing: " + ", ".join(gone))
 
-    with client_factory() as client:
-        fetched = client.query_turns_by_trace_ids(trace_ids)
-        fetched_ids = [turn.trace_id for turn in fetched]
-        duplicate_ids = sorted(
-            {trace_id for trace_id in fetched_ids if fetched_ids.count(trace_id) > 1}
+    by_trace_id = {turn.trace_id: turn for session in live.values() for turn in session.turns}
+    missing = [entry["trace_id"] for entry in turn_entries if entry["trace_id"] not in by_trace_id]
+    if missing:
+        raise RuntimeError(
+            "Pinned turn cohort is incomplete; missing trace IDs: " + ", ".join(missing)
         )
-        if duplicate_ids:
-            raise RuntimeError(
-                "Pinned turn cohort returned duplicate trace IDs: " + ", ".join(duplicate_ids)
-            )
-        unexpected = sorted(set(fetched_ids) - set(trace_ids))
-        if unexpected:
-            raise RuntimeError(
-                "Pinned turn cohort returned unexpected trace IDs: " + ", ".join(unexpected)
-            )
-        by_trace_id = {turn.trace_id: turn for turn in fetched}
-        missing = [trace_id for trace_id in trace_ids if trace_id not in by_trace_id]
-        if missing:
-            raise RuntimeError(
-                "Pinned turn cohort is incomplete; missing trace IDs: " + ", ".join(missing)
-            )
-        ordered = [by_trace_id[trace_id] for trace_id in trace_ids]
-        ineligible = sorted(
-            conversation_id
-            for conversation_id, session in _session_views(ordered).items()
-            if not session_is_evaluable(session.turns)
+    ordered = [by_trace_id[entry["trace_id"]] for entry in turn_entries]
+    sessions = _session_views(ordered)
+    ineligible = sorted(
+        conversation_id
+        for conversation_id, session in sessions.items()
+        if not session_is_evaluable(session.turns)
+    )
+    if ineligible:
+        raise RuntimeError(
+            "Pinned turn cohort contains sessions that are not evaluable: " + ", ".join(ineligible)
         )
-        if ineligible:
-            raise RuntimeError(
-                "Pinned turn cohort contains sessions that are not evaluable: "
-                + ", ".join(ineligible)
-            )
-        client.hydrate_turns_batch(ordered)
 
-        entity = getattr(client, "entity", None)
-        project = getattr(client, "project", None)
-        if not isinstance(entity, str) or not entity or not isinstance(project, str) or not project:
-            raise RuntimeError("cohort client must expose its entity and project")
-
-        changed: list[str] = []
-        for entry, turn in zip(turn_entries, ordered, strict=True):
-            if (
-                turn.conversation_id != entry["conversation_id"]
-                or turn.ref_for(entity, project) != entry["weave_ref"]
-                or turn.started_at.isoformat() != entry["started_at"]
-                or turn.model != entry["model"]
-                or model_family(turn.model or "") != entry["model_family"]
-                or turn.effort_level != entry["effort_level"]
-            ):
-                changed.append(turn.trace_id)
-        if changed:
-            raise RuntimeError(
-                "Pinned turn cohort metadata changed for trace IDs: " + ", ".join(changed)
-            )
-
-        sessions = _session_views(ordered)
-        live_session_entries = [
-            {
-                "conversation_id": conversation_id,
-                "weave_ref": session.ref_for(entity, project),
-                "turn_count": len(session.turns),
-            }
-            for conversation_id, session in sessions.items()
-        ]
-        if live_session_entries != session_entries:
-            raise RuntimeError("Pinned turn cohort session metadata changed")
+    changed = [
+        turn.trace_id
+        for entry, turn in zip(turn_entries, ordered, strict=True)
+        if _turn_entry(turn) != entry
+    ]
+    if changed:
+        raise RuntimeError(
+            "Pinned turn cohort metadata changed for trace IDs: " + ", ".join(changed)
+        )
+    if _session_entries(sessions) != session_entries:
+        raise RuntimeError("Pinned turn cohort session metadata changed")
 
     return ordered, sessions
