@@ -6,7 +6,7 @@ import json
 import re
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -20,6 +20,9 @@ from pydantic import (
 from weave_agent_signals.run_config import ModelDescriptor
 from weave_agent_signals.runs.bundles import BundleSnapshot
 from weave_agent_signals.runs.challenges.contracts import ChallengeResult
+
+if TYPE_CHECKING:
+    from weave_agent_signals.runs.reflection import ReflectionResult
 
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _SCORE_BASIS = "predicted_evaluator"
@@ -84,39 +87,6 @@ class ReflectionInputRecord(_Record):
     @field_serializer("baseline")
     def _serialize_baseline(self, value: BundleSnapshot) -> dict[str, Any]:
         return value.to_dict()
-
-    @classmethod
-    def from_epoch9(cls, value: Mapping[str, Any]) -> ReflectionInputRecord:
-        expected = {
-            "schema_version",
-            "cohort_id",
-            "captured_at",
-            "turn_count",
-            "session_count",
-            "feedback_count",
-            "feedback",
-            "target_registry",
-            "baseline",
-        }
-        if set(value) != expected or value.get("schema_version") != "3":
-            raise ValueError("invalid epoch-9 reflection input")
-        feedback = value.get("feedback")
-        feedback_count = value.get("feedback_count")
-        if not isinstance(feedback, list) or feedback_count != len(feedback):
-            raise ValueError("feedback_count does not match feedback")
-        for name in ("turn_count", "session_count"):
-            count = value.get(name)
-            if type(count) is not int or count < 0:
-                raise ValueError(f"{name} must be a nonnegative integer")
-        return cls.model_validate(
-            {
-                "cohort_id": value["cohort_id"],
-                "captured_at": value["captured_at"],
-                "feedback": feedback,
-                "target_registry": value["target_registry"],
-                "baseline": value["baseline"],
-            }
-        )
 
 
 class GenerationAttemptRecord(_Record):
@@ -340,24 +310,9 @@ class ReflectionResultRecord(_Record):
         )
 
     @classmethod
-    def from_epoch9(cls, value: Mapping[str, Any]) -> ReflectionResultRecord:
-        from weave_agent_signals.runs.reflection import ReflectionResult
-
-        normalized = json.loads(json.dumps(value))
-        owners = (
-            *normalized.get("generation_attempts", []),
-            *normalized.get("candidates", []),
-        )
-        for owner in owners:
-            descriptor = owner.get("requested_writer") if isinstance(owner, dict) else None
-            if isinstance(descriptor, dict) and "provider" not in descriptor:
-                descriptor["provider"] = descriptor.pop("backend")
-                descriptor["provider_model"] = descriptor["id"]
-        raw_challenge = normalized.get("challenge")
-        challenge = _challenge_from_epoch9(raw_challenge)
-        normalized["challenge"] = None
-        legacy = ReflectionResult.from_dict(normalized)
-        candidates = {candidate.generation_attempt_id: candidate for candidate in legacy.candidates}
+    def from_result(cls, result: ReflectionResult) -> ReflectionResultRecord:
+        """The persisted record of a finished reflection run."""
+        candidates = {candidate.generation_attempt_id: candidate for candidate in result.candidates}
         attempts = tuple(
             GenerationAttemptRecord(
                 attempt_id=attempt.attempt_id,
@@ -384,7 +339,7 @@ class ReflectionResultRecord(_Record):
                 error_type=attempt.error_type,
                 error=attempt.error,
             )
-            for attempt in legacy.generation_attempts
+            for attempt in result.generation_attempts
         )
 
         def evaluation(value: Any, target_id: str) -> EvaluatorRecord:
@@ -402,44 +357,21 @@ class ReflectionResultRecord(_Record):
                 usage=dict(value.usage),
             )
 
-        evaluations = (evaluation(legacy.baseline_evaluation, "baseline"),) + tuple(
+        evaluations = (evaluation(result.baseline_evaluation, "baseline"),) + tuple(
             evaluation(candidate.evaluation, candidate.candidate_id)
-            for candidate in legacy.candidates
+            for candidate in result.candidates
         )
         return cls(
-            baseline=legacy.baseline,
+            baseline=result.baseline,
             attempts=attempts,
             evaluations=evaluations,
-            recommended_candidate_id=legacy.recommended_candidate_id,
-            baseline_won=legacy.baseline_won,
-            reason=legacy.reason,
-            score_basis=legacy.score_basis,
-            provisional_candidate_id=legacy.provisional_candidate_id,
-            challenge=challenge,
+            recommended_candidate_id=result.recommended_candidate_id,
+            baseline_won=result.baseline_won,
+            reason=result.reason,
+            score_basis=result.score_basis,
+            provisional_candidate_id=result.provisional_candidate_id,
+            challenge=result.challenge,
         )
-
-
-def _challenge_from_epoch9(
-    value: object,
-) -> ChallengeResult | dict[str, Any] | None:
-    if value is None:
-        return None
-    if not isinstance(value, Mapping):
-        raise ValueError("historical challenge must be an object")
-    historical = json.loads(json.dumps(value))
-    try:
-        return ChallengeResult.from_dict(historical)
-    except ValueError:
-        task = historical.get("task")
-        if not isinstance(task, dict) or task.get("schema_version") != "2":
-            return historical
-    task["schema_version"] = "3"
-    task["task_id"] = "pending"
-    task.setdefault("required_files", [])
-    task.setdefault("required_executables", [])
-    task.setdefault("requires_git_metadata", False)
-    historical["challenge_id"] = "pending"
-    return ChallengeResult.from_dict(historical)
 
 
 __all__ = [

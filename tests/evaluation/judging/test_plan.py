@@ -9,12 +9,10 @@ from weave_agent_signals.judges import plan as plan_module
 from weave_agent_signals.judges.plan import (
     JudgingPlan,
     build_canonical_judging_plan,
-    canonical_plan_from_epoch9,
     judging_plan_totals,
 )
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.models import SessionView, TurnSpan
-from weave_agent_signals.routes.run_views import judging_plan_view
 from weave_agent_signals.run_config import DEFAULT_JUDGING_CONTEXT_POLICY, PositionedJudge
 
 
@@ -207,20 +205,3 @@ def test_canonical_plan_locates_exact_session_and_reviewer() -> None:
         plan.session("missing-session")
     with pytest.raises(KeyError, match="3"):
         session.reviewer(3)
-
-
-def test_epoch9_plan_converts_without_rehydrating_historical_evidence() -> None:
-    legacy = judging_plan_view(_canonical_plan(judges=(_judge("judge-1", 1), _judge("judge-2", 2))))
-    assert legacy is not None
-    legacy["plan_id"] = plan_module._digest(
-        {key: value for key, value in legacy.items() if key != "plan_id"}
-    )
-
-    converted = canonical_plan_from_epoch9(legacy)
-
-    assert converted.cohort_id == legacy["cohort_id"]
-    assert converted.plan_id != legacy["plan_id"]
-    assert tuple(turn.trace_id for turn in converted.sessions[0].turns) == tuple(
-        legacy["sessions"][0]["raw_coverage_trace_ids"]
-    )
-    assert converted.sessions[0].reviewer(1).window_plan is not None

@@ -563,7 +563,7 @@ def test_stage_pins_exact_input_uses_effective_models_and_finalizes_review(store
     expected = _result(baseline, config).with_challenge(
         _challenge_result("candidate-1", "candidate")
     )
-    assert updated.reflecting_result == ReflectionResultRecord.from_epoch9(expected.to_dict())
+    assert updated.reflecting_result == ReflectionResultRecord.from_result(expected)
     assert updated.reflection_review == {
         "status": "pending",
         "selected_candidate_id": "candidate-1",
@@ -715,7 +715,7 @@ def test_all_invalid_stage_result_persists_audit_without_review(store):
     run_reflection_stage(run, config, threading.Event(), dependencies=dependencies)
 
     updated = store.get(run.run_id)
-    assert updated.reflecting_result == ReflectionResultRecord.from_epoch9(result.to_dict())
+    assert updated.reflecting_result == ReflectionResultRecord.from_result(result)
     assert updated.reflecting_result.reason == NO_VALID_PROPOSAL_REASON
     assert updated.reflection_review is None
     assert updated.reflecting_progress["status_message"] == NO_VALID_PROPOSAL_REASON
@@ -847,7 +847,7 @@ def test_stage_sanitizes_failures_across_the_full_reflection_boundary(
     elif failure_point == "model_setup":
         writer_client_factory = fail
     elif failure_point == "final_validation":
-        monkeypatch.setattr(ReflectionResult, "to_dict", fail)
+        monkeypatch.setattr(ReflectionResultRecord, "from_result", fail)
 
     dependencies = ReflectionDependencies(
         store=store,
@@ -1241,7 +1241,7 @@ def test_stage_finalizes_persisted_evidence_without_rerunning_inference(store):
     store.record_stage_result(
         run.run_id,
         stage=RunStatus.REFLECTING,
-        result=ReflectionResultRecord.from_epoch9(evidence.to_dict()),
+        result=ReflectionResultRecord.from_result(evidence),
     )
     dependencies = ReflectionDependencies(
         store=store,
@@ -1262,7 +1262,7 @@ def test_stage_finalizes_persisted_evidence_without_rerunning_inference(store):
 
     updated = store.get(run.run_id)
     assert adapter.capture_calls == 1
-    assert updated.reflecting_result == ReflectionResultRecord.from_epoch9(evidence.to_dict())
+    assert updated.reflecting_result == ReflectionResultRecord.from_result(evidence)
     assert updated.reflection_review["selected_candidate_id"] == "candidate-1"
 
 
@@ -1286,7 +1286,7 @@ def test_stage_revalidates_pinned_policy_before_finalizing_persisted_result(stor
     store.record_stage_result(
         run.run_id,
         stage=RunStatus.REFLECTING,
-        result=ReflectionResultRecord.from_epoch9(evidence.to_dict()),
+        result=ReflectionResultRecord.from_result(evidence),
     )
     changed_adapter = Adapter(baseline, _manifest("sha256:changed"))
     second = ReflectionDependencies(

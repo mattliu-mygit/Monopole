@@ -18,7 +18,6 @@ from weave_agent_signals.judges.plan import JudgingPlan
 from weave_agent_signals.judges.records import JudgeCallAudit, JudgeCallRecord
 from weave_agent_signals.run_config import EffectiveRunConfig, RunConfig
 from weave_agent_signals.runs.events import RunEvent, RunEventDraft, RunEventStage
-from weave_agent_signals.runs.migrations import RunMigrationError, migrate_v9_to_v10
 from weave_agent_signals.runs.reflection_records import (
     ReflectionInputRecord,
     ReflectionResultRecord,
@@ -31,6 +30,10 @@ RUN_DB_SCHEMA_VERSION = 10
 def _default_db_path() -> Path:
     _DEFAULT_DB_DIR.mkdir(parents=True, exist_ok=True)
     return _DEFAULT_DB_DIR / "runs.db"
+
+
+class RunDatabaseSchemaError(RuntimeError):
+    """The run database was written by an incompatible version of Monopole."""
 
 
 class RunStatus(str, Enum):
@@ -486,16 +489,13 @@ class RunStore:
             has_runs = self._conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runs'"
             ).fetchone()
-            if stored_version == 9:
-                migrate_v9_to_v10(
-                    self._conn,
-                    path,
-                    lambda: datetime.now(timezone.utc),
+            fresh = stored_version == 0 and has_runs is None
+            if not fresh and stored_version != RUN_DB_SCHEMA_VERSION:
+                # The run database is disposable pre-release state and is never migrated.
+                raise RunDatabaseSchemaError(
+                    f"unsupported run database schema: {stored_version}; "
+                    f"delete {path} to start with an empty run database"
                 )
-            elif stored_version == 0 and has_runs is None:
-                pass
-            elif stored_version != RUN_DB_SCHEMA_VERSION:
-                raise RunMigrationError(f"unsupported run database schema: {stored_version}")
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("BEGIN IMMEDIATE")
             self._conn.execute(_SCHEMA)

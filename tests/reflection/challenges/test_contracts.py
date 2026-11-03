@@ -1,7 +1,6 @@
 import pytest
 from pydantic import ValidationError
 
-from weave_agent_signals.runs import reflection_records
 from weave_agent_signals.runs.challenges.contracts import (
     ArmResult,
     ArtifactChange,
@@ -192,22 +191,6 @@ def test_ces_record_round_trips_outside_the_challenge_identity() -> None:
 
     assert restored.ces_record == record
     assert restored.challenge_id == result.challenge_id
-
-
-def test_epoch9_challenge_task_v2_upgrades_to_current_authenticated_contract() -> None:
-    value = _result().to_dict()
-    value["challenge_id"] = "sha256:legacy-challenge"
-    value["task"]["schema_version"] = "2"
-    value["task"]["task_id"] = "sha256:legacy-task"
-    value["task"].pop("required_files")
-    value["task"].pop("required_executables")
-    value["task"].pop("requires_git_metadata")
-
-    upgraded = reflection_records._challenge_from_epoch9(value)
-
-    assert isinstance(upgraded, ChallengeResult)
-    assert upgraded.task is not None
-    assert upgraded.task.schema_version == "3"
 
 
 @pytest.mark.parametrize("winner", ["baseline", "tie"])

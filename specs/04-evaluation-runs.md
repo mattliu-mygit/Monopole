@@ -375,7 +375,6 @@ comparing the current registry scope with A and displays exact per-file receipt
 outcomes.
 This separation keeps list polling cheap without weakening promotion safety.
 
-Runtime reads only schema epoch 10. Startup performs the one supported epoch-9
-preservation migration after creating a timestamped SQLite backup; imported
-judge audits remain presentation-only and are never reusable. Other schema
-epochs fail closed instead of being reset or adapted.
+Runtime reads only schema epoch 10. The run database is disposable pre-release
+state, so a database from any other epoch fails closed with an error that names
+the file to delete; it is never migrated, reset, or adapted.

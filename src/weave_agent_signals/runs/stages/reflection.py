@@ -555,7 +555,7 @@ def _execute_reflection_stage(
         dependencies.store,
         run.run_id,
         cancel,
-        ReflectionResultRecord.from_epoch9(result.to_dict()),
+        ReflectionResultRecord.from_result(result),
     )
 
     selected = result.recommended_candidate_id or result.provisional_candidate_id
