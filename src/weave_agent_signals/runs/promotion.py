@@ -439,13 +439,16 @@ class TargetPromoter:
                     outcomes.append(
                         PromotionTargetOutcome(item.action.locator, item.action.action, "applied")
                     )
-            if registered_creates and not any(outcome.status == "applied" for outcome in outcomes):
+            # A create that wasn't written must not stay registered, even when other targets were.
+            applied = {outcome.locator for outcome in outcomes if outcome.status == "applied"}
+            unwritten = tuple(locator for locator in registered_creates if locator not in applied)
+            if unwritten:
                 try:
-                    self.registry.unregister_absent_creates(registered_creates)
+                    self.registry.unregister_absent_creates(unwritten)
                 except (KeyError, OSError, ValueError) as exc:
                     raise PromotionApplyError(
                         f"could not restore create registrations: {exc}",
-                        changed_locators=registered_creates,
+                        changed_locators=unwritten,
                     ) from exc
         finally:
             for item in staged:

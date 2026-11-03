@@ -422,3 +422,46 @@ def test_receipt_rejects_an_applied_file_after_a_not_applied_outcome(
 
     with pytest.raises(Exception, match="after a not-applied"):
         PromotionReceipt.from_dict(serialized)
+
+
+def test_a_failed_create_is_unregistered_even_when_another_create_applies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry_path = tmp_path / "targets.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "targets": [
+                    {
+                        "kind": "markdown_root",
+                        "id": "repo",
+                        "root": "repo",
+                        "files": [],
+                        "allow_create": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "repo").mkdir()
+    promoter = TargetPromoter(load_target_registry(registry_path))
+    baseline = promoter.capture()
+    requested = _candidate(
+        baseline, **{"markdown:repo/a/AGENTS.md": "# A", "markdown:repo/b/AGENTS.md": "# B"}
+    )
+    real_publish = promoter._publish
+
+    def fail_b(item) -> None:
+        if "/b/" in str(item.destination):
+            raise OSError("disk full")
+        real_publish(item)
+
+    monkeypatch.setattr(promoter, "_publish", fail_b)
+
+    receipt = _promote(promoter, baseline, requested)
+
+    assert receipt.status == "partial"
+    registered = json.loads(registry_path.read_text(encoding="utf-8"))["targets"][0]["files"]
+    assert registered == ["a/AGENTS.md"]

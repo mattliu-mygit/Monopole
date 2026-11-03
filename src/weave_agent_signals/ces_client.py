@@ -590,8 +590,9 @@ class CesClient:
         for _, _, scores in targets:
             for score in scores:
                 key = (score["scorer_id"], score["scorer_version_id"])
-                if key not in names:
-                    names[key] = self._scorer_name(*key)
+                # Only found names are cached: a Scorer version created later must still resolve.
+                if key not in names and (name := self._scorer_name(*key)) is not None:
+                    names[key] = name
         records = [record for target in targets for record in _feedback(*target, names)]
         records.sort(
             key=lambda r: r["payload"]["details"].get("turn_started_at") or "", reverse=True
