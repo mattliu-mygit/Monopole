@@ -10,7 +10,14 @@ import pytest
 import respx
 
 from weave_agent_signals.ces_catalog import VERDICT, Catalog, ScorerSpec
-from weave_agent_signals.ces_client import CesClient, _feedback, _tool_span, session_view
+from weave_agent_signals.ces_client import (
+    MAX_RETRY_AFTER_S,
+    SESSIONS_PER_SEARCH,
+    CesClient,
+    _feedback,
+    _tool_span,
+    session_view,
+)
 from weave_agent_signals.ces_score_index import ScoreIndex
 from weave_agent_signals.models import Score
 from weave_agent_signals.scorers.outcome import _extract_exit_code
@@ -721,3 +728,106 @@ def test_find_sessions_compares_times_not_strings_at_the_window_edge():
     found = client.find_sessions(catalog, since=datetime(2026, 11, 2, tzinfo=timezone.utc))
 
     assert found == ["s-edge"]
+
+
+@respx.mock
+def test_a_scores_key_repeats_for_the_same_body_and_changes_with_it():
+    _catalog_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = client.ensure_catalog("ds-1")
+    route = respx.post(f"{BASE}/scores").mock(
+        return_value=httpx.Response(200, json={"score_ids": ["s1", "s2"]})
+    )
+
+    def key(value):
+        client.write_scores(
+            catalog, "pass-1", "case", "c1", [Score("efficiency", value, [], {}, "turn")]
+        )
+        return route.calls.last.request.headers["Idempotency-Key"]
+
+    first, same, changed = key(0.5), key(0.5), key(0.75)
+
+    assert first == same != changed
+
+
+@respx.mock
+def test_a_5xx_is_retried_and_a_transport_error_raises_after_the_last_attempt():
+    slept = []
+    client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=slept.append)
+    respx.get(f"{BASE}/scores/s1").mock(
+        side_effect=[httpx.Response(503), httpx.Response(200, json={"score_id": "s1"})]
+    )
+    respx.get(f"{BASE}/scores/s2").mock(side_effect=httpx.ConnectError("down"))
+
+    assert client.get_score("s1") == {"score_id": "s1"}
+    with pytest.raises(httpx.ConnectError):
+        client.get_score("s2")
+    assert slept == [1, 1, 2]
+
+
+@respx.mock
+def test_a_long_retry_after_is_capped():
+    slept = []
+    client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=slept.append)
+    respx.get(f"{BASE}/scores/s1").mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "120"}),
+            httpx.Response(200, json={}),
+        ]
+    )
+
+    client.get_score("s1")
+
+    assert slept == [MAX_RETRY_AFTER_S]
+
+
+@respx.mock
+def test_find_sessions_stops_reading_at_its_limit():
+    _catalog_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = client.ensure_catalog("ds-1")
+    rows = [
+        {"input": {"started_at": "2026-11-03T10:00:00.000Z", "session_trajectory_id": sid}}
+        for sid in ("s1", "s2")
+    ]
+    route = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
+        return_value=httpx.Response(200, json={"rows": rows, "next_cursor": "more"})
+    )
+
+    found = client.find_sessions(catalog, since=datetime(2026, 11, 1, tzinfo=timezone.utc), limit=1)
+
+    assert found == ["s1"]
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_cohort_feedback_searches_one_batch_of_sessions_at_a_time():
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    turns = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
+        return_value=httpx.Response(200, json={"rows": []})
+    )
+    respx.post(f"{BASE}/evaluations/ev-sessions/trajectory-rows/search").mock(
+        return_value=httpx.Response(200, json={"rows": []})
+    )
+    ids = [f"s{index}" for index in range(SESSIONS_PER_SEARCH + 1)]
+
+    client.cohort_feedback(Catalog("ev-turns", "ev-sessions", {}), ids)
+
+    first, second = (json.loads(call.request.content)["filter"] for call in turns.calls)
+    last = f'"s{SESSIONS_PER_SEARCH}"'
+    assert last not in first and last in second
+
+
+@respx.mock
+def test_turn_scores_are_keyed_by_each_turns_first_case():
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={"rows": [{"case_id": "c1", "scores": [{"score_id": "x"}]}, {"case_id": "c5"}]},
+        )
+    )
+
+    scores = client.turn_scores(Catalog("ev-turns", "ev-sessions", {}), "traj-s")
+
+    assert scores == {"c1": [{"score_id": "x"}], "c5": []}
