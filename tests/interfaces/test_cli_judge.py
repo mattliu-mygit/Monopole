@@ -24,6 +24,7 @@ def _args(**updates):
         "rubric": None,
         "judge_models": ["claude:claude-sonnet-5", "codex:gpt-5.6-sol"],
         "force": False,
+        "backend": "weave",
     }
     values.update(updates)
     return argparse.Namespace(**values)

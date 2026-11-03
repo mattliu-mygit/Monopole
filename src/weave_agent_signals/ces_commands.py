@@ -13,9 +13,10 @@ import logging
 import os
 import uuid
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
-from weave_agent_signals.ces_catalog import Catalog
+from weave_agent_signals.ces_catalog import Catalog, judge_spec
 from weave_agent_signals.ces_client import CesClient
 from weave_agent_signals.models import Score, SessionView, session_is_evaluable
 from weave_agent_signals.scorers import score_session, score_turn
@@ -285,3 +286,39 @@ def inspect(args: argparse.Namespace) -> int:
     finally:
         client.close()
     return 0
+
+
+def sessions_to_judge(
+    client, catalog: Catalog, *, since: datetime, limit: int
+) -> list[SessionView]:
+    """The newest `limit` sessions with a turn since `since` that are agent sessions throughout."""
+    sessions = [
+        client.read_session(sid) for sid in client.find_sessions(catalog, since=since, limit=limit)
+    ]
+    return [
+        session for session in sessions if session.turns and session_is_evaluable(session.turns)
+    ]
+
+
+def write_judge_scores(client, catalog: Catalog, pending: list, *, force: bool) -> int:
+    """Write each finished review's Score under its panel's Scorer. Returns the count written.
+
+    A degraded or failed review writes nothing: its partial results stay in the judge call
+    records, and the session keeps the Scores of its last finished review."""
+    by_session: dict[str, list[Score]] = {}
+    specs = {}
+    for score, session in pending:
+        if score.metadata.get("review_status") != "complete":
+            continue
+        spec = judge_spec(score.scorer, score.metadata)
+        specs[spec.name] = spec
+        by_session.setdefault(session.conversation_id, []).append(replace(score, scorer=spec.name))
+    if not by_session:
+        return 0
+    catalog = client.add_scorers(catalog, tuple(specs.values()))
+    existing = {} if force else client.session_scores(catalog, list(by_session))
+    pass_id, stats = str(uuid.uuid4()), _Stats()
+    for sid, scores in by_session.items():
+        have = _scored_names(catalog, existing.get(sid, []))
+        _write(client, catalog, pass_id, "trajectory", sid, scores, have, force, stats)
+    return stats.written

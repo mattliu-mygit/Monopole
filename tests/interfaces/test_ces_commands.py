@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 
 from weave_agent_signals import ces_commands, cli
-from weave_agent_signals.ces_catalog import DETAILS_SUFFIX, DETERMINISTIC, Catalog, ScorerRef
+from weave_agent_signals.ces_catalog import (
+    DETAILS_SUFFIX,
+    DETERMINISTIC,
+    Catalog,
+    ScorerRef,
+    judge_spec,
+)
 from weave_agent_signals.ces_client import session_view
 from weave_agent_signals.models import Score
 
@@ -182,3 +188,94 @@ def test_the_weave_backend_stays_the_default():
     args = cli.build_parser().parse_args(["score"])
 
     assert args.backend == "weave"
+
+
+def _judge_score(rubric="judge.task_completion", status="complete", models=("claude:a", "codex:b")):
+    metadata = {
+        "review_status": status,
+        "rubric_version": "3",
+        "panel_contract_version": 2,
+        "requested_judge_models": list(models),
+    }
+    return Score(rubric, 0.8, ["on_task"], metadata, "session", reason="did the task")
+
+
+class FakeJudgeCes(FakeCes):
+    def __init__(self, session_rows=None):
+        super().__init__(session_rows=session_rows)
+        self.added: list[str] = []
+
+    def add_scorers(self, catalog, specs):
+        self.added += [spec.name for spec in specs]
+        refs = {
+            s.name: ScorerRef(s, f"sc-{s.name}", "v", f"sc-{s.name}{DETAILS_SUFFIX}", "v")
+            for s in specs
+        }
+        return Catalog(
+            catalog.turns_evaluation_id, catalog.sessions_evaluation_id, {**catalog.scorers, **refs}
+        )
+
+
+def test_only_finished_reviews_write_judge_scores_under_their_panel_scorer():
+    client = FakeJudgeCes()
+    pending = [(_judge_score(), SESSION), (_judge_score("judge.focus", status="degraded"), SESSION)]
+
+    written = ces_commands.write_judge_scores(client, CATALOG, pending, force=False)
+
+    [(_, kind, target, names)] = client.writes
+    assert (written, kind, target) == (1, "trajectory", "s1")
+    assert names == client.added and names[0].startswith("judge.task_completion.panel-")
+
+
+def test_a_different_panel_or_rubric_version_gets_a_different_scorer():
+    base = judge_spec("judge.x", _judge_score().metadata)
+    reordered = judge_spec("judge.x", _judge_score(models=("codex:b", "claude:a")).metadata)
+    newer = judge_spec("judge.x", {**_judge_score().metadata, "rubric_version": "4"})
+
+    assert base == judge_spec("judge.x", _judge_score().metadata)
+    assert len({base.name, reordered.name, newer.name}) == 3
+    assert (base.granularity, base.value_type, base.description) == (
+        "session",
+        "number",
+        "judge.x v3 judged by claude:a, codex:b",
+    )
+
+
+def test_an_existing_panel_score_is_skipped_unless_forced():
+    name = judge_spec("judge.task_completion", _judge_score().metadata).name
+    client = FakeJudgeCes(session_rows={"s1": [{"scorer_id": f"sc-{name}", "value": 0.5}]})
+
+    assert (
+        ces_commands.write_judge_scores(client, CATALOG, [(_judge_score(), SESSION)], force=False)
+        == 0
+    )
+    assert (
+        ces_commands.write_judge_scores(client, CATALOG, [(_judge_score(), SESSION)], force=True)
+        == 1
+    )
+
+
+def test_judge_with_the_ces_backend_judges_found_sessions_and_writes_finished_scores(
+    monkeypatch, capsys
+):
+    client = FakeJudgeCes()
+    monkeypatch.setattr(ces_commands, "connect", lambda args: (client, CATALOG))
+    seen = {}
+
+    def judge_sessions(args, sessions, judges, rubrics):
+        seen["sessions"] = [s.conversation_id for s in sessions]
+        return "plan", [(_judge_score(), SESSION)], 0
+
+    monkeypatch.setattr(cli, "_judge_sessions", judge_sessions)
+    monkeypatch.setattr(
+        cli, "judging_plan_totals", lambda plan: {"sessions_planned": 1, "windows_planned": 2}
+    )
+
+    assert cli.main(["judge", "--backend", "ces", "--judge-model", "claude:claude-sonnet-5"]) == 0
+
+    assert seen["sessions"] == ["s1"]
+    assert (
+        "Judged 1 sessions across 2 reviewer windows (1 rubric scores). Wrote 1."
+        in capsys.readouterr().out
+    )
+    assert client.closed

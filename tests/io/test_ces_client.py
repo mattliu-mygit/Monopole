@@ -9,6 +9,7 @@ import httpx
 import pytest
 import respx
 
+from weave_agent_signals.ces_catalog import ScorerSpec
 from weave_agent_signals.ces_client import CesClient, session_view
 from weave_agent_signals.models import Score
 
@@ -308,3 +309,24 @@ def test_session_scores_keep_only_the_requested_trajectories():
     )
 
     assert client.session_scores(catalog, ["s1"]) == {"s1": [{"scorer_id": "sc-1"}]}
+
+
+@respx.mock
+def test_a_description_is_sent_only_for_scorers_that_have_one():
+    _catalog_routes()
+    bodies = []
+    respx.post(f"{BASE}/scorers").mock(
+        side_effect=lambda request: (
+            bodies.append(json.loads(request.content))
+            or httpx.Response(200, json={"scorer_id": f"sc-{len(bodies)}", "version_id": "v"})
+        )
+    )
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = client.ensure_catalog("ds-1")
+    spec = ScorerSpec("judge.x.panel-1", "number", "session", description="judge.x v3 judged by a")
+
+    merged = client.add_scorers(catalog, (spec,))
+
+    assert all("description" not in body for body in bodies[: 2 * len(catalog.scorers)])
+    assert [b.get("description") for b in bodies[-2:]] == ["judge.x v3 judged by a"] * 2
+    assert set(merged.scorers) == {*catalog.scorers, "judge.x.panel-1"}

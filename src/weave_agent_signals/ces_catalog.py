@@ -9,7 +9,10 @@ Trajectory.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
+from typing import Any
 
 TARGET_KINDS = {"turn": "case", "session": "trajectory"}
 DETAILS_SUFFIX = ".details"
@@ -20,6 +23,7 @@ class ScorerSpec:
     name: str
     value_type: str  # "number" or "boolean"
     granularity: str  # "turn" or "session"
+    description: str | None = None
 
     @property
     def target_kind(self) -> str:
@@ -38,6 +42,21 @@ DETERMINISTIC = (
     ScorerSpec("implicit.correction_free_rate", "number", "session"),
     ScorerSpec("implicit.completion", "boolean", "session"),
 )
+
+
+def judge_spec(scorer: str, metadata: dict[str, Any]) -> ScorerSpec:
+    """The Scorer for one rubric judged by one panel, so a saved query's average covers one panel.
+
+    A different panel, panel contract, or rubric version gets a different Scorer."""
+    models = list(metadata.get("requested_judge_models") or [])
+    panel = [metadata.get("panel_contract_version"), metadata.get("rubric_version"), models]
+    digest = hashlib.sha256(json.dumps(panel).encode()).hexdigest()[:10]
+    return ScorerSpec(
+        f"{scorer}.panel-{digest}",
+        "number",
+        "session",
+        description=f"{scorer} v{panel[1]} judged by {', '.join(models) or 'no models'}",
+    )
 
 
 @dataclass(frozen=True)

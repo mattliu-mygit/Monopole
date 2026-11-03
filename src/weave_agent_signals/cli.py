@@ -431,6 +431,27 @@ def cmd_judge(args: argparse.Namespace) -> int:
     else:
         selected_rubrics = rubric_catalog.rubrics
 
+    if args.backend == "ces":
+        client, catalog = ces_commands.connect(args)
+        try:
+            sessions = ces_commands.sessions_to_judge(
+                client, catalog, since=since, limit=args.limit
+            )
+            if not sessions:
+                print("No eligible agent sessions found.")
+                return 0
+            judging_plan, pending, errors = _judge_sessions(
+                args, sessions, judges, selected_rubrics
+            )
+            written = (
+                0
+                if errors
+                else ces_commands.write_judge_scores(client, catalog, pending, force=args.force)
+            )
+        finally:
+            client.close()
+        return _report_judging(judging_plan, pending, written, errors)
+
     with WeaveClient(entity=args.entity, project=args.project) as client:
         discovery_turns = client.query_turns(limit=args.limit, since=since)
         discovery_turns = filter_evaluable_turns(discovery_turns)
@@ -481,81 +502,97 @@ def cmd_judge(args: argparse.Namespace) -> int:
         # so discovery cutoffs cannot produce partial durable feedback.
         client.hydrate_turns_batch(turns)
 
-        cohort_id = "cli-direct:" + ",".join(sorted(trace_ids))
-        judging_plan = build_canonical_judging_plan(
-            sessions,
-            cohort_id=cohort_id,
-            rubrics=selected_rubrics,
-            judge_models=judges,
-            context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-        )
-        with ExitStack() as stack:
-            inference = {
-                judge.id: stack.enter_context(_make_model_client(args, judge.model))
-                for judge in judges
-            }
-            calls: dict[str, JudgeCallRecord] = {}
+        judging_plan, pending, errors = _judge_sessions(args, sessions, judges, selected_rubrics)
+        stats.errors += errors
+        if not stats.errors:
+            for score, session in pending:
+                stats.write_score(
+                    client, score, session.ref_for(args.entity, args.project), force=args.force
+                )
 
-            def record_call(call: JudgeCallRecord) -> None:
-                existing = calls.setdefault(call.request_id, call)
-                if existing != call:
-                    raise ValueError(f"judge call conflict: {call.request_id}")
+    return _report_judging(judging_plan, pending, stats.total_written, stats.errors)
 
-            pending_scores: list[tuple[Score, str]] = []
-            for session in sessions:
-                conv_id = session.conversation_id
-                run_time = session.turns[0].started_at if session.turns else None
-                try:
-                    scores = judge_session(
-                        session,
-                        inference,
-                        rubrics=selected_rubrics,
-                        judges=judges,
-                        judging_plan=judging_plan,
-                        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
-                        call_loader=calls.get,
-                        call_recorder=record_call,
-                    )
-                except JudgeExecutionError as error:
-                    if error.failures:
-                        stats.errors += 1
-                        log.warning("Error judging session %s: %s", conv_id[:12], error)
-                        continue
-                    scores = list(error.scores)
-                    log.info(
-                        "Session %s had %d not-evaluable rubric(s)",
-                        conv_id[:12],
-                        len(error.not_evaluable),
-                    )
-                except Exception as error:
-                    stats.errors += 1
+
+def _judge_sessions(
+    args: argparse.Namespace,
+    sessions: list[SessionView],
+    judges: tuple[PositionedJudge, ...],
+    selected_rubrics,
+) -> tuple:
+    """Judge each session with the panel. Returns (plan, [(score, session)], errors).
+
+    A session whose reviewers failed counts as an error and adds no scores. A session
+    with only not-evaluable rubrics keeps the scores it has."""
+    trace_ids = [turn.trace_id for session in sessions for turn in session.turns]
+    judging_plan = build_canonical_judging_plan(
+        sessions,
+        cohort_id="cli-direct:" + ",".join(sorted(trace_ids)),
+        rubrics=selected_rubrics,
+        judge_models=judges,
+        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
+    )
+    pending: list[tuple[Score, SessionView]] = []
+    errors = 0
+    with ExitStack() as stack:
+        inference = {
+            judge.id: stack.enter_context(_make_model_client(args, judge.model)) for judge in judges
+        }
+        calls: dict[str, JudgeCallRecord] = {}
+
+        def record_call(call: JudgeCallRecord) -> None:
+            existing = calls.setdefault(call.request_id, call)
+            if existing != call:
+                raise ValueError(f"judge call conflict: {call.request_id}")
+
+        for session in sessions:
+            conv_id = session.conversation_id
+            run_time = session.turns[0].started_at if session.turns else None
+            try:
+                scores = judge_session(
+                    session,
+                    inference,
+                    rubrics=selected_rubrics,
+                    judges=judges,
+                    judging_plan=judging_plan,
+                    context_policy=DEFAULT_JUDGING_CONTEXT_POLICY,
+                    call_loader=calls.get,
+                    call_recorder=record_call,
+                )
+            except JudgeExecutionError as error:
+                if error.failures:
+                    errors += 1
                     log.warning("Error judging session %s: %s", conv_id[:12], error)
                     continue
-                try:
-                    sess_ref = session.ref_for(args.entity, args.project)
-                    for score in scores:
-                        score.stamp(
-                            config_version=session.config_version,
-                            git_branch=session.git_branch,
-                            run_time=run_time,
-                        )
-                        pending_scores.append((score, sess_ref))
-                except Exception as error:
-                    stats.errors += 1
-                    log.warning("Error judging session %s: %s", conv_id[:12], error)
-            if not stats.errors:
-                for score, sess_ref in pending_scores:
-                    stats.write_score(client, score, sess_ref, force=args.force)
+                scores = list(error.scores)
+                log.info(
+                    "Session %s had %d not-evaluable rubric(s)",
+                    conv_id[:12],
+                    len(error.not_evaluable),
+                )
+            except Exception as error:
+                errors += 1
+                log.warning("Error judging session %s: %s", conv_id[:12], error)
+                continue
+            for score in scores:
+                score.stamp(
+                    config_version=session.config_version,
+                    git_branch=session.git_branch,
+                    run_time=run_time,
+                )
+                pending.append((score, session))
+    return judging_plan, pending, errors
 
+
+def _report_judging(judging_plan, pending: list, written: int, errors: int) -> int:
     plan_totals = judging_plan_totals(judging_plan)
     print(
         f"Judged {plan_totals['sessions_planned']} sessions across "
         f"{plan_totals['windows_planned']} reviewer windows "
-        f"({len(pending_scores)} rubric scores). Wrote {stats.total_written}."
+        f"({len(pending)} rubric scores). Wrote {written}."
     )
-    if stats.errors:
-        print(f"  Errors: {stats.errors} (use -v for details)")
-    return 1 if stats.errors else 0
+    if errors:
+        print(f"  Errors: {errors} (use -v for details)")
+    return 1 if errors else 0
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
@@ -830,6 +867,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ordered judge model ID; repeat for each reviewer (default: catalog recommendation)",
     )
     p_judge.add_argument("--force", action="store_true")
+    ces_commands.add_arguments(p_judge)
 
     # inspect
     p_insp = subs.add_parser("inspect", help="Inspect turns or sessions")

@@ -276,7 +276,7 @@ class CesClient:
     def ensure_catalog(
         self, dataset_id: str, specs: tuple[ScorerSpec, ...] = DETERMINISTIC
     ) -> Catalog:
-        """Create, or find again by exact replay, the two Evaluations and every scorer's Scorers."""
+        """Create, or find again by exact replay, the two Evaluations and the Scorers."""
         evaluations = {}
         for kind, label in (("case", "turns"), ("trajectory", "sessions")):
             body = {
@@ -290,7 +290,11 @@ class CesClient:
                 body=body,
                 key=f"monopole-evaluation-v1:{dataset_id}:{label}",
             )["evaluation_id"]
-        refs, selected = {}, {"case": [], "trajectory": []}
+        return self.add_scorers(Catalog(evaluations["case"], evaluations["trajectory"], {}), specs)
+
+    def add_scorers(self, catalog: Catalog, specs: tuple[ScorerSpec, ...]) -> Catalog:
+        """Create each spec's value and details Scorers and add them to the matching Evaluation."""
+        refs, selected = dict(catalog.scorers), {"case": [], "trajectory": []}
         for spec in specs:
             made = []
             for name, value_type in (
@@ -302,6 +306,8 @@ class CesClient:
                     "value_type": value_type,
                     "allowed_target_kinds": [spec.target_kind],
                 }
+                if spec.description:
+                    body["description"] = spec.description
                 made.append(
                     self._request(
                         "POST",
@@ -324,9 +330,11 @@ class CesClient:
             if scorers:
                 # Adding Scorers an Evaluation already selects returns the same selection.
                 self._request(
-                    "PATCH", f"/evaluations/{evaluations[kind]}/scorers", body={"scorers": scorers}
+                    "PATCH",
+                    f"/evaluations/{catalog.evaluation_for(kind)}/scorers",
+                    body={"scorers": scorers},
                 )
-        return Catalog(evaluations["case"], evaluations["trajectory"], refs)
+        return Catalog(catalog.turns_evaluation_id, catalog.sessions_evaluation_id, refs)
 
     def find_sessions(
         self,
