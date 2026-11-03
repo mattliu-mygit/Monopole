@@ -155,7 +155,7 @@ def test_resolve_run_config_pins_exact_order_descriptors_and_pipeline_version():
         rubric_catalog=rubrics,
     )
 
-    assert effective.pipeline_version == PIPELINE_VERSION == "8"
+    assert effective.pipeline_version == PIPELINE_VERSION == "9"
     assert [judge.id for judge in effective.models.judges] == [
         "codex:gpt-5.6-sol",
         "agy:gemini-3.1-pro-high",

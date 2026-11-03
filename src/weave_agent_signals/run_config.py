@@ -17,7 +17,7 @@ from pydantic import (
 
 from weave_agent_signals.judges.tokens import TokenCounterName
 
-PIPELINE_VERSION = "8"
+PIPELINE_VERSION = "9"
 MODEL_CATALOG_SCHEMA_VERSION = "6"
 RUBRIC_CATALOG_SCHEMA_VERSION = "1"
 EFFECTIVE_RUN_CONFIG_SCHEMA_VERSION = "5"
