@@ -1,8 +1,8 @@
 # weave-agent-signals
 
 Monopole provides layered evaluation and human-reviewed instruction improvement
-for agent traces recorded by
-`weave-agent-adapter`. It reads and scores Weave traces, writes custom feedback,
+for agent sessions that `weave-agent-adapter` writes to the CoreWeave
+Evaluations service (CES). It reads and scores those sessions, writes CES Scores,
 analyzes regressions, and manages human-reviewed instruction promotion. The
 package and CLI remain `weave-agent-signals`.
 
@@ -36,8 +36,10 @@ uv sync --frozen --all-extras
 cd frontend && npm ci
 ```
 
-The default Weave scope is entity `weave-team`, project `agent-sessions`.
-Credentials come from `WANDB_API_KEY` or the `api.wandb.ai` entry in `~/.netrc`.
+The CES scope and Dataset come from the adapter's
+`~/.weave-agent-adapter/evaluations.json`, or the `--ces-*` flags and
+`WEAVE_AGENT_SIGNALS_CES_*` env vars. Credentials come from `WANDB_API_KEY` or the
+`api.wandb.ai` entry in `~/.netrc`.
 
 ## Verification
 
@@ -64,7 +66,7 @@ then run all gates before declaring completion.
 ## Architecture map
 
 - [`specs/DESIGN.md`](specs/DESIGN.md) — product purpose and system overview
-- [`specs/01-weave-io.md`](specs/01-weave-io.md) — reads, hydration, refs, writes
+- [`specs/01-ces-io.md`](specs/01-ces-io.md) — session reads, Scores, pinning, writes
 - [`specs/02-evaluation.md`](specs/02-evaluation.md) — deterministic and model
   evaluation, sliding context policy, fixed-panel aggregation, and inference trust
 - [`specs/03-analysis-monitoring.md`](specs/03-analysis-monitoring.md) —
@@ -140,32 +142,27 @@ product behavior; standalone reflection does not mutate managed files.
   environment, an isolated temporary home, and a one-use FIFO carrying only
   its stored OAuth token. Persistent Gemini histories and state are not exposed.
 
-## Weave correctness checklist
+## CES correctness checklist
 
-These constraints are operationally dangerous to get wrong:
+These constraints are operationally dangerous to get wrong. The details live in
+[`specs/01-ces-io.md`](specs/01-ces-io.md).
 
-1. Root turn spans use `parent_span_id == ""`, never null or `$not`.
-2. Request adapter attributes through `custom_attr_columns` and flatten the
-   typed custom-attribute maps.
-3. Format ClickHouse `DateTime64(6)` literals as bare UTC ISO strings without
-   `Z` or `+00:00`.
-4. Detail columns require `include_details: true`; it cannot accompany
-   `group_by`.
-5. Hydrate children by exact `trace_id`, not conversation alone. Each detail
-   batch must also contain the requested `invoke_agent` roots.
-6. Unwrap Bash JSON `stdout`/`stderr`. Status is often `UNSET`, and an explicit
-   null exit code means unknown.
-7. Derive token totals/effective model from child chat spans when roots are zero.
-8. Feedback query returns records under `result`.
-9. Forced feedback replacement creates the new row before purging any prior
-   match. Purge supports `$eq` on feedback `id` and runs only after creation
-   succeeds.
-10. Custom scores use flat `payload`. `scorer_*` fields require monitor-specific
-    runnable, call, and trigger refs that this project does not create.
-11. W&B Inference is `https://api.inference.wandb.ai/v1` and requires bearer W&B
-    auth plus `OpenAI-Project: {entity}/{project}`. HTTP 402 means credits are
-    disabled.
-12. URL-encode `conversation_id` when constructing session refs.
+1. A turn's identity is its first Case ID. Turn Scores target that Case, and run
+   cohorts pin every member Case ID; never rebuild a turn's identity another way.
+2. CES filters cannot range-compare string fields. Scan newest first and stop at
+   the bound instead of filtering on `started_at`.
+3. Every create carries an `Idempotency-Key` built from its content. Score keys
+   include the pass ID and a body digest, so a retry replays and a changed body
+   writes a newer Score. Never reuse a key for different content.
+4. Reads return the newest Score per Scorer. Rescoring writes newer Scores; there
+   is no purge.
+5. Only finished judge reviews write Scores, and each rubric and panel has its
+   own Scorer.
+6. `ces_score_index.py` is a temporary fallback for CES deployments without
+   Trajectory-row search. Delete it once the route is deployed.
+7. W&B Inference is `https://api.inference.wandb.ai/v1` and requires bearer W&B
+   auth plus `OpenAI-Project: {entity}/{project}`. HTTP 402 means credits are
+   disabled.
 
 ## Run and promotion safety
 

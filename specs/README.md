@@ -3,7 +3,7 @@
 Start with [DESIGN.md](DESIGN.md) for the product model and system boundaries.
 The component specs then cover the current behavioral contract:
 
-1. [Weave I/O](01-weave-io.md) — trace identity, exact hydration, refs, feedback,
+1. [CES I/O](01-ces-io.md) — session and turn identity, reads, Scores, pinning,
    and external correctness constraints.
 2. [Evaluation](02-evaluation.md) — deterministic scores, planned model
    judgment, verdicts, fixed-panel aggregation, and inference trust.

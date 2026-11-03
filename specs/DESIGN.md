@@ -1,6 +1,6 @@
 # Monopole design
 
-Monopole turns agent traces recorded by `weave-agent-adapter` into an
+Monopole turns agent sessions that `weave-agent-adapter` writes to CES into an
 auditable improvement loop. It evaluates observed outcomes and process quality,
 finds regressions, proposes repository instruction changes, and requires a human
 decision before promotion.
@@ -9,10 +9,10 @@ decision before promotion.
 
 ```mermaid
 flowchart LR
-    A["Weave traces"] --> B["Exact trace hydration"]
+    A["CES session Trajectories"] --> B["Session reads"]
     B --> C["Deterministic evaluation"]
     B --> D["Planned model evaluation"]
-    C --> E["Weave score feedback"]
+    C --> E["CES Scores"]
     D --> E
     E --> F["Analysis and monitoring"]
     E --> G["Pinned evaluation run"]
@@ -24,7 +24,7 @@ flowchart LR
 
 Three systems hold different kinds of authority:
 
-- Weave is the source of truth for recorded traces and attached scores.
+- CES is the source of truth for recorded sessions and their Scores.
 - Local SQLite is the source of truth for evaluation-run inputs, progress,
   immutable review evidence, decisions, and promotion receipts.
 - Repository Markdown files are the live instruction state and the promotion
@@ -44,8 +44,8 @@ while pages compose those features into user workflows.
 
 Evaluation is layered:
 
-1. Weave I/O discovers turn roots, hydrates exact traces, builds turn and
-   session views, and writes score feedback to exact refs.
+1. CES I/O reads session Trajectories, builds turn and session views, and
+   writes Scores to each turn's first Case or the session Trajectory.
 2. Deterministic evaluation extracts high-precision outcome and process signals
    without inference.
 3. Model evaluation pins a bounded sliding-window plan, gives every session turn

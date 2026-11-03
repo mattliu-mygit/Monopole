@@ -2,8 +2,9 @@
 
 Monopole evaluates Claude Code and Codex sessions recorded by
 [`weave-agent-adapter`](https://github.com/wandb/weave-agent-adapter). It reads
-traces from W&B Weave, writes scores beside the same turns and sessions, detects
-regressions, and prepares instruction improvements for human review.
+those sessions from the CoreWeave Evaluations service (CES), writes CES Scores on
+the same turns and sessions, detects regressions, and prepares instruction
+improvements for human review.
 
 The repository, Python package, and CLI entry point are named
 `weave-agent-signals`.
@@ -20,7 +21,7 @@ development mode.
 - Node.js `20.19.x` or `22.12+` and npm
 - Apple Silicon macOS, or Linux with KVM, for local paired verification
 - The self-contained [Smol CLI](https://smolmachines.com/docs/installation)
-- Access to the W&B entity and project that contain your Weave traces
+- The CES Dataset that `weave-agent-adapter evaluations setup` created
 
 Clone the repository if you have not already:
 
@@ -57,8 +58,11 @@ WANDB_API_KEY=your-key
 ```
 
 If you already use the W&B CLI, its `api.wandb.ai` entry in `~/.netrc` also
-works. The default Weave scope is `weave-team/agent-sessions`; pass global
-`--entity` and `--project` arguments to use another scope.
+works. Monopole finds the CES scope and Dataset in the adapter's
+`~/.weave-agent-adapter/evaluations.json`; override them with `--ces-scope-ref`,
+`--ces-dataset-id`, and `--ces-url`, or the matching `WEAVE_AGENT_SIGNALS_CES_*`
+env vars. The global `--entity` and `--project` arguments only choose the W&B
+Inference project for judges.
 
 ### 4. Create your local instruction-target registry
 
@@ -216,11 +220,11 @@ contains and when it should update or create instructions there.
   model reviews.
 - Compares compatible evaluation cohorts, identifies trends, and emits
   deduplicated regression alerts.
-- Runs a reproducible scoring-to-reflection workflow over pinned Weave traces.
+- Runs a reproducible scoring-to-reflection workflow over pinned CES sessions.
 - Keeps instruction proposals human-reviewed and records exact promotion
   outcomes.
 
-Scores are custom Weave feedback attached to the turn or conversation they
+Scores are CES Scores on the turn's first Case or the session Trajectory they
 describe. Local SQLite state tracks evaluation runs and review evidence.
 
 ## Development
@@ -245,7 +249,7 @@ Additional contributor conventions live in [AGENTS.md](AGENTS.md). Start the
 architecture tour in [specs/DESIGN.md](specs/DESIGN.md), then use the component
 specifications:
 
-- [Weave I/O](specs/01-weave-io.md)
+- [CES I/O](specs/01-ces-io.md)
 - [Evaluation](specs/02-evaluation.md)
 - [Analysis and monitoring](specs/03-analysis-monitoring.md)
 - [Evaluation runs](specs/04-evaluation-runs.md)
