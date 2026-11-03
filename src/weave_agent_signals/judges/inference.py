@@ -16,7 +16,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
-from weave_agent_signals.client import _get_api_key
+from weave_agent_signals.auth import get_api_key
 
 log = logging.getLogger("weave_agent_signals.judges")
 
@@ -391,7 +391,7 @@ def _resolve_backend(
     backend = backend or os.environ.get("JUDGE_BACKEND", "openai")
 
     if backend == "wandb":
-        api_key = _get_api_key()
+        api_key = get_api_key()
         return (
             INFERENCE_BASE,
             {

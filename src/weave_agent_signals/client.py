@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import base64
 import json
-import netrc as netrc_mod
-import os
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
+from weave_agent_signals.auth import get_api_key
 from weave_agent_signals.models import (
     FEEDBACK_PREFIX,
     TRACE_ROLE_ATTRIBUTE,
@@ -53,21 +52,6 @@ def _root_trace_counts(spans: list[dict[str, Any]]) -> Counter[str]:
     return counts
 
 
-def _get_api_key() -> str:
-    key = os.environ.get("WANDB_API_KEY")
-    if key:
-        return key
-    netrc_path = os.path.expanduser("~/.netrc")
-    if os.path.exists(netrc_path):
-        try:
-            auth = netrc_mod.netrc(netrc_path).authenticators("api.wandb.ai")
-            if auth:
-                return auth[2]
-        except Exception:
-            pass
-    raise RuntimeError("No W&B API key found. Set WANDB_API_KEY or add api.wandb.ai to ~/.netrc")
-
-
 class WeaveClient:
     def __init__(
         self,
@@ -75,7 +59,7 @@ class WeaveClient:
         entity: str = "weave-team",
         project: str = "agent-sessions",
     ):
-        self.api_key = api_key or _get_api_key()
+        self.api_key = api_key or get_api_key()
         self.entity = entity
         self.project = project
         self.project_id = f"{entity}/{project}"

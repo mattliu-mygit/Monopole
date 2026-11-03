@@ -16,6 +16,7 @@ from urllib.parse import quote
 
 import httpx
 
+from weave_agent_signals.auth import get_api_key
 from weave_agent_signals.ces_catalog import (
     DETAILS_SUFFIX,
     DETERMINISTIC,
@@ -24,7 +25,6 @@ from weave_agent_signals.ces_catalog import (
     ScorerSpec,
 )
 from weave_agent_signals.ces_score_index import ScoreIndex
-from weave_agent_signals.client import _get_api_key
 from weave_agent_signals.models import (
     ChatSpan,
     Score,
@@ -265,7 +265,7 @@ class CesClient:
     ):
         self.base = f"/v1/namespaces/{namespace}/scopes/{quote(scope_ref, safe='')}"
         self._http = http or httpx.Client(
-            base_url=base_url.rstrip("/"), auth=("api", api_key or _get_api_key()), timeout=60.0
+            base_url=base_url.rstrip("/"), auth=("api", api_key or get_api_key()), timeout=60.0
         )
         self._sleep = sleep
         self._index = score_index or ScoreIndex()
