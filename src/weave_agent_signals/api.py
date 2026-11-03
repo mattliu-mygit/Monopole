@@ -180,7 +180,7 @@ def _build_default_dependencies(
         writer_client_factory=model_client,
         evaluator_client_factory=model_client,
         coaching_digest=coaching_digest,
-        challenge_runner=create_challenge_runner(runtime),
+        challenge_runner=create_challenge_runner(runtime, ces_factory=ces_factory),
     )
 
     def reflection_stage(

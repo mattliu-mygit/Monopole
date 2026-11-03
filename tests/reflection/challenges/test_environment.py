@@ -45,7 +45,6 @@ def test_execution_environment_pins_exact_harness_and_hashes_all_values() -> Non
         "--sandbox",
         "workspace-write",
         "--skip-git-repo-check",
-        "--ephemeral",
         "--json",
         "{task}",
     )

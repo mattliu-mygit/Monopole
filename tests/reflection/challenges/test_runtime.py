@@ -117,10 +117,7 @@ def test_runtime_files_cannot_change_the_paired_workspace(tmp_path, target):
         )
 
 
-def test_challenge_runtime_prepares_public_material_once_before_forking_arms(
-    tmp_path,
-    monkeypatch,
-):
+def _call_challenge_runner(tmp_path, monkeypatch, **runner_kwargs):
     (tmp_path / "AGENTS.md").write_text("baseline\n", encoding="utf-8")
     runtime = load_sandbox_runtime(_document(tmp_path))
     baseline = BundleSnapshot(
@@ -195,6 +192,7 @@ def test_challenge_runtime_prepares_public_material_once_before_forking_arms(
         pair_runner=object(),
         version_reader=lambda _argv: "codex-cli 0.144.1",
         repository_fetcher=fetch,
+        **runner_kwargs,
     )
 
     result = challenge_runner(
@@ -216,11 +214,33 @@ def test_challenge_runtime_prepares_public_material_once_before_forking_arms(
         judge_clients={"judge": object()},
         cancel_requested=lambda: False,
     )
+    return result, captured["prepared"], fetched
 
-    prepared = captured["prepared"]
+
+def test_challenge_runtime_prepares_public_material_once_before_forking_arms(
+    tmp_path,
+    monkeypatch,
+):
+    result, prepared, fetched = _call_challenge_runner(tmp_path, monkeypatch)
+
     assert result == "challenge"
     assert len(fetched) == 1
     assert prepared.authoring.read_text("task/app.py") == "print('fixture')\n"
     assert prepared.arms.baseline.read_text("task/app.py") == "print('fixture')\n"
     assert prepared.arms.baseline.read_text("AGENTS.md") == "baseline\n"
     assert prepared.arms.candidate.read_text("AGENTS.md") == "candidate\n"
+
+
+def test_challenge_runtime_records_the_result_in_ces_when_given_a_session_factory(
+    tmp_path,
+    monkeypatch,
+):
+    factory = object()
+    monkeypatch.setattr(
+        "weave_agent_signals.runs.challenges.runtime.record_safely",
+        lambda result, ces_factory: (result, ces_factory),
+    )
+
+    result, _prepared, _fetched = _call_challenge_runner(tmp_path, monkeypatch, ces_factory=factory)
+
+    assert result == ("challenge", factory)

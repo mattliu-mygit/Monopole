@@ -264,6 +264,9 @@ class ArmResult(_Contract):
     artifact_digests: dict[StrictStr, StrictStr]
     artifact_changes: tuple[ArtifactChange, ...] = ()
     infrastructure_error: StrictStr | None = None
+    # The harness session file, held only until the arm is logged to CES. It is not
+    # evidence, so it is never serialized or part of the challenge identity.
+    session_transcript: StrictStr | None = Field(default=None, exclude=True, repr=False)
 
     @model_validator(mode="after")
     def validate_result(self) -> ArmResult:
@@ -382,6 +385,15 @@ class JudgeVerdict(_Contract):
         return self
 
 
+class ChallengeCesRecord(_Contract):
+    """Where CES holds a challenge: each arm's session Case, their Comparison, and its verdict."""
+
+    baseline_case_id: StrictStr
+    candidate_case_id: StrictStr
+    comparison_id: StrictStr
+    verdict_score_id: StrictStr
+
+
 class ChallengeResult(_Contract):
     schema_version: Literal["1"] = "1"
     challenge_id: StrictStr = "pending"
@@ -394,6 +406,8 @@ class ChallengeResult(_Contract):
     baseline: ArmResult | None
     candidate: ArmResult | None
     judges: tuple[JudgeVerdict, ...]
+    # Added after the challenge is decided, so it is left out of the identity digest.
+    ces_record: ChallengeCesRecord | None = None
 
     @model_validator(mode="after")
     def validate_result(self) -> ChallengeResult:
@@ -435,7 +449,9 @@ class ChallengeResult(_Contract):
                     raise ValueError("judged invalid task requires task and both arm results")
                 if not any(not judge.task_valid for judge in self.judges):
                     raise ValueError("invalid task challenge requires invalid-task judge evidence")
-        expected_id = canonical_digest(self.model_dump(mode="json", exclude={"challenge_id"}))
+        expected_id = canonical_digest(
+            self.model_dump(mode="json", exclude={"challenge_id", "ces_record"})
+        )
         if self.challenge_id not in {"pending", expected_id}:
             raise ValueError("challenge identity digest mismatch")
         object.__setattr__(self, "challenge_id", expected_id)

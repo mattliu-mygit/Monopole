@@ -99,7 +99,6 @@ def _command(
                 "--sandbox",
                 "workspace-write",
                 "--skip-git-repo-check",
-                "--ephemeral",
                 "--json",
                 "{task}",
             )
@@ -113,7 +112,7 @@ def _command(
     ]
     if effort is not None:
         command.extend(("--effort", effort))
-    command.extend(("--output-format", "stream-json", "--no-session-persistence", "{task}"))
+    command.extend(("--output-format", "stream-json", "{task}"))
     return tuple(command)
 
 

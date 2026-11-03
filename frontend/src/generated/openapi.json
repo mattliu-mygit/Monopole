@@ -422,6 +422,36 @@
         "title": "BundleSnapshotResponse",
         "type": "object"
       },
+      "ChallengeCesRecord": {
+        "additionalProperties": false,
+        "description": "Where CES holds a challenge: each arm's session Case, their Comparison, and its verdict.",
+        "properties": {
+          "baseline_case_id": {
+            "title": "Baseline Case Id",
+            "type": "string"
+          },
+          "candidate_case_id": {
+            "title": "Candidate Case Id",
+            "type": "string"
+          },
+          "comparison_id": {
+            "title": "Comparison Id",
+            "type": "string"
+          },
+          "verdict_score_id": {
+            "title": "Verdict Score Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "baseline_case_id",
+          "candidate_case_id",
+          "comparison_id",
+          "verdict_score_id"
+        ],
+        "title": "ChallengeCesRecord",
+        "type": "object"
+      },
       "ChallengeResult": {
         "additionalProperties": false,
         "properties": {
@@ -448,6 +478,16 @@
           "candidate_id": {
             "title": "Candidate Id",
             "type": "string"
+          },
+          "ces_record": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChallengeCesRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "challenge_id": {
             "default": "pending",

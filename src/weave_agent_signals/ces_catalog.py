@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-TARGET_KINDS = {"turn": "case", "session": "trajectory"}
+TARGET_KINDS = {"turn": "case", "session": "trajectory", "comparison": "comparison"}
 DETAILS_SUFFIX = ".details"
 
 
@@ -22,7 +22,7 @@ DETAILS_SUFFIX = ".details"
 class ScorerSpec:
     name: str
     value_type: str  # "number" or "boolean"
-    granularity: str  # "turn" or "session"
+    granularity: str  # "turn", "session", or "comparison"
     description: str | None = None
 
     @property
@@ -41,6 +41,15 @@ DETERMINISTIC = (
     ScorerSpec("efficiency.session", "number", "session"),
     ScorerSpec("implicit.correction_free_rate", "number", "session"),
     ScorerSpec("implicit.completion", "boolean", "session"),
+)
+
+VERDICT = ScorerSpec(
+    "ab.verdict",
+    "number",
+    "comparison",
+    description=(
+        "Paired A/B verification: 1 when B (the candidate) wins, 0.5 for a tie, 0 when A wins"
+    ),
 )
 
 

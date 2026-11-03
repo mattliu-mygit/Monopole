@@ -6,6 +6,7 @@ from weave_agent_signals.runs.challenges.contracts import (
     ArmResult,
     ArtifactChange,
     AuthoredTask,
+    ChallengeCesRecord,
     ChallengeResult,
     ExecutionIdentity,
     JudgeVerdict,
@@ -175,6 +176,21 @@ def test_challenge_contract_round_trips_with_content_authenticated_ids() -> None
     assert result.to_dict()["judges"][0]["rubrics"][0]["delta"] == pytest.approx(0.5)
     assert result.to_dict()["baseline"]["artifact_changes"][0]["path"] == "src/parser.py"
     assert result.to_dict()["task"]["schema_version"] == "3"
+
+
+def test_ces_record_round_trips_outside_the_challenge_identity() -> None:
+    result = _result()
+    record = ChallengeCesRecord(
+        baseline_case_id="case-a",
+        candidate_case_id="case-b",
+        comparison_id="comparison-1",
+        verdict_score_id="score-1",
+    )
+
+    restored = ChallengeResult.from_dict(result.model_copy(update={"ces_record": record}).to_dict())
+
+    assert restored.ces_record == record
+    assert restored.challenge_id == result.challenge_id
 
 
 def test_epoch9_challenge_task_v2_upgrades_to_current_authenticated_contract() -> None:

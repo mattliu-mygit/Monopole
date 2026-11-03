@@ -444,9 +444,11 @@ class CesClient:
                 made[1]["scorer_id"],
                 made[1]["version_id"],
             )
-            selected[spec.target_kind] += [
-                {"scorer_id": m["scorer_id"], "version_id": m["version_id"]} for m in made
-            ]
+            # Comparison Scores are read by ID, so no Evaluation selects their Scorers.
+            if spec.target_kind in selected:
+                selected[spec.target_kind] += [
+                    {"scorer_id": m["scorer_id"], "version_id": m["version_id"]} for m in made
+                ]
         for kind, scorers in selected.items():
             if scorers:
                 # Adding Scorers an Evaluation already selects returns the same selection.
@@ -456,6 +458,18 @@ class CesClient:
                     body={"scorers": scorers},
                 )
         return Catalog(catalog.turns_evaluation_id, catalog.sessions_evaluation_id, refs)
+
+    def create_comparison(
+        self, members: list[tuple[str, str]], *, key: str, attributes: dict | None = None
+    ) -> str:
+        """Group published Cases, given as (Case ID, role) pairs, into one Comparison."""
+        comparison: dict[str, Any] = {
+            "members": [{"case_id": case_id, "role": role} for case_id, role in members]
+        }
+        if attributes:
+            comparison["attributes"] = attributes
+        result = self._request("POST", "/comparisons", body={"comparisons": [comparison]}, key=key)
+        return result["comparison_ids"][0]
 
     def find_sessions(
         self,

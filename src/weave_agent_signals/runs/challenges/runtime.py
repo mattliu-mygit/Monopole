@@ -12,7 +12,9 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, model_validator
 
+from weave_agent_signals.ces_client import CesSession
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
+from weave_agent_signals.runs.challenges.ces_record import record_safely
 from weave_agent_signals.runs.challenges.contracts import TaskMaterialPlan
 from weave_agent_signals.runs.challenges.environment import (
     RuntimeFile,
@@ -126,8 +128,11 @@ def create_challenge_runner(
     pair_runner=None,
     version_reader: Callable[[list[str]], str] | None = None,
     repository_fetcher: RepositoryFetcher | None = None,
+    ces_factory: Callable[[], CesSession] | None = None,
 ):
-    """Bind the platform runtime to the reflection-stage challenge contract."""
+    """Bind the platform runtime to the reflection-stage challenge contract.
+
+    With `ces_factory`, a decided challenge is also recorded in CES."""
 
     machine_runner = pair_runner or SmolMachineRunner()
 
@@ -201,7 +206,7 @@ def create_challenge_runner(
             rubrics = tuple(SESSION_RUBRICS[item.id] for item in config.rubrics)
         except KeyError as exc:
             raise ValueError(f"unknown configured challenge rubric: {exc.args[0]}") from exc
-        return run_challenge(
+        result = run_challenge(
             candidate_id=candidate.candidate_id,
             coaching_digest=coaching_text,
             authoring_snapshot=arms.authoring,
@@ -219,5 +224,6 @@ def create_challenge_runner(
             prepare_pair=prepare_pair,
             cancel_requested=cancel_requested,
         )
+        return result if ces_factory is None else record_safely(result, ces_factory)
 
     return challenge_runner

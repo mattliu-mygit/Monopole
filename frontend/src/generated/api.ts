@@ -443,12 +443,27 @@ export interface components {
             /** Targets */
             targets: components["schemas"]["TargetSnapshotResponse"][];
         };
+        /**
+         * ChallengeCesRecord
+         * @description Where CES holds a challenge: each arm's session Case, their Comparison, and its verdict.
+         */
+        ChallengeCesRecord: {
+            /** Baseline Case Id */
+            baseline_case_id: string;
+            /** Candidate Case Id */
+            candidate_case_id: string;
+            /** Comparison Id */
+            comparison_id: string;
+            /** Verdict Score Id */
+            verdict_score_id: string;
+        };
         /** ChallengeResult */
         ChallengeResult: {
             baseline: components["schemas"]["ArmResult"] | null;
             candidate: components["schemas"]["ArmResult"] | null;
             /** Candidate Id */
             candidate_id: string;
+            ces_record?: components["schemas"]["ChallengeCesRecord"] | null;
             /**
              * Challenge Id
              * @default pending

@@ -9,7 +9,7 @@ import httpx
 import pytest
 import respx
 
-from weave_agent_signals.ces_catalog import ScorerSpec
+from weave_agent_signals.ces_catalog import VERDICT, Catalog, ScorerSpec
 from weave_agent_signals.ces_client import CesClient, session_view
 from weave_agent_signals.ces_score_index import ScoreIndex
 from weave_agent_signals.models import Score
@@ -223,6 +223,42 @@ def test_the_catalog_makes_a_value_and_a_details_scorer_for_each_scorer():
     ]
     assert "monopole-scorer-v1:implicit.completion:boolean:trajectory" in made
     assert catalog.by_scorer_id()["sc-2"] == ("efficiency", True)
+
+
+@respx.mock
+def test_a_comparison_groups_cases_by_role_and_its_scorer_joins_no_evaluation():
+    made = _catalog_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    route = respx.post(f"{BASE}/comparisons").mock(
+        return_value=httpx.Response(
+            200, json={"comparison_ids": ["cmp-1"], "commit_id": 1, "publish_operation_id": "op"}
+        )
+    )
+
+    comparison_id = client.create_comparison(
+        [("case-a", "A"), ("case-b", "B")],
+        key="ab-comparison-v1:x",
+        attributes={"challenge_id": "x"},
+    )
+    catalog = client.add_scorers(Catalog("ev-turns", "ev-sessions", {}), (VERDICT,))
+
+    assert comparison_id == "cmp-1"
+    request = route.calls.last.request
+    assert request.headers["Idempotency-Key"] == "ab-comparison-v1:x"
+    assert json.loads(request.content) == {
+        "comparisons": [
+            {
+                "members": [{"case_id": "case-a", "role": "A"}, {"case_id": "case-b", "role": "B"}],
+                "attributes": {"challenge_id": "x"},
+            }
+        ]
+    }
+    assert made == [
+        "monopole-scorer-v1:ab.verdict:number:comparison",
+        "monopole-scorer-v1:ab.verdict.details:json:comparison",
+    ]
+    assert all(call.request.method != "PATCH" for call in respx.calls)
+    assert catalog.scorers["ab.verdict"].spec is VERDICT
 
 
 @respx.mock

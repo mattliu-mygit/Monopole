@@ -46,6 +46,8 @@ _MAX_PROCESS_OUTPUT_BYTES = 200_000
 _MAX_PROCESS_CAPTURE_BYTES = 32 * 1024 * 1024
 _MAX_PROCESS_CAPTURE_FILE_BYTES = _MAX_PROCESS_CAPTURE_BYTES // 2
 _MAX_WORKSPACE_ARCHIVE_BYTES = 320 * 1024 * 1024
+_SESSION_DIRS = {"codex": "$HOME/.codex/sessions", "claude": "$HOME/.claude/projects"}
+_MAX_SESSION_BYTES = 16 * 1024 * 1024
 _LOG = logging.getLogger(__name__)
 
 
@@ -344,6 +346,35 @@ def _is_execution_timeout(error: BaseException) -> bool:
     return isinstance(error, TimeoutError) or getattr(error, "code", None) == "TIMEOUT"
 
 
+def _session_transcript(machine: Machine, environment: CapturedEnvironment) -> str | None:
+    """The arm's harness session file, read so the arm can be logged to CES.
+
+    Each arm runs one session in a fresh machine, so the one top-level session file is the
+    arm's. A missing, oversized, or unreadable file leaves the arm unlogged, never failed."""
+    directory = _SESSION_DIRS[environment.identity.harness]
+    try:
+        found = machine.exec(
+            [
+                "/bin/sh",
+                "-c",
+                f'find "{directory}" -name "*.jsonl" -not -path "*/subagents/*" 2>/dev/null'
+                " | head -1",
+            ],
+            ExecutionOptions(env=dict(environment.runtime_env), workdir=_WORKSPACE, timeout=60),
+        )
+        path = found.stdout.strip()
+        if found.exit_code != 0 or not path:
+            return None
+        data = machine.read_file(path)
+    except Exception as error:
+        _LOG.warning("arm session file could not be read: %s", _safe_error(error))
+        return None
+    if len(data) > _MAX_SESSION_BYTES:
+        _LOG.warning("arm session file is %d bytes, over the logging limit", len(data))
+        return None
+    return data.decode("utf-8", errors="replace")
+
+
 def _transcript(stdout: str, stderr: str) -> tuple[str, str]:
     combined = stdout
     if stderr:
@@ -599,6 +630,7 @@ class SmolMachineRunner:
                 raise RuntimeError(f"artifact capture exited {packed.exit_code}: {packed.stderr}")
             final = _snapshot_from_archive(machine.read_file(_FINAL_ARCHIVE))
             transcript, transcript_digest = _transcript(stdout, stderr)
+            session_transcript = _session_transcript(machine, environment)
             return ArmResult(
                 arm=arm,
                 status=status,
@@ -610,6 +642,7 @@ class SmolMachineRunner:
                 transcript_digest=transcript_digest,
                 artifact_digests={item.path: item.digest for item in final.files},
                 artifact_changes=describe_workspace_changes(snapshot, final),
+                session_transcript=session_transcript,
             )
         except ChallengeCancelled:
             raise

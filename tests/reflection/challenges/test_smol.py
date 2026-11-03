@@ -41,8 +41,10 @@ class _FakeMachine:
         task_error: Exception | None = None,
         setup_exit: int = 0,
         missing_executables: frozenset[str] = frozenset(),
+        session_path: str | None = "/root/.codex/sessions/rollout-arm.jsonl",
     ) -> None:
         self.name = name
+        self.session_path = session_path
         self.archive = archive
         self.barrier = barrier
         self.task_error = task_error
@@ -72,9 +74,15 @@ class _FakeMachine:
             return _ExecResult(stdout=f"{self.name} completed and verified the goal")
         if command[0] == "tar":
             return _ExecResult()
+        if command[:2] == ["/bin/sh", "-c"] and command[2].startswith(
+            'find "$HOME/.codex/sessions"'
+        ):
+            return _ExecResult(stdout=f"{self.session_path}\n" if self.session_path else "")
         raise AssertionError(command)
 
     def read_file(self, path: str) -> bytes:
+        if path == self.session_path:
+            return f'{{"session": "{self.name}"}}\n'.encode()
         assert path == "/root/.monopole-final-workspace.tar"
         return self.archive
 
@@ -194,6 +202,10 @@ def test_runner_executes_both_arms_concurrently_with_identical_runtime() -> None
 
     assert [result.arm for result in results] == ["baseline", "candidate"]
     assert all(result.status == "exited" for result in results)
+    assert [result.session_transcript for result in results] == [
+        f'{{"session": "{machine.name}"}}\n' for machine in machines
+    ]
+    assert all("session_transcript" not in result.to_dict() for result in results)
     assert all(machine.deleted for machine in machines)
     assert all(machine.writes["/tmp/workspace.tar"] for machine in machines)
     assert {
@@ -230,6 +242,27 @@ def test_runner_executes_both_arms_concurrently_with_identical_runtime() -> None
     assert len(packed_calls) == 2
     assert all("--exclude=*/.venv" in command for command in packed_calls)
     assert all("--exclude=*/node_modules" in command for command in packed_calls)
+
+
+def test_runner_leaves_an_arm_without_a_session_file_unlogged() -> None:
+    baseline, candidate = _snapshots()
+    barrier = threading.Barrier(2)
+
+    def factory(name: str, _image: str, _network: bool):
+        snapshot = baseline if name.endswith("baseline") else candidate
+        return _FakeMachine(name, snapshot.archive, barrier, session_path=None)
+
+    results = SmolMachineRunner(machine_factory=factory).run_pair(
+        baseline=baseline,
+        candidate=candidate,
+        task=_task(),
+        environment=_environment(),
+    )
+
+    assert [(result.status, result.session_transcript) for result in results] == [
+        ("exited", None),
+        ("exited", None),
+    ]
 
 
 def test_runner_preflight_rejects_missing_required_executable_before_arms() -> None:
