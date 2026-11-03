@@ -21,7 +21,6 @@ from weave_agent_signals import ces_commands
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
 from weave_agent_signals.ces_catalog import Catalog
 from weave_agent_signals.ces_client import CesClient, CesSession
-from weave_agent_signals.client import WeaveClient
 from weave_agent_signals.judges.cli_backend import CliJudgeClient
 from weave_agent_signals.judges.inference import ChatClient, InferenceClient
 from weave_agent_signals.patterns import coaching_digest
@@ -54,11 +53,11 @@ _DEFAULT_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dis
 
 @dataclass(frozen=True)
 class ApiDependencies:
-    """Application-owned services and their shared external client factory."""
+    """Application-owned services and their shared CES session factory."""
 
     run_service: RunService
     review_service: ReviewService
-    client_factory: Callable[[], WeaveClient]
+    ces_factory: Callable[[], CesSession]
     close: Callable[[], None]
 
 
@@ -103,9 +102,6 @@ def _build_default_dependencies(
 
     store = RunStore(db_path)
     executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="evaluation-run")
-
-    def client_factory() -> WeaveClient:
-        return WeaveClient(entity=entity, project=project)
 
     catalogs: list[Catalog] = []
 
@@ -221,7 +217,7 @@ def _build_default_dependencies(
     return ApiDependencies(
         run_service=run_service,
         review_service=review_service,
-        client_factory=client_factory,
+        ces_factory=ces_factory,
         close=close,
     )
 
@@ -272,7 +268,7 @@ def create_app(
     if dependencies is not None:
         run_reference.bind(dependencies.run_service)
         review_reference.bind(dependencies.review_service)
-        client_reference.bind(dependencies.client_factory)
+        client_reference.bind(dependencies.ces_factory)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -287,7 +283,7 @@ def create_app(
             )
             run_reference.bind(active.run_service)
             review_reference.bind(active.review_service)
-            client_reference.bind(active.client_factory)
+            client_reference.bind(active.ces_factory)
         application.state.dependencies = active
         try:
             active.run_service.recover_interrupted_runs()
@@ -323,10 +319,10 @@ def create_app(
     )
     application.include_router(create_reviews_router(cast(ReviewService, review_reference)))
 
-    def client_factory() -> WeaveClient:
-        return cast(Callable[[], WeaveClient], client_reference._value)()
+    def ces_factory() -> CesSession:
+        return cast(Callable[[], CesSession], client_reference._value)()
 
-    application.include_router(create_inspection_router(client_factory))
+    application.include_router(create_inspection_router(ces_factory))
     _register_frontend(
         application,
         Path(frontend_dist) if frontend_dist is not None else _DEFAULT_FRONTEND_DIST,

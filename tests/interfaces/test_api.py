@@ -34,7 +34,7 @@ def _dependencies(*, closed: list[bool] | None = None) -> ApiDependencies:
     return ApiDependencies(
         run_service=_Runs(),
         review_service=_Reviews(),
-        client_factory=lambda: _Client(),
+        ces_factory=lambda: _Client(),
         close=(lambda: closed.append(True)) if closed is not None else (lambda: None),
     )
 

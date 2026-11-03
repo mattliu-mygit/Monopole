@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel
@@ -612,7 +611,6 @@ class FeedbackItemResponse(BaseModel):
     id: str
     feedback_type: str
     payload: FeedbackPayloadResponse
-    created_at: datetime
 
 
 class TurnDetailResponse(ResponseModel):

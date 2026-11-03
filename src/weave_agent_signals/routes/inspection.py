@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import get_args
-from urllib.parse import unquote, urlparse
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query
 
-from weave_agent_signals.client import WeaveClient
+from weave_agent_signals.ces_client import CesSession
 from weave_agent_signals.judges.tokens import TokenCounterName, count_tokens
 from weave_agent_signals.judges.windowing import render_raw_turn
-from weave_agent_signals.models import FEEDBACK_PREFIX, TurnSpan, session_is_evaluable
+from weave_agent_signals.models import FEEDBACK_PREFIX, SessionView, TurnSpan, session_is_evaluable
 from weave_agent_signals.patterns import (
     ab_leaderboard,
     aggregate_scores,
@@ -27,95 +26,39 @@ from weave_agent_signals.routes.models import (
     SessionListResponse,
 )
 
-_SIGNAL_SCORER_RE = re.compile(
-    r"^agent-signal-(?P<signal>.+)-(?P<version>v[1-9][0-9]*)-scorer(?::.+)?$"
-)
-_SIGNAL_ANCHORS = {0.0, 0.25, 0.5, 0.75, 1.0}
 _SIGNAL_THRESHOLD = 0.5
 
 
-def _signal_identity(runnable_ref: object) -> tuple[str, str] | None:
-    if not isinstance(runnable_ref, str):
-        return None
-    parts = [unquote(part) for part in urlparse(runnable_ref).path.split("/") if part]
-    if not parts:
-        return None
-    match = _SIGNAL_SCORER_RE.fullmatch(parts[-1])
-    if match is None:
-        return None
-    return match.group("signal"), match.group("version")
-
-
-def _signal_rating(row: dict) -> tuple[float, str, datetime]:
-    payload = row.get("payload")
-    output = payload.get("output") if isinstance(payload, dict) else None
-    if not isinstance(output, dict):
-        raise ValueError("eligible Signal feedback has no output object")
-    rating_value = output.get("rating")
-    value_value = output.get("value")
-    if rating_value is not None and value_value is not None and rating_value != value_value:
-        raise ValueError("eligible Signal feedback has conflicting rating aliases")
-    rating = rating_value if rating_value is not None else value_value
-    if isinstance(rating, bool) or not isinstance(rating, (int, float)):
-        raise ValueError("eligible Signal feedback has a non-numeric rating")
-    rating = float(rating)
-    if rating not in _SIGNAL_ANCHORS:
-        raise ValueError("eligible Signal feedback has an invalid rating anchor")
-    scorer_ratings = row.get("scorer_ratings")
-    if not isinstance(scorer_ratings, dict) or scorer_ratings.get("_rating_") != rating:
-        raise ValueError("eligible Signal feedback has inconsistent typed rating")
-    reason = output.get("reason")
-    if not isinstance(reason, str) or not reason.strip():
-        raise ValueError("eligible Signal feedback has no grounded reason")
-    created_at = row.get("created_at")
-    if isinstance(created_at, str):
-        try:
-            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-        except ValueError as error:
-            raise ValueError("eligible Signal feedback has invalid score time") from error
-    if not isinstance(created_at, datetime) or created_at.tzinfo is None:
-        raise ValueError("eligible Signal feedback has invalid score time")
-    return rating, reason.strip(), created_at.astimezone(timezone.utc)
+def _by_target(records: list[dict]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for record in records:
+        grouped.setdefault(record["weave_ref"], []).append(record)
+    return grouped
 
 
 def _signal_evidence(
-    turns: list[TurnSpan],
-    feedback_by_ref: dict[str, list[dict]],
-    *,
-    entity: str,
-    project: str,
+    turns: list[TurnSpan], feedback_by_target: dict[str, list[dict]]
 ) -> list[dict]:
-    selected: dict[tuple[str, str, str], tuple[datetime, str, dict]] = {}
+    """Turn Scores at or below the threshold that carry a reason, in turn order."""
+    evidence = []
     for turn in turns:
-        turn_ref = turn.ref_for(entity, project)
-        for row in feedback_by_ref.get(turn_ref, []):
-            if row.get("feedback_type") != "wandb.agent_monitor":
+        for record in feedback_by_target.get(turn.trace_id, []):
+            payload = record["payload"]
+            rating, reason = payload.get("rating"), payload.get("reason")
+            if not isinstance(rating, (int, float)) or rating > _SIGNAL_THRESHOLD or not reason:
                 continue
-            identity = _signal_identity(row.get("runnable_ref"))
-            if identity is None:
-                continue
-            typed_ratings = row.get("scorer_ratings")
-            if not isinstance(typed_ratings, dict) or "_rating_" not in typed_ratings:
-                continue
-            rating, reason, created_at = _signal_rating(row)
-            feedback_id = row.get("id")
-            if not isinstance(feedback_id, str) or not feedback_id:
-                raise ValueError("eligible Signal feedback has no id")
-            signal, version = identity
-            evidence = {
-                "signal": signal,
-                "version": version,
-                "rating": rating,
-                "reason": reason,
-                "turn_id": turn.trace_id,
-                "turn_started_at": turn.started_at.isoformat(),
-            }
-            key = (signal, version, turn.trace_id)
-            existing = selected.get(key)
-            if existing is None or (created_at, feedback_id) > existing[:2]:
-                selected[key] = (created_at, feedback_id, evidence)
+            evidence.append(
+                {
+                    "signal": record["feedback_type"].removeprefix(FEEDBACK_PREFIX),
+                    "version": payload.get("scorer_version") or "v1",
+                    "rating": float(rating),
+                    "reason": reason,
+                    "turn_id": turn.trace_id,
+                    "turn_started_at": turn.started_at.isoformat(),
+                }
+            )
     return sorted(
-        (item[2] for item in selected.values() if item[2]["rating"] <= _SIGNAL_THRESHOLD),
+        evidence,
         key=lambda item: (
             item["turn_started_at"],
             item["signal"],
@@ -125,13 +68,13 @@ def _signal_evidence(
     )
 
 
-def _score_feedback(rows: list[dict]) -> list[dict]:
-    return [
-        row
-        for row in rows
-        if isinstance(row.get("feedback_type"), str)
-        and row["feedback_type"].startswith(FEEDBACK_PREFIX)
-    ]
+def _read_session(ces: CesSession, trajectory_id: str) -> SessionView | None:
+    try:
+        return ces.client.read_session(trajectory_id)
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code == 404:
+            return None
+        raise
 
 
 def _turn_json(turn: TurnSpan, *, include_children: bool = False) -> dict:
@@ -232,17 +175,6 @@ def _session_summary(conversation_id: str, turns: list[TurnSpan]) -> dict:
     }
 
 
-def _group_sessions(turns: list[TurnSpan]) -> dict[str, list[TurnSpan]]:
-    grouped: dict[str, list[TurnSpan]] = {}
-    for turn in turns:
-        grouped.setdefault(turn.conversation_id, []).append(turn)
-    sessions: dict[str, list[TurnSpan]] = {}
-    for conversation_id, session_turns in grouped.items():
-        if session_is_evaluable(session_turns):
-            sessions[conversation_id] = session_turns
-    return sessions
-
-
 def _date_error(error: DateFilterError) -> HTTPException:
     return HTTPException(
         status_code=400,
@@ -250,9 +182,7 @@ def _date_error(error: DateFilterError) -> HTTPException:
     )
 
 
-def create_inspection_router(
-    client_factory: Callable[[], WeaveClient],
-) -> APIRouter:
+def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["inspection"])
 
     @router.get("/sessions")
@@ -271,79 +201,57 @@ def create_inspection_router(
         except DateFilterError as error:
             raise _date_error(error) from error
         since_value = since_value or (datetime.now(timezone.utc) - timedelta(hours=168))
-        query_since = since_value.astimezone(timezone.utc)
-        with client_factory() as client:
-            turns = client.query_turns_paginated(
-                page_size=500,
-                since=query_since,
-                include_details=True,
+        with ces_factory() as ces:
+            # Newest activity first, so reading stops once `limit` sessions are found.
+            session_ids = ces.client.find_sessions(
+                ces.catalog, since=since_value, until=until_value
             )
-            filtered = [turn for turn in turns if turn.started_at >= since_value]
-            if until_value is not None:
-                filtered = [turn for turn in filtered if turn.started_at <= until_value]
-            grouped = {
-                conversation_id: session_turns
-                for conversation_id, session_turns in _group_sessions(filtered).items()
-                if session_is_evaluable(client.query_session(conversation_id).turns)
-            }
-        sessions = [
-            (_session_summary(conversation_id, session_turns), session_turns)
-            for conversation_id, session_turns in grouped.items()
-        ]
-        sessions.sort(key=lambda item: item[0]["last_activity"], reverse=True)
-        visible = sessions[:limit]
-        with client_factory() as feedback_client:
-            refs = [
-                turn.ref_for(feedback_client.entity, feedback_client.project)
-                for _summary, session_turns in visible
-                for turn in session_turns
-            ]
-            feedback_by_ref = feedback_client.query_all_feedback_batch(refs)
-            for summary, session_turns in visible:
-                summary["signal_evidence"] = _signal_evidence(
-                    session_turns,
-                    feedback_by_ref,
-                    entity=feedback_client.entity,
-                    project=feedback_client.project,
-                )
+            visible: list[tuple[dict, list[TurnSpan]]] = []
+            for sid in session_ids:
+                if len(visible) == limit:
+                    break
+                session = _read_session(ces, sid)
+                if session is None or not session_is_evaluable(session.turns):
+                    continue
+                in_window = [
+                    turn
+                    for turn in session.turns
+                    if turn.started_at >= since_value
+                    and (until_value is None or turn.started_at <= until_value)
+                ]
+                if in_window:
+                    visible.append((_session_summary(sid, in_window), in_window))
+            feedback = _by_target(
+                ces.client.cohort_feedback(ces.catalog, [s["conversation_id"] for s, _ in visible])
+                if visible
+                else []
+            )
+        for summary, turns in visible:
+            summary["signal_evidence"] = _signal_evidence(turns, feedback)
         return SessionListResponse.model_validate(
             {
                 "sessions": [summary for summary, _turns in visible],
-                "total": len(sessions),
-                "truncated": len(sessions) > limit,
+                "total": len(session_ids),
+                "truncated": len(session_ids) > len(visible),
                 "limit": limit,
             }
         )
 
     @router.get("/sessions/{conversation_id:path}")
     def get_session(conversation_id: str) -> SessionDetailResponse:
-        try:
-            with client_factory() as client:
-                session = client.query_session(conversation_id)
-                if not session_is_evaluable(session.turns):
-                    raise ValueError("session is not an evaluable agent session")
-                client.hydrate_turns_batch(session.turns)
-                session_ref = session.ref_for(client.entity, client.project)
-                turn_refs = {
-                    turn.trace_id: turn.ref_for(client.entity, client.project)
-                    for turn in session.turns
-                }
-                feedback_by_ref = client.query_all_feedback_batch(
-                    [session_ref, *turn_refs.values()]
+        with ces_factory() as ces:
+            session = _read_session(ces, conversation_id)
+            if session is None or not session_is_evaluable(session.turns):
+                message = (
+                    "session not found"
+                    if session is None
+                    else "session is not an evaluable agent session"
                 )
-                entity = client.entity
-                project = client.project
-                session_feedback = _score_feedback(feedback_by_ref[session_ref])
-                turn_feedback = {
-                    trace_id: scores
-                    for trace_id, ref in turn_refs.items()
-                    if (scores := _score_feedback(feedback_by_ref[ref]))
-                }
-        except ValueError as error:
-            raise HTTPException(
-                status_code=404,
-                detail={"code": "session_not_found", "message": str(error)},
-            ) from error
+                raise HTTPException(
+                    status_code=404,
+                    detail={"code": "session_not_found", "message": message},
+                )
+            feedback = _by_target(ces.client.cohort_feedback(ces.catalog, [conversation_id]))
         return SessionDetailResponse.model_validate(
             {
                 "conversation_id": session.conversation_id,
@@ -353,21 +261,20 @@ def create_inspection_router(
                 "turn_count": len(session.turns),
                 "judging_token_estimates": _judging_token_estimates(session.turns),
                 "turns": [_turn_json(turn, include_children=True) for turn in session.turns],
-                "session_feedback": session_feedback,
-                "turn_feedback": turn_feedback,
-                "signal_evidence": _signal_evidence(
-                    session.turns,
-                    feedback_by_ref,
-                    entity=entity,
-                    project=project,
-                ),
+                "session_feedback": feedback.get(conversation_id, []),
+                "turn_feedback": {
+                    turn.trace_id: feedback[turn.trace_id]
+                    for turn in session.turns
+                    if feedback.get(turn.trace_id)
+                },
+                "signal_evidence": _signal_evidence(session.turns, feedback),
             }
         )
 
     @router.get("/analyze")
     def get_analysis(limit: int = Query(default=1000, ge=1, le=5000)) -> AnalysisResponse:
-        with client_factory() as client:
-            feedback = client.query_project_feedback(limit=limit)
+        with ces_factory() as ces:
+            feedback = ces.client.read_all_scores(ces.catalog)[:limit]
         if not feedback:
             return AnalysisResponse.model_validate(
                 {
