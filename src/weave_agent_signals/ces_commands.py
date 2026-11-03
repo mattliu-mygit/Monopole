@@ -28,12 +28,6 @@ ADAPTER_STATE = "~/.weave-agent-adapter/evaluations.json"
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--backend",
-        choices=("weave", "ces"),
-        default="weave",
-        help="Where sessions and scores live (default: weave)",
-    )
     parser.add_argument("--ces-url", default=None, help=f"Default: {DEFAULT_CES_URL}")
     parser.add_argument(
         "--ces-scope-ref",

@@ -1,6 +1,8 @@
-"""`score`, `backfill`, and `inspect` with `--backend ces`, over a fake CES client."""
+"""`score`, `backfill`, `inspect`, `judge`, and the analysis commands over a fake CES client."""
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 import pytest
 
@@ -13,7 +15,7 @@ from weave_agent_signals.ces_catalog import (
     judge_spec,
 )
 from weave_agent_signals.ces_client import CesSession, session_view
-from weave_agent_signals.models import Score
+from weave_agent_signals.models import Score, SessionView, TraceRole
 
 CATALOG = Catalog(
     "ev-turns",
@@ -98,7 +100,7 @@ def fake(monkeypatch):
 
 
 def _run(*argv):
-    return cli.main([argv[0], "--backend", "ces", *argv[1:]])
+    return cli.main(list(argv))
 
 
 def test_score_writes_turn_scores_on_the_first_case_and_session_scores_on_the_trajectory(
@@ -169,7 +171,7 @@ def test_connect_reads_the_adapter_state_when_flags_are_missing(tmp_path, monkey
             return CATALOG
 
     monkeypatch.setattr(ces_commands, "CesClient", Client)
-    args = cli.build_parser().parse_args(["inspect", "--backend", "ces", "--session", "s1"])
+    args = cli.build_parser().parse_args(["inspect", "--session", "s1"])
 
     ces_commands.connect(args)
 
@@ -178,16 +180,10 @@ def test_connect_reads_the_adapter_state_when_flags_are_missing(tmp_path, monkey
 
 def test_connect_without_a_scope_or_dataset_explains_how_to_set_them(tmp_path, monkeypatch):
     monkeypatch.setenv("WEAVE_AGENT_ADAPTER_EVALUATIONS_STATE", str(tmp_path / "missing.json"))
-    args = cli.build_parser().parse_args(["inspect", "--backend", "ces", "--session", "s1"])
+    args = cli.build_parser().parse_args(["inspect", "--session", "s1"])
 
     with pytest.raises(SystemExit, match="--ces-scope-ref"):
         ces_commands.connect(args)
-
-
-def test_the_weave_backend_stays_the_default():
-    args = cli.build_parser().parse_args(["score"])
-
-    assert args.backend == "weave"
 
 
 def _judge_score(rubric="judge.task_completion", status="complete", models=("claude:a", "codex:b")):
@@ -255,9 +251,7 @@ def test_an_existing_panel_score_is_skipped_unless_forced():
     )
 
 
-def test_judge_with_the_ces_backend_judges_found_sessions_and_writes_finished_scores(
-    monkeypatch, capsys
-):
+def test_judge_judges_found_sessions_and_writes_finished_scores(monkeypatch, capsys):
     client = FakeJudgeCes()
     monkeypatch.setattr(ces_commands, "connect", lambda args: CesSession(client, CATALOG))
     seen = {}
@@ -271,7 +265,7 @@ def test_judge_with_the_ces_backend_judges_found_sessions_and_writes_finished_sc
         cli, "judging_plan_totals", lambda plan: {"sessions_planned": 1, "windows_planned": 2}
     )
 
-    assert cli.main(["judge", "--backend", "ces", "--judge-model", "claude:claude-sonnet-5"]) == 0
+    assert cli.main(["judge", "--judge-model", "claude:claude-sonnet-5"]) == 0
 
     assert seen["sessions"] == ["s1"]
     assert (
@@ -281,9 +275,33 @@ def test_judge_with_the_ces_backend_judges_found_sessions_and_writes_finished_sc
     assert client.closed
 
 
-def test_analysis_commands_read_feedback_from_ces_with_the_ces_backend(monkeypatch):
+def test_analysis_commands_read_feedback_from_ces(monkeypatch):
     records = [{"feedback_type": "weave_agent_signals.efficiency", "payload": {"rating": 1.0}}]
     monkeypatch.setattr(ces_commands, "read_feedback", lambda args: records)
-    args = cli.build_parser().parse_args(["analyze", "--backend", "ces"])
+    args = cli.build_parser().parse_args(["analyze"])
 
     assert cli._project_feedback(args) is records
+
+
+def test_score_and_backfill_return_cleanly_when_no_sessions_match(fake, monkeypatch, capsys):
+    monkeypatch.setattr(fake, "find_sessions", lambda *_args, **_kwargs: [])
+
+    assert _run("score") == 0
+    assert _run("backfill", "--start", "2026-11-01") == 0
+
+    out = capsys.readouterr().out
+    assert "No turns found." in out and "No turns found in date range." in out
+    assert fake.writes == []
+
+
+def test_a_session_with_non_agent_turns_is_not_scored(fake, monkeypatch):
+    mixed = replace(SESSION.turns[0], trace_role=TraceRole.SIGNAL_EVALUATION)
+    monkeypatch.setattr(
+        fake,
+        "read_session",
+        lambda _sid: SessionView("s1", [mixed, *SESSION.turns[1:]], None, None),
+    )
+
+    assert _run("score", "--since", "2026-11-01") == 0
+
+    assert fake.writes == []

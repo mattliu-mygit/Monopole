@@ -6,8 +6,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from weave_agent_signals import cli
+from weave_agent_signals import ces_commands, cli
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
+from weave_agent_signals.ces_client import CesSession
 from weave_agent_signals.models import Score, SessionView, TraceRole
 
 
@@ -24,21 +25,46 @@ def _args(**updates):
         "rubric": None,
         "judge_models": ["claude:claude-sonnet-5", "codex:gpt-5.6-sol"],
         "force": False,
-        "backend": "weave",
+        "ces_url": None,
+        "ces_scope_ref": None,
+        "ces_dataset_id": None,
     }
     values.update(updates)
     return argparse.Namespace(**values)
 
 
-def _turn():
+def _turn(trace_id="turn-1", conversation_id="session-1", role=TraceRole.AGENT_SESSION):
     turn = MagicMock()
-    turn.trace_id = "turn-1"
-    turn.conversation_id = "session-1"
+    turn.trace_id = trace_id
+    turn.conversation_id = conversation_id
     turn.started_at = datetime(2026, 7, 15, tzinfo=timezone.utc)
     turn.config_version = "cfg"
     turn.git_branch = "main"
-    turn.trace_role = TraceRole.AGENT_SESSION
+    turn.trace_role = role
     return turn
+
+
+def _session(index: int) -> SessionView:
+    return SessionView(
+        f"session-{index}", [_turn(f"turn-{index}", f"session-{index}")], "cfg", "main"
+    )
+
+
+@pytest.fixture
+def ces(monkeypatch):
+    """The CES session cmd_judge opens; tests set which sessions it finds."""
+    client = MagicMock()
+    client.close = MagicMock()
+    monkeypatch.setattr(ces_commands, "connect", lambda _args: CesSession(client, None))
+    return client
+
+
+def _plan(sessions: int):
+    return {
+        "plan_id": "plan",
+        "totals": {"sessions_planned": sessions, "windows_planned": 2},
+        "sessions": [],
+    }
 
 
 def test_default_panel_resolves_catalog_recommendations(monkeypatch):
@@ -48,257 +74,97 @@ def test_default_panel_resolves_catalog_recommendations(monkeypatch):
     assert [judge.id for judge in judges] == list(catalog.recommended_judges)
 
 
-def test_group_sessions_breaks_equal_timestamp_ties_by_trace_id():
-    turn_b = _turn()
-    turn_b.trace_id = "turn-b"
-    turn_a = _turn()
-    turn_a.trace_id = "turn-a"
-
-    sessions = cli._group_sessions([turn_b, turn_a])
-
-    assert [turn.trace_id for turn in sessions[0].turns] == ["turn-a", "turn-b"]
-
-
-def test_direct_cli_uses_one_session_plan_runner_and_in_memory_calls(monkeypatch, capsys):
-    turn = _turn()
-    session = SessionView(
-        conversation_id="session-1",
-        turns=[turn],
-        config_version="cfg",
-        git_branch="main",
-    )
-    weave = MagicMock()
-    weave.query_turns.return_value = [turn]
-    weave.query_session.return_value = session
-    weave.__enter__.return_value = weave
+def test_direct_cli_uses_one_session_plan_runner_and_in_memory_calls(ces, monkeypatch, capsys):
+    found = {}
     inference = MagicMock()
     inference.__enter__.return_value = inference
-    plan = {
-        "plan_id": "plan",
-        "totals": {"sessions_planned": 1, "windows_planned": 2},
-        "sessions": [],
-    }
+    plan = _plan(1)
     judge = MagicMock(return_value=[])
-    monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
+    monkeypatch.setattr(
+        ces_commands,
+        "sessions_to_judge",
+        lambda _client, _catalog, **kwargs: found.update(kwargs) or [_session(1)],
+    )
     monkeypatch.setattr(cli, "build_model_catalog", _catalog)
     monkeypatch.setattr(cli, "build_rubric_catalog", build_rubric_catalog)
     monkeypatch.setattr(cli, "build_canonical_judging_plan", lambda *_args, **_kwargs: plan)
     monkeypatch.setattr(cli, "judging_plan_totals", lambda value: value["totals"])
     monkeypatch.setattr(cli, "_make_model_client", lambda *_args: inference)
     monkeypatch.setattr(cli, "judge_session", judge)
+
     rc = cli.cmd_judge(_args(rubric="judge.session_outcome"))
+
     assert rc == 0
+    assert found["limit"] == 10
     assert judge.call_count == 1
     kwargs = judge.call_args.kwargs
     assert kwargs["judging_plan"] is plan
-    assert [item.id for item in kwargs["judges"]] == [
-        "claude:claude-sonnet-5",
-        "codex:gpt-5.6-sol",
-    ]
+    assert [item.id for item in kwargs["judges"]] == ["claude:claude-sonnet-5", "codex:gpt-5.6-sol"]
     assert callable(kwargs["call_loader"])
     assert callable(kwargs["call_recorder"])
-    weave.query_session.assert_called_once_with("session-1")
-    weave.hydrate_turns_batch.assert_called_once_with([turn])
     assert "1 sessions across 2 reviewer windows" in capsys.readouterr().out
+    ces.close.assert_called_once()
 
 
-def test_direct_cli_discovers_conversations_then_judges_complete_hydrated_sessions(monkeypatch):
-    recent_one = _turn()
-    recent_one.trace_id = "session-1-recent"
-    duplicate_one = _turn()
-    duplicate_one.trace_id = "session-1-other-recent"
-    recent_two = _turn()
-    recent_two.trace_id = "session-2-recent"
-    recent_two.conversation_id = "session-2"
-    older_one = _turn()
-    older_one.trace_id = "session-1-older"
-    older_one.started_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
-
-    session_one = SessionView(
-        conversation_id="session-1",
-        turns=[older_one, duplicate_one, recent_one],
-        config_version="cfg",
-        git_branch="main",
-    )
-    session_two = SessionView(
-        conversation_id="session-2",
-        turns=[recent_two],
-        config_version="cfg",
-        git_branch="main",
-    )
-    weave = MagicMock()
-    weave.query_turns.return_value = [recent_two, recent_one, duplicate_one]
-    weave.query_session.side_effect = [session_one, session_two]
-    weave.query_existing_feedback.return_value = []
-    weave.__enter__.return_value = weave
-    inference = MagicMock()
-    inference.__enter__.return_value = inference
-    plan = {
-        "plan_id": "plan",
-        "totals": {"sessions_planned": 2, "windows_planned": 2},
-        "sessions": [],
-    }
-    captured_sessions = []
-
-    def build_plan(sessions, **_kwargs):
-        captured_sessions.extend(sessions)
-        return plan
-
-    score = Score("judge.session_outcome", 0.75, [], {}, "session")
-    judge = MagicMock(side_effect=[[score], []])
-    monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
+def test_direct_cli_rejects_unknown_rubric_before_connecting_to_ces(monkeypatch, capsys):
+    monkeypatch.setattr(ces_commands, "connect", lambda _args: pytest.fail("must not connect"))
     monkeypatch.setattr(cli, "build_model_catalog", _catalog)
-    monkeypatch.setattr(cli, "build_canonical_judging_plan", build_plan)
-    monkeypatch.setattr(cli, "judging_plan_totals", lambda value: value["totals"])
-    monkeypatch.setattr(cli, "_make_model_client", lambda *_args: inference)
-    monkeypatch.setattr(cli, "judge_session", judge)
 
-    since = datetime(2026, 7, 14, tzinfo=timezone.utc)
-    assert cli.cmd_judge(_args(limit=3, since=since, rubric="judge.session_outcome")) == 0
-
-    weave.query_turns.assert_called_once_with(limit=3, since=since)
-    assert [call.args[0] for call in weave.query_session.call_args_list] == [
-        "session-1",
-        "session-2",
-    ]
-    hydrated = weave.hydrate_turns_batch.call_args.args[0]
-    assert [turn.trace_id for turn in hydrated] == [
-        "session-1-older",
-        "session-1-other-recent",
-        "session-1-recent",
-        "session-2-recent",
-    ]
-    assert captured_sessions == [session_one, session_two]
-    assert judge.call_args_list[0].args[0] is session_one
-    assert [turn.trace_id for turn in judge.call_args_list[0].args[0].turns] == [
-        "session-1-older",
-        "session-1-other-recent",
-        "session-1-recent",
-    ]
-    assert weave.write_score.call_count == 1
-
-
-def test_direct_cli_fails_when_complete_session_omits_a_discovery_root(monkeypatch):
-    discovered = _turn()
-    reloaded = _turn()
-    reloaded.trace_id = "different-root"
-    session = SessionView(
-        conversation_id="session-1",
-        turns=[reloaded],
-        config_version="cfg",
-        git_branch="main",
-    )
-    weave = MagicMock()
-    weave.query_turns.return_value = [discovered]
-    weave.query_session.return_value = session
-    weave.__enter__.return_value = weave
-    build_plan = MagicMock(side_effect=AssertionError("must not plan partial discovery"))
-    make_client = MagicMock()
-    monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
-    monkeypatch.setattr(cli, "build_model_catalog", _catalog)
-    monkeypatch.setattr(cli, "build_canonical_judging_plan", build_plan)
-    monkeypatch.setattr(cli, "judging_plan_totals", lambda value: value["totals"])
-    monkeypatch.setattr(cli, "_make_model_client", make_client)
-
-    with pytest.raises(RuntimeError, match="missing discovered root"):
-        cli.cmd_judge(_args(rubric="judge.session_outcome"))
-
-    weave.hydrate_turns_batch.assert_not_called()
-    build_plan.assert_not_called()
-    make_client.assert_not_called()
-    weave.write_score.assert_not_called()
-
-
-def test_direct_cli_rejects_non_agent_complete_session_before_hydration(monkeypatch):
-    discovered = _turn()
-    evaluator = _turn()
-    evaluator.trace_role = TraceRole.JUDGE_EVALUATION
-    session = SessionView(
-        conversation_id="session-1",
-        turns=[evaluator],
-        config_version="cfg",
-        git_branch="main",
-    )
-    weave = MagicMock()
-    weave.query_turns.return_value = [discovered]
-    weave.query_session.return_value = session
-    weave.__enter__.return_value = weave
-    build_plan = MagicMock()
-    monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
-    monkeypatch.setattr(cli, "build_model_catalog", _catalog)
-    monkeypatch.setattr(cli, "build_canonical_judging_plan", build_plan)
-    monkeypatch.setattr(cli, "judging_plan_totals", lambda value: value["totals"])
-
-    assert cli.cmd_judge(_args(rubric="judge.session_outcome")) == 0
-
-    weave.hydrate_turns_batch.assert_not_called()
-    build_plan.assert_not_called()
-    weave.write_score.assert_not_called()
-
-
-def test_direct_cli_rejects_unknown_rubric_before_reading_weave(monkeypatch, capsys):
-    weave = MagicMock()
-    monkeypatch.setattr(cli, "WeaveClient", weave)
-    monkeypatch.setattr(cli, "build_model_catalog", _catalog)
     assert cli.cmd_judge(_args(rubric="judge.unknown")) == 2
-    weave.assert_not_called()
     assert "Unknown rubric" in capsys.readouterr().out
 
 
-def test_hydration_failure_aborts_before_inference(monkeypatch):
-    turn = _turn()
-    weave = MagicMock()
-    weave.query_turns.return_value = [turn]
-    weave.query_session.return_value = SessionView(
-        conversation_id="session-1",
-        turns=[turn],
-        config_version="cfg",
-        git_branch="main",
-    )
-    weave.hydrate_turns_batch.side_effect = RuntimeError("detail hydration truncated")
-    weave.__enter__.return_value = weave
+def test_a_session_read_failure_aborts_before_inference(ces, monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("session read failed")
+
     make_client = MagicMock()
-    monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
+    monkeypatch.setattr(ces_commands, "sessions_to_judge", fail)
     monkeypatch.setattr(cli, "build_model_catalog", _catalog)
     monkeypatch.setattr(cli, "_make_model_client", make_client)
-    with pytest.raises(RuntimeError, match="detail hydration truncated"):
+
+    with pytest.raises(RuntimeError, match="session read failed"):
         cli.cmd_judge(_args())
     make_client.assert_not_called()
 
 
-def test_direct_cli_buffers_all_sessions_and_writes_nothing_on_later_failure(monkeypatch):
-    turns = [_turn(), _turn()]
-    turns[1].trace_id = "turn-2"
-    turns[1].conversation_id = "session-2"
-    weave = MagicMock()
-    weave.query_turns.return_value = turns
-    weave.__enter__.return_value = weave
+def test_direct_cli_buffers_all_sessions_and_writes_nothing_on_later_failure(ces, monkeypatch):
     inference = MagicMock()
     inference.__enter__.return_value = inference
-    sessions = []
-    for index in (1, 2):
-        session = MagicMock()
-        session.conversation_id = f"session-{index}"
-        session.turns = [turns[index - 1]]
-        session.config_version = "cfg"
-        session.git_branch = "main"
-        session.ref_for.return_value = f"weave:///session-{index}"
-        sessions.append(session)
-    weave.query_session.side_effect = sessions
-    plan = {
-        "plan_id": "plan",
-        "totals": {"sessions_planned": 2, "windows_planned": 2},
-        "sessions": [],
-    }
-    score = Score("judge.session_outcome", 0.75, [], {}, "session")
+    score = Score("judge.session_outcome", 0.75, [], {"review_status": "complete"}, "session")
     judge = MagicMock(side_effect=[[score], RuntimeError("later failure")])
-    monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
+    write = MagicMock()
+    monkeypatch.setattr(
+        ces_commands, "sessions_to_judge", lambda *_args, **_kwargs: [_session(1), _session(2)]
+    )
+    monkeypatch.setattr(ces_commands, "write_judge_scores", write)
     monkeypatch.setattr(cli, "build_model_catalog", _catalog)
-    monkeypatch.setattr(cli, "build_canonical_judging_plan", lambda *_args, **_kwargs: plan)
+    monkeypatch.setattr(cli, "build_canonical_judging_plan", lambda *_args, **_kwargs: _plan(2))
     monkeypatch.setattr(cli, "judging_plan_totals", lambda value: value["totals"])
     monkeypatch.setattr(cli, "_make_model_client", lambda *_args: inference)
     monkeypatch.setattr(cli, "judge_session", judge)
 
     assert cli.cmd_judge(_args(rubric="judge.session_outcome")) == 1
-    weave.write_score.assert_not_called()
-    weave.query_existing_feedback.assert_not_called()
+    write.assert_not_called()
+
+
+def test_sessions_to_judge_keeps_only_agent_sessions_with_turns():
+    client = MagicMock()
+    client.find_sessions.return_value = ["agent", "mixed", "empty"]
+    sessions = {
+        "agent": SessionView("agent", [_turn("a1", "agent")], "cfg", "main"),
+        "mixed": SessionView(
+            "mixed",
+            [_turn("m1", "mixed"), _turn("m2", "mixed", TraceRole.SIGNAL_EVALUATION)],
+            "cfg",
+            "main",
+        ),
+        "empty": SessionView("empty", [], "cfg", "main"),
+    }
+    client.read_session.side_effect = sessions.__getitem__
+    since = datetime(2026, 7, 14, tzinfo=timezone.utc)
+
+    found = ces_commands.sessions_to_judge(client, None, since=since, limit=3)
+
+    assert [session.conversation_id for session in found] == ["agent"]
+    client.find_sessions.assert_called_once_with(None, since=since, limit=3)

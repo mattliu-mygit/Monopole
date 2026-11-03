@@ -86,8 +86,7 @@ def test_standalone_reflect_stops_before_local_or_model_setup_for_audit_only_fee
     monkeypatch,
     capsys,
 ):
-    weave = MagicMock()
-    weave.__enter__.return_value.query_project_feedback.return_value = [
+    feedback = [
         {
             "feedback_type": "weave_agent_signals.judge.verification",
             "payload": {
@@ -98,7 +97,7 @@ def test_standalone_reflect_stops_before_local_or_model_setup_for_audit_only_fee
         }
     ]
 
-    monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
+    monkeypatch.setattr(cli.ces_commands, "read_feedback", lambda _args: feedback)
     monkeypatch.setattr(
         cli,
         "load_target_registry",
@@ -115,7 +114,6 @@ def test_standalone_reflect_stops_before_local_or_model_setup_for_audit_only_fee
             entity="entity",
             project="project",
             limit=10,
-            backend="weave",
             target_registry=str(tmp_path / "targets.json"),
             model="codex:gpt-5.6-sol",
             proposal_evaluator_model="claude:claude-sonnet-5",
@@ -149,8 +147,7 @@ def test_standalone_reflect_always_infers_with_resolved_roles_and_only_prints_di
         recommended_candidate_id=candidate.candidate_id,
         baseline_won=False,
     )
-    weave = MagicMock()
-    weave.__enter__.return_value.query_project_feedback.return_value = [
+    feedback = [
         {
             "feedback_type": "weave_agent_signals.outcome.test",
             "payload": {"rating": 0.5},
@@ -168,7 +165,7 @@ def test_standalone_reflect_always_infers_with_resolved_roles_and_only_prints_di
     adapter.capture.return_value = baseline
     reflect = MagicMock(return_value=result)
 
-    monkeypatch.setattr(cli, "WeaveClient", lambda **_kwargs: weave)
+    monkeypatch.setattr(cli.ces_commands, "read_feedback", lambda _args: feedback)
     monkeypatch.setattr(cli, "load_target_registry", lambda _path: object())
     monkeypatch.setattr(cli, "TargetPromoter", lambda _registry: adapter)
     monkeypatch.setattr(cli, "build_model_catalog", lambda: catalog)
@@ -181,7 +178,6 @@ def test_standalone_reflect_always_infers_with_resolved_roles_and_only_prints_di
             entity="entity",
             project="project",
             limit=10,
-            backend="weave",
             target_registry=str(tmp_path / "targets.json"),
             model="codex:gpt-5.6-sol",
             proposal_evaluator_model="claude:claude-sonnet-5",

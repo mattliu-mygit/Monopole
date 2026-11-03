@@ -3,11 +3,9 @@ from __future__ import annotations
 import argparse
 import difflib
 import ipaddress
-import json
 import logging
 import os
 import sys
-from collections import Counter
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
@@ -17,7 +15,6 @@ from dotenv import load_dotenv
 
 from weave_agent_signals import alerts, ces_commands
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
-from weave_agent_signals.client import WeaveClient
 from weave_agent_signals.judges.cli_backend import CliJudgeClient
 from weave_agent_signals.judges.inference import InferenceClient
 from weave_agent_signals.judges.plan import build_canonical_judging_plan, judging_plan_totals
@@ -26,8 +23,6 @@ from weave_agent_signals.judges.runner import JudgeExecutionError, judge_session
 from weave_agent_signals.models import (
     Score,
     SessionView,
-    filter_evaluable_turns,
-    session_is_evaluable,
 )
 from weave_agent_signals.patterns import (
     ab_leaderboard,
@@ -45,8 +40,6 @@ from weave_agent_signals.runs.bundles import BundleSnapshot, compare_bundles
 from weave_agent_signals.runs.promotion import TargetPromoter
 from weave_agent_signals.runs.reflection import run_reflection
 from weave_agent_signals.runs.targets import load_target_registry
-from weave_agent_signals.scorers import score_session, score_turn
-from weave_agent_signals.scorers.outcome import classify_command
 
 log = logging.getLogger("weave_agent_signals")
 
@@ -66,37 +59,6 @@ def _positive_int(value: str) -> int:
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
     return parsed
-
-
-class _WriteStats:
-    """Accumulates scoring stats across turns and sessions."""
-
-    def __init__(self) -> None:
-        self.total_scored = 0
-        self.total_written = 0
-        self.skipped = 0
-        self.errors = 0
-        self.all_tags: list[str] = []
-
-    def write_score(
-        self,
-        client: WeaveClient,
-        score: Score,
-        ref: str,
-        *,
-        force: bool,
-    ) -> None:
-        self.total_scored += 1
-        feedback_type = f"weave_agent_signals.{score.scorer}"
-        existing = client.query_existing_feedback(ref, feedback_type)
-        if existing and not force:
-            self.skipped += 1
-            return
-        client.write_score(score, ref)
-        self.total_written += 1
-        self.all_tags.extend(score.tags)
-        if existing:
-            client.delete_feedback_ids(existing)
 
 
 def _make_model_client(args: argparse.Namespace, model: ModelDescriptor):
@@ -165,254 +127,16 @@ def _resolve_reflection_models(
     return writer, evaluator
 
 
-def _group_sessions(turns: list) -> list[SessionView]:
-    """Group turns into per-conversation SessionViews (turns sorted by start)."""
-    by_conv: dict[str, list] = {}
-    for turn in turns:
-        by_conv.setdefault(turn.conversation_id, []).append(turn)
-
-    sessions = []
-    for conv_id, sess_turns in by_conv.items():
-        ordered = sorted(sess_turns, key=lambda t: (t.started_at, t.trace_id))
-        sessions.append(
-            SessionView(
-                conversation_id=conv_id,
-                turns=ordered,
-                config_version=ordered[0].config_version if ordered else None,
-                git_branch=ordered[0].git_branch if ordered else None,
-            )
-        )
-    return sessions
-
-
-def _score_sessions(
-    client: WeaveClient,
-    turns: list,
-    stats: _WriteStats,
-    args: argparse.Namespace,
-) -> int:
-    sessions_scored = 0
-    for session in _group_sessions(turns):
-        conv_id = session.conversation_id
-        sess_ref = session.ref_for(args.entity, args.project)
-        try:
-            run_time = session.turns[0].started_at if session.turns else None
-            for s in score_session(session):
-                s.stamp(
-                    config_version=session.config_version,
-                    git_branch=session.git_branch,
-                    run_time=run_time,
-                )
-                stats.write_score(
-                    client,
-                    s,
-                    sess_ref,
-                    force=args.force,
-                )
-        except Exception as e:
-            stats.errors += 1
-            log.warning("Error scoring session %s: %s", conv_id[:12], e)
-        sessions_scored += 1
-    return sessions_scored
-
-
 def cmd_score(args: argparse.Namespace) -> int:
-    if args.backend == "ces":
-        return ces_commands.score(args)
-    since = args.since or (datetime.now(timezone.utc) - timedelta(hours=24))
-
-    with WeaveClient(entity=args.entity, project=args.project) as client:
-        turns = client.query_turns(limit=args.limit, since=since)
-        turns = filter_evaluable_turns(turns)
-
-        if not turns:
-            print("No turns found.")
-            return 0
-
-        stats = _WriteStats()
-
-        for turn in turns:
-            try:
-                client.hydrate_turn_children(turn)
-                turn_ref = turn.ref_for(args.entity, args.project)
-                for s in score_turn(turn):
-                    s.stamp(
-                        config_version=turn.config_version,
-                        git_branch=turn.git_branch,
-                        run_time=turn.started_at,
-                    )
-                    stats.write_score(
-                        client,
-                        s,
-                        turn_ref,
-                        force=args.force,
-                    )
-            except Exception as e:
-                stats.errors += 1
-                log.warning("Error scoring turn %s: %s", turn.trace_id[:12], e)
-
-        sessions_scored = _score_sessions(client, turns, stats, args)
-
-    print(
-        f"Scored {len(turns)} turns, {sessions_scored} sessions"
-        f" ({stats.total_scored} scores). Wrote {stats.total_written}."
-    )
-    if stats.errors:
-        print(f"  Errors: {stats.errors} (use -v for details)")
-    if stats.all_tags:
-        tag_counts = Counter(stats.all_tags)
-        print("  Tags: " + ", ".join(f"{k}={v}" for k, v in tag_counts.most_common(10)))
-
-    return 1 if stats.errors else 0
+    return ces_commands.score(args)
 
 
 def cmd_backfill(args: argparse.Namespace) -> int:
-    if args.backend == "ces":
-        return ces_commands.backfill(args)
-    with WeaveClient(entity=args.entity, project=args.project) as client:
-        turns = client.query_turns_paginated(page_size=args.page_size, since=args.start)
-        turns = filter_evaluable_turns(turns)
-
-        if args.end:
-            turns = [t for t in turns if t.started_at <= args.end]
-
-        if not turns:
-            print("No turns found in date range.")
-            return 0
-
-        total_bash = 0
-        classified_bash = 0
-        stats = _WriteStats()
-
-        for turn in turns:
-            try:
-                client.hydrate_turn_children(turn)
-            except Exception as e:
-                stats.errors += 1
-                log.warning("Error hydrating turn %s: %s", turn.trace_id[:12], e)
-                continue
-
-            for tc in turn.tool_calls:
-                if tc.tool_name == "Bash":
-                    total_bash += 1
-                    try:
-                        cmd = json.loads(tc.arguments).get("command", "")
-                    except (json.JSONDecodeError, TypeError):
-                        cmd = ""
-                    if cmd and classify_command(cmd) is not None:
-                        classified_bash += 1
-
-            try:
-                turn_ref = turn.ref_for(args.entity, args.project)
-                for s in score_turn(turn):
-                    s.stamp(
-                        config_version=turn.config_version,
-                        git_branch=turn.git_branch,
-                        run_time=turn.started_at,
-                    )
-                    stats.write_score(
-                        client,
-                        s,
-                        turn_ref,
-                        force=args.force,
-                    )
-            except Exception as e:
-                stats.errors += 1
-                log.warning("Error scoring turn %s: %s", turn.trace_id[:12], e)
-
-        sessions_scored = _score_sessions(client, turns, stats, args)
-
-    pct = (classified_bash / total_bash * 100) if total_bash else 0
-    print(
-        f"Backfilled {stats.total_written} scores across"
-        f" {len(turns)} turns, {sessions_scored} sessions."
-    )
-    if stats.skipped:
-        print(f"  Skipped: {stats.skipped} (existing, use --force to overwrite)")
-    print(f"  Bash coverage: {classified_bash}/{total_bash} classified ({pct:.0f}%)")
-    if stats.errors:
-        print(f"  Errors: {stats.errors} (use -v for details)")
-    return 1 if stats.errors else 0
-
-
-def _print_feedback(feedback: list[dict]) -> None:
-    if not feedback:
-        print("    (no feedback)")
-        return
-    for fb in feedback:
-        ftype = fb.get("feedback_type", "?")
-        short = ftype.replace("weave_agent_signals.", "")
-        payload = fb.get("payload", {})
-        rating = payload.get("rating", "?")
-        tags = payload.get("tags", [])
-        reason = payload.get("reason", "")
-        extra = f'  "{reason}"' if reason else ""
-        print(f"    {short:30s}  rating={rating}  tags={tags}{extra}")
+    return ces_commands.backfill(args)
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
-    if args.backend == "ces":
-        return ces_commands.inspect(args)
-    with WeaveClient(entity=args.entity, project=args.project) as client:
-        if args.recent:
-            turns = client.query_turns(limit=args.recent)
-            client.hydrate_turns_batch(turns)
-            feedback_by_ref = (
-                client.query_all_feedback_batch(
-                    [turn.ref_for(args.entity, args.project) for turn in turns]
-                )
-                if args.feedback
-                else {}
-            )
-            for turn in turns:
-                print(f"\n{'=' * 60}")
-                print(f"Turn {turn.trace_id[:12]}  [{turn.started_at}]")
-                print(f"  role={turn.trace_role.value}")
-                print(
-                    f"  config={turn.config_version}  steering={turn.steering_count}  "
-                    f"denials={turn.denial_count}  errors={turn.tool_error_count}"
-                )
-                print(
-                    f"  tokens: in={turn.input_tokens} out={turn.output_tokens} "
-                    f"cache={turn.cache_read_tokens}"
-                )
-                print(f"  tools={len(turn.tool_calls)}  subagents={len(turn.subagents)}")
-                if args.feedback:
-                    feedback = feedback_by_ref[turn.ref_for(args.entity, args.project)]
-                    print("  Feedback:")
-                    _print_feedback(feedback)
-        elif args.session:
-            session = client.query_session(args.session)
-            client.hydrate_turns_batch(session.turns)
-            session_ref = session.ref_for(args.entity, args.project)
-            turn_refs = {
-                turn.trace_id: turn.ref_for(args.entity, args.project) for turn in session.turns
-            }
-            feedback_by_ref = (
-                client.query_all_feedback_batch([session_ref, *turn_refs.values()])
-                if args.feedback
-                else {}
-            )
-            print(f"Session {session.conversation_id}")
-            print(f"  Turns: {len(session.turns)}")
-            print(f"  Tokens: {session.total_tokens}")
-            if args.feedback:
-                print("  Session feedback:")
-                _print_feedback(feedback_by_ref[session_ref])
-            for i, t in enumerate(session.turns):
-                print(
-                    f"  [{i}] {t.trace_id[:12]}  steer={t.steering_count} "
-                    f"deny={t.denial_count} err={t.tool_error_count} "
-                    f"tools={len(t.tool_calls)} subagents={len(t.subagents)} "
-                    f"role={t.trace_role.value}"
-                )
-                if args.feedback:
-                    _print_feedback(feedback_by_ref[turn_refs[t.trace_id]])
-        else:
-            print("Specify --recent N or --session CONVERSATION_ID")
-            return 1
-
-    return 0
+    return ces_commands.inspect(args)
 
 
 def cmd_judge(args: argparse.Namespace) -> int:
@@ -431,84 +155,19 @@ def cmd_judge(args: argparse.Namespace) -> int:
     else:
         selected_rubrics = rubric_catalog.rubrics
 
-    if args.backend == "ces":
-        with ces_commands.connect(args) as ces:
-            client, catalog = ces.client, ces.catalog
-            sessions = ces_commands.sessions_to_judge(
-                client, catalog, since=since, limit=args.limit
-            )
-            if not sessions:
-                print("No eligible agent sessions found.")
-                return 0
-            judging_plan, pending, errors = _judge_sessions(
-                args, sessions, judges, selected_rubrics
-            )
-            written = (
-                0
-                if errors
-                else ces_commands.write_judge_scores(client, catalog, pending, force=args.force)
-            )
-        return _report_judging(judging_plan, pending, written, errors)
-
-    with WeaveClient(entity=args.entity, project=args.project) as client:
-        discovery_turns = client.query_turns(limit=args.limit, since=since)
-        discovery_turns = filter_evaluable_turns(discovery_turns)
-
-        if not discovery_turns:
-            print("No turns found.")
-            return 0
-
-        stats = _WriteStats()
-
-        discovered_by_conversation: dict[str, set[str]] = {}
-        for turn in discovery_turns:
-            discovered_by_conversation.setdefault(turn.conversation_id, set()).add(turn.trace_id)
-        conversation_ids = sorted(discovered_by_conversation)
-        if not conversation_ids or any(not conversation_id for conversation_id in conversation_ids):
-            raise RuntimeError("Discovered turns require nonblank conversation IDs")
-        sessions = [client.query_session(conversation_id) for conversation_id in conversation_ids]
-        if any(not session.turns for session in sessions):
-            raise RuntimeError("Discovered conversation has no complete session turns")
-        for conversation_id, session in zip(conversation_ids, sessions, strict=True):
-            if session.conversation_id != conversation_id:
-                raise RuntimeError("Complete session query returned a mismatched conversation")
-            missing = sorted(
-                discovered_by_conversation[conversation_id]
-                - {turn.trace_id for turn in session.turns}
-            )
-            if missing:
-                raise RuntimeError(
-                    "Complete session is missing discovered root trace IDs: " + ", ".join(missing)
-                )
-        if any(
-            turn.conversation_id != session.conversation_id
-            for session in sessions
-            for turn in session.turns
-        ):
-            raise RuntimeError("Complete session query returned a mismatched conversation")
-        sessions = [session for session in sessions if session_is_evaluable(session.turns)]
+    with ces_commands.connect(args) as ces:
+        client, catalog = ces.client, ces.catalog
+        sessions = ces_commands.sessions_to_judge(client, catalog, since=since, limit=args.limit)
         if not sessions:
             print("No eligible agent sessions found.")
             return 0
-        turns = [turn for session in sessions for turn in session.turns]
-        trace_ids = [turn.trace_id for turn in turns]
-        if len(trace_ids) != len(set(trace_ids)):
-            raise RuntimeError("Complete session queries returned duplicate trace IDs")
-
-        # Session windows require every root and its tool/chat children. Hydrate
-        # the complete selected sessions as one validated batch before planning,
-        # so discovery cutoffs cannot produce partial durable feedback.
-        client.hydrate_turns_batch(turns)
-
         judging_plan, pending, errors = _judge_sessions(args, sessions, judges, selected_rubrics)
-        stats.errors += errors
-        if not stats.errors:
-            for score, session in pending:
-                stats.write_score(
-                    client, score, session.ref_for(args.entity, args.project), force=args.force
-                )
-
-    return _report_judging(judging_plan, pending, stats.total_written, stats.errors)
+        written = (
+            0
+            if errors
+            else ces_commands.write_judge_scores(client, catalog, pending, force=args.force)
+        )
+    return _report_judging(judging_plan, pending, written, errors)
 
 
 def _judge_sessions(
@@ -594,10 +253,7 @@ def _report_judging(judging_plan, pending: list, written: int, errors: int) -> i
 
 
 def _project_feedback(args: argparse.Namespace) -> list[dict]:
-    if args.backend == "ces":
-        return ces_commands.read_feedback(args)
-    with WeaveClient(entity=args.entity, project=args.project) as client:
-        return client.query_project_feedback(limit=args.limit)
+    return ces_commands.read_feedback(args)
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:

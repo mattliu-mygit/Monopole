@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from unittest.mock import MagicMock, patch
 
 from weave_agent_signals import cli
 
@@ -50,17 +49,13 @@ def _args(**over):
         limit=1000,
         alert_webhook=None,
         state_file=None,
-        backend="weave",
     )
     base.update(over)
     return argparse.Namespace(**base)
 
 
-@patch("weave_agent_signals.cli.WeaveClient")
-def test_monitor_alerts_on_significant_regression_then_dedups(mock_wc, tmp_path, monkeypatch):
-    client = MagicMock()
-    client.query_project_feedback.return_value = _regressing_feedback()
-    mock_wc.return_value.__enter__.return_value = client
+def test_monitor_alerts_on_significant_regression_then_dedups(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.ces_commands, "read_feedback", lambda _args: _regressing_feedback())
 
     sent, fake_send = _capturing_send()
     monkeypatch.setattr(cli.alerts, "send", fake_send)
@@ -78,19 +73,18 @@ def test_monitor_alerts_on_significant_regression_then_dedups(mock_wc, tmp_path,
     assert sent == []  # same regressions deduped on rerun
 
 
-@patch("weave_agent_signals.cli.WeaveClient")
 def test_monitor_realerts_when_a_regression_recurs_after_recovery(
-    mock_wc,
     tmp_path,
     monkeypatch,
 ):
-    client = MagicMock()
-    client.query_project_feedback.side_effect = [
-        _regressing_feedback(),
-        _improving_feedback(),
-        _regressing_feedback(),
-    ]
-    mock_wc.return_value.__enter__.return_value = client
+    feeds = iter(
+        [
+            _regressing_feedback(),
+            _improving_feedback(),
+            _regressing_feedback(),
+        ]
+    )
+    monkeypatch.setattr(cli.ces_commands, "read_feedback", lambda _args: next(feeds))
 
     sent, fake_send = _capturing_send()
     monkeypatch.setattr(cli.alerts, "send", fake_send)
@@ -111,11 +105,8 @@ def test_monitor_realerts_when_a_regression_recurs_after_recovery(
     }
 
 
-@patch("weave_agent_signals.cli.WeaveClient")
-def test_monitor_does_not_alert_on_improvement(mock_wc, monkeypatch):
-    client = MagicMock()
-    client.query_project_feedback.return_value = _improving_feedback()
-    mock_wc.return_value.__enter__.return_value = client
+def test_monitor_does_not_alert_on_improvement(monkeypatch):
+    monkeypatch.setattr(cli.ces_commands, "read_feedback", lambda _args: _improving_feedback())
     sent, fake_send = _capturing_send()
     monkeypatch.setattr(cli.alerts, "send", fake_send)
 
