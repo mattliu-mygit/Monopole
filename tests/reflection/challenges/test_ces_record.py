@@ -117,3 +117,15 @@ def test_a_failed_adapter_command_logs_its_stderr(caplog):
 
     assert record_safely(result, adapter_fails) is result
     assert "no evaluations state" in caplog.text
+
+
+def test_a_judge_that_found_the_task_invalid_is_not_counted_as_agreeing():
+    client = _FakeClient()
+    result = _with_sessions(_result(winner="candidate"))
+    invalid = result.judges[0].model_copy(update={"task_valid": False, "winner": "tie"})
+    result = result.model_copy(update={"judges": (*result.judges, invalid)})
+
+    record_challenge(result, CesSession(client, Catalog("ev-t", "ev-s", {})), log=lambda *_: "case")
+
+    [(_, _, _, [verdict])] = client.writes
+    assert verdict.reason == "1 of 1 judges chose candidate; 1 found the task invalid"

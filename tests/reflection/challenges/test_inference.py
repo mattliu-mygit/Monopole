@@ -551,3 +551,46 @@ def test_blinding_redacts_instruction_text_copied_into_an_artifact_diff() -> Non
     )
 
     assert "candidate checklist" not in blinded["artifact_changes"][0]["diff"]
+
+
+def test_pairwise_judge_accepts_rubrics_in_another_order() -> None:
+    rubric = {"arm_1_score": 1.0, "arm_2_score": 0.5, "winner": "arm-1", "rationale": "Better."}
+    client = _Client(
+        [
+            (
+                {
+                    "task_valid": True,
+                    "task_invalid_reason": None,
+                    "winner": "arm-1",
+                    "rationale": "Arm 1 achieved the goal more completely.",
+                    "rubrics": [
+                        {"rubric_id": "judge.tool_choice", **rubric},
+                        {"rubric_id": "judge.verification", **rubric},
+                    ],
+                },
+                "gpt-5.6-sol",
+            )
+        ]
+    )
+    task = AuthoredTask(
+        prompt="Repair the parser.",
+        goal="Tests pass.",
+        workspace_digest="sha256:workspace",
+        author_model="claude-sonnet-5",
+        author_backend="cli",
+    )
+
+    verdict = judge_pair(
+        client,
+        judge=_judge(),
+        task=task,
+        baseline=_arm("baseline", "Baseline output"),
+        candidate=_arm("candidate", "Candidate output"),
+        rubrics=(VERIFICATION_DISCIPLINE, TOOL_CHOICE),
+        presentation_order=("candidate", "baseline"),
+    )
+
+    assert [item.rubric_id for item in verdict.rubrics] == [
+        "judge.verification",
+        "judge.tool_choice",
+    ]

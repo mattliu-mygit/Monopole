@@ -67,7 +67,10 @@ def record_challenge(
         key=f"ab-comparison-v1:{result.challenge_id}",
         attributes={"challenge_id": result.challenge_id, "candidate_id": result.candidate_id},
     )
-    agreeing = sum(judge.winner == result.winner for judge in result.judges)
+    # A judge that found the task invalid is forced to a tie, which is not a vote for one.
+    valid = [judge for judge in result.judges if judge.task_valid]
+    agreeing = sum(judge.winner == result.winner for judge in valid)
+    invalid = len(result.judges) - len(valid)
     verdict = Score(
         VERDICT.name,
         _VERDICT_VALUE[result.winner],
@@ -78,7 +81,8 @@ def record_challenge(
             "judge_winners": [judge.winner for judge in result.judges],
         },
         "comparison",
-        reason=f"{agreeing} of {len(result.judges)} judges chose {result.winner}",
+        reason=f"{agreeing} of {len(valid)} judges chose {result.winner}"
+        + (f"; {invalid} found the task invalid" if invalid else ""),
     )
     catalog = ces.client.add_scorers(ces.catalog, (VERDICT,))
     verdict_score_id, _details_id = ces.client.write_scores(

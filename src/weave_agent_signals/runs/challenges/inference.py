@@ -708,11 +708,11 @@ def judge_pair(
     if not isinstance(raw_rubrics, list):
         raise ValueError("paired verdict rubrics must be a list")
     expected_ids = [rubric.scorer_name for rubric in rubrics]
-    returned_ids = [
-        item.get("rubric_id") if isinstance(item, Mapping) else None for item in raw_rubrics
-    ]
-    if returned_ids != expected_ids:
-        raise ValueError("paired verdict rubric order does not match configured rubrics")
+    by_id = {item.get("rubric_id"): item for item in raw_rubrics if isinstance(item, Mapping)}
+    if len(raw_rubrics) != len(expected_ids) or set(by_id) != set(expected_ids):
+        raise ValueError("paired verdict rubrics do not match configured rubrics")
+    # The schema can't fix the order, so a verdict in another order is reordered, not rejected.
+    raw_rubrics = [by_id[rubric_id] for rubric_id in expected_ids]
     labels = {
         presentation_order[0]: "arm-1",
         presentation_order[1]: "arm-2",
