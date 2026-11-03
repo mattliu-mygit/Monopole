@@ -307,4 +307,4 @@ def read_feedback(args: argparse.Namespace) -> list[dict]:
     """The newest `args.limit` Scores as feedback records, for analyze, monitor, and reflect."""
     with connect(args) as ces:
         client, catalog = ces.client, ces.catalog
-        return client.read_all_scores(catalog)[: args.limit]
+        return client.read_all_scores(catalog, limit=args.limit)

@@ -114,7 +114,7 @@ class FakeCes:
         }
         return [record for record in self.feedback if record["target_id"] in targets]
 
-    def read_all_scores(self, _catalog):
+    def read_all_scores(self, _catalog, limit=None):
         return list(self.all_scores)
 
 

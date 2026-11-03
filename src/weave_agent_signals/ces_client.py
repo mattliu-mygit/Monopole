@@ -42,6 +42,9 @@ from weave_agent_signals.models import (
 ATTEMPTS = 3
 MAX_RETRY_AFTER_S = 30.0
 PAGE_LIMIT = 1000
+# A turn's row is its first Case; the adapter numbers each turn's Cases from 0.
+FIRST_STEP = "i.step_index = 0"
+SESSIONS_PER_SEARCH = 50
 _STATUS = {"completed": "OK", "aborted": "ERROR"}
 
 
@@ -293,6 +296,12 @@ def session_view(
     )
 
 
+def _turns_of(session_ids: list[str]) -> str:
+    """A rows/search filter for the turns of these sessions."""
+    either = " OR ".join(f"i.session_trajectory_id = {json.dumps(sid)}" for sid in session_ids)
+    return f"{FIRST_STEP} AND ({either})"
+
+
 @dataclass
 class CesSession:
     """A CES client and Monopole's catalog for the adapter's Dataset. Exiting closes the client."""
@@ -325,6 +334,7 @@ class CesClient:
         )
         self._sleep = sleep
         self._index = score_index or ScoreIndex()
+        self._scorer_names: dict[tuple[str, str], str] = {}  # a Scorer version's name never changes
 
     def close(self) -> None:
         self._http.close()
@@ -381,7 +391,7 @@ class CesClient:
             )
         return session_view(trajectory_id, cases, children)
 
-    def _rows(self, path: str, body: dict) -> list[dict]:
+    def _rows(self, path: str, body: dict, limit: int | None = None) -> list[dict]:
         rows, cursor = [], None
         while True:
             page = self._request(
@@ -390,6 +400,8 @@ class CesClient:
                 body={**body, "limit": PAGE_LIMIT, **({"cursor": cursor} if cursor else {})},
             )
             rows.extend(page.get("rows") or [])
+            if limit is not None and len(rows) >= limit:
+                return rows[:limit]
             cursor = page.get("next_cursor")
             if not cursor:
                 return rows
@@ -487,7 +499,7 @@ class CesClient:
         found, cursor = {}, None
         while True:
             body = {
-                "filter": "i.step_index = 0",
+                "filter": FIRST_STEP,
                 "order_by": "i.started_at desc",
                 "limit": PAGE_LIMIT,
                 **({"cursor": cursor} if cursor else {}),
@@ -516,7 +528,7 @@ class CesClient:
         """Scores on each turn of one session, keyed by the turn's first Case ID."""
         rows = self._rows(
             f"/evaluations/{catalog.turns_evaluation_id}/rows/search",
-            {"filter": f'i.session_trajectory_id = "{trajectory_id}" AND i.step_index = 0'},
+            {"filter": _turns_of([trajectory_id])},
         )
         return {r["case_id"]: r.get("scores") or [] for r in rows}
 
@@ -551,7 +563,7 @@ class CesClient:
         return {t: scores for t, _, scores in self._session_targets(catalog, set(trajectory_ids))}
 
     def _feedback_records(self, targets: list[tuple[str, dict, list]]) -> list[dict]:
-        names: dict[tuple[str, str], str] = {}
+        names = self._scorer_names
         for _, _, scores in targets:
             for score in scores:
                 key = (score["scorer_id"], score["scorer_version_id"])
@@ -565,22 +577,29 @@ class CesClient:
         )
         return records
 
-    def read_all_scores(self, catalog: Catalog) -> list[dict]:
-        """Every turn and session Score, newest run first, as feedback-shaped records."""
+    def read_all_scores(self, catalog: Catalog, limit: int | None = None) -> list[dict]:
+        """Turn and session Scores, newest turn first, as feedback-shaped records.
+
+        With `limit`, only the newest `limit` turns are read, with the Scores of their sessions,
+        so a bound never drops session Scores for lacking a turn time."""
         turn_rows = self._rows(
             f"/evaluations/{catalog.turns_evaluation_id}/rows/search",
-            {"filter": "i.step_index = 0"},
+            {"filter": FIRST_STEP, "order_by": "i.started_at desc"},
+            limit=limit,
         )
         targets = [(r["case_id"], r["input"], r.get("scores") or []) for r in turn_rows]
-        return self._feedback_records(targets + self._session_targets(catalog))
+        sessions = (
+            None if limit is None else {r["input"].get("session_trajectory_id") for r in turn_rows}
+        )
+        return self._feedback_records(targets + self._session_targets(catalog, sessions))
 
     def cohort_feedback(self, catalog: Catalog, session_ids: list[str]) -> list[dict]:
         """The Scores on these sessions and their turns, as feedback-shaped records."""
         targets = []
-        for sid in session_ids:
+        for start in range(0, len(session_ids), SESSIONS_PER_SEARCH):
             rows = self._rows(
                 f"/evaluations/{catalog.turns_evaluation_id}/rows/search",
-                {"filter": f'i.session_trajectory_id = "{sid}" AND i.step_index = 0'},
+                {"filter": _turns_of(session_ids[start : start + SESSIONS_PER_SEARCH])},
             )
             targets += [(r["case_id"], r["input"], r.get("scores") or []) for r in rows]
         return self._feedback_records(targets + self._session_targets(catalog, set(session_ids)))

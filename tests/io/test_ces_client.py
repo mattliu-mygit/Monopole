@@ -575,3 +575,71 @@ def test_read_all_scores_turns_ces_rows_into_feedback_records(tmp_path):
     )
     assert judge["payload"]["details"]["ces_scorer"] == "judge.tool_choice.panel-abc"
     assert judge["payload"]["details"]["review_status"] == "complete"
+
+
+@respx.mock
+def test_a_limit_reads_the_newest_turns_and_only_their_sessions_scores():
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = Catalog("ev-turns", "ev-sessions", {})
+    turns = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "rows": [
+                    {"case_id": "c-new", "input": {"session_trajectory_id": "s-new"}, "scores": []},
+                    {"case_id": "c-old", "input": {"session_trajectory_id": "s-old"}, "scores": []},
+                ],
+                "next_cursor": "more",
+            },
+        )
+    )
+    respx.post(f"{BASE}/evaluations/ev-sessions/trajectory-rows/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "rows": [
+                    {
+                        "trajectory": {"trajectory_id": tid},
+                        "scores": [
+                            {
+                                "score_id": tid,
+                                "scorer_id": "sc",
+                                "scorer_version_id": "v",
+                                "value": 1,
+                            }
+                        ],
+                    }
+                    for tid in ("s-new", "s-old")
+                ]
+            },
+        )
+    )
+    names = respx.get(f"{BASE}/scorers/sc/versions/v").mock(
+        return_value=httpx.Response(200, json={"name": "efficiency.session"})
+    )
+
+    records = client.read_all_scores(catalog, limit=1)
+    client.read_all_scores(catalog, limit=1)
+
+    assert turns.call_count == 2
+    assert json.loads(turns.calls.last.request.content)["order_by"] == "i.started_at desc"
+    assert [r["target_id"] for r in records] == ["s-new"]
+    assert names.call_count == 1
+
+
+@respx.mock
+def test_cohort_feedback_searches_the_turns_of_all_sessions_at_once():
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    turns = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
+        return_value=httpx.Response(200, json={"rows": []})
+    )
+    respx.post(f"{BASE}/evaluations/ev-sessions/trajectory-rows/search").mock(
+        return_value=httpx.Response(200, json={"rows": []})
+    )
+
+    client.cohort_feedback(Catalog("ev-turns", "ev-sessions", {}), ["s1", "s2"])
+
+    assert turns.call_count == 1
+    assert json.loads(turns.calls.last.request.content)["filter"] == (
+        'i.step_index = 0 AND (i.session_trajectory_id = "s1" OR i.session_trajectory_id = "s2")'
+    )

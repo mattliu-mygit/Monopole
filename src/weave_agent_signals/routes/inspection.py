@@ -274,7 +274,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
     @router.get("/analyze")
     def get_analysis(limit: int = Query(default=1000, ge=1, le=5000)) -> AnalysisResponse:
         with ces_factory() as ces:
-            feedback = ces.client.read_all_scores(ces.catalog)[:limit]
+            feedback = ces.client.read_all_scores(ces.catalog, limit=limit)
         if not feedback:
             return AnalysisResponse.model_validate(
                 {
