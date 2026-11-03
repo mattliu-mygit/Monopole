@@ -112,7 +112,8 @@ def _command(
     ]
     if effort is not None:
         command.extend(("--effort", effort))
-    command.extend(("--output-format", "stream-json", "{task}"))
+    # Claude Code refuses stream-json output in --print mode without --verbose.
+    command.extend(("--output-format", "stream-json", "--verbose", "{task}"))
     return tuple(command)
 
 

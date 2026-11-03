@@ -121,3 +121,13 @@ def test_execution_environment_requires_harness_version() -> None:
             runtime_env={},
             version_reader=lambda _argv: "",
         )
+
+
+def test_a_claude_arm_asks_for_the_verbose_output_stream_json_requires() -> None:
+    from weave_agent_signals.runs.challenges.environment import _command
+
+    command = _command("claude", "claude-sonnet-5", None, network_enabled=False)
+
+    assert command[0] == "claude" and "--print" in command
+    assert command[command.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in command
