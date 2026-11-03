@@ -330,3 +330,16 @@ def test_a_description_is_sent_only_for_scorers_that_have_one():
     assert all("description" not in body for body in bodies[: 2 * len(catalog.scorers)])
     assert [b.get("description") for b in bodies[-2:]] == ["judge.x v3 judged by a"] * 2
     assert set(merged.scorers) == {*catalog.scorers, "judge.x.panel-1"}
+
+
+def test_a_turn_without_a_prompt_keeps_its_span_ids_distinct_from_its_turn_id():
+    reply = _case(
+        "r1", "assistant_message", "t1", 0, output={"turn_status": "aborted", "text": "partial"}
+    )
+    call = _case("r2", "tool_call", "t1", 1, tool_name="exec", output={"status": "completed"})
+
+    [turn] = session_view("traj-s", [reply, call], {}).turns
+
+    assert turn.trace_id == "r1"
+    assert [c.span_id for c in turn.chat_spans] == ["r1/span"]
+    assert [t.span_id for t in turn.tool_calls] == ["r2"]

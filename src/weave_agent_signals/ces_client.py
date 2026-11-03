@@ -57,11 +57,17 @@ def _int(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def _tool_span(case: dict[str, Any]) -> ToolSpan:
+def _span_id(case_id: str, turn_id: str | None) -> str:
+    """A turn with no user prompt starts with a reply or tool call, whose Case ID is also the
+    turn's ID. Judges need every evidence ID to be unique, so that span gets a suffix."""
+    return f"{case_id}/span" if case_id == turn_id else case_id
+
+
+def _tool_span(case: dict[str, Any], turn_id: str | None = None) -> ToolSpan:
     case_in, out = case["input"], case.get("output") or {}
     arguments = case_in.get("arguments")
     return ToolSpan(
-        span_id=case["case_id"],
+        span_id=_span_id(case["case_id"], turn_id),
         tool_name=case_in.get("tool_name") or "",
         arguments="" if arguments is None else json.dumps(arguments, ensure_ascii=False),
         result=out.get("output") or out.get("error") or "",
@@ -157,10 +163,14 @@ def session_view(
                     for c in steps
                     if c["input"]["kind"] == "compaction"
                 ],
-                tool_calls=[_tool_span(c) for c in steps if c["input"]["kind"] == "tool_call"],
+                tool_calls=[
+                    _tool_span(c, steps[0]["case_id"])
+                    for c in steps
+                    if c["input"]["kind"] == "tool_call"
+                ],
                 chat_spans=[
                     ChatSpan(
-                        span_id=c["case_id"],
+                        span_id=_span_id(c["case_id"], steps[0]["case_id"]),
                         model=first.get("model") or "",
                         input_tokens=_int((c.get("output") or {}).get("input_tokens")),
                         output_tokens=_int((c.get("output") or {}).get("output_tokens")),
