@@ -329,7 +329,12 @@ class CesClient:
         return Catalog(evaluations["case"], evaluations["trajectory"], refs)
 
     def find_sessions(
-        self, catalog: Catalog, *, since: datetime, until: datetime | None = None
+        self,
+        catalog: Catalog,
+        *,
+        since: datetime,
+        until: datetime | None = None,
+        limit: int | None = None,
     ) -> list[str]:
         """Session Trajectories with a turn that started in the window, newest first.
 
@@ -356,6 +361,8 @@ class CesClient:
                     return list(found)
                 if session and (hi is None or started <= hi):
                     found.setdefault(session, None)
+                    if limit is not None and len(found) >= limit:
+                        return list(found)
             cursor = page.get("next_cursor")
             if not cursor:
                 return list(found)

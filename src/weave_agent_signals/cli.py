@@ -15,7 +15,7 @@ from typing import Sequence
 import httpx
 from dotenv import load_dotenv
 
-from weave_agent_signals import alerts
+from weave_agent_signals import alerts, ces_commands
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
 from weave_agent_signals.client import WeaveClient
 from weave_agent_signals.judges.cli_backend import CliJudgeClient
@@ -217,6 +217,8 @@ def _score_sessions(
 
 
 def cmd_score(args: argparse.Namespace) -> int:
+    if args.backend == "ces":
+        return ces_commands.score(args)
     since = args.since or (datetime.now(timezone.utc) - timedelta(hours=24))
 
     with WeaveClient(entity=args.entity, project=args.project) as client:
@@ -265,6 +267,8 @@ def cmd_score(args: argparse.Namespace) -> int:
 
 
 def cmd_backfill(args: argparse.Namespace) -> int:
+    if args.backend == "ces":
+        return ces_commands.backfill(args)
     with WeaveClient(entity=args.entity, project=args.project) as client:
         turns = client.query_turns_paginated(page_size=args.page_size, since=args.start)
         turns = filter_evaluable_turns(turns)
@@ -347,6 +351,8 @@ def _print_feedback(feedback: list[dict]) -> None:
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
+    if args.backend == "ces":
+        return ces_commands.inspect(args)
     with WeaveClient(entity=args.entity, project=args.project) as client:
         if args.recent:
             turns = client.query_turns(limit=args.recent)
@@ -791,6 +797,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_score.add_argument("--since", type=_parse_datetime, default=None)
     p_score.add_argument("--limit", type=int, default=100)
     p_score.add_argument("--force", action="store_true")
+    ces_commands.add_arguments(p_score)
 
     # backfill
     p_back = subs.add_parser("backfill", help="Backfill scores for a date range")
@@ -798,6 +805,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_back.add_argument("--end", type=_parse_datetime, default=None)
     p_back.add_argument("--page-size", type=int, default=500)
     p_back.add_argument("--force", action="store_true")
+    ces_commands.add_arguments(p_back)
 
     # judge
     p_judge = subs.add_parser("judge", help="Run sliding-window LLM judges on sessions")
@@ -828,6 +836,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_insp.add_argument("--recent", type=int, default=None)
     p_insp.add_argument("--session", type=str, default=None)
     p_insp.add_argument("--feedback", action="store_true", help="Show feedback/scores")
+    ces_commands.add_arguments(p_insp)
 
     # analyze
     p_analyze = subs.add_parser("analyze", help="Analyze scored feedback patterns")

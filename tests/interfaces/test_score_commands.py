@@ -101,6 +101,7 @@ def test_score_and_backfill_return_cleanly_for_empty_queries(monkeypatch, capsys
             since=None,
             limit=10,
             force=False,
+            backend="weave",
         )
     )
     backfill_rc = cli.cmd_backfill(
@@ -111,6 +112,7 @@ def test_score_and_backfill_return_cleanly_for_empty_queries(monkeypatch, capsys
             end=None,
             page_size=10,
             force=False,
+            backend="weave",
         )
     )
 
@@ -151,6 +153,7 @@ def test_score_commands_exclude_entire_mixed_role_session_before_hydration(
                 since=None,
                 limit=10,
                 force=False,
+                backend="weave",
             )
         )
     else:
@@ -162,6 +165,7 @@ def test_score_commands_exclude_entire_mixed_role_session_before_hydration(
                 end=None,
                 page_size=10,
                 force=False,
+                backend="weave",
             )
         )
 
