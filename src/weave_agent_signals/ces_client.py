@@ -136,7 +136,7 @@ def _score_row(score: dict[str, Any]) -> dict[str, Any]:
     return {k: score.get(k) for k in ("score_id", "scorer_id", "scorer_version_id", "value")}
 
 
-def _feedback(target_id: str, case_input: dict, scores: list[dict], names: dict) -> list[dict]:
+def _score_record(target_id: str, case_input: dict, scores: list[dict], names: dict) -> list[dict]:
     """One target's Scores as feedback-shaped records, the shape the analysis code takes.
 
     `names` maps (scorer_id, scorer_version_id) to the CES Scorer name. A `.details` Scorer
@@ -585,7 +585,7 @@ class CesClient:
         """Score rows on session Trajectories, by Trajectory ID."""
         return {t: scores for t, _, scores in self._session_targets(catalog, set(trajectory_ids))}
 
-    def _feedback_records(self, targets: list[tuple[str, dict, list]]) -> list[dict]:
+    def _score_records(self, targets: list[tuple[str, dict, list]]) -> list[dict]:
         names = self._scorer_names
         for _, _, scores in targets:
             for score in scores:
@@ -593,7 +593,7 @@ class CesClient:
                 # Only found names are cached: a Scorer version created later must still resolve.
                 if key not in names and (name := self._scorer_name(*key)) is not None:
                     names[key] = name
-        records = [record for target in targets for record in _feedback(*target, names)]
+        records = [record for target in targets for record in _score_record(*target, names)]
         records.sort(
             key=lambda r: r["payload"]["details"].get("turn_started_at") or "", reverse=True
         )
@@ -623,9 +623,9 @@ class CesClient:
         sessions = (
             None if limit is None else {r["input"].get("session_trajectory_id") for r in turn_rows}
         )
-        return self._feedback_records(targets + self._session_targets(catalog, sessions))
+        return self._score_records(targets + self._session_targets(catalog, sessions))
 
-    def cohort_feedback(self, catalog: Catalog, session_ids: list[str]) -> list[dict]:
+    def cohort_scores(self, catalog: Catalog, session_ids: list[str]) -> list[dict]:
         """The Scores on these sessions and their turns, as feedback-shaped records."""
         targets = []
         for start in range(0, len(session_ids), SESSIONS_PER_SEARCH):
@@ -634,7 +634,7 @@ class CesClient:
                 {"filter": _turns_of(session_ids[start : start + SESSIONS_PER_SEARCH])},
             )
             targets += [(r["case_id"], r["input"], r.get("scores") or []) for r in rows]
-        return self._feedback_records(targets + self._session_targets(catalog, set(session_ids)))
+        return self._score_records(targets + self._session_targets(catalog, set(session_ids)))
 
     def get_score(self, score_id: str) -> dict:
         return self._request("GET", f"/scores/{score_id}")

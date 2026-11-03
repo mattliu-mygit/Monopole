@@ -303,7 +303,7 @@ def write_judge_scores(client, catalog: Catalog, pending: list, *, force: bool) 
     return sum(map(len, writes.values()))
 
 
-def read_feedback(args: argparse.Namespace) -> list[dict]:
+def read_scores(args: argparse.Namespace) -> list[dict]:
     """The newest `args.limit` Scores as feedback records, for analyze, monitor, and reflect."""
     with connect(args) as ces:
         client, catalog = ces.client, ces.catalog

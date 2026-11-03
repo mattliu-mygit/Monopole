@@ -220,7 +220,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                 if in_window:
                     visible.append((_session_summary(sid, in_window), in_window))
             feedback = _by_target(
-                ces.client.cohort_feedback(ces.catalog, [s["conversation_id"] for s, _ in visible])
+                ces.client.cohort_scores(ces.catalog, [s["conversation_id"] for s, _ in visible])
                 if visible
                 else []
             )
@@ -249,7 +249,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                     status_code=404,
                     detail={"code": "session_not_found", "message": message},
                 )
-            feedback = _by_target(ces.client.cohort_feedback(ces.catalog, [conversation_id]))
+            feedback = _by_target(ces.client.cohort_scores(ces.catalog, [conversation_id]))
         return SessionDetailResponse.model_validate(
             {
                 "conversation_id": session.conversation_id,

@@ -97,7 +97,7 @@ def test_standalone_reflect_stops_before_local_or_model_setup_for_audit_only_fee
         }
     ]
 
-    monkeypatch.setattr(cli.ces_commands, "read_feedback", lambda _args: feedback)
+    monkeypatch.setattr(cli.ces_commands, "read_scores", lambda _args: feedback)
     monkeypatch.setattr(
         cli,
         "load_target_registry",
@@ -165,7 +165,7 @@ def test_standalone_reflect_always_infers_with_resolved_roles_and_only_prints_di
     adapter.capture.return_value = baseline
     reflect = MagicMock(return_value=result)
 
-    monkeypatch.setattr(cli.ces_commands, "read_feedback", lambda _args: feedback)
+    monkeypatch.setattr(cli.ces_commands, "read_scores", lambda _args: feedback)
     monkeypatch.setattr(cli, "load_target_registry", lambda _path: object())
     monkeypatch.setattr(cli, "TargetPromoter", lambda _registry: adapter)
     monkeypatch.setattr(cli, "build_model_catalog", lambda: catalog)

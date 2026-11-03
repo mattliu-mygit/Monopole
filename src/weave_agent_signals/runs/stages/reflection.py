@@ -405,7 +405,7 @@ def _execute_reflection_stage(
         "Loading evaluation feedback for the pinned cohort",
     )
     with dependencies.ces_factory() as ces:
-        records = ces.client.cohort_feedback(ces.catalog, session_ids)
+        records = ces.client.cohort_scores(ces.catalog, session_ids)
     if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
         raise ValueError("Feedback query must return a list of objects")
     feedback, identities = _selected_feedback(records, refs)

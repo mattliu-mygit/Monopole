@@ -225,7 +225,7 @@ class CesFeedback:
     def __exit__(self, *_args):
         return None
 
-    def cohort_feedback(self, _catalog, session_ids):
+    def cohort_scores(self, _catalog, session_ids):
         self.queried_sessions = list(session_ids)
         return list(self.feedback)
 
@@ -837,7 +837,7 @@ def test_stage_sanitizes_failures_across_the_full_reflection_boundary(
     elif failure_point == "adapter_contract":
         monkeypatch.setattr(adapter, "contract_manifest", fail)
     elif failure_point == "feedback_io":
-        monkeypatch.setattr(weave, "cohort_feedback", fail)
+        monkeypatch.setattr(weave, "cohort_scores", fail)
     elif failure_point == "baseline_capture":
         monkeypatch.setattr(adapter, "capture", fail)
     elif failure_point == "input_pinning":

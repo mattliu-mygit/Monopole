@@ -107,7 +107,7 @@ class FakeCes:
             raise httpx.HTTPStatusError("missing", request=request, response=httpx.Response(404))
         return SessionView(trajectory_id, turns, "config-v1", "main")
 
-    def cohort_feedback(self, _catalog, session_ids):
+    def cohort_scores(self, _catalog, session_ids):
         self.feedback_calls.append(list(session_ids))
         targets = set(session_ids) | {
             turn.trace_id for turn in self.turns if turn.conversation_id in session_ids

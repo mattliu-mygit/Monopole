@@ -556,7 +556,7 @@ def test_reflection_stage_failure_exposes_only_safe_error_through_run_service(st
         def __exit__(self, *_args):
             return None
 
-        def cohort_feedback(self, _catalog, _session_ids):
+        def cohort_scores(self, _catalog, _session_ids):
             return [
                 {
                     "id": "feedback-1",

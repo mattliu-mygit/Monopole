@@ -295,10 +295,10 @@ def test_judge_judges_found_sessions_and_writes_finished_scores(monkeypatch, cap
 
 def test_analysis_commands_read_feedback_from_ces(monkeypatch):
     records = [{"feedback_type": "weave_agent_signals.efficiency", "payload": {"rating": 1.0}}]
-    monkeypatch.setattr(ces_commands, "read_feedback", lambda args: records)
+    monkeypatch.setattr(ces_commands, "read_scores", lambda args: records)
     args = cli.build_parser().parse_args(["analyze"])
 
-    assert cli._project_feedback(args) is records
+    assert cli._project_scores(args) is records
 
 
 def test_score_and_backfill_return_cleanly_when_no_sessions_match(fake, monkeypatch, capsys):

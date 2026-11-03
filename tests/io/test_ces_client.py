@@ -14,7 +14,7 @@ from weave_agent_signals.ces_client import (
     MAX_RETRY_AFTER_S,
     SESSIONS_PER_SEARCH,
     CesClient,
-    _feedback,
+    _score_record,
     _tool_span,
     session_view,
 )
@@ -645,7 +645,7 @@ def test_cohort_feedback_searches_the_turns_of_all_sessions_at_once():
         return_value=httpx.Response(200, json={"rows": []})
     )
 
-    client.cohort_feedback(Catalog("ev-turns", "ev-sessions", {}), ["s1", "s2"])
+    client.cohort_scores(Catalog("ev-turns", "ev-sessions", {}), ["s1", "s2"])
 
     assert turns.call_count == 1
     assert json.loads(turns.calls.last.request.content)["filter"] == (
@@ -660,7 +660,7 @@ def test_a_score_that_is_not_a_rating_is_skipped():
         {"score_id": "2", "scorer_id": "sc2", "scorer_version_id": "v", "value": 0.5},
     ]
 
-    records = _feedback("c1", {}, scores, names)
+    records = _score_record("c1", {}, scores, names)
 
     assert [(r["feedback_type"], r["payload"]["rating"]) for r in records] == [
         ("weave_agent_signals.outcome.test", 0.5)
@@ -707,7 +707,7 @@ def test_a_score_from_an_unknown_scorer_version_is_skipped():
         {"score_id": "2", "scorer_id": "sc", "scorer_version_id": "v", "value": 0.9},
     ]
 
-    records = client._feedback_records([("c1", {}, scores)])
+    records = client._score_records([("c1", {}, scores)])
 
     assert [r["feedback_type"] for r in records] == ["weave_agent_signals.efficiency"]
 
@@ -811,7 +811,7 @@ def test_cohort_feedback_searches_one_batch_of_sessions_at_a_time():
     )
     ids = [f"s{index}" for index in range(SESSIONS_PER_SEARCH + 1)]
 
-    client.cohort_feedback(Catalog("ev-turns", "ev-sessions", {}), ids)
+    client.cohort_scores(Catalog("ev-turns", "ev-sessions", {}), ids)
 
     first, second = (json.loads(call.request.content)["filter"] for call in turns.calls)
     last = f'"s{SESSIONS_PER_SEARCH}"'

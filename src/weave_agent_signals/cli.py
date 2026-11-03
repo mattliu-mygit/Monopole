@@ -240,12 +240,12 @@ def _report_judging(judging_plan, pending: list, written: int, errors: int) -> i
     return 1 if errors else 0
 
 
-def _project_feedback(args: argparse.Namespace) -> list[dict]:
-    return ces_commands.read_feedback(args)
+def _project_scores(args: argparse.Namespace) -> list[dict]:
+    return ces_commands.read_scores(args)
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
-    feedback = _project_feedback(args)
+    feedback = _project_scores(args)
 
     if not feedback:
         print("No scored feedback found.")
@@ -301,7 +301,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 
 def cmd_monitor(args: argparse.Namespace) -> int:
-    feedback = _project_feedback(args)
+    feedback = _project_scores(args)
 
     if not feedback:
         print("No scored feedback found.")
@@ -368,7 +368,7 @@ def _render_bundle_diff(past: BundleSnapshot, proposed: BundleSnapshot) -> str:
 
 
 def cmd_reflect(args: argparse.Namespace) -> int:
-    feedback = _project_feedback(args)
+    feedback = _project_scores(args)
 
     feedback = [item for item in feedback if is_evaluation_feedback_eligible(item)]
     if not feedback:
