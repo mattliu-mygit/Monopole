@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import partial
 from typing import Any
 
 from weave_agent_signals.ces_client import CesSession, plan_judge_writes
@@ -23,7 +24,12 @@ from weave_agent_signals.judges.runner import (
 from weave_agent_signals.models import Score, SessionView, TurnSpan
 from weave_agent_signals.run_config import EffectiveRunConfig, PositionedJudge, RubricDescriptor
 from weave_agent_signals.runs.events import sanitize_event
-from weave_agent_signals.runs.stages import StageCancelled
+from weave_agent_signals.runs.stages import (
+    record_progress,
+    record_result,
+    require_active,
+    translate_cancellation,
+)
 from weave_agent_signals.runs.store import (
     Run,
     RunStatus,
@@ -120,30 +126,8 @@ class _State:
         }
 
 
-def _active(store: RunStore, run_id: str, cancel: threading.Event) -> Run:
-    if cancel.is_set():
-        raise StageCancelled()
-    current = store.get(run_id)
-    if current is None:
-        raise ValueError(f"Run {run_id} not found")
-    if current.status is RunStatus.CANCELLED:
-        raise StageCancelled()
-    if current.status is not RunStatus.JUDGING:
-        raise RunStoreConflictError(
-            f"Run {run_id} is no longer judging; current status is {current.status.value}"
-        )
-    return current
-
-
-def _translate_cancel(
-    store: RunStore,
-    run_id: str,
-    cancel: threading.Event,
-    error: RunStoreConflictError,
-) -> None:
-    current = store.get(run_id)
-    if cancel.is_set() or (current and current.status is RunStatus.CANCELLED):
-        raise StageCancelled() from error
+_active = partial(require_active, stage=RunStatus.JUDGING)
+_translate_cancel = translate_cancellation
 
 
 def _persist(
@@ -154,14 +138,8 @@ def _persist(
     *,
     result: bool = False,
 ) -> None:
-    try:
-        if result:
-            store.record_stage_result(run_id, stage=RunStatus.JUDGING, result=value)
-        else:
-            store.record_stage_progress(run_id, stage=RunStatus.JUDGING, progress=value)
-    except RunStoreConflictError as error:
-        _translate_cancel(store, run_id, cancel, error)
-        raise
+    record = record_result if result else record_progress
+    record(store, run_id, cancel, value, stage=RunStatus.JUDGING)
 
 
 def _text(value: object) -> str | None:

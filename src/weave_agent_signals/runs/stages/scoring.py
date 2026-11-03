@@ -8,13 +8,19 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from typing import Any
 
 from weave_agent_signals.ces_client import CesSession
 from weave_agent_signals.models import Score, SessionView, TurnSpan
 from weave_agent_signals.run_config import EffectiveRunConfig
 from weave_agent_signals.runs.events import sanitize_event
-from weave_agent_signals.runs.stages import StageCancelled
+from weave_agent_signals.runs.stages import (
+    record_progress,
+    record_result,
+    require_active,
+    translate_cancellation,
+)
 from weave_agent_signals.runs.store import (
     Run,
     RunStatus,
@@ -36,68 +42,10 @@ class ScoringDependencies:
     ]
 
 
-def _require_active(
-    store: RunStore,
-    run_id: str,
-    cancel: threading.Event,
-) -> Run:
-    if cancel.is_set():
-        raise StageCancelled()
-    current = store.get(run_id)
-    if current is None:
-        raise ValueError(f"Run {run_id} not found")
-    if current.status is RunStatus.CANCELLED:
-        raise StageCancelled()
-    if current.status is not RunStatus.SCORING:
-        raise RunStoreConflictError(
-            f"Run {run_id} is no longer scoring; current status is {current.status.value}"
-        )
-    return current
-
-
-def _translate_cancellation(
-    store: RunStore,
-    run_id: str,
-    cancel: threading.Event,
-    conflict: RunStoreConflictError,
-) -> None:
-    current = store.get(run_id)
-    if cancel.is_set() or (current is not None and current.status is RunStatus.CANCELLED):
-        raise StageCancelled() from conflict
-
-
-def _record_progress(
-    store: RunStore,
-    run_id: str,
-    cancel: threading.Event,
-    progress: Mapping[str, Any],
-) -> None:
-    try:
-        store.record_stage_progress(
-            run_id,
-            stage=RunStatus.SCORING,
-            progress=progress,
-        )
-    except RunStoreConflictError as exc:
-        _translate_cancellation(store, run_id, cancel, exc)
-        raise
-
-
-def _record_result(
-    store: RunStore,
-    run_id: str,
-    cancel: threading.Event,
-    result: Mapping[str, Any],
-) -> None:
-    try:
-        store.record_stage_result(
-            run_id,
-            stage=RunStatus.SCORING,
-            result=result,
-        )
-    except RunStoreConflictError as exc:
-        _translate_cancellation(store, run_id, cancel, exc)
-        raise
+_require_active = partial(require_active, stage=RunStatus.SCORING)
+_translate_cancellation = translate_cancellation
+_record_progress = partial(record_progress, stage=RunStatus.SCORING)
+_record_result = partial(record_result, stage=RunStatus.SCORING)
 
 
 def _record_event(
