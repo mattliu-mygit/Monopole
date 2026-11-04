@@ -277,7 +277,7 @@ class SlidingReviewer:
             context_policy,
             judge.max_input_tokens,
             judge.token_counter,
-            judge.raw_window_target_tokens,
+            judge.window_budget_tokens,
         )
         expected_slim = {
             key: expected_plan[key]

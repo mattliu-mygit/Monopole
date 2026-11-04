@@ -22,13 +22,8 @@ def test_judging_context_policy_uses_capacity_tiers_at_exact_threshold():
     assert policy.contract_version == "4"
     assert policy.capacity_reserve(200_000) == 18_000
     assert policy.capacity_reserve(200_001) == 24_000
-    assert policy.raw_window_target(200_000) == 50_000
-    assert policy.raw_window_target(200_001) == 128_000
-    assert policy.raw_window_target(1_050_000) == 128_000
     assert policy.generation_budget(200_000) == 4_000
     assert policy.generation_budget(200_001) == 10_000
-    assert policy.small_model_raw_target_tokens == 50_000
-    assert policy.large_model_raw_target_tokens == 128_000
     assert policy.finding_max_tokens == 10_000
     assert "target_input_tokens" not in policy.model_dump()
     assert "token_estimator" not in policy.model_dump()
@@ -38,8 +33,6 @@ def test_judging_context_policy_uses_capacity_tiers_at_exact_threshold():
 def test_judging_context_policy_rejects_invalid_capacity(model_limit):
     with pytest.raises(ValueError, match="model_limit must be a positive integer"):
         JudgingContextPolicy().capacity_reserve(model_limit)
-    with pytest.raises(ValueError, match="model_limit must be a positive integer"):
-        JudgingContextPolicy().raw_window_target(model_limit)
     with pytest.raises(ValueError, match="model_limit must be a positive integer"):
         JudgingContextPolicy().generation_budget(model_limit)
 
@@ -238,6 +231,10 @@ def test_resolve_run_config_rejects_model_without_requested_role():
         provider_model="writer-only",
         family="example",
         supported_roles=("proposal_writer",),
+        question_budget_tokens=4_000,
+        window_budget_tokens=32_000,
+        whole_budget_tokens=32_000,
+        merge_budget_tokens=32_000,
     )
     restricted_catalog = models.model_copy(
         update={"available_models": (*models.available_models, writer_only)}

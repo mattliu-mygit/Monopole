@@ -59,6 +59,10 @@ def _judge(model_id: str, position: int, limit: int = 128_000) -> PositionedJudg
         family=f"family-{position}",
         supported_roles=("judge",),
         max_input_tokens=limit,
+        question_budget_tokens=4_000,
+        window_budget_tokens=32_000,
+        whole_budget_tokens=32_000,
+        merge_budget_tokens=32_000,
         position=position,
     )
 
@@ -68,12 +72,12 @@ def test_plan_pins_incapable_reviewer_as_skipped_and_excludes_its_work(
 ) -> None:
     original = plan_module.build_window_plan
 
-    def build(session, policy, limit, counter, model_raw_target_tokens=None):
+    def build(session, policy, limit, counter, window_budget_tokens):
         if limit == 64_000:
             from weave_agent_signals.judges.windowing import WindowPlanInapplicable
 
             raise WindowPlanInapplicable()
-        return original(session, policy, limit, counter, model_raw_target_tokens)
+        return original(session, policy, limit, counter, window_budget_tokens)
 
     monkeypatch.setattr(plan_module, "build_window_plan", build)
     plan = _canonical_plan(judges=(_judge("small", 1, 64_000), _judge("large", 2)))
@@ -133,9 +137,7 @@ def test_canonical_plan_id_authenticates_evidence_model_and_policy() -> None:
         cohort_id="cohort-1",
         rubrics=build_rubric_catalog().rubrics,
         judge_models=(_judge("judge-1", 1),),
-        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY.model_copy(
-            update={"small_model_raw_target_tokens": 40_000}
-        ),
+        context_policy=DEFAULT_JUDGING_CONTEXT_POLICY.model_copy(update={"max_chunks": 39}),
     )
 
     assert (
@@ -157,20 +159,6 @@ def test_canonical_plan_rejects_tampered_content() -> None:
 
     with pytest.raises(ValueError, match="plan ID does not match"):
         JudgingPlan.model_validate(payload)
-
-
-def test_canonical_plan_accepts_authenticated_models_before_raw_window_target() -> None:
-    payload = _canonical_plan().model_dump(mode="json")
-    for reviewer in payload["reviewers"]:
-        del reviewer["raw_window_target_tokens"]
-    payload["plan_id"] = plan_module._digest(
-        {key: value for key, value in payload.items() if key != "plan_id"}
-    )
-
-    restored = JudgingPlan.model_validate(payload)
-
-    assert restored.plan_id == payload["plan_id"]
-    assert all(reviewer.raw_window_target_tokens is None for reviewer in restored.reviewers)
 
 
 def test_canonical_plan_derives_totals_instead_of_storing_them() -> None:

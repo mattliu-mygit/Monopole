@@ -100,20 +100,9 @@ class JudgingPlan(StrictFrozenModel):
             "reviewers": [reviewer.model_dump(mode="json") for reviewer in self.reviewers],
             "sessions": [session.model_dump(mode="json") for session in self.sessions],
         }
-        if self.plan_id == _digest(body):
-            return self
-        legacy_body = dict(body)
-        changed = False
-        legacy_reviewers = [dict(reviewer) for reviewer in body["reviewers"]]
-        for reviewer, legacy_reviewer in zip(self.reviewers, legacy_reviewers, strict=True):
-            if "raw_window_target_tokens" not in reviewer.model_fields_set:
-                legacy_reviewer.pop("raw_window_target_tokens")
-                changed = True
-        if changed:
-            legacy_body["reviewers"] = legacy_reviewers
-            if self.plan_id == _digest(legacy_body):
-                return self
-        raise ValueError("judging plan ID does not match its content")
+        if self.plan_id != _digest(body):
+            raise ValueError("judging plan ID does not match its content")
+        return self
 
     def session(self, conversation_id: str) -> SessionPlan:
         for session in self.sessions:
@@ -189,7 +178,7 @@ def build_canonical_judging_plan(
                     context_policy,
                     judge.max_input_tokens,
                     judge.token_counter,
-                    judge.raw_window_target_tokens,
+                    judge.window_budget_tokens,
                 )
             except WindowPlanInapplicable:
                 reviewer_plans.append(

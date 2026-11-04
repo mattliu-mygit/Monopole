@@ -88,6 +88,10 @@ def _judge(**updates: object) -> PositionedJudge:
         "family": "family-1",
         "supported_roles": ("judge",),
         "max_input_tokens": 16_384,
+        "question_budget_tokens": 2_000,
+        "window_budget_tokens": 10_000,
+        "whole_budget_tokens": 10_000,
+        "merge_budget_tokens": 10_000,
         "position": 1,
     }
     values.update(updates)
@@ -279,6 +283,7 @@ def _reviewer(
         active_policy,
         active_judge.max_input_tokens,
         active_judge.token_counter,
+        active_judge.window_budget_tokens,
     )
     judging_plan = build_canonical_judging_plan(
         [session],
@@ -451,8 +456,11 @@ def test_reviewer_digests_once_then_reads_every_window_and_merges() -> None:
 
 def test_large_reviewer_uses_10k_generation_budget_for_every_phase() -> None:
     reviewer, client, _, _ = _reviewer(
-        policy=_policy(large_model_raw_target_tokens=20_000),
-        judge=_judge(max_input_tokens=262_000),
+        judge=_judge(
+            max_input_tokens=262_000,
+            window_budget_tokens=20_000,
+            whole_budget_tokens=20_000,
+        ),
         expected_windows=1,
     )
 

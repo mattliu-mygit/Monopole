@@ -22,6 +22,10 @@ WRITER = ModelDescriptor(
     provider_model="writer",
     family="openai",
     supported_roles=("proposal_writer",),
+    question_budget_tokens=4_000,
+    window_budget_tokens=32_000,
+    whole_budget_tokens=32_000,
+    merge_budget_tokens=32_000,
 )
 SCOPE = ScopeDescriptor("file", "/project", ("AGENTS.md",))
 

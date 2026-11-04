@@ -24,6 +24,10 @@ def _judge(position: int) -> PositionedJudge:
         provider_model=f"judge-{position}",
         family=f"family-{position}",
         supported_roles=("judge",),
+        question_budget_tokens=4_000,
+        window_budget_tokens=32_000,
+        whole_budget_tokens=32_000,
+        merge_budget_tokens=32_000,
         position=position,
     )
 

@@ -69,6 +69,10 @@ def _descriptor(model: str, *, position: int | None = None):
         provider_model=model,
         family="openai" if model.startswith("gpt") else "anthropic",
         supported_roles=("judge",) if position else ("proposal_evaluator",),
+        question_budget_tokens=4_000,
+        window_budget_tokens=32_000,
+        whole_budget_tokens=32_000,
+        merge_budget_tokens=32_000,
     )
     return PositionedJudge(**values, position=position) if position else ModelDescriptor(**values)
 

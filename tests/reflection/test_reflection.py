@@ -49,6 +49,10 @@ WRITER = ModelDescriptor(
     provider_model="writer-requested",
     family="anthropic",
     supported_roles=("proposal_writer",),
+    question_budget_tokens=4_000,
+    window_budget_tokens=32_000,
+    whole_budget_tokens=32_000,
+    merge_budget_tokens=32_000,
 )
 EVALUATOR = ModelDescriptor(
     id="evaluator-requested",
@@ -57,6 +61,10 @@ EVALUATOR = ModelDescriptor(
     provider_model="evaluator-requested",
     family="meta",
     supported_roles=("proposal_evaluator",),
+    question_budget_tokens=4_000,
+    window_budget_tokens=32_000,
+    whole_budget_tokens=32_000,
+    merge_budget_tokens=32_000,
 )
 SCOPE_POLICY = {
     "version": "test-policy-v1",

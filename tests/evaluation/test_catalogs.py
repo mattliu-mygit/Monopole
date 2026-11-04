@@ -58,6 +58,13 @@ DEPRECATED_WANDB_MODELS = {
     "Qwen/Qwen3-235B-A22B-Thinking-2507",
 }
 
+MID_BUDGETS = {
+    "question_budget_tokens": 4_000,
+    "window_budget_tokens": 32_000,
+    "whole_budget_tokens": 32_000,
+    "merge_budget_tokens": 32_000,
+}
+
 
 def test_model_catalog_is_stable_role_oriented_and_immutable():
     first = build_model_catalog(which=_all_executables)
@@ -78,8 +85,6 @@ def test_model_catalog_is_stable_role_oriented_and_immutable():
     by_id = {model["id"]: model for model in data["available_models"]}
     assert all(model["id"].startswith(f"{model['provider']}:") for model in by_id.values())
     assert len(data["recommended_judges"]) == 3
-    assert data["judging_context"]["small_model_raw_target_tokens"] == 50_000
-    assert data["judging_context"]["large_model_raw_target_tokens"] == 128_000
     assert all(model_id in by_id for model_id in data["recommended_judges"])
     assert data["recommended_challenge_judges"] == [data["recommended_judges"][0]]
     assert set(data["proposal_evaluator_preferences"]) == {
@@ -97,11 +102,11 @@ def test_model_catalog_is_stable_role_oriented_and_immutable():
             "supported_roles",
             "max_input_tokens",
             "token_counter",
-            "raw_window_target_tokens",
+            "question_budget_tokens",
+            "window_budget_tokens",
+            "whole_budget_tokens",
+            "merge_budget_tokens",
         }
-
-    deepseek = by_id["wandb:DeepSeek-V4-Pro"]
-    assert deepseek["raw_window_target_tokens"] == 96_000
 
     with pytest.raises(ValidationError):
         first.catalog_version = "changed"  # type: ignore[misc]
@@ -284,6 +289,19 @@ def test_model_catalog_version_tracks_recommendations_and_evaluator_order():
     assert evaluator_changed.catalog_version != base.catalog_version
 
 
+def test_changing_a_budget_changes_the_catalog_version(monkeypatch):
+    base = build_model_catalog(which=_all_executables)
+    changed = tuple(
+        ModelDescriptor.model_validate({**descriptor.model_dump(), "window_budget_tokens": 100_000})
+        if descriptor.id == "claude:claude-sonnet-5"
+        else descriptor
+        for descriptor in catalogs_module._MODEL_DESCRIPTORS
+    )
+    monkeypatch.setattr(catalogs_module, "_MODEL_DESCRIPTORS", changed)
+
+    assert build_model_catalog(which=_all_executables).catalog_version != base.catalog_version
+
+
 def test_rubric_catalog_is_stable_and_descriptors_have_exact_shape():
     first = build_rubric_catalog()
     second = build_rubric_catalog()
@@ -340,6 +358,7 @@ def test_descriptor_membership_is_not_limited_by_preference_registries(monkeypat
         provider_model="deepseek-r1",
         family="deepseek",
         supported_roles=("judge", "proposal_evaluator"),
+        **MID_BUDGETS,
     )
     monkeypatch.setattr(
         catalogs_module,
@@ -362,6 +381,7 @@ def test_model_descriptor_serializes_only_its_public_fields():
         provider_model="example-model",
         family="example-family",
         supported_roles=("judge",),
+        **MID_BUDGETS,
     )
 
     assert descriptor.model_dump(mode="json") == {
@@ -373,7 +393,10 @@ def test_model_descriptor_serializes_only_its_public_fields():
         "supported_roles": ["judge"],
         "max_input_tokens": 128_000,
         "token_counter": "utf8_bytes_div_3",
-        "raw_window_target_tokens": None,
+        "question_budget_tokens": 4_000,
+        "window_budget_tokens": 32_000,
+        "whole_budget_tokens": 32_000,
+        "merge_budget_tokens": 32_000,
     }
 
 
@@ -388,6 +411,7 @@ def test_model_descriptor_rejects_invalid_input_token_limits(value):
             family="example-family",
             supported_roles=("judge",),
             max_input_tokens=value,
+            **MID_BUDGETS,
         )
 
 
@@ -401,4 +425,47 @@ def test_model_descriptor_rejects_unknown_token_counter():
             family="example-family",
             supported_roles=("judge",),
             token_counter="family-inferred",
+            **MID_BUDGETS,
         )
+
+
+def test_budgets_out_of_order_are_rejected():
+    with pytest.raises(
+        ValueError,
+        match="model example question_budget_tokens must not exceed window_budget_tokens",
+    ):
+        ModelDescriptor(
+            id="example",
+            label="Example",
+            provider="example-provider",
+            provider_model="example-model",
+            family="example-family",
+            supported_roles=("judge",),
+            question_budget_tokens=8_000,
+            window_budget_tokens=4_000,
+            whole_budget_tokens=8_000,
+            merge_budget_tokens=8_000,
+        )
+
+
+def test_budget_larger_than_usable_context_is_rejected():
+    values = {
+        "id": "example",
+        "label": "Example",
+        "provider": "example-provider",
+        "provider_model": "example-model",
+        "family": "example-family",
+        "supported_roles": ("judge",),
+        "max_input_tokens": 32_800,
+        "question_budget_tokens": 2_000,
+        "whole_budget_tokens": None,
+        "merge_budget_tokens": 16_000,
+    }
+
+    # A 32,800-token model reserves 9,840 tokens, which leaves 22,960 for evidence.
+    assert ModelDescriptor(**values, window_budget_tokens=22_960).window_budget_tokens == 22_960
+    with pytest.raises(
+        ValueError,
+        match="model example window_budget_tokens must not exceed the usable context of 22960",
+    ):
+        ModelDescriptor(**values, window_budget_tokens=30_000)

@@ -31,6 +31,23 @@ _PROPOSAL_ROLE = "proposal_writer"
 _JUDGE_ROLE = "judge"
 _PROPOSAL_EVALUATOR_ROLE = "proposal_evaluator"
 
+_BUDGETS = {
+    "small_dense": (2_000, None, None, 4_000),  # 8k-class, or dense 8B and below
+    "small_moe": (2_000, 8_000, 8_000, 16_000),  # about 32k, or 3B-5B active MoE
+    "mid": (4_000, 32_000, 32_000, 32_000),  # dense 27B-70B, 128k-262k windows
+    "frontier": (8_000, 128_000, 128_000, 128_000),  # frontier, 200k-1M windows
+}
+
+
+def _budget_fields(budget_class: str) -> dict[str, int | None]:
+    question, window, whole, merge = _BUDGETS[budget_class]
+    return {
+        "question_budget_tokens": question,
+        "window_budget_tokens": window,
+        "whole_budget_tokens": whole,
+        "merge_budget_tokens": merge,
+    }
+
 
 def _wandb_model(
     model_id: str,
@@ -38,8 +55,8 @@ def _wandb_model(
     provider_model: str,
     family: str,
     max_input_tokens: int,
+    budget_class: str,
     token_counter: TokenCounterName = "utf8_bytes_div_3",
-    raw_window_target_tokens: int | None = None,
 ) -> ModelDescriptor:
     return ModelDescriptor(
         id=model_id,
@@ -50,7 +67,7 @@ def _wandb_model(
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=max_input_tokens,
         token_counter=token_counter,
-        raw_window_target_tokens=raw_window_target_tokens,
+        **_budget_fields(budget_class),
     )
 
 
@@ -63,14 +80,23 @@ _WANDB_MODELS = tuple(
             "JetBrains/Mellum2-12B-A2.5B-Instruct",
             "jetbrains",
             131_000,
+            "small_moe",
         ),
-        ("wandb:MiniMax-M2.5", "MiniMax M2.5", "MiniMaxAI/MiniMax-M2.5", "minimax", 197_000),
+        (
+            "wandb:MiniMax-M2.5",
+            "MiniMax M2.5",
+            "MiniMaxAI/MiniMax-M2.5",
+            "minimax",
+            197_000,
+            "frontier",
+        ),
         (
             "wandb:Qwen3-14B-Instruct",
             "Qwen3 14B Instruct",
             "OpenPipe/Qwen3-14B-Instruct",
             "qwen",
             32_800,
+            "small_moe",
         ),
         (
             "wandb:Qwen3-30B-A3B-Instruct-2507",
@@ -78,6 +104,7 @@ _WANDB_MODELS = tuple(
             "Qwen/Qwen3-30B-A3B-Instruct-2507",
             "qwen",
             262_000,
+            "small_moe",
         ),
         (
             "wandb:Qwen3-Coder-480B-A35B-Instruct",
@@ -85,17 +112,40 @@ _WANDB_MODELS = tuple(
             "Qwen/Qwen3-Coder-480B-A35B-Instruct",
             "qwen",
             262_000,
+            "frontier",
         ),
-        ("wandb:Qwen3.5-35B-A3B", "Qwen3.5 35B A3B", "Qwen/Qwen3.5-35B-A3B", "qwen", 262_000),
-        ("wandb:Qwen3.6-27B", "Qwen3.6 27B", "Qwen/Qwen3.6-27B", "qwen", 262_000),
-        ("wandb:Qwen3.6-35B-A3B", "Qwen3.6 35B A3B", "Qwen/Qwen3.6-35B-A3B", "qwen", 262_000),
-        ("wandb:DeepSeek-V3.1", "DeepSeek V3.1", "deepseek-ai/DeepSeek-V3.1", "deepseek", 161_000),
+        (
+            "wandb:Qwen3.5-35B-A3B",
+            "Qwen3.5 35B A3B",
+            "Qwen/Qwen3.5-35B-A3B",
+            "qwen",
+            262_000,
+            "small_moe",
+        ),
+        ("wandb:Qwen3.6-27B", "Qwen3.6 27B", "Qwen/Qwen3.6-27B", "qwen", 262_000, "mid"),
+        (
+            "wandb:Qwen3.6-35B-A3B",
+            "Qwen3.6 35B A3B",
+            "Qwen/Qwen3.6-35B-A3B",
+            "qwen",
+            262_000,
+            "small_moe",
+        ),
+        (
+            "wandb:DeepSeek-V3.1",
+            "DeepSeek V3.1",
+            "deepseek-ai/DeepSeek-V3.1",
+            "deepseek",
+            161_000,
+            "frontier",
+        ),
         (
             "wandb:DeepSeek-V4-Flash",
             "DeepSeek V4 Flash",
             "deepseek-ai/DeepSeek-V4-Flash",
             "deepseek",
             1_049_000,
+            "frontier",
         ),
         (
             "wandb:DeepSeek-V4-Pro",
@@ -103,16 +153,23 @@ _WANDB_MODELS = tuple(
             "deepseek-ai/DeepSeek-V4-Pro",
             "deepseek",
             1_049_000,
-            "utf8_bytes_div_3",
-            96_000,
+            "frontier",
         ),
-        ("wandb:gemma-4-31B-it", "Gemma 4 31B", "google/gemma-4-31B-it", "google", 262_000),
+        (
+            "wandb:gemma-4-31B-it",
+            "Gemma 4 31B",
+            "google/gemma-4-31B-it",
+            "google",
+            262_000,
+            "mid",
+        ),
         (
             "wandb:granite-4.1-8b",
             "Granite 4.1 8B",
             "ibm-granite/granite-4.1-8b",
             "ibm",
             131_072,
+            "small_dense",
         ),
         (
             "wandb:Llama-3.1-70B",
@@ -120,6 +177,7 @@ _WANDB_MODELS = tuple(
             "meta-llama/Llama-3.1-70B-Instruct",
             "meta",
             128_000,
+            "mid",
         ),
         (
             "wandb:Llama-3.1-8B",
@@ -127,6 +185,7 @@ _WANDB_MODELS = tuple(
             "meta-llama/Llama-3.1-8B-Instruct",
             "meta",
             131_072,
+            "small_dense",
         ),
         (
             "wandb:Llama-3.3-70B",
@@ -134,14 +193,23 @@ _WANDB_MODELS = tuple(
             "meta-llama/Llama-3.3-70B-Instruct",
             "meta",
             128_000,
+            "mid",
         ),
-        ("wandb:Kimi-K2.6", "Kimi K2.6", "moonshotai/Kimi-K2.6", "moonshot", 262_000),
+        (
+            "wandb:Kimi-K2.6",
+            "Kimi K2.6",
+            "moonshotai/Kimi-K2.6",
+            "moonshot",
+            262_000,
+            "frontier",
+        ),
         (
             "wandb:Kimi-K2.7-Code",
             "Kimi K2.7 Code",
             "moonshotai/Kimi-K2.7-Code",
             "moonshot",
             262_000,
+            "frontier",
         ),
         (
             "wandb:Nemotron-3-Super-120B",
@@ -149,6 +217,7 @@ _WANDB_MODELS = tuple(
             "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
             "nvidia",
             262_000,
+            "mid",
         ),
         (
             "wandb:Nemotron-3-Ultra-550B",
@@ -156,6 +225,7 @@ _WANDB_MODELS = tuple(
             "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
             "nvidia",
             262_000,
+            "frontier",
         ),
         (
             "wandb:gpt-oss-20b",
@@ -163,6 +233,7 @@ _WANDB_MODELS = tuple(
             "openai/gpt-oss-20b",
             "openai",
             131_072,
+            "small_moe",
             "o200k_harmony",
         ),
         (
@@ -171,10 +242,11 @@ _WANDB_MODELS = tuple(
             "openai/gpt-oss-120b",
             "openai",
             131_072,
+            "mid",
             "o200k_harmony",
         ),
-        ("wandb:GLM-5.1", "GLM 5.1", "zai-org/GLM-5.1", "zai", 203_000),
-        ("wandb:GLM-5.2", "GLM 5.2", "zai-org/GLM-5.2", "zai", 262_000),
+        ("wandb:GLM-5.1", "GLM 5.1", "zai-org/GLM-5.1", "zai", 203_000, "frontier"),
+        ("wandb:GLM-5.2", "GLM 5.2", "zai-org/GLM-5.2", "zai", 262_000, "frontier"),
     )
 )
 
@@ -198,6 +270,7 @@ _MODEL_DESCRIPTORS = (
         family="anthropic",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=200_000,
+        **_budget_fields("frontier"),
     ),
     ModelDescriptor(
         id="codex:gpt-5.6-sol",
@@ -208,6 +281,7 @@ _MODEL_DESCRIPTORS = (
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=272_000,
         token_counter="o200k_base",
+        **_budget_fields("frontier"),
     ),
     ModelDescriptor(
         id="codex:gpt-5.6-terra",
@@ -218,6 +292,7 @@ _MODEL_DESCRIPTORS = (
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=272_000,
         token_counter="o200k_base",
+        **_budget_fields("frontier"),
     ),
     ModelDescriptor(
         id="codex:gpt-5.6-luna",
@@ -228,6 +303,7 @@ _MODEL_DESCRIPTORS = (
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=272_000,
         token_counter="o200k_base",
+        **_budget_fields("frontier"),
     ),
     ModelDescriptor(
         id="codex:gpt-5.5",
@@ -238,6 +314,7 @@ _MODEL_DESCRIPTORS = (
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=272_000,
         token_counter="o200k_base",
+        **_budget_fields("frontier"),
     ),
     ModelDescriptor(
         id="codex:gpt-5.4",
@@ -248,6 +325,7 @@ _MODEL_DESCRIPTORS = (
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=272_000,
         token_counter="o200k_base",
+        **_budget_fields("frontier"),
     ),
     ModelDescriptor(
         id="codex:gpt-5.4-mini",
@@ -258,6 +336,7 @@ _MODEL_DESCRIPTORS = (
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=272_000,
         token_counter="o200k_base",
+        **_budget_fields("frontier"),
     ),
     ModelDescriptor(
         id="claude:claude-haiku-4-5",
@@ -267,6 +346,7 @@ _MODEL_DESCRIPTORS = (
         family="anthropic",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=200_000,
+        **_budget_fields("frontier"),
     ),
     ModelDescriptor(
         id="agy:gemini-3.5-flash-medium",
@@ -276,6 +356,7 @@ _MODEL_DESCRIPTORS = (
         family="google",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=1_048_576,
+        **_budget_fields("frontier"),
     ),
     ModelDescriptor(
         id="agy:gemini-3.5-flash-high",
@@ -285,6 +366,7 @@ _MODEL_DESCRIPTORS = (
         family="google",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=1_048_576,
+        **_budget_fields("frontier"),
     ),
     ModelDescriptor(
         id="agy:gemini-3.5-flash-low",
@@ -294,6 +376,7 @@ _MODEL_DESCRIPTORS = (
         family="google",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=1_048_576,
+        **_budget_fields("frontier"),
     ),
     ModelDescriptor(
         id="agy:gemini-3.1-pro-low",
@@ -303,6 +386,7 @@ _MODEL_DESCRIPTORS = (
         family="google",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=1_048_576,
+        **_budget_fields("frontier"),
     ),
     ModelDescriptor(
         id="agy:gemini-3.1-pro-high",
@@ -312,6 +396,7 @@ _MODEL_DESCRIPTORS = (
         family="google",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=1_048_576,
+        **_budget_fields("frontier"),
     ),
     ModelDescriptor(
         id="agy:gpt-oss-120b-medium",
@@ -322,6 +407,7 @@ _MODEL_DESCRIPTORS = (
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=131_072,
         token_counter="o200k_harmony",
+        **_budget_fields("mid"),
     ),
     *_WANDB_MODELS,
     ModelDescriptor(
@@ -333,6 +419,7 @@ _MODEL_DESCRIPTORS = (
         supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=128_000,
         token_counter="o200k_base",
+        **_budget_fields("mid"),
     ),
     ModelDescriptor(
         id="openai:gpt-4o",
@@ -343,6 +430,7 @@ _MODEL_DESCRIPTORS = (
         supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=128_000,
         token_counter="o200k_base",
+        **_budget_fields("mid"),
     ),
 )
 

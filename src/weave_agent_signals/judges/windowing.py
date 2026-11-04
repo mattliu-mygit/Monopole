@@ -212,7 +212,6 @@ def _partition_cores(
     turn_count: int,
     range_tokens: Callable[[int, int], int],
     raw_budget: int,
-    target_raw_tokens: int,
 ) -> list[tuple[int, int]]:
     cores: list[tuple[int, int]] = []
     start = 0
@@ -220,13 +219,7 @@ def _partition_cores(
         if range_tokens(start, start) > raw_budget:
             raise ValueError("core turn exceeds the raw window budget")
         accepted_end = start
-        while accepted_end + 1 < turn_count:
-            current_tokens = range_tokens(start, accepted_end)
-            candidate_tokens = range_tokens(start, accepted_end + 1)
-            if candidate_tokens > raw_budget or current_tokens >= target_raw_tokens:
-                break
-            if abs(target_raw_tokens - candidate_tokens) > abs(target_raw_tokens - current_tokens):
-                break
+        while accepted_end + 1 < turn_count and range_tokens(start, accepted_end + 1) <= raw_budget:
             accepted_end += 1
         cores.append((start, accepted_end))
         start = accepted_end + 1
@@ -272,18 +265,18 @@ def build_window_plan(
     policy: JudgingContextPolicy,
     model_limit: int,
     token_counter: TokenCounterName,
-    model_raw_target_tokens: int | None = None,
+    window_budget_tokens: int | None,
 ) -> dict[str, object]:
     """Build a deterministic overlap-aware fixed-point raw-window plan."""
 
     if isinstance(model_limit, bool) or not isinstance(model_limit, int) or model_limit <= 0:
         raise ValueError("model_limit must be a positive integer")
-    if model_raw_target_tokens is not None and (
-        isinstance(model_raw_target_tokens, bool)
-        or not isinstance(model_raw_target_tokens, int)
-        or model_raw_target_tokens <= 0
+    if window_budget_tokens is not None and (
+        isinstance(window_budget_tokens, bool)
+        or not isinstance(window_budget_tokens, int)
+        or window_budget_tokens <= 0
     ):
-        raise ValueError("model_raw_target_tokens must be a positive integer")
+        raise ValueError("window_budget_tokens must be a positive integer")
     _validate_session_evidence_ids(session)
     trace_ids = [turn.trace_id for turn in session.turns]
 
@@ -312,10 +305,7 @@ def build_window_plan(
         for position, turn in enumerate(session.turns, start=1)
     ]
 
-    tier_target = policy.raw_window_target(model_limit)
-    if model_raw_target_tokens is not None:
-        tier_target = min(tier_target, model_raw_target_tokens)
-    if input_cap - base_reserve <= 0:
+    if window_budget_tokens is None or input_cap - base_reserve <= 0:
         raise WindowPlanInapplicable()
 
     if not session.turns:
@@ -324,7 +314,7 @@ def build_window_plan(
             "conversation_id": session.conversation_id,
             "input_cap_tokens": input_cap,
             "raw_budget_tokens": input_cap - base_reserve,
-            "target_raw_tokens": min(tier_target, input_cap - base_reserve),
+            "target_raw_tokens": min(window_budget_tokens, input_cap - base_reserve),
             "chunk_count": 0,
             "overlap_turns": policy.overlap_turns,
             "token_counter": token_counter,
@@ -346,16 +336,11 @@ def build_window_plan(
         raw_budget = input_cap - capacity_reserve
         if raw_budget <= 0:
             raise WindowPlanInapplicable()
-        if any(tokens > raw_budget for tokens in turn_tokens):
+        target_raw_tokens = min(window_budget_tokens, raw_budget)
+        if any(tokens > target_raw_tokens for tokens in turn_tokens):
             raise WindowPlanInapplicable()
-        target_raw_tokens = min(tier_target, raw_budget)
 
-        cores = _partition_cores(
-            len(rendered_turns),
-            range_tokens,
-            raw_budget,
-            target_raw_tokens,
-        )
+        cores = _partition_cores(len(rendered_turns), range_tokens, target_raw_tokens)
         planned_count = len(cores)
         if planned_count > policy.max_chunks:
             raise WindowPlanInapplicable()
@@ -372,13 +357,12 @@ def build_window_plan(
     windows: list[dict[str, object]] = []
     covered_trace_ids: list[str] = []
     for index, (core_start, core_end) in enumerate(cores, start=1):
-        core_tokens = range_tokens(core_start, core_end)
         raw_start, raw_end = _expand_raw_bounds(
             len(rendered_turns),
             range_tokens,
             core_start,
             core_end,
-            min(raw_budget, max(target_raw_tokens, core_tokens)),
+            target_raw_tokens,
             policy.overlap_turns,
         )
         raw_tokens = range_tokens(raw_start, raw_end)

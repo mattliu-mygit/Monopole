@@ -54,6 +54,11 @@ def _author(*, max_input_tokens: int = 128_000) -> ModelDescriptor:
         family="anthropic",
         supported_roles=("proposal_evaluator",),
         max_input_tokens=max_input_tokens,
+        # Small enough for the 5,000-token author, which has 1,000 tokens left after the reserve.
+        question_budget_tokens=1_000,
+        window_budget_tokens=None,
+        whole_budget_tokens=None,
+        merge_budget_tokens=1_000,
     )
 
 
@@ -67,6 +72,10 @@ def _judge(*, max_input_tokens: int = 128_000) -> PositionedJudge:
         supported_roles=("judge",),
         position=1,
         max_input_tokens=max_input_tokens,
+        question_budget_tokens=1_000,
+        window_budget_tokens=None,
+        whole_budget_tokens=None,
+        merge_budget_tokens=1_000,
     )
 
 

@@ -56,8 +56,6 @@ class StrictFrozenModel(BaseModel):
 class JudgingContextPolicy(StrictFrozenModel):
     contract_version: Literal["4"] = "4"
     large_model_threshold_tokens: Literal[200_000] = 200_000
-    large_model_raw_target_tokens: Annotated[int, Field(strict=True, ge=1)] = 128_000
-    small_model_raw_target_tokens: Annotated[int, Field(strict=True, ge=1)] = 50_000
     digest_max_tokens: Annotated[int, Field(strict=True, ge=1)] = 1_000
     finding_max_tokens: Annotated[int, Field(strict=True, ge=1)] = 10_000
     overlap_turns: Literal[1] = 1
@@ -71,14 +69,6 @@ class JudgingContextPolicy(StrictFrozenModel):
             + self.generation_budget(model_limit)
             + self.safety_reserve(model_limit)
         )
-
-    def raw_window_target(self, model_limit: int) -> int:
-        """Return the soft raw-window target for a validated model capacity."""
-
-        _require_model_limit(model_limit)
-        if model_limit > self.large_model_threshold_tokens:
-            return self.large_model_raw_target_tokens
-        return self.small_model_raw_target_tokens
 
     def prompt_reserve(self, model_limit: int) -> int:
         """Return the rubric and instruction prompt allowance for a model capacity."""
@@ -112,7 +102,10 @@ class ModelDescriptor(StrictFrozenModel):
     supported_roles: tuple[ModelRole, ...]
     max_input_tokens: Annotated[int, Field(strict=True, ge=1)] = 128_000
     token_counter: TokenCounterName = "utf8_bytes_div_3"
-    raw_window_target_tokens: Annotated[int, Field(strict=True, ge=1)] | None = None
+    question_budget_tokens: Annotated[int, Field(strict=True, ge=1)]
+    window_budget_tokens: Annotated[int, Field(strict=True, ge=1)] | None
+    whole_budget_tokens: Annotated[int, Field(strict=True, ge=1)] | None
+    merge_budget_tokens: Annotated[int, Field(strict=True, ge=1)]
 
     @model_validator(mode="after")
     def validate_descriptor(self) -> ModelDescriptor:
@@ -122,6 +115,25 @@ class ModelDescriptor(StrictFrozenModel):
             raise ValueError("supported_roles must not be empty")
         if len(self.supported_roles) != len(set(self.supported_roles)):
             raise ValueError("supported_roles must be unique")
+        ordered_budgets = [
+            name
+            for name in ("question_budget_tokens", "window_budget_tokens", "whole_budget_tokens")
+            if getattr(self, name) is not None
+        ]
+        for smaller, larger in (
+            ("question_budget_tokens", "merge_budget_tokens"),
+            *zip(ordered_budgets, ordered_budgets[1:]),
+        ):
+            if getattr(self, smaller) > getattr(self, larger):
+                raise ValueError(f"model {self.id} {smaller} must not exceed {larger}")
+        usable = self.max_input_tokens - DEFAULT_JUDGING_CONTEXT_POLICY.capacity_reserve(
+            self.max_input_tokens
+        )
+        for name in (*ordered_budgets, "merge_budget_tokens"):
+            if getattr(self, name) > usable:
+                raise ValueError(
+                    f"model {self.id} {name} must not exceed the usable context of {usable} tokens"
+                )
         return self
 
 

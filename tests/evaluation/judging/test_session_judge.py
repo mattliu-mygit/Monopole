@@ -54,6 +54,10 @@ def _judge(model_id: str, position: int) -> PositionedJudge:
         family=f"family-{position}",
         supported_roles=("judge",),
         max_input_tokens=128_000,
+        question_budget_tokens=4_000,
+        window_budget_tokens=32_000,
+        whole_budget_tokens=32_000,
+        merge_budget_tokens=32_000,
         position=position,
     )
 
@@ -440,7 +444,8 @@ def test_runner_rejects_alternate_later_judge_before_reviewer_instantiation(monk
 def test_runner_synthesizes_authenticated_skip_without_creating_reviewer(monkeypatch) -> None:
     session = _session()
     judges = (_judge("small", 1), _judge("large", 2))
-    judges = (judges[0].model_copy(update={"max_input_tokens": 4_000}), judges[1])
+    small = judges[0].model_copy(update={"window_budget_tokens": None, "whole_budget_tokens": None})
+    judges = (small, judges[1])
     rubrics = build_rubric_catalog().rubrics[:1]
     plan = build_canonical_judging_plan(
         [session],

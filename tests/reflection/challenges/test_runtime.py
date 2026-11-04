@@ -168,6 +168,10 @@ def _call_challenge_runner(tmp_path, monkeypatch, **runner_kwargs):
                 provider_model="author",
                 family="openai",
                 supported_roles=("proposal_evaluator",),
+                question_budget_tokens=4_000,
+                window_budget_tokens=32_000,
+                whole_budget_tokens=32_000,
+                merge_budget_tokens=32_000,
             ),
             challenge_judges=(
                 PositionedJudge(
@@ -177,6 +181,10 @@ def _call_challenge_runner(tmp_path, monkeypatch, **runner_kwargs):
                     provider_model="judge",
                     family="openai",
                     supported_roles=("judge",),
+                    question_budget_tokens=4_000,
+                    window_budget_tokens=32_000,
+                    whole_budget_tokens=32_000,
+                    merge_budget_tokens=32_000,
                     position=1,
                 ),
             ),
