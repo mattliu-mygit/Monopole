@@ -483,6 +483,38 @@ def test_wandb_transport_retry_uses_concise_json_mode(client, monkeypatch):
     assert events[6]["output_mode"] == "json_object_fallback"
 
 
+def test_wandb_never_disables_reasoning_for_a_model_that_always_reasons(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.inference.wandb.ai/v1/chat/completions")
+    responses = iter(
+        [
+            httpx.ReadTimeout("provider stalled", request=request),
+            httpx.Response(200, request=request, json=_completion()),
+        ]
+    )
+    calls: list[dict] = []
+    client.backend = "wandb"
+
+    def fake_post(_path, *, json):
+        calls.append(json)
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(client._http, "post", fake_post)
+    monkeypatch.setattr(inference.time, "sleep", lambda _delay: None)
+
+    client.chat_json(
+        model="reflection/Beam-1.0-501B-A23B",
+        messages=_messages(),
+        response_schema=_schema(),
+        reasoning="disabled",
+    )
+
+    assert [call["response_format"]["type"] for call in calls] == ["json_schema", "json_object"]
+    assert all("chat_template_kwargs" not in call for call in calls)
+
+
 def test_wandb_reuses_recovery_mode_for_same_model_and_schema(client, monkeypatch):
     calls: list[dict] = []
     events: list[dict[str, object]] = []
