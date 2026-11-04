@@ -65,7 +65,7 @@ ID and digest.
 3. Creates are idempotent by `Idempotency-Key`; reusing a key with a different
    body is a conflict.
 4. `429` and `503` are retried after `Retry-After`.
-5. Trajectory-row search has no filter, so session Score reads page every row.
+5. list-trajectory-rows has no filter, so session Score reads page every row.
 6. CoreWeave Serverless Inference uses bearer W&B authentication plus the
    entity/project header; HTTP 402 means inference credits are unavailable.
 

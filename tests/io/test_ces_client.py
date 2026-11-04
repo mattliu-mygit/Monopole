@@ -361,7 +361,7 @@ def test_session_scores_keep_only_the_requested_trajectories():
     _catalog_routes()
     client = CesClient("http://ces.test", "scope-1", api_key="k")
     catalog = client.ensure_catalog("ds-1")
-    respx.post(f"{BASE}/evaluations/ev-sessions/trajectory-rows/search").mock(
+    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -426,7 +426,7 @@ def test_session_scores_fall_back_to_the_local_index_without_the_route(tmp_path)
     for value in (False, True):
         score = Score("implicit.completion", value, [], {}, "session")
         client.write_scores(catalog, f"pass-{value}", "trajectory", "s1", [score])
-    respx.post(f"{BASE}/evaluations/ev-sessions/trajectory-rows/search").mock(
+    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
         return_value=httpx.Response(404, json={"error": {"code": "not_found"}})
     )
     respx.get(url__regex=rf"{BASE}/scores/.*").mock(
@@ -456,7 +456,7 @@ def test_a_route_error_other_than_missing_is_not_hidden_by_the_fallback(tmp_path
         "http://ces.test", "scope-1", api_key="k", score_index=ScoreIndex(str(tmp_path / "i.jsonl"))
     )
     catalog = client.ensure_catalog("ds-1")
-    respx.post(f"{BASE}/evaluations/ev-sessions/trajectory-rows/search").mock(
+    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
         return_value=httpx.Response(400, json={"error": {"code": "invalid_request"}})
     )
 
@@ -508,7 +508,7 @@ def test_read_all_scores_turns_ces_rows_into_feedback_records(tmp_path):
             },
         )
     )
-    respx.post(f"{BASE}/evaluations/ev-sessions/trajectory-rows/search").mock(
+    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -601,7 +601,7 @@ def test_a_limit_reads_the_newest_turns_and_only_their_sessions_scores():
             },
         )
     )
-    respx.post(f"{BASE}/evaluations/ev-sessions/trajectory-rows/search").mock(
+    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -641,7 +641,7 @@ def test_cohort_scores_searches_each_sessions_turns_with_an_and_only_filter():
     turns = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
         return_value=httpx.Response(200, json={"rows": []})
     )
-    respx.post(f"{BASE}/evaluations/ev-sessions/trajectory-rows/search").mock(
+    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
         return_value=httpx.Response(200, json={"rows": []})
     )
 
@@ -874,7 +874,7 @@ def test_cohort_scores_reads_no_turn_rows_it_is_given():
     turns = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
         return_value=httpx.Response(200, json={"rows": []})
     )
-    respx.post(f"{BASE}/evaluations/ev-sessions/trajectory-rows/search").mock(
+    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
         return_value=httpx.Response(200, json={"rows": []})
     )
 

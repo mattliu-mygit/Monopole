@@ -1,4 +1,4 @@
-"""Session Score IDs Monopole wrote, for CES deployments without trajectory-rows/search.
+"""Session Score IDs Monopole wrote, for CES deployments without list-trajectory-rows.
 
 Workaround: CES returns Scores on Trajectories only through that route, which ships with
 the Trajectory-row stack (wandb/core#60962, #60963, #60954). Until it deploys,

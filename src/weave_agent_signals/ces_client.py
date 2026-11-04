@@ -518,13 +518,14 @@ class CesClient:
             found = pool.map(lambda sid: self._rows(path, {"filter": _turns_of(sid)}), session_ids)
             return dict(zip(session_ids, found))
 
-    def _rows(self, path: str, body: dict, limit: int | None = None) -> list[dict]:
+    def _rows(self, path: str, body: dict | None, limit: int | None = None) -> list[dict]:
         rows, cursor = [], None
         while True:
-            page = self._request(
-                "POST",
-                path,
-                body={**body, "limit": PAGE_LIMIT, **({"cursor": cursor} if cursor else {})},
+            paging = {"limit": PAGE_LIMIT, **({"cursor": cursor} if cursor else {})}
+            page = (
+                self._request("GET", path, params=paging)
+                if body is None
+                else self._request("POST", path, body={**body, **paging})
             )
             rows.extend(page.get("rows") or [])
             if limit is not None and len(rows) >= limit:
@@ -663,7 +664,7 @@ class CesClient:
         the wanted ones. The route has no filter, so this pages every row."""
         try:
             rows = self._rows(
-                f"/evaluations/{catalog.sessions_evaluation_id}/trajectory-rows/search", {}
+                f"/evaluations/{catalog.sessions_evaluation_id}/trajectory-rows", None
             )
         except httpx.HTTPStatusError as error:
             if error.response.status_code not in (404, 405):
