@@ -82,10 +82,11 @@ def _wandb_model(
     )
 
 
-# Ids from https://api.inference.wandb.ai/v1/models on 2026-11-03, which lists no context sizes.
+# Provider model names from https://api.inference.wandb.ai/v1/models on 2026-11-03, which lists
+# no context sizes.
 # Sizes come from https://docs.coreweave.com/products/inference/serverless/models unless noted.
 _WANDB_MODELS = tuple(
-    _wandb_model(*spec)
+    spec if isinstance(spec, ModelDescriptor) else _wandb_model(*spec)
     for spec in (
         (
             "wandb:MiniMax-M3",
@@ -120,15 +121,14 @@ _WANDB_MODELS = tuple(
             262_000,
             "frontier",
         ),
-        (
+        _wandb_model(
             "wandb:DeepSeek-V4-Pro-0813",
             "DeepSeek V4 Pro 0813",
             "deepseek-ai/DeepSeek-V4-Pro-0813",
             "deepseek",
             1_049_000,
             "frontier",
-            "utf8_bytes_div_3",
-            96_000,
+            raw_budget_cap_tokens=96_000,
         ),
         (
             "wandb:DeepSeek-V4.1-Flash",
