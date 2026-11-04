@@ -767,7 +767,7 @@ describe('RunDetail wiring', () => {
   })
 
   it('shows the exact actionable terminal reflection error without an empty logs panel', async () => {
-    const message = 'Proposal evaluator failed: W&B credits are disabled'
+    const message = 'Proposal evaluator failed: CoreWeave Serverless Inference credits are disabled'
     api.getRun.mockResolvedValue(baseRun({
       status: 'failed',
       error: message,

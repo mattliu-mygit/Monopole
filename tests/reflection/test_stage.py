@@ -739,7 +739,7 @@ def test_all_invalid_stage_result_persists_audit_without_review(store):
 def test_stage_failure_progress_keeps_actionable_evaluator_message(store):
     run, config = _reflecting_run(store)
     baseline = bundle_from_content_map({"CLAUDE.md": "old"}, scope=SCOPE)
-    message = "Proposal evaluator failed: W&B credits are disabled"
+    message = "Proposal evaluator failed: CoreWeave Serverless Inference credits are disabled"
     dependencies = ReflectionDependencies(
         store=store,
         ces_factory=lambda: CesFeedback([_feedback()]),

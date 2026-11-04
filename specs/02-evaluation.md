@@ -48,32 +48,52 @@ applicability and exact window plan from the pinned session, descriptor, and
 policy before external work.
 
 All model rubrics are session-level. Each applicable reviewer gets a window plan
-sized to its pinned context capacity. Every model reserves the pinned prompt,
-output, and safety allowance; surrounding-digest and finding overhead increase
-that reserve as the chunk count grows. At the 200,000-token context threshold,
-the generation allowance is 4,000 tokens at or below the threshold and 10,000
-tokens above it. This API allowance is independent of the smaller validated
-artifact limits. Raw windows have separate soft targets of 128,000 tokens above
-the same model threshold and 50,000 tokens at or below it. A model catalog
-entry may lower that target when its inference harness has a smaller reliable
-operational window; this does not change the model's advertised context
-capacity. OpenAI catalog
-entries use their explicitly pinned `tiktoken` encoding; other model families
-use the conservative UTF-8 byte estimator.
+sized to its pinned context capacity and window budget. Under judging context
+policy contract 4, each model reserves a prompt, a generation, and a safety
+allowance that scale with its context capacity: each is a fixed share of the
+capacity bounded by a floor and a cap, so the reserve shrinks for small models
+instead of consuming most of their context and stops growing for large models.
+The generation allowance has a higher cap above the 200,000-token context
+threshold than at or below it. This API allowance is independent of the
+validated artifact limits. OpenAI catalog entries use their explicitly pinned
+`tiktoken` encoding; other model families use the conservative UTF-8 byte
+estimator.
 
-The hard raw budget remains a capacity ceiling. Contiguous core chunks are
-packed near the soft target, assigning a boundary-crossing turn to the side
-closer to that target, so every session turn has exact core coverage. Each raw
-window includes up to one neighboring turn on either side when it remains
-within the soft target; overlap can shrink to zero without removing core
-coverage. Turn boundaries remain indivisible, and a single oversized turn may
-exceed the soft target only when it still fits the hard budget. Before planning,
-the judge view deterministically compacts only oversized tool arguments and
-results, preserving their head, diagnostic excerpts, tail, original character
-count, and content hash. Captured user and assistant messages are not compacted. When an intact
-projected turn, the required chunk count, or the worst-case merge cannot fit,
-that reviewer alone is skipped for the session with
-`insufficient_context_capacity`.
+Every catalog model also pins four reading budgets: a question budget (B_q) for
+the evidence behind one yes/no judging question, a window budget (B_win) for one
+raw rubric window, a whole-thread budget (B_whole) for the largest thread judged
+in one request, and a merge budget (B_merge) for one merge input. The window and
+whole-thread budgets may be absent. A model's usable context is its capacity
+minus the scaled reserve. Catalog construction rejects a model with a budget
+above its usable context, a question budget above its merge budget, or present
+budgets that break the order question ≤ window ≤ whole-thread. Budgets are
+descriptor data, so changing one changes the catalog version that runs pin. Each
+model carries conservative starting values for its size class (small dense,
+small mixture-of-experts, mid-size, or frontier) until a budget-calibration
+experiment replaces them with measured values. A catalog entry may cap its
+window and whole-thread budgets below its class values when its inference
+harness has a smaller reliable operational window; this does not change the
+model's advertised context capacity. The current digest/window/merge protocol
+uses only the window budget; the other budgets are pinned and validated ahead of
+the reading plans that use them.
+
+The hard raw budget, the capacity left after the reserve and the digest
+allowances for the session's other windows, remains a capacity ceiling.
+Contiguous core chunks are packed in session order with as many whole turns as
+fit within the window budget, or within the hard raw budget when that is
+smaller, so every session turn has exact core coverage. Each raw window includes
+up to one neighboring turn on either side when it remains within that limit;
+overlap can shrink to zero without removing core coverage. Turn boundaries
+remain indivisible, and a single turn larger than the window budget occupies its
+own window when it still fits the hard raw budget. Before planning, the judge
+view deterministically compacts only oversized tool arguments and results,
+preserving their head, diagnostic excerpts, tail, original character count, and
+content hash. Captured user and assistant messages are not compacted. A
+reviewer whose model has no window budget is skipped for every session with
+`insufficient_context_capacity`. Otherwise, when an intact projected turn, the
+required chunk count, or the worst-case merge, which carries every window's
+digest and findings, cannot fit, that reviewer alone is skipped for the session
+with the same reason.
 
 For each reviewer, the pipeline first creates one rubric-neutral factual digest
 per core chunk. A rubric evaluation then slides across every window: the active
@@ -89,17 +109,18 @@ findings and returns the reviewer's anchored session verdict and behavioral
 feedback. The merge cites finding IDs; the host derives the final canonical
 trace citations from those immutable findings.
 
-W&B digest and verdict-merge requests disable optional model reasoning through
-the provider's documented request setting. Those phases compress or consolidate
-the substantive rubric analysis already performed in the raw-evidence window
-reviews, so spending their output budget on hidden reasoning reduces reliability.
-Window review retains each model's default reasoning behavior on its first
-attempt and asks for careful internal reasoning followed by concise JSON. W&B
-retries use JSON-object mode with optional thinking disabled and receive the
-same bound schema and canonical examples in the prompt; canonical runtime
-validation remains unchanged. Every structured judge request receives one
-schema-owned example, plus a second only for a materially different valid mode;
-validation correction repeats that exact contract.
+CoreWeave Serverless Inference digest and verdict-merge requests disable
+optional model reasoning through the provider's documented request setting.
+Those phases compress or consolidate the substantive rubric analysis already
+performed in the raw-evidence window reviews, so spending their output budget on
+hidden reasoning reduces reliability. Window review retains each model's default
+reasoning behavior on its first attempt and asks for careful internal reasoning
+followed by concise JSON. CoreWeave Serverless Inference retries use JSON-object
+mode with optional thinking disabled and receive the same bound schema and
+canonical examples in the prompt; canonical runtime validation remains
+unchanged. Every structured judge request receives one schema-owned example,
+plus a second only for a materially different valid mode; validation correction
+repeats that exact contract.
 
 Raw rendering includes captured user, assistant, tool, event, status, token, and
 trace-identity evidence while omitting the generating model's identity from the
@@ -164,17 +185,18 @@ finite value in `[0, 1]`.
 
 Structured output is requested when the backend supports it. A recorded JSON
 object fallback is allowed when the provider explicitly rejects structured
-schema capability or on a W&B recovery attempt. Invalid model content does not
-weaken canonical runtime validation. W&B retries preserve evidence constraints
-while using JSON-object mode with optional thinking disabled;
+schema capability or on a CoreWeave Serverless Inference recovery attempt.
+Invalid model content does not weaken canonical runtime validation. CoreWeave
+Serverless Inference retries preserve evidence constraints while using
+JSON-object mode with optional thinking disabled;
 other backends retry the same strict request. Invalid JSON that consumes the
 exact generation allowance retries once under the same budget. A second
 exhaustion fails closed as explicit
 output-limit exhaustion while retaining both attempts' usage and request counts.
-After a W&B model and schema pair requires recovery, later calls for that pair
-within the same run start in concise JSON recovery mode instead of repeating the
-known-expensive failing path. Exact schema prompting and runtime validation are
-unchanged.
+After a CoreWeave Serverless Inference model and schema pair requires recovery,
+later calls for that pair within the same run start in concise JSON recovery
+mode instead of repeating the known-expensive failing path. Exact schema
+prompting and runtime validation are unchanged.
 If returned JSON parses but violates the canonical output contract, regardless
 of structured or fallback output mode, one or two correction calls receive the
 bounded validation error and prior object.
@@ -211,27 +233,36 @@ inference harnesses expose the same underlying model. CoreWeave Serverless
 Inference entries are ordered and recommended ahead of local CLI variants;
 fitting local and direct API variants remain explicit alternatives. Every option
 shows its pinned input context capacity and, once sessions are selected, whether
-the model can support the estimated judging requests. A non-fitting option is
-disabled and a selected configuration that becomes non-fitting cannot start.
+the model fits its role for those sessions. A non-fitting option is disabled and
+a selected configuration that becomes non-fitting cannot start.
 
-The W&B entries cover its generally available Serverless Inference catalog and
-exclude models that W&B marks deprecated. Their provider IDs, families, context
-capacities, and role capabilities are maintained in the versioned local catalog:
-W&B's live models endpoint reports accessible IDs but not the metadata required
-to pin a reproducible run. Catalog construction therefore remains deterministic
-and offline; explicit catalog updates track W&B lifecycle changes.
+CoreWeave Serverless Inference is reached at
+`https://api.inference.wandb.ai/v1` with the W&B API key, and its entries keep
+the `wandb` provider, so their model IDs read like `wandb:GLM-5.3`. The entries
+are exactly the models that the service's live models endpoint listed at the
+last catalog update. Their exact provider model names, families, context
+capacities, reading budgets, and role capabilities are maintained in the
+versioned local catalog: the live endpoint reports accessible IDs but not the
+metadata required to pin a reproducible run. Catalog construction therefore
+remains deterministic and offline; explicit catalog updates track the service's
+lifecycle changes.
 
 Selection-time capacity estimation hydrates only the selected sessions, renders
-their compact judging evidence once, and counts it with each catalog token-counter
-identity. For each selected session and model, the largest rendered turn estimates the minimum indivisible
-raw chunk, while the total rendered evidence estimates only the number of chunks
-and therefore the digest and merge buffers. The estimator uses the pinned context
-policy's raw-window target, prompt/output/safety reserve, digest limit, finding
+their compact judging evidence once, and counts each rendered turn with each
+catalog token-counter identity. For each selected session and model, the
+estimator packs those turn counts by the runtime planner's rules, using the
+model's scaled reserve and the pinned context policy's digest limit, finding
 limit, and maximum chunk count. Its estimated largest request is the greater of
 the largest raw-window request and the final merge request; that value must not
-exceed the descriptor's input context capacity. The runtime still derives and
-authenticates the exact rendered-turn plan before inference. Borderline exact
-requests are attempted. An explicit provider context-limit rejection becomes an
+exceed the descriptor's input context capacity. Each role has its own fit rule.
+A run judge packs within its window budget, so a model without one never fits
+that role. Proposal writers and proposal evaluators are estimated the same way
+with their whole usable context in place of a window budget. An A/B
+verification judge fits when its capacity exceeds the paired comparison's output
+and safety allowances, the same limit the A/B comparison enforces, whatever the
+selected sessions contain. The runtime still derives and authenticates the
+exact rendered-turn plan before inference. Borderline exact requests are
+attempted. An explicit provider context-limit rejection becomes an
 `insufficient_context_capacity` skip for that reviewer; authentication, rate,
 schema, and other provider errors remain failures.
 

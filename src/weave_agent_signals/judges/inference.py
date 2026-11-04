@@ -1,4 +1,4 @@
-"""Chat-completions client for the catalog-backed OpenAI and W&B providers."""
+"""Chat-completions client for catalog-backed OpenAI and CoreWeave Serverless Inference."""
 
 from __future__ import annotations
 

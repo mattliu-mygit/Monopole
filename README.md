@@ -165,6 +165,12 @@ models whose provider executable it detects. Antigravity contributes its
 Gemini/Google and open-source models; duplicate Anthropic choices remain under
 the Claude provider.
 
+Each catalog model pins its context capacity and four reading budgets: the most
+evidence it reads for one question, in one raw window, in one whole-thread
+request, and in one merge. Once sessions are selected, each model selector
+disables the models that do not fit that role for those sessions. A model with
+no window budget, such as Llama 3.1 8B, cannot be a session judge.
+
 ## Try the CLI
 
 Run a read-only inspection first:

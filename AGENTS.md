@@ -160,9 +160,9 @@ These constraints are operationally dangerous to get wrong. The details live in
    own Scorer.
 6. `ces_score_index.py` is a temporary fallback for CES deployments without
    Trajectory-row search. Delete it once the route is deployed.
-7. W&B Inference is `https://api.inference.wandb.ai/v1` and requires bearer W&B
-   auth plus `OpenAI-Project: {entity}/{project}`. HTTP 402 means credits are
-   disabled.
+7. CoreWeave Serverless Inference is `https://api.inference.wandb.ai/v1` and
+   requires bearer W&B auth plus `OpenAI-Project: {entity}/{project}`. HTTP 402
+   means credits are disabled.
 
 ## Run and promotion safety
 
