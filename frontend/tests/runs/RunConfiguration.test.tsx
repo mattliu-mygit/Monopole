@@ -338,7 +338,7 @@ describe('RunConfiguration', () => {
     expect(blockedOption).toHaveProperty('disabled', true)
   })
 
-  it('blocks a model without a window budget only as a judge', () => {
+  it('blocks a model without a window budget only as an ordered session judge', () => {
     const noWindowModel: ModelDescriptor = {
       ...cliMeta,
       id: 'cli-no-window',
@@ -358,12 +358,13 @@ describe('RunConfiguration', () => {
     )
 
     const fits = 'CLI No Window · agy · meta · 128k model limit · estimated largest request ~116k · fits'
+    const pairedFits = 'CLI No Window · agy · meta · 128k model limit · fits'
     const doesNotFit = 'CLI No Window · agy · meta · 128k model limit · does not fit'
     const option = (select: string, name: string) =>
       within(screen.getByRole('combobox', { name: select })).getByRole('option', { name })
     expect(option('Proposal writer', fits)).toHaveProperty('disabled', false)
     expect(option('Proposal evaluator', fits)).toHaveProperty('disabled', false)
+    expect(option('A/B verification judge 1', pairedFits)).toHaveProperty('disabled', false)
     expect(option('Judge 1', doesNotFit)).toHaveProperty('disabled', true)
-    expect(option('A/B verification judge 1', doesNotFit)).toHaveProperty('disabled', true)
   })
 })

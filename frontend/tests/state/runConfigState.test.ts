@@ -206,11 +206,11 @@ describe('judge panel configuration state', () => {
 
     expect(next.proposalModel.value).toBe(roomyWriter.id)
     expect(next.judgeModels.value).toEqual([roomyJudge.id])
-    expect(next.challengeJudgeModels.value).toEqual([roomyJudge.id])
+    expect(next.challengeJudgeModels.value).toEqual([anthropic.id])
     expect(next.proposalEvaluatorModel.value).toBe(roomyJudge.id)
   })
 
-  it('blocks a model without a window budget only as a judge', () => {
+  it('blocks a model without a window budget only as an ordered session judge', () => {
     const noWindow: ModelDescriptor = {
       ...meta,
       id: 'wandb:no-window',
@@ -241,6 +241,12 @@ describe('judge panel configuration state', () => {
     state = transitionRunConfig(
       state,
       { type: 'select-evaluator', modelId: noWindow.id },
+      capacityModels,
+      sessions,
+    )
+    state = transitionRunConfig(
+      state,
+      { type: 'select-challenge-judge', position: 1, modelId: noWindow.id },
       capacityModels,
       sessions,
     )

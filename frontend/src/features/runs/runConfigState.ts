@@ -5,7 +5,7 @@ import type {
   JudgingTokenEstimates,
   RunConfig,
 } from '../../types'
-import { estimateModelCapacity } from './modelCapacity'
+import { estimateModelCapacity, type CapacityRole } from './modelCapacity'
 
 type SessionTokens = { judging_token_estimates: JudgingTokenEstimates }
 
@@ -44,7 +44,7 @@ function model(models: ModelCatalog, id: string) {
 
 function fits(
   candidate: ModelDescriptor,
-  role: ModelDescriptor['supported_roles'][number],
+  role: CapacityRole,
   models: ModelCatalog,
   sessions: readonly SessionTokens[],
 ): boolean {
@@ -73,16 +73,17 @@ function same(values: readonly string[], recommended: readonly string[]): boolea
 
 function fittingIds(
   models: ModelCatalog,
-  role: ModelDescriptor['supported_roles'][number],
+  role: CapacityRole,
   preferred: readonly string[],
   sessions: readonly SessionTokens[],
 ): string[] {
+  const supportedRole = role === 'challenge_judge' ? 'judge' : role
   return [...preferred, ...models.available_models.map((candidate) => candidate.id)]
     .filter((id, index, values) => values.indexOf(id) === index)
     .filter((id) => {
       const candidate = model(models, id)
       return candidate !== undefined
-        && supports(candidate, role)
+        && supports(candidate, supportedRole)
         && fits(candidate, role, models, sessions)
     })
 }
@@ -101,7 +102,7 @@ function recommendedState(
   const judgeIds = fittingIds(models, 'judge', models.recommended_judges, sessions)
   const challengeJudgeIds = fittingIds(
     models,
-    'judge',
+    'challenge_judge',
     models.recommended_challenge_judges,
     sessions,
   )
@@ -249,13 +250,12 @@ export function assessRunConfig(
   if (!selectedEvaluator || !supports(selectedEvaluator, 'proposal_evaluator')) {
     errors.push('Select an available proposal evaluator.')
   }
-  const unfit = (
-    candidate: ModelDescriptor | undefined,
-    role: ModelDescriptor['supported_roles'][number],
-  ) => candidate !== undefined && !fits(candidate, role, models, sessions)
+  const unfit = (candidate: ModelDescriptor | undefined, role: CapacityRole) =>
+    candidate !== undefined && !fits(candidate, role, models, sessions)
   if (
     unfit(selectedWriter, 'proposal_writer')
-    || [...judges, ...challengeJudges].some((judge) => unfit(judge, 'judge'))
+    || judges.some((judge) => unfit(judge, 'judge'))
+    || challengeJudges.some((judge) => unfit(judge, 'challenge_judge'))
     || unfit(selectedEvaluator, 'proposal_evaluator')
   ) {
     errors.push('Select models that fit the selected sessions.')

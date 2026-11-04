@@ -99,7 +99,7 @@ describe('estimateModelCapacity', () => {
     })
   })
 
-  it('limits only judges to the window budget; writers and evaluators pack up to the usable context', () => {
+  it('limits only ordered judges to the window budget; writers and evaluators pack up to the usable context', () => {
     const noWindow = model(131_072, 'utf8_bytes_div_3', null)
     const sessions = [session(100_000, 30_000, [30_000, 30_000, 30_000, 10_000])]
     const oneWindow = { fits: true, estimatedRequestTokens: 116_554, estimatedChunks: 1 }
@@ -111,6 +111,22 @@ describe('estimateModelCapacity', () => {
     })
     expect(estimateModelCapacity(noWindow, sessions, policy, 'proposal_writer')).toEqual(oneWindow)
     expect(estimateModelCapacity(noWindow, sessions, policy, 'proposal_evaluator')).toEqual(oneWindow)
+  })
+
+  it('fits an A/B judge when its limit exceeds 2,048 output plus 1,024 safety tokens, whatever the session', () => {
+    const sessions = [session(100_000, 30_000, [30_000, 30_000, 30_000, 10_000])]
+    const noRequest = { estimatedRequestTokens: null, estimatedChunks: null }
+
+    expect(estimateModelCapacity(
+      model(131_072, 'utf8_bytes_div_3', null),
+      sessions,
+      policy,
+      'challenge_judge',
+    )).toEqual({ fits: true, ...noRequest })
+    expect(estimateModelCapacity(model(3_073), sessions, policy, 'challenge_judge'))
+      .toEqual({ fits: true, ...noRequest })
+    expect(estimateModelCapacity(model(3_072), sessions, policy, 'challenge_judge'))
+      .toEqual({ fits: false, ...noRequest })
   })
 
   it('uses the selected model token counter', () => {

@@ -8,7 +8,7 @@ export interface ModelCapacityEstimate {
 
 type SessionTokens = { judging_token_estimates: JudgingTokenEstimates }
 type ContextPolicy = ModelCatalog['judging_context']
-type ModelRole = ModelDescriptor['supported_roles'][number]
+export type CapacityRole = ModelDescriptor['supported_roles'][number] | 'challenge_judge'
 
 function roundHalfToEven(value: number): number {
   const floor = Math.floor(value)
@@ -93,10 +93,14 @@ export function estimateModelCapacity(
   model: ModelDescriptor,
   sessions: readonly SessionTokens[],
   policy: ContextPolicy,
-  role: ModelRole,
+  role: CapacityRole,
 ): ModelCapacityEstimate {
   if (sessions.length === 0) {
     return { fits: null, estimatedRequestTokens: null, estimatedChunks: null }
+  }
+  if (role === 'challenge_judge') {
+    const pairedInputLimit = model.max_input_tokens - 2_048 - 1_024
+    return { fits: pairedInputLimit > 0, estimatedRequestTokens: null, estimatedChunks: null }
   }
   const windowBudget = role === 'judge'
     ? model.window_budget_tokens

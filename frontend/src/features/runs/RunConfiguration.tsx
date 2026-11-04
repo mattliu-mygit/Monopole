@@ -6,6 +6,7 @@ import type {
 } from '../../types'
 import {
   estimateModelCapacity,
+  type CapacityRole,
   type ModelCapacityEstimate,
 } from './modelCapacity'
 import {
@@ -145,17 +146,18 @@ export default function RunConfiguration({
   const proposalModels = writerChoices(models)
   const judgeChoices = uniqueJudgeChoices(models)
   const evaluatorModels = evaluatorChoices(models)
-  const capacities = (
-    choices: readonly ModelDescriptor[],
-    role: ModelDescriptor['supported_roles'][number],
-  ) => new Map(choices.map((model) => [
-    model.id,
-    estimateModelCapacity(model, sessions, models.judging_context, role),
-  ]))
+  const capacities = (choices: readonly ModelDescriptor[], role: CapacityRole) =>
+    new Map(choices.map((model) => [
+      model.id,
+      estimateModelCapacity(model, sessions, models.judging_context, role),
+    ]))
   const writerCapacities = capacities(proposalModels, 'proposal_writer')
   const judgeCapacities = capacities(judgeChoices, 'judge')
+  const challengeJudgeCapacities = capacities(judgeChoices, 'challenge_judge')
   const evaluatorCapacities = capacities(evaluatorModels, 'proposal_evaluator')
   const judgeFits = (modelId: string) => judgeCapacities.get(modelId)?.fits !== false
+  const challengeJudgeFits = (modelId: string) =>
+    challengeJudgeCapacities.get(modelId)?.fits !== false
   const catalogRubricIds = rubrics.rubrics.map((rubric) => rubric.id)
   const selectedRubrics = new Set(state.rubricIds)
   const allRubrics =
@@ -174,7 +176,7 @@ export default function RunConfiguration({
     ...judgeChoices.map((model) => model.id),
   ].filter((modelId, index, values) => values.indexOf(modelId) === index)
   const addChallengeJudgeId = orderedChallengeJudgeIds.find(
-    (modelId) => !state.challengeJudgeModels.value.includes(modelId) && judgeFits(modelId),
+    (modelId) => !state.challengeJudgeModels.value.includes(modelId) && challengeJudgeFits(modelId),
   )
 
   function toggleRubric(rubricId: string) {
@@ -364,7 +366,7 @@ export default function RunConfiguration({
                   className={inputClass}
                 >
                   <UnavailableOption value={modelId} choices={judgeChoices} />
-                  <ModelOptions choices={judgeChoices} capacities={judgeCapacities} />
+                  <ModelOptions choices={judgeChoices} capacities={challengeJudgeCapacities} />
                 </select>
               </div>
             ))}
