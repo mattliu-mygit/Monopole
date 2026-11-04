@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from weave_agent_signals.runs.store import (
     ReflectionReviewLifecycleConflictError,
     ReflectionReviewRevisionConflictError,
     RunCancellationConflictError,
+    RunDatabaseSchemaError,
     RunLifecycleConflictError,
     RunStatus,
     RunStore,
@@ -225,21 +227,31 @@ def _reflection_evidence() -> ReflectionResultRecord:
     )
 
 
-def test_store_rejects_unknown_schema_without_deleting_rows(tmp_path):
+@pytest.mark.parametrize(
+    "stored_version",
+    [pytest.param(2, id="old-schema"), pytest.param(10, id="before-per-model-budgets")],
+)
+def test_store_rejects_unknown_schema_without_deleting_rows(tmp_path, stored_version):
     path = tmp_path / "runs.db"
     connection = sqlite3.connect(path)
     connection.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, obsolete TEXT)")
     connection.execute("INSERT INTO runs VALUES ('legacy', '{}')")
-    connection.execute("PRAGMA user_version = 2")
+    connection.execute(f"PRAGMA user_version = {stored_version}")
     connection.commit()
     connection.close()
 
-    with pytest.raises(Exception, match="unsupported run database schema"):
+    with pytest.raises(
+        RunDatabaseSchemaError,
+        match=re.escape(
+            f"unsupported run database schema: {stored_version}; "
+            f"delete {path} to start with an empty run database"
+        ),
+    ):
         RunStore(path)
 
     connection = sqlite3.connect(path)
     assert connection.execute("SELECT run_id FROM runs").fetchone()[0] == "legacy"
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == stored_version
     connection.close()
 
 

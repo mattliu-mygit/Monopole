@@ -24,7 +24,7 @@ from weave_agent_signals.runs.reflection_records import (
 )
 
 _DEFAULT_DB_DIR = Path.home() / ".weave-agent-signals"
-RUN_DB_SCHEMA_VERSION = 10
+RUN_DB_SCHEMA_VERSION = 11
 
 
 def _default_db_path() -> Path:

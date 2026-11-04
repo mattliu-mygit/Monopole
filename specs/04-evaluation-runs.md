@@ -385,6 +385,6 @@ comparing the current registry scope with A and displays exact per-file receipt
 outcomes.
 This separation keeps list polling cheap without weakening promotion safety.
 
-Runtime reads only schema epoch 10. The run database is disposable pre-release
+Runtime reads only schema epoch 11. The run database is disposable pre-release
 state, so a database from any other epoch fails closed with an error that names
 the file to delete; it is never migrated, reset, or adapted.
