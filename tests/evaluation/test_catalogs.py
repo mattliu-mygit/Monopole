@@ -429,10 +429,74 @@ def test_model_descriptor_rejects_unknown_token_counter():
         )
 
 
-def test_budgets_out_of_order_are_rejected():
+@pytest.mark.parametrize(
+    ("question", "window", "whole", "merge", "message"),
+    [
+        pytest.param(
+            8_000,
+            4_000,
+            8_000,
+            8_000,
+            "question_budget_tokens must not exceed window_budget_tokens",
+            id="question-above-window",
+        ),
+        pytest.param(
+            8_000,
+            8_000,
+            8_000,
+            4_000,
+            "question_budget_tokens must not exceed merge_budget_tokens",
+            id="question-above-merge",
+        ),
+        pytest.param(
+            2_000,
+            8_000,
+            4_000,
+            4_000,
+            "window_budget_tokens must not exceed whole_budget_tokens",
+            id="window-above-whole",
+        ),
+        # With no window budget, the question budget is compared with the whole budget.
+        pytest.param(
+            8_000,
+            None,
+            4_000,
+            8_000,
+            "question_budget_tokens must not exceed whole_budget_tokens",
+            id="no-window-question-above-whole",
+        ),
+    ],
+)
+def test_budgets_out_of_order_are_rejected(question, window, whole, merge, message):
+    with pytest.raises(ValueError, match=f"model example {message}"):
+        ModelDescriptor(
+            id="example",
+            label="Example",
+            provider="example-provider",
+            provider_model="example-model",
+            family="example-family",
+            supported_roles=("judge",),
+            question_budget_tokens=question,
+            window_budget_tokens=window,
+            whole_budget_tokens=whole,
+            merge_budget_tokens=merge,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "question", "window", "whole", "merge"),
+    [
+        ("question_budget_tokens", 23_000, None, None, 23_000),
+        ("window_budget_tokens", 2_000, 30_000, None, 16_000),
+        ("whole_budget_tokens", 2_000, 8_000, 30_000, 16_000),
+        ("merge_budget_tokens", 2_000, 8_000, 8_000, 30_000),
+    ],
+)
+def test_budget_larger_than_usable_context_is_rejected(field, question, window, whole, merge):
+    # A 32,800-token model reserves 9,840 tokens, which leaves 22,960 for evidence.
     with pytest.raises(
         ValueError,
-        match="model example question_budget_tokens must not exceed window_budget_tokens",
+        match=f"model example {field} must not exceed the usable context of 22960",
     ):
         ModelDescriptor(
             id="example",
@@ -441,34 +505,30 @@ def test_budgets_out_of_order_are_rejected():
             provider_model="example-model",
             family="example-family",
             supported_roles=("judge",),
-            question_budget_tokens=8_000,
-            window_budget_tokens=4_000,
-            whole_budget_tokens=8_000,
-            merge_budget_tokens=8_000,
+            max_input_tokens=32_800,
+            question_budget_tokens=question,
+            window_budget_tokens=window,
+            whole_budget_tokens=whole,
+            merge_budget_tokens=merge,
         )
 
 
-def test_budget_larger_than_usable_context_is_rejected():
-    values = {
-        "id": "example",
-        "label": "Example",
-        "provider": "example-provider",
-        "provider_model": "example-model",
-        "family": "example-family",
-        "supported_roles": ("judge",),
-        "max_input_tokens": 32_800,
-        "question_budget_tokens": 2_000,
-        "whole_budget_tokens": None,
-        "merge_budget_tokens": 16_000,
-    }
+def test_budgets_equal_to_usable_context_are_accepted():
+    descriptor = ModelDescriptor(
+        id="example",
+        label="Example",
+        provider="example-provider",
+        provider_model="example-model",
+        family="example-family",
+        supported_roles=("judge",),
+        max_input_tokens=32_800,
+        question_budget_tokens=22_960,
+        window_budget_tokens=22_960,
+        whole_budget_tokens=22_960,
+        merge_budget_tokens=22_960,
+    )
 
-    # A 32,800-token model reserves 9,840 tokens, which leaves 22,960 for evidence.
-    assert ModelDescriptor(**values, window_budget_tokens=22_960).window_budget_tokens == 22_960
-    with pytest.raises(
-        ValueError,
-        match="model example window_budget_tokens must not exceed the usable context of 22960",
-    ):
-        ModelDescriptor(**values, window_budget_tokens=30_000)
+    assert descriptor.merge_budget_tokens == 22_960
 
 
 def test_deepseek_v4_pro_keeps_its_96k_window_budget():
