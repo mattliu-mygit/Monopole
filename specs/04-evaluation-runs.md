@@ -28,7 +28,7 @@ Start atomically pins:
 - the ordered turn cohort and its session identities;
 - the evaluated model family, model ID, and effort level for every pinned turn;
 - the resolved model and rubric catalogs, including each model's context
-  capacity and token-counter identity;
+  capacity, reading budgets, and token-counter identity;
 - the proposal writer, one through three ordered run judges, and proposal evaluator;
 - rubric versions, thresholds, judging context policy, candidate-attempt budget,
   and other effective configuration; and

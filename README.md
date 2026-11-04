@@ -168,9 +168,9 @@ the Claude provider.
 Each catalog model pins its context capacity and four reading budgets, for one
 question, one raw window, one whole-thread request, and one merge; a model may
 have no window or whole-thread budget. Judging uses only the window budget
-today: it packs session turns into windows of up to that size, and one larger
-turn still gets a window of its own when it fits the context left after the
-model's reserved space and the other windows' digests. The question,
+today: it packs session turns into windows of up to that size, and any turn
+larger than that still gets a window of its own when it fits the context left
+after the model's reserved space and the other windows' digests. The question,
 whole-thread, and merge budgets are pinned for reading plans that later versions
 add. Once sessions are selected, each model selector disables the models that do
 not fit that role for those sessions. A model with no window budget, such as

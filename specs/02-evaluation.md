@@ -39,9 +39,9 @@ causal attribution for all work that led to an observed result.
 
 Before inference, an evaluation run derives and pins a versioned judging plan
 from its immutable cohort. The plan pins the context policy, ordered model
-descriptors including context capacity and token-counter identity, rubric
-descriptors, complete session trace identities, each reviewer's planned-or-
-skipped disposition, reviewer-specific window manifests, and the exact
+descriptors including context capacity, reading budgets, and token-counter
+identity, rubric descriptors, complete session trace identities, each reviewer's
+planned-or-skipped disposition, reviewer-specific window manifests, and the exact
 digest/window/merge protocol. Changes to any of those inputs produce a different
 plan or request identity. Authentication recomputes each reviewer's
 applicability and exact window plan from the pinned session, descriptor, and
