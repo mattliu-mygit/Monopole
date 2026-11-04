@@ -59,23 +59,26 @@ validated artifact limits. OpenAI catalog entries use their explicitly pinned
 `tiktoken` encoding; other model families use the conservative UTF-8 byte
 estimator.
 
-Every catalog model also pins four reading budgets: a question budget (B_q) for
-the evidence behind one yes/no judging question, a window budget (B_win) for one
-raw rubric window, a whole-thread budget (B_whole) for the largest thread judged
-in one request, and a merge budget (B_merge) for one merge input. The window and
-whole-thread budgets may be absent. A model's usable context is its capacity
-minus the scaled reserve. Catalog construction rejects a model with a budget
-above its usable context, a question budget above its merge budget, or present
-budgets that break the order question ≤ window ≤ whole-thread. Budgets are
-descriptor data, so changing one changes the catalog version that runs pin. Each
-model carries conservative starting values for its size class (small dense,
-small mixture-of-experts, mid-size, or frontier) until a budget-calibration
-experiment replaces them with measured values. A catalog entry may cap its
-window and whole-thread budgets below its class values when its inference
-harness has a smaller reliable operational window; this does not change the
-model's advertised context capacity. The current digest/window/merge protocol
-uses only the window budget; the other budgets are pinned and validated ahead of
-the reading plans that use them.
+Every catalog model also pins four reading budgets, each intended to bound one
+kind of judging input: a question budget (B_q) for the evidence behind one
+yes/no judging question, a window budget (B_win) for one raw rubric window, a
+whole-thread budget (B_whole) for a thread judged in one request, and a merge
+budget (B_merge) for one merge input. The window and whole-thread budgets may be
+absent. Judging currently uses only the window budget, as the size that raw
+windows are packed to; a single larger turn may still exceed it, as described
+below, and the merge is checked against the model's capacity rather than its
+merge budget. The question, whole-thread, and merge budgets are pinned and
+validated for the reading plans that later pipeline versions add. A model's
+usable context is its capacity minus the scaled reserve. Catalog construction
+rejects a model with a budget above its usable context, a question budget above
+its merge budget, or present budgets that break the order question ≤ window ≤
+whole-thread. Budgets are descriptor data, so changing one changes the catalog
+version that runs pin. Each model carries conservative starting values for its
+size class (small dense, small mixture-of-experts, mid-size, or frontier) until
+a budget-calibration experiment replaces them with measured values. A catalog
+entry may cap its window and whole-thread budgets below its class values when
+its inference harness has a smaller reliable operational window; this does not
+change the model's advertised context capacity.
 
 The hard raw budget, the capacity left after the reserve and the digest
 allowances for the session's other windows, remains a capacity ceiling.
@@ -255,9 +258,9 @@ model's scaled reserve and the pinned context policy's digest limit, finding
 limit, and maximum chunk count. Its estimated largest request is the greater of
 the largest raw-window request and the final merge request; that value must not
 exceed the descriptor's input context capacity. Each role has its own fit rule.
-A run judge packs within its window budget, so a model without one never fits
-that role. Proposal writers and proposal evaluators are estimated the same way
-with their whole usable context in place of a window budget. An A/B
+A run judge's windows are packed to its window budget, so a model without one
+never fits that role. Proposal writers and proposal evaluators are estimated the
+same way with their whole usable context in place of a window budget. An A/B
 verification judge fits when its capacity exceeds the paired comparison's output
 and safety allowances, the same limit the A/B comparison enforces, whatever the
 selected sessions contain. The runtime still derives and authenticates the
