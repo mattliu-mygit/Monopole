@@ -214,18 +214,25 @@ def test_model_without_a_window_budget_gets_no_window_plan():
         )
 
 
-def test_turn_larger_than_the_window_budget_is_inapplicable():
-    # The 40,000-token turn fits the 238,000 tokens left after the reserve, but not the budget.
-    session = _session_with_rendered_turn_sizes([120_000])
+def test_turn_larger_than_the_window_budget_gets_its_own_window():
+    # The 150,000-token turn passes the 128,000-token budget but fits the 974,000 tokens left
+    # after the reserve and two digests; the 20,000-token turns around it still pack in pairs.
+    session = _session_with_rendered_turn_sizes([60_000, 60_000, 450_000, 60_000, 60_000])
 
-    with pytest.raises(WindowPlanInapplicable):
-        build_window_plan(
-            session,
-            JudgingContextPolicy(),
-            model_limit=262_000,
-            token_counter="utf8_bytes_div_3",
-            window_budget_tokens=32_000,
-        )
+    plan = build_window_plan(
+        session,
+        JudgingContextPolicy(),
+        model_limit=1_000_000,
+        token_counter="utf8_bytes_div_3",
+        window_budget_tokens=128_000,
+    )
+
+    assert [window["raw_trace_ids"] for window in plan["windows"]] == [
+        ["t1", "t2"],
+        ["t3"],
+        ["t4", "t5"],
+    ]
+    assert plan["windows"][1]["raw_tokens"] == 150_000
 
 
 def test_large_model_uses_its_window_budget_instead_of_filling_context():

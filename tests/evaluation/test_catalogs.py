@@ -469,3 +469,33 @@ def test_budget_larger_than_usable_context_is_rejected():
         match="model example window_budget_tokens must not exceed the usable context of 22960",
     ):
         ModelDescriptor(**values, window_budget_tokens=30_000)
+
+
+def test_deepseek_v4_pro_keeps_its_96k_window_budget():
+    deepseek = build_model_catalog(which=lambda _name: None).model("wandb:DeepSeek-V4-Pro")
+
+    assert (
+        deepseek.question_budget_tokens,
+        deepseek.window_budget_tokens,
+        deepseek.whole_budget_tokens,
+        deepseek.merge_budget_tokens,
+    ) == (8_000, 96_000, 128_000, 128_000)
+
+
+@pytest.mark.parametrize(
+    ("budget_class", "window"), [("frontier", 128_001), ("small_dense", 1_000)]
+)
+def test_window_budget_override_must_fit_its_budget_class(budget_class, window):
+    with pytest.raises(
+        ValueError,
+        match=f"model wandb:example window_budget_tokens must not exceed the {budget_class} window",
+    ):
+        catalogs_module._wandb_model(
+            "wandb:example",
+            "Example",
+            "example/example",
+            "example",
+            1_000_000,
+            budget_class,
+            window_budget_tokens=window,
+        )

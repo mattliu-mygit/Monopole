@@ -57,7 +57,17 @@ def _wandb_model(
     max_input_tokens: int,
     budget_class: str,
     token_counter: TokenCounterName = "utf8_bytes_div_3",
+    window_budget_tokens: int | None = None,
 ) -> ModelDescriptor:
+    budgets = _budget_fields(budget_class)
+    if window_budget_tokens is not None:
+        class_window = budgets["window_budget_tokens"]
+        if class_window is None or window_budget_tokens > class_window:
+            raise ValueError(
+                f"model {model_id} window_budget_tokens must not exceed the {budget_class} "
+                "window budget"
+            )
+        budgets["window_budget_tokens"] = window_budget_tokens
     return ModelDescriptor(
         id=model_id,
         label=label,
@@ -67,7 +77,7 @@ def _wandb_model(
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=max_input_tokens,
         token_counter=token_counter,
-        **_budget_fields(budget_class),
+        **budgets,
     )
 
 
@@ -154,6 +164,8 @@ _WANDB_MODELS = tuple(
             "deepseek",
             1_049_000,
             "frontier",
+            "utf8_bytes_div_3",
+            96_000,
         ),
         (
             "wandb:gemma-4-31B-it",

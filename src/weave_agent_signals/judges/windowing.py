@@ -212,6 +212,7 @@ def _partition_cores(
     turn_count: int,
     range_tokens: Callable[[int, int], int],
     raw_budget: int,
+    target_raw_tokens: int,
 ) -> list[tuple[int, int]]:
     cores: list[tuple[int, int]] = []
     start = 0
@@ -219,7 +220,10 @@ def _partition_cores(
         if range_tokens(start, start) > raw_budget:
             raise ValueError("core turn exceeds the raw window budget")
         accepted_end = start
-        while accepted_end + 1 < turn_count and range_tokens(start, accepted_end + 1) <= raw_budget:
+        while (
+            accepted_end + 1 < turn_count
+            and range_tokens(start, accepted_end + 1) <= target_raw_tokens
+        ):
             accepted_end += 1
         cores.append((start, accepted_end))
         start = accepted_end + 1
@@ -336,11 +340,11 @@ def build_window_plan(
         raw_budget = input_cap - capacity_reserve
         if raw_budget <= 0:
             raise WindowPlanInapplicable()
-        target_raw_tokens = min(window_budget_tokens, raw_budget)
-        if any(tokens > target_raw_tokens for tokens in turn_tokens):
+        if any(tokens > raw_budget for tokens in turn_tokens):
             raise WindowPlanInapplicable()
+        target_raw_tokens = min(window_budget_tokens, raw_budget)
 
-        cores = _partition_cores(len(rendered_turns), range_tokens, target_raw_tokens)
+        cores = _partition_cores(len(rendered_turns), range_tokens, raw_budget, target_raw_tokens)
         planned_count = len(cores)
         if planned_count > policy.max_chunks:
             raise WindowPlanInapplicable()
