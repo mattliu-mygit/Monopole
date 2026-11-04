@@ -29,6 +29,7 @@ from weave_agent_signals.judges.inference import (
     _explicit_schema_rejection_reason,
     _parse_exact_json_object,
     _raw_output_digest,
+    _safe_provider_text,
     json_output_contract_messages,
 )
 from weave_agent_signals.judges.process import CODEX_CONFINED_ARGS, prepare_cli_subprocess
@@ -105,12 +106,6 @@ _RETRYABLE_PATTERNS = [
 MAX_CLI_RETRIES = 2
 RETRY_BASE_DELAY = 5.0
 _PROCESS_DIAGNOSTIC_TAIL_CHARACTERS = 16_000
-_PROVIDER_TEXT_CHARACTERS = 500
-_SECRET_ASSIGNMENT = re.compile(
-    r"(?i)(\b(?:api[_-]?key|token|secret|password|authorization|credential)\b\s*[:=]\s*)"
-    r"[^\s,;}]+"
-)
-_BEARER_SECRET = re.compile(r"(?i)\bbearer\s+[^\s,;}]+")
 _PROVIDER_CODE = re.compile(r"[A-Za-z0-9_.-]{1,100}\Z")
 
 
@@ -122,15 +117,6 @@ def _failure_diagnostic(stdout: str, stderr: str, prompt: str) -> str:
     """Remove Codex's exact prompt echo before retaining failure metadata."""
     combined = (stderr or "") + (stdout or "")
     return combined.replace(prompt, "") if prompt else combined
-
-
-def _safe_provider_text(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    text = " ".join(value.split())
-    text = _SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", text)
-    text = _BEARER_SECRET.sub("Bearer [REDACTED]", text)
-    return text[:_PROVIDER_TEXT_CHARACTERS] or None
 
 
 def _safe_provider_code(value: object) -> str | None:

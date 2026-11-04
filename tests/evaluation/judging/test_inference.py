@@ -579,6 +579,43 @@ def test_http_explicit_context_rejection_has_typed_capacity_error(client, monkey
     assert raised.value._transport_request_count == 1
 
 
+def test_http_error_keeps_provider_error_code_and_message(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.inference.wandb.ai/v1/chat/completions")
+    response = httpx.Response(
+        401,
+        request=request,
+        json={
+            "error": {
+                "code": "invalid_api_key",
+                "message": "Invalid Authentication",
+                "type": "invalid_request_error",
+            }
+        },
+    )
+    monkeypatch.setattr(client._http, "post", lambda _path, **_kwargs: response)
+
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        client.chat_json(model="gpt-pinned", messages=_messages(), response_schema=_schema())
+
+    assert raised.value._provider_error_code == "invalid_api_key"
+    assert raised.value._provider_error_message == "Invalid Authentication"
+
+
+def test_http_error_redacts_secrets_in_provider_message(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.inference.wandb.ai/v1/chat/completions")
+    response = httpx.Response(
+        403,
+        request=request,
+        json={"error": {"code": "forbidden", "message": "Project denied; token=SECRET123"}},
+    )
+    monkeypatch.setattr(client._http, "post", lambda _path, **_kwargs: response)
+
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        client.chat_json(model="gpt-pinned", messages=_messages(), response_schema=_schema())
+
+    assert raised.value._provider_error_message == "Project denied; token=[REDACTED]"
+
+
 def test_http_wandb_negative_available_max_tokens_is_context_rejection(client, monkeypatch):
     request = httpx.Request("POST", "https://api.inference.wandb.ai/v1/chat/completions")
     response = httpx.Response(

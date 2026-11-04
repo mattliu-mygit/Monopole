@@ -167,6 +167,12 @@ _SCHEMA_VALIDATION_FAILURE_TERMS = (
     "schema mismatch",
     "does not conform",
 )
+_PROVIDER_TEXT_CHARACTERS = 500
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)(\b(?:api[_-]?key|token|secret|password|authorization|credential)\b\s*[:=]\s*)"
+    r"[^\s,;}]+"
+)
+_BEARER_SECRET = re.compile(r"(?i)\bbearer\s+[^\s,;}]+")
 
 
 def _raw_output_digest(raw_output: str) -> str:
@@ -281,6 +287,15 @@ def _combined_usage(*values: Mapping[str, Any]) -> dict[str, int]:
             if isinstance(key, str) and key.strip() and type(count) is int and count >= 0:
                 combined[key] = combined.get(key, 0) + count
     return combined
+
+
+def _safe_provider_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    text = _SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", text)
+    text = _BEARER_SECRET.sub("Bearer [REDACTED]", text)
+    return text[:_PROVIDER_TEXT_CHARACTERS] or None
 
 
 def _explicit_schema_rejection_reason(text: str) -> str | None:
@@ -682,6 +697,15 @@ class InferenceClient:
                     capacity_error._transport_request_count = request_count  # type: ignore[attr-defined]
                     raise capacity_error from None
                 error._transport_request_count = request_count  # type: ignore[attr-defined]
+                try:
+                    payload = resp.json()
+                except ValueError:
+                    payload = None
+                detail = payload.get("error", payload) if isinstance(payload, Mapping) else None
+                if isinstance(detail, Mapping):
+                    for key in ("code", "message"):
+                        value = _safe_provider_text(detail.get(key))
+                        setattr(error, f"_provider_error_{key}", value)
                 raise
             try:
                 data = resp.json()
