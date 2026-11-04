@@ -288,8 +288,8 @@ evaluable and writes no feedback.
 A failed invocation or invalid attempt by an applicable reviewer still fails
 coverage even when another reviewer returned a valid score. After the bounded
 transport retries for that attempt are exhausted, the runtime cancels pending
-work across the session. Active local CLI processes are terminated; an active
-HTTP request may settle, but cannot start another digest, window, or merge.
+work across the session. Active local CLI processes are terminated and active
+HTTP requests are disconnected; no reviewer starts another digest, window, or merge.
 Concurrent outcomes that settled before cancellation remain ordered by pinned
 rubric and reviewer identity. Any coverage failure then fails the session and
 stops remaining sessions.

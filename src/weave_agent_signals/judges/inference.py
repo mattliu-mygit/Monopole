@@ -7,9 +7,11 @@ import json
 import logging
 import os
 import re
+import socket
 import threading
 import time
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -450,10 +452,13 @@ class InferenceClient:
     ):
         resolved_url, headers, self.backend = _resolve_backend(backend, entity, project)
 
+        self._sockets: set[socket.socket] = set()
+        self._sockets_lock = threading.Lock()
         self._http = httpx.Client(
             base_url=resolved_url,
             headers=headers,
             timeout=httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=10.0),
+            event_hooks={"request": [lambda request: request.extensions.update(trace=self._trace)]},
         )
         self._activity = threading.local()
         self._schema_recovery: set[tuple[str, str]] = set()
@@ -463,9 +468,25 @@ class InferenceClient:
     def set_cancel(self, cancel: threading.Event) -> None:
         self._cancel = cancel
 
+    def _trace(self, event: str, info: Mapping[str, Any]) -> None:
+        """Keep each connection's socket, so abort() can wake a request waiting for its reply."""
+        if event in {"connection.connect_tcp.complete", "connection.start_tls.complete"}:
+            with self._sockets_lock:
+                self._sockets.add(info["return_value"].get_extra_info("socket"))
+
     def abort(self) -> None:
-        """Stop waiting between retries and close the connection, which ends a request in flight."""
+        """Stop retries and shut down this client's sockets, which ends a request in flight.
+
+        Closing the HTTP client alone does not: a thread waiting for a reply misses it and waits
+        out the read timeout.
+        """
         self._aborted.set()
+        with self._sockets_lock:
+            sockets = list(self._sockets)
+        for sock in sockets:
+            # A closed connection's socket, or the plain socket TLS replaced, is already unusable.
+            with suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
         self._http.close()
 
     def _wait(self, delay: float) -> None:
@@ -512,6 +533,7 @@ class InferenceClient:
         retry_note = " in concise JSON recovery mode" if wandb_retry else ""
         retry_fields = {"output_mode": "json_object_fallback"} if schema_retry else {}
         while True:
+            self._raise_if_cancelled()
             request_count += 1
             retry_mode = wandb_retry and request_count > 1
             request_body = _wandb_retry_body(body) if retry_mode else body
@@ -534,6 +556,7 @@ class InferenceClient:
             try:
                 resp = self._http.post(path, json=request_body)
             except httpx.TransportError as error:
+                self._raise_if_cancelled()
                 attempt_elapsed = time.monotonic() - attempt_started
                 self._emit_activity(
                     {

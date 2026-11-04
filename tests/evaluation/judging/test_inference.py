@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import socket
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -583,6 +584,53 @@ def test_http_transport_stops_after_three_read_timeout_attempts(client, monkeypa
     ]
     assert events[-1]["error_category"] == "ReadTimeout"
     assert events[-1]["request_attempt"] == 3
+
+
+def test_abort_ends_a_request_waiting_for_its_reply(client):
+    server = socket.create_server(("127.0.0.1", 0))
+    received = threading.Event()
+    connections: list[socket.socket] = []
+
+    def accept_and_never_reply():
+        connection, _ = server.accept()
+        connections.append(connection)
+        connection.recv(65536)
+        received.set()
+
+    threading.Thread(target=accept_and_never_reply, daemon=True).start()
+    client._http.base_url = f"http://127.0.0.1:{server.getsockname()[1]}"
+    client._http.timeout = httpx.Timeout(30.0)
+    raised: list[BaseException] = []
+    events: list[dict[str, object]] = []
+
+    def request():
+        client.set_activity(events.append)
+        try:
+            client.chat_json(model="gpt-pinned", messages=_messages(), response_schema=_schema())
+        except BaseException as error:
+            raised.append(error)
+
+    worker = threading.Thread(target=request, daemon=True)
+    worker.start()
+    try:
+        assert received.wait(5)
+        client.abort()
+        worker.join(5)
+
+        assert not worker.is_alive()
+        assert isinstance(raised[0], inference.InferenceCancelled)
+        assert "transport_retry" not in [event["phase"] for event in events]
+    finally:
+        server.close()
+        for connection in connections:
+            connection.close()
+
+
+def test_aborted_client_cancels_instead_of_sending(client):
+    client.abort()
+
+    with pytest.raises(inference.InferenceCancelled):
+        client.chat_json(model="gpt-pinned", messages=_messages(), response_schema=_schema())
 
 
 def test_http_explicit_context_rejection_has_typed_capacity_error(client, monkeypatch):
