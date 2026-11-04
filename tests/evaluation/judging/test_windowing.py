@@ -528,12 +528,12 @@ def test_window_plan_rejects_worst_case_merge_input_over_model_cap():
 def test_render_raw_window_uses_planned_order_and_visible_evidence_ids():
     session = _session_with_rendered_turn_sizes([18_000, 18_000, 18_000, 18_000])
     plan = build_window_plan(
-        session, _small_policy(), model_limit=70_000, token_counter="utf8_bytes_div_3"
+        session, _small_policy(), model_limit=32_800, token_counter="utf8_bytes_div_3"
     )
 
     digest = render_raw_window(session, plan["windows"][0], "utf8_bytes_div_3")
 
-    assert digest.evidence_ids == tuple(plan["windows"][0]["raw_trace_ids"])
+    assert digest.evidence_ids == ("t1", "t2", "t3")
     assert digest.text.index("evidence_id=t1") < digest.text.index("evidence_id=t2")
     assert digest.text.index("evidence_id=t2") < digest.text.index("evidence_id=t3")
 
