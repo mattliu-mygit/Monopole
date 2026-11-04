@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ModelCatalog, ModelDescriptor, RubricCatalog } from '../../src/types'
 import type { RunConfigState } from '../../src/features/runs/runConfigState'
@@ -130,6 +130,14 @@ const state: RunConfigState = {
   candidateBudget: 3,
   force: false,
 }
+
+const selectedSessions = [{
+  judging_token_estimates: {
+    utf8_bytes_div_3: { total_tokens: 100_000, largest_turn_tokens: 60_000, turn_tokens: [60_000, 40_000] },
+    o200k_base: { total_tokens: 100_000, largest_turn_tokens: 60_000, turn_tokens: [60_000, 40_000] },
+    o200k_harmony: { total_tokens: 100_000, largest_turn_tokens: 60_000, turn_tokens: [60_000, 40_000] },
+  },
+}]
 
 describe('RunConfiguration', () => {
   it('renders every model role as a guided select with visible choice provenance', () => {
@@ -306,44 +314,56 @@ describe('RunConfiguration', () => {
 
   it('shows context capacity and disables models that do not fit selected sessions', () => {
     const tightWriter = { ...writerAnthropic, max_input_tokens: 70_000 }
-    const noWindowJudge: ModelDescriptor = {
-      ...cliMeta,
-      id: 'cli-no-window',
-      label: 'CLI No Window',
-      window_budget_tokens: null,
-      whole_budget_tokens: null,
-    }
     const capacityModels: ModelCatalog = {
       ...models,
-      available_models: [writerOpenAI, tightWriter, cliAnthropic, cliOpenAI, cliMeta, noWindowJudge],
+      available_models: [writerOpenAI, tightWriter, cliAnthropic, cliOpenAI, cliMeta],
     }
     render(
       <RunConfiguration
         state={state}
         models={capacityModels}
         rubrics={rubrics}
-        sessions={[{
-          judging_token_estimates: {
-            utf8_bytes_div_3: { total_tokens: 100_000, largest_turn_tokens: 60_000, turn_tokens: [60_000, 40_000] },
-            o200k_base: { total_tokens: 100_000, largest_turn_tokens: 60_000, turn_tokens: [60_000, 40_000] },
-            o200k_harmony: { total_tokens: 100_000, largest_turn_tokens: 60_000, turn_tokens: [60_000, 40_000] },
-          },
-        }]}
+        sessions={selectedSessions}
         onAction={() => undefined}
       />,
     )
 
     const fitOption = screen.getByRole('option', {
-      name: /Writer OpenAI.*128k model limit.*estimated largest request ~77k.*fits/i,
+      name: /Writer OpenAI.*128k model limit.*estimated largest request ~116k.*fits/i,
     })
     const blockedOption = screen.getByRole('option', {
       name: /Writer Anthropic.*70k model limit.*estimated largest request ~74k.*does not fit/i,
     })
-    const noWindowOptions = screen.getAllByRole('option', {
-      name: 'CLI No Window · agy · meta · 128k model limit · does not fit',
-    })
     expect(fitOption).toHaveProperty('disabled', false)
     expect(blockedOption).toHaveProperty('disabled', true)
-    for (const option of noWindowOptions) expect(option).toHaveProperty('disabled', true)
+  })
+
+  it('blocks a model without a window budget only as a judge', () => {
+    const noWindowModel: ModelDescriptor = {
+      ...cliMeta,
+      id: 'cli-no-window',
+      label: 'CLI No Window',
+      supported_roles: ['proposal_writer', 'judge', 'proposal_evaluator'],
+      window_budget_tokens: null,
+      whole_budget_tokens: null,
+    }
+    render(
+      <RunConfiguration
+        state={state}
+        models={{ ...models, available_models: [...models.available_models, noWindowModel] }}
+        rubrics={rubrics}
+        sessions={selectedSessions}
+        onAction={() => undefined}
+      />,
+    )
+
+    const fits = 'CLI No Window · agy · meta · 128k model limit · estimated largest request ~116k · fits'
+    const doesNotFit = 'CLI No Window · agy · meta · 128k model limit · does not fit'
+    const option = (select: string, name: string) =>
+      within(screen.getByRole('combobox', { name: select })).getByRole('option', { name })
+    expect(option('Proposal writer', fits)).toHaveProperty('disabled', false)
+    expect(option('Proposal evaluator', fits)).toHaveProperty('disabled', false)
+    expect(option('Judge 1', doesNotFit)).toHaveProperty('disabled', true)
+    expect(option('A/B verification judge 1', doesNotFit)).toHaveProperty('disabled', true)
   })
 })

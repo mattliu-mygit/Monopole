@@ -209,4 +209,51 @@ describe('judge panel configuration state', () => {
     expect(next.challengeJudgeModels.value).toEqual([roomyJudge.id])
     expect(next.proposalEvaluatorModel.value).toBe(roomyJudge.id)
   })
+
+  it('blocks a model without a window budget only as a judge', () => {
+    const noWindow: ModelDescriptor = {
+      ...meta,
+      id: 'wandb:no-window',
+      label: 'No window',
+      family: 'small',
+      supported_roles: ['proposal_writer', 'judge', 'proposal_evaluator'],
+      window_budget_tokens: null,
+      whole_budget_tokens: null,
+    }
+    const capacityModels: ModelCatalog = {
+      ...models,
+      available_models: [...models.available_models, noWindow],
+    }
+    const sessions = [{
+      judging_token_estimates: {
+        utf8_bytes_div_3: { total_tokens: 10_000, largest_turn_tokens: 10_000, turn_tokens: [10_000] },
+        o200k_base: { total_tokens: 10_000, largest_turn_tokens: 10_000, turn_tokens: [10_000] },
+        o200k_harmony: { total_tokens: 10_000, largest_turn_tokens: 10_000, turn_tokens: [10_000] },
+      },
+    }]
+    let state = initializeRunConfigState(capacityModels, rubrics)
+    state = transitionRunConfig(
+      state,
+      { type: 'select-writer', modelId: noWindow.id },
+      capacityModels,
+      sessions,
+    )
+    state = transitionRunConfig(
+      state,
+      { type: 'select-evaluator', modelId: noWindow.id },
+      capacityModels,
+      sessions,
+    )
+    expect(assessRunConfig(state, capacityModels, rubrics, sessions).errors).toEqual([])
+
+    state = transitionRunConfig(
+      state,
+      { type: 'select-judge', position: 1, modelId: noWindow.id },
+      capacityModels,
+      sessions,
+    )
+    expect(assessRunConfig(state, capacityModels, rubrics, sessions).errors).toEqual([
+      'Select models that fit the selected sessions.',
+    ])
+  })
 })

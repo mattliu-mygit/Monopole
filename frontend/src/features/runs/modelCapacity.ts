@@ -8,6 +8,7 @@ export interface ModelCapacityEstimate {
 
 type SessionTokens = { judging_token_estimates: JudgingTokenEstimates }
 type ContextPolicy = ModelCatalog['judging_context']
+type ModelRole = ModelDescriptor['supported_roles'][number]
 
 function roundHalfToEven(value: number): number {
   const floor = Math.floor(value)
@@ -19,7 +20,6 @@ function clamp(value: number, low: number, high: number): number {
   return Math.max(low, Math.min(value, high))
 }
 
-/** Mirrors JudgingContextPolicy.capacity_reserve, including Python's half-to-even round(). */
 export function capacityReserve(modelLimit: number): number {
   const prompt = clamp(roundHalfToEven(0.15 * modelLimit), 2_000, 6_000)
   const generationCap = modelLimit > 200_000 ? 10_000 : 4_000
@@ -50,6 +50,7 @@ function partitionCoreTokens(
 
 function estimateSession(
   model: ModelDescriptor,
+  windowBudget: number,
   session: SessionTokens,
   policy: ContextPolicy,
 ): Required<ModelCapacityEstimate> {
@@ -64,13 +65,13 @@ function estimateSession(
     coreTokens = partitionCoreTokens(
       tokens.turn_tokens,
       model.max_input_tokens - reserve,
-      Math.min(model.window_budget_tokens, model.max_input_tokens - reserve),
+      Math.min(windowBudget, model.max_input_tokens - reserve),
     )
     if (coreTokens === null || coreTokens.length === chunks) break
     chunks = coreTokens.length
   }
   const windowReserve = baseReserve + Math.max(0, chunks - 1) * policy.digest_max_tokens
-  const target = Math.min(model.window_budget_tokens, model.max_input_tokens - windowReserve)
+  const target = Math.min(windowBudget, model.max_input_tokens - windowReserve)
   const largestCore = coreTokens === null
     ? tokens.largest_turn_tokens
     : Math.max(...coreTokens, 0)
@@ -92,14 +93,18 @@ export function estimateModelCapacity(
   model: ModelDescriptor,
   sessions: readonly SessionTokens[],
   policy: ContextPolicy,
+  role: ModelRole,
 ): ModelCapacityEstimate {
   if (sessions.length === 0) {
     return { fits: null, estimatedRequestTokens: null, estimatedChunks: null }
   }
-  if (model.window_budget_tokens === null) {
+  const windowBudget = role === 'judge'
+    ? model.window_budget_tokens
+    : model.max_input_tokens - capacityReserve(model.max_input_tokens)
+  if (windowBudget === null) {
     return { fits: false, estimatedRequestTokens: null, estimatedChunks: null }
   }
-  const estimates = sessions.map((session) => estimateSession(model, session, policy))
+  const estimates = sessions.map((session) => estimateSession(model, windowBudget, session, policy))
   return {
     fits: estimates.every((estimate) => estimate.fits),
     estimatedRequestTokens: Math.max(

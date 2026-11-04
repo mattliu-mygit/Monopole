@@ -8,11 +8,9 @@ describe('capacityReserve', () => {
       expect(capacityReserve(limit)).toBe(reserve)
     })
 
-  // 0.15 × 13,350 is exactly 2,002.5 and 0.15 × 13,370 is exactly 2,005.5. Python's round()
-  // takes both prompt reserves to the even neighbor, 2,002 and 2,006, where Math.round gives
-  // 2,003 for the first. The 0.05 × 10,010 = 500.5 half is hidden by the 1,000 safety floor.
   it.each([[13_350, 4_337], [13_370, 4_343]])(
-    'rounds an exact half to even like Python for %i tokens', (limit, reserve) => {
+    'rounds the exact-half prompt reserve for %i tokens to even like Python, reserving %i',
+    (limit, reserve) => {
       expect(capacityReserve(limit)).toBe(reserve)
     })
 })
@@ -69,7 +67,7 @@ function session(
 
 describe('estimateModelCapacity', () => {
   it('returns unknown fit when no sessions are selected', () => {
-    expect(estimateModelCapacity(model(131_072), [], policy)).toEqual({
+    expect(estimateModelCapacity(model(131_072), [], policy, 'judge')).toEqual({
       fits: null,
       estimatedRequestTokens: null,
       estimatedChunks: null,
@@ -77,12 +75,13 @@ describe('estimateModelCapacity', () => {
   })
 
   it('packs turns into windows no larger than the model window budget', () => {
-    // Turns of 30k, 30k, 30k and 10k: a 32k budget takes one turn per window, and a 64k
-    // budget takes 30k + 30k and then 30k + 10k.
+    const sessions = [session(100_000, 30_000, [30_000, 30_000, 30_000, 10_000])]
+
     expect(estimateModelCapacity(
       model(131_072, 'utf8_bytes_div_3', 32_000),
-      [session(100_000, 30_000)],
+      sessions,
       policy,
+      'judge',
     )).toEqual({
       fits: true,
       estimatedRequestTokens: 51_554,
@@ -90,13 +89,28 @@ describe('estimateModelCapacity', () => {
     })
     expect(estimateModelCapacity(
       model(131_072, 'utf8_bytes_div_3', 64_000),
-      [session(100_000, 30_000)],
+      sessions,
       policy,
+      'judge',
     )).toEqual({
       fits: true,
       estimatedRequestTokens: 81_554,
       estimatedChunks: 2,
     })
+  })
+
+  it('limits only judges to the window budget; writers and evaluators pack up to the usable context', () => {
+    const noWindow = model(131_072, 'utf8_bytes_div_3', null)
+    const sessions = [session(100_000, 30_000, [30_000, 30_000, 30_000, 10_000])]
+    const oneWindow = { fits: true, estimatedRequestTokens: 116_554, estimatedChunks: 1 }
+
+    expect(estimateModelCapacity(noWindow, sessions, policy, 'judge')).toEqual({
+      fits: false,
+      estimatedRequestTokens: null,
+      estimatedChunks: null,
+    })
+    expect(estimateModelCapacity(noWindow, sessions, policy, 'proposal_writer')).toEqual(oneWindow)
+    expect(estimateModelCapacity(noWindow, sessions, policy, 'proposal_evaluator')).toEqual(oneWindow)
   })
 
   it('uses the selected model token counter', () => {
@@ -107,16 +121,22 @@ describe('estimateModelCapacity', () => {
       turn_tokens: [50_000, 20_000],
     }
 
-    expect(estimateModelCapacity(model(131_072), [selected], policy).fits).toBe(false)
+    expect(estimateModelCapacity(model(131_072), [selected], policy, 'judge').fits).toBe(false)
     expect(estimateModelCapacity(
       model(131_072, 'o200k_harmony'),
       [selected],
       policy,
+      'judge',
     )).toMatchObject({ fits: true, estimatedChunks: 2 })
   })
 
   it('gives one turn larger than the window budget a window of its own', () => {
-    expect(estimateModelCapacity(model(131_072), [session(112_000, 112_000)], policy)).toEqual({
+    expect(estimateModelCapacity(
+      model(131_072),
+      [session(112_000, 112_000)],
+      policy,
+      'judge',
+    )).toEqual({
       fits: true,
       estimatedRequestTokens: 128_554,
       estimatedChunks: 1,
@@ -128,6 +148,7 @@ describe('estimateModelCapacity', () => {
       model(131_072),
       [session(224_000, 112_000, [112_000, 112_000])],
       policy,
+      'judge',
     )).toEqual({
       fits: true,
       estimatedRequestTokens: 129_554,
@@ -136,9 +157,12 @@ describe('estimateModelCapacity', () => {
   })
 
   it('fits a large turn only in the context left after digests for the other windows', () => {
-    // A 131,072-token model keeps 114,518 tokens after its 16,554 reserve. Beside two other
-    // windows, 2,000 more go to their digests, so a 114,000-token turn no longer fits.
-    expect(estimateModelCapacity(model(131_072), [session(114_000, 114_000)], policy)).toEqual({
+    expect(estimateModelCapacity(
+      model(131_072),
+      [session(114_000, 114_000)],
+      policy,
+      'judge',
+    )).toEqual({
       fits: true,
       estimatedRequestTokens: 130_554,
       estimatedChunks: 1,
@@ -147,6 +171,7 @@ describe('estimateModelCapacity', () => {
       model(131_072),
       [session(134_000, 114_000, [10_000, 114_000, 10_000])],
       policy,
+      'judge',
     )).toEqual({
       fits: false,
       estimatedRequestTokens: 132_554,
@@ -154,20 +179,13 @@ describe('estimateModelCapacity', () => {
     })
   })
 
-  it('does not fit a model without a window budget', () => {
-    expect(estimateModelCapacity(
-      model(131_072, 'utf8_bytes_div_3', null),
-      [session(10_000, 10_000)],
-      policy,
-    )).toEqual({
-      fits: false,
-      estimatedRequestTokens: null,
-      estimatedChunks: null,
-    })
-  })
-
   it('reserves the larger generation allowance for large-model requests', () => {
-    expect(estimateModelCapacity(model(262_000), [session(128_000, 128_000)], policy)).toEqual({
+    expect(estimateModelCapacity(
+      model(262_000),
+      [session(128_000, 128_000)],
+      policy,
+      'judge',
+    )).toEqual({
       fits: true,
       estimatedRequestTokens: 152_000,
       estimatedChunks: 1,
@@ -177,26 +195,35 @@ describe('estimateModelCapacity', () => {
   it('fails sessions that exceed the pinned chunk limit', () => {
     const large = model(1_048_576, 'utf8_bytes_div_3', 128_000)
 
-    expect(estimateModelCapacity(large, [session(4_000_000, 100_000)], policy)).toEqual({
+    expect(estimateModelCapacity(large, [session(4_000_000, 100_000)], policy, 'judge')).toEqual({
       fits: true,
       estimatedRequestTokens: 224_000,
       estimatedChunks: 40,
     })
-    expect(estimateModelCapacity(large, [session(4_100_000, 100_000)], policy)).toEqual({
+    expect(estimateModelCapacity(large, [session(4_100_000, 100_000)], policy, 'judge')).toEqual({
       fits: false,
       estimatedRequestTokens: 229_000,
       estimatedChunks: 41,
     })
   })
 
-  it('fails sessions whose merge request exceeds the model', () => {
-    // Each window adds a 1,000-token digest and a 4,000-token finding to the merge request.
-    expect(estimateModelCapacity(model(131_072), [session(660_000, 30_000)], policy)).toEqual({
+  it('fails sessions whose merge request, a digest and a finding per window, exceeds the model', () => {
+    expect(estimateModelCapacity(
+      model(131_072),
+      [session(660_000, 30_000)],
+      policy,
+      'judge',
+    )).toEqual({
       fits: true,
       estimatedRequestTokens: 126_554,
       estimatedChunks: 22,
     })
-    expect(estimateModelCapacity(model(131_072), [session(690_000, 30_000)], policy)).toEqual({
+    expect(estimateModelCapacity(
+      model(131_072),
+      [session(690_000, 30_000)],
+      policy,
+      'judge',
+    )).toEqual({
       fits: false,
       estimatedRequestTokens: 131_554,
       estimatedChunks: 23,
@@ -208,6 +235,7 @@ describe('estimateModelCapacity', () => {
       model(131_072),
       [session(100_000, 30_000), session(300_000, 70_000)],
       policy,
+      'judge',
     )).toEqual({
       fits: true,
       estimatedRequestTokens: 90_554,

@@ -44,10 +44,11 @@ function model(models: ModelCatalog, id: string) {
 
 function fits(
   candidate: ModelDescriptor,
+  role: ModelDescriptor['supported_roles'][number],
   models: ModelCatalog,
   sessions: readonly SessionTokens[],
 ): boolean {
-  return estimateModelCapacity(candidate, sessions, models.judging_context).fits !== false
+  return estimateModelCapacity(candidate, sessions, models.judging_context, role).fits !== false
 }
 
 function evaluator(
@@ -61,7 +62,7 @@ function evaluator(
     .filter((candidate): candidate is ModelDescriptor =>
       candidate !== undefined
       && supports(candidate, 'proposal_evaluator')
-      && fits(candidate, models, sessions))
+      && fits(candidate, 'proposal_evaluator', models, sessions))
   return (candidates.find((candidate) => candidate.family !== writerFamily) ?? candidates[0])?.id ?? ''
 }
 
@@ -82,7 +83,7 @@ function fittingIds(
       const candidate = model(models, id)
       return candidate !== undefined
         && supports(candidate, role)
-        && fits(candidate, models, sessions)
+        && fits(candidate, role, models, sessions)
     })
 }
 
@@ -248,9 +249,15 @@ export function assessRunConfig(
   if (!selectedEvaluator || !supports(selectedEvaluator, 'proposal_evaluator')) {
     errors.push('Select an available proposal evaluator.')
   }
-  const selectedModels = [selectedWriter, ...judges, ...challengeJudges, selectedEvaluator]
-    .filter((candidate): candidate is ModelDescriptor => candidate !== undefined)
-  if (selectedModels.some((candidate) => !fits(candidate, models, sessions))) {
+  const unfit = (
+    candidate: ModelDescriptor | undefined,
+    role: ModelDescriptor['supported_roles'][number],
+  ) => candidate !== undefined && !fits(candidate, role, models, sessions)
+  if (
+    unfit(selectedWriter, 'proposal_writer')
+    || [...judges, ...challengeJudges].some((judge) => unfit(judge, 'judge'))
+    || unfit(selectedEvaluator, 'proposal_evaluator')
+  ) {
     errors.push('Select models that fit the selected sessions.')
   }
   const rubricIds = new Set(rubrics.rubrics.map((rubric) => rubric.id))
