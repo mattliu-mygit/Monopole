@@ -12,16 +12,8 @@
     "pass_threshold": 0.5
   }],
   "input_policy": {
-    "contract_version": "3",
+    "contract_version": "4",
     "large_model_threshold_tokens": 200000,
-    "large_model_reserve_tokens": 18000,
-    "small_model_reserve_tokens": 18000,
-    "large_model_raw_target_tokens": 128000,
-    "small_model_raw_target_tokens": 50000,
-    "prompt_reserve_tokens": 6000,
-    "output_reserve_tokens": 4000,
-    "large_model_output_reserve_tokens": 10000,
-    "safety_reserve_tokens": 8000,
     "digest_max_tokens": 1000,
     "finding_max_tokens": 4000,
     "overlap_turns": 1,
@@ -65,7 +57,11 @@
         "position": 1,
         "role": "judge",
         "max_input_tokens": 131072,
-        "token_counter": "utf8_bytes_div_3"
+        "token_counter": "utf8_bytes_div_3",
+        "question_budget_tokens": 4000,
+        "window_budget_tokens": 32000,
+        "whole_budget_tokens": 32000,
+        "merge_budget_tokens": 32000
       },
       "status": "planned",
       "skip_reason": null,

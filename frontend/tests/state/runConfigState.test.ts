@@ -7,37 +7,38 @@ import {
   transitionRunConfig,
 } from '../../src/features/runs/runConfigState'
 
+const budgets = {
+  question_budget_tokens: 4_000,
+  window_budget_tokens: 32_000,
+  whole_budget_tokens: 32_000,
+  merge_budget_tokens: 32_000,
+}
 const writer: ModelDescriptor = {
   id: 'codex:writer', label: 'Writer', family: 'openai', provider: 'codex', provider_model: 'writer',
   supported_roles: ['proposal_writer'], max_input_tokens: 128_000,
-  token_counter: 'utf8_bytes_div_3',
+  token_counter: 'utf8_bytes_div_3', ...budgets,
 }
 const anthropic: ModelDescriptor = {
   id: 'claude:anthropic', label: 'Anthropic', family: 'anthropic', provider: 'claude', provider_model: 'anthropic',
   supported_roles: ['judge', 'proposal_evaluator'], max_input_tokens: 128_000,
-  token_counter: 'utf8_bytes_div_3',
+  token_counter: 'utf8_bytes_div_3', ...budgets,
 }
 const openai: ModelDescriptor = {
   id: 'codex:openai', label: 'OpenAI', family: 'openai', provider: 'codex', provider_model: 'openai',
   supported_roles: ['judge', 'proposal_evaluator'], max_input_tokens: 128_000,
-  token_counter: 'utf8_bytes_div_3',
+  token_counter: 'utf8_bytes_div_3', ...budgets,
 }
 const meta: ModelDescriptor = {
   id: 'agy:meta', label: 'Meta', family: 'meta', provider: 'agy', provider_model: 'meta',
   supported_roles: ['judge', 'proposal_evaluator'], max_input_tokens: 128_000,
-  token_counter: 'utf8_bytes_div_3',
+  token_counter: 'utf8_bytes_div_3', ...budgets,
 }
 const metaAlt = { ...meta, id: 'meta-alt', label: 'Meta alternate' }
 
 const models: ModelCatalog = {
   catalog_version: 'sha256:models',
   judging_context: {
-    contract_version: '3', large_model_threshold_tokens: 200_000,
-    large_model_reserve_tokens: 100_000, small_model_reserve_tokens: 50_000,
-    large_model_raw_target_tokens: 128_000, small_model_raw_target_tokens: 50_000,
-    prompt_reserve_tokens: 6_000, output_reserve_tokens: 4_000,
-    large_model_output_reserve_tokens: 10_000,
-    safety_reserve_tokens: 8_000, digest_max_tokens: 1_000,
+    contract_version: '4', large_model_threshold_tokens: 200_000, digest_max_tokens: 1_000,
     finding_max_tokens: 4_000, overlap_turns: 1, max_chunks: 40,
   },
   available_models: [writer, anthropic, openai, meta, metaAlt],
@@ -159,9 +160,9 @@ describe('judge panel configuration state', () => {
     const state = initializeRunConfigState(models, rubrics)
     const sessions = [{
       judging_token_estimates: {
-        utf8_bytes_div_3: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
-        o200k_base: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
-        o200k_harmony: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
+        utf8_bytes_div_3: { total_tokens: 130_000, largest_turn_tokens: 120_000, turn_tokens: [120_000, 10_000] },
+        o200k_base: { total_tokens: 130_000, largest_turn_tokens: 120_000, turn_tokens: [120_000, 10_000] },
+        o200k_harmony: { total_tokens: 130_000, largest_turn_tokens: 120_000, turn_tokens: [120_000, 10_000] },
       },
     }]
 
@@ -190,9 +191,9 @@ describe('judge panel configuration state', () => {
     }
     const sessions = [{
       judging_token_estimates: {
-        utf8_bytes_div_3: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
-        o200k_base: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
-        o200k_harmony: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
+        utf8_bytes_div_3: { total_tokens: 130_000, largest_turn_tokens: 120_000, turn_tokens: [120_000, 10_000] },
+        o200k_base: { total_tokens: 130_000, largest_turn_tokens: 120_000, turn_tokens: [120_000, 10_000] },
+        o200k_harmony: { total_tokens: 130_000, largest_turn_tokens: 120_000, turn_tokens: [120_000, 10_000] },
       },
     }]
     const initial = initializeRunConfigState(capacityModels, rubrics)

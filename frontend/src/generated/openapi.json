@@ -1834,8 +1834,8 @@
         "additionalProperties": false,
         "properties": {
           "contract_version": {
-            "const": "3",
-            "default": "3",
+            "const": "4",
+            "default": "4",
             "title": "Contract Version",
             "type": "string"
           },
@@ -1851,24 +1851,6 @@
             "title": "Finding Max Tokens",
             "type": "integer"
           },
-          "large_model_output_reserve_tokens": {
-            "default": 10000,
-            "minimum": 1.0,
-            "title": "Large Model Output Reserve Tokens",
-            "type": "integer"
-          },
-          "large_model_raw_target_tokens": {
-            "default": 128000,
-            "minimum": 1.0,
-            "title": "Large Model Raw Target Tokens",
-            "type": "integer"
-          },
-          "large_model_reserve_tokens": {
-            "default": 18000,
-            "minimum": 1.0,
-            "title": "Large Model Reserve Tokens",
-            "type": "integer"
-          },
           "large_model_threshold_tokens": {
             "const": 200000,
             "default": 200000,
@@ -1881,40 +1863,10 @@
             "title": "Max Chunks",
             "type": "integer"
           },
-          "output_reserve_tokens": {
-            "default": 4000,
-            "minimum": 1.0,
-            "title": "Output Reserve Tokens",
-            "type": "integer"
-          },
           "overlap_turns": {
             "const": 1,
             "default": 1,
             "title": "Overlap Turns",
-            "type": "integer"
-          },
-          "prompt_reserve_tokens": {
-            "default": 6000,
-            "minimum": 1.0,
-            "title": "Prompt Reserve Tokens",
-            "type": "integer"
-          },
-          "safety_reserve_tokens": {
-            "default": 8000,
-            "minimum": 1.0,
-            "title": "Safety Reserve Tokens",
-            "type": "integer"
-          },
-          "small_model_raw_target_tokens": {
-            "default": 50000,
-            "minimum": 1.0,
-            "title": "Small Model Raw Target Tokens",
-            "type": "integer"
-          },
-          "small_model_reserve_tokens": {
-            "default": 18000,
-            "minimum": 1.0,
-            "title": "Small Model Reserve Tokens",
             "type": "integer"
           }
         },
@@ -2721,6 +2673,11 @@
             "title": "Max Input Tokens",
             "type": "integer"
           },
+          "merge_budget_tokens": {
+            "minimum": 1.0,
+            "title": "Merge Budget Tokens",
+            "type": "integer"
+          },
           "provider": {
             "title": "Provider",
             "type": "string"
@@ -2729,17 +2686,10 @@
             "title": "Provider Model",
             "type": "string"
           },
-          "raw_window_target_tokens": {
-            "anyOf": [
-              {
-                "minimum": 1.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Raw Window Target Tokens"
+          "question_budget_tokens": {
+            "minimum": 1.0,
+            "title": "Question Budget Tokens",
+            "type": "integer"
           },
           "supported_roles": {
             "items": {
@@ -2762,6 +2712,30 @@
             ],
             "title": "Token Counter",
             "type": "string"
+          },
+          "whole_budget_tokens": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Whole Budget Tokens"
+          },
+          "window_budget_tokens": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Budget Tokens"
           }
         },
         "required": [
@@ -2770,7 +2744,11 @@
           "provider",
           "provider_model",
           "family",
-          "supported_roles"
+          "supported_roles",
+          "question_budget_tokens",
+          "window_budget_tokens",
+          "whole_budget_tokens",
+          "merge_budget_tokens"
         ],
         "title": "ModelDescriptor",
         "type": "object"
@@ -2815,6 +2793,11 @@
             "title": "Max Input Tokens",
             "type": "integer"
           },
+          "merge_budget_tokens": {
+            "minimum": 1.0,
+            "title": "Merge Budget Tokens",
+            "type": "integer"
+          },
           "position": {
             "minimum": 1.0,
             "title": "Position",
@@ -2828,17 +2811,10 @@
             "title": "Provider Model",
             "type": "string"
           },
-          "raw_window_target_tokens": {
-            "anyOf": [
-              {
-                "minimum": 1.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Raw Window Target Tokens"
+          "question_budget_tokens": {
+            "minimum": 1.0,
+            "title": "Question Budget Tokens",
+            "type": "integer"
           },
           "role": {
             "const": "judge",
@@ -2867,6 +2843,30 @@
             ],
             "title": "Token Counter",
             "type": "string"
+          },
+          "whole_budget_tokens": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Whole Budget Tokens"
+          },
+          "window_budget_tokens": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Budget Tokens"
           }
         },
         "required": [
@@ -2876,6 +2876,10 @@
           "provider_model",
           "family",
           "supported_roles",
+          "question_budget_tokens",
+          "window_budget_tokens",
+          "whole_budget_tokens",
+          "merge_budget_tokens",
           "position"
         ],
         "title": "PositionedJudge",

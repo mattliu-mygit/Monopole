@@ -23,6 +23,10 @@ const writer: ModelDescriptor = {
   supported_roles: ['proposal_writer'],
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
+  question_budget_tokens: 4_000,
+  window_budget_tokens: 32_000,
+  whole_budget_tokens: 32_000,
+  merge_budget_tokens: 32_000,
 }
 
 function bundle(revision: string, claude: string): ReflectionBundleSnapshot {

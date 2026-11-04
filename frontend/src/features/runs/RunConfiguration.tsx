@@ -64,11 +64,12 @@ function modelLabel(
   estimate: ModelCapacityEstimate,
 ): string {
   const capacity = `${formatTokens(model.max_input_tokens)} model limit`
+  const request = estimate.estimatedRequestTokens === null
+    ? ''
+    : ` · estimated largest request ~${formatTokens(estimate.estimatedRequestTokens)}`
   const fit = estimate.fits === null
     ? ''
-    : estimate.fits
-      ? ` · estimated largest request ~${formatTokens(estimate.estimatedRequestTokens ?? 0)} · fits`
-      : ` · estimated largest request ~${formatTokens(estimate.estimatedRequestTokens ?? 0)} · does not fit`
+    : `${request} · ${estimate.fits ? 'fits' : 'does not fit'}`
   return `${model.label} · ${model.provider} · ${model.family} · ${capacity}${fit}`
 }
 

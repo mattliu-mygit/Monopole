@@ -890,10 +890,10 @@ export interface components {
         JudgingContextPolicy: {
             /**
              * Contract Version
-             * @default 3
+             * @default 4
              * @constant
              */
-            contract_version: "3";
+            contract_version: "4";
             /**
              * Digest Max Tokens
              * @default 1000
@@ -904,21 +904,6 @@ export interface components {
              * @default 10000
              */
             finding_max_tokens: number;
-            /**
-             * Large Model Output Reserve Tokens
-             * @default 10000
-             */
-            large_model_output_reserve_tokens: number;
-            /**
-             * Large Model Raw Target Tokens
-             * @default 128000
-             */
-            large_model_raw_target_tokens: number;
-            /**
-             * Large Model Reserve Tokens
-             * @default 18000
-             */
-            large_model_reserve_tokens: number;
             /**
              * Large Model Threshold Tokens
              * @default 200000
@@ -931,36 +916,11 @@ export interface components {
              */
             max_chunks: number;
             /**
-             * Output Reserve Tokens
-             * @default 4000
-             */
-            output_reserve_tokens: number;
-            /**
              * Overlap Turns
              * @default 1
              * @constant
              */
             overlap_turns: 1;
-            /**
-             * Prompt Reserve Tokens
-             * @default 6000
-             */
-            prompt_reserve_tokens: number;
-            /**
-             * Safety Reserve Tokens
-             * @default 8000
-             */
-            safety_reserve_tokens: number;
-            /**
-             * Small Model Raw Target Tokens
-             * @default 50000
-             */
-            small_model_raw_target_tokens: number;
-            /**
-             * Small Model Reserve Tokens
-             * @default 18000
-             */
-            small_model_reserve_tokens: number;
         };
         /** JudgingFailureDetailResponse */
         JudgingFailureDetailResponse: {
@@ -1250,12 +1210,14 @@ export interface components {
              * @default 128000
              */
             max_input_tokens: number;
+            /** Merge Budget Tokens */
+            merge_budget_tokens: number;
             /** Provider */
             provider: string;
             /** Provider Model */
             provider_model: string;
-            /** Raw Window Target Tokens */
-            raw_window_target_tokens?: number | null;
+            /** Question Budget Tokens */
+            question_budget_tokens: number;
             /** Supported Roles */
             supported_roles: ("proposal_writer" | "judge" | "proposal_evaluator")[];
             /**
@@ -1264,6 +1226,10 @@ export interface components {
              * @enum {string}
              */
             token_counter: "utf8_bytes_div_3" | "o200k_base" | "o200k_harmony";
+            /** Whole Budget Tokens */
+            whole_budget_tokens: number | null;
+            /** Window Budget Tokens */
+            window_budget_tokens: number | null;
         };
         /** NamedDigest */
         NamedDigest: {
@@ -1285,14 +1251,16 @@ export interface components {
              * @default 128000
              */
             max_input_tokens: number;
+            /** Merge Budget Tokens */
+            merge_budget_tokens: number;
             /** Position */
             position: number;
             /** Provider */
             provider: string;
             /** Provider Model */
             provider_model: string;
-            /** Raw Window Target Tokens */
-            raw_window_target_tokens?: number | null;
+            /** Question Budget Tokens */
+            question_budget_tokens: number;
             /**
              * Role
              * @default judge
@@ -1307,6 +1275,10 @@ export interface components {
              * @enum {string}
              */
             token_counter: "utf8_bytes_div_3" | "o200k_base" | "o200k_harmony";
+            /** Whole Budget Tokens */
+            whole_budget_tokens: number | null;
+            /** Window Budget Tokens */
+            window_budget_tokens: number | null;
         };
         /** PromoteRequest */
         PromoteRequest: {

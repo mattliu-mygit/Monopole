@@ -56,6 +56,12 @@ vi.mock('../../src/api', () => ({
 
 afterEach(cleanup)
 
+const budgets = {
+  question_budget_tokens: 4_000,
+  window_budget_tokens: 32_000,
+  whole_budget_tokens: 32_000,
+  merge_budget_tokens: 32_000,
+}
 const writer: ModelDescriptor = {
   id: 'writer-openai',
   label: 'Writer OpenAI',
@@ -65,6 +71,7 @@ const writer: ModelDescriptor = {
   supported_roles: ['proposal_writer'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
+  ...budgets,
 }
 const judgeOne: ModelDescriptor = {
   id: 'judge-anthropic',
@@ -75,6 +82,7 @@ const judgeOne: ModelDescriptor = {
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
+  ...budgets,
 }
 const judgeTwo: ModelDescriptor = {
   id: 'judge-openai',
@@ -85,6 +93,7 @@ const judgeTwo: ModelDescriptor = {
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
+  ...budgets,
 }
 const judgeThree: ModelDescriptor = {
   id: 'judge-meta',
@@ -95,17 +104,13 @@ const judgeThree: ModelDescriptor = {
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
+  ...budgets,
 }
 
 const models: ModelCatalog = {
   catalog_version: 'models-v1',
   judging_context: {
-    contract_version: '3', large_model_threshold_tokens: 200_000,
-    large_model_reserve_tokens: 100_000, small_model_reserve_tokens: 50_000,
-    large_model_raw_target_tokens: 128_000, small_model_raw_target_tokens: 50_000,
-    prompt_reserve_tokens: 6_000, output_reserve_tokens: 4_000,
-    large_model_output_reserve_tokens: 10_000,
-    safety_reserve_tokens: 8_000, digest_max_tokens: 1_000,
+    contract_version: '4', large_model_threshold_tokens: 200_000, digest_max_tokens: 1_000,
     finding_max_tokens: 4_000, overlap_turns: 1, max_chunks: 40,
   },
   available_models: [writer, judgeOne, judgeTwo, judgeThree],
@@ -167,12 +172,7 @@ const effectiveConfig: EffectiveRunConfig = {
   rubrics: rubrics.rubrics,
   selection_warnings: [],
   judging_context: {
-    contract_version: '3', large_model_threshold_tokens: 200_000,
-    large_model_reserve_tokens: 100_000, small_model_reserve_tokens: 50_000,
-    large_model_raw_target_tokens: 128_000, small_model_raw_target_tokens: 50_000,
-    prompt_reserve_tokens: 6_000,
-    output_reserve_tokens: 4_000, large_model_output_reserve_tokens: 10_000,
-    safety_reserve_tokens: 8_000, digest_max_tokens: 1_000,
+    contract_version: '4', large_model_threshold_tokens: 200_000, digest_max_tokens: 1_000,
     finding_max_tokens: 4_000, overlap_turns: 1, max_chunks: 40,
   },
   candidate_budget: 3,
@@ -530,9 +530,9 @@ describe('RunDetail wiring', () => {
       sessions: [{
         ...session,
         judging_token_estimates: {
-          utf8_bytes_div_3: { total_tokens: 100_000, largest_turn_tokens: 90_000, turn_tokens: [90_000, 10_000] },
-          o200k_base: { total_tokens: 90_000, largest_turn_tokens: 80_000, turn_tokens: [80_000, 10_000] },
-          o200k_harmony: { total_tokens: 85_000, largest_turn_tokens: 75_000, turn_tokens: [75_000, 10_000] },
+          utf8_bytes_div_3: { total_tokens: 130_000, largest_turn_tokens: 120_000, turn_tokens: [120_000, 10_000] },
+          o200k_base: { total_tokens: 125_000, largest_turn_tokens: 115_000, turn_tokens: [115_000, 10_000] },
+          o200k_harmony: { total_tokens: 122_000, largest_turn_tokens: 112_000, turn_tokens: [112_000, 10_000] },
         },
       }],
       total: 1,

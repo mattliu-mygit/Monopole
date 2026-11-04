@@ -42,6 +42,10 @@ function AuditItem({
   )
 }
 
+function budgetTokens(tokens: number | null): string {
+  return tokens === null ? 'no' : tokens.toLocaleString()
+}
+
 function JudgeCards({
   title,
   labelPrefix,
@@ -71,6 +75,12 @@ function JudgeCards({
             </div>
             <div className="mt-1 text-xs text-gray-500">
               {judge.max_input_tokens.toLocaleString()} max input tokens
+            </div>
+            <div className="mt-1 text-xs text-gray-500">
+              {judge.question_budget_tokens.toLocaleString()} question ·{' '}
+              {budgetTokens(judge.window_budget_tokens)} window ·{' '}
+              {budgetTokens(judge.whole_budget_tokens)} whole-thread ·{' '}
+              {judge.merge_budget_tokens.toLocaleString()} merge budget
             </div>
           </li>
         ))}
@@ -136,22 +146,12 @@ export default function RunConfigAudit({ config }: RunConfigAuditProps) {
         </h5>
         <div className="rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-600">
           <div className="font-medium text-gray-900">
-            {config.judging_context.small_model_reserve_tokens.toLocaleString()} small-model ·{' '}
-            {config.judging_context.large_model_reserve_tokens.toLocaleString()} large-model reserve
-          </div>
-          <div className="mt-1 font-medium text-gray-900">
-            {config.judging_context.small_model_raw_target_tokens.toLocaleString()} small-model ·{' '}
-            {config.judging_context.large_model_raw_target_tokens.toLocaleString()} large-model raw target
+            Policy contract {config.judging_context.contract_version}
           </div>
           <div className="mt-1">
             {config.judging_context.digest_max_tokens.toLocaleString()} digest ·{' '}
             {config.judging_context.finding_max_tokens.toLocaleString()} findings ·{' '}
             {config.judging_context.overlap_turns} turn overlap
-          </div>
-          <div className="mt-1">
-            {config.judging_context.prompt_reserve_tokens.toLocaleString()} prompt ·{' '}
-            {config.judging_context.output_reserve_tokens.toLocaleString()} output ·{' '}
-            {config.judging_context.safety_reserve_tokens.toLocaleString()} safety reserve
           </div>
         </div>
       </div>

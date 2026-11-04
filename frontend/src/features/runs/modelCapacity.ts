@@ -9,6 +9,25 @@ export interface ModelCapacityEstimate {
 type SessionTokens = { judging_token_estimates: JudgingTokenEstimates }
 type ContextPolicy = ModelCatalog['judging_context']
 
+function roundHalfToEven(value: number): number {
+  const floor = Math.floor(value)
+  if (value - floor !== 0.5) return Math.round(value)
+  return floor % 2 === 0 ? floor : floor + 1
+}
+
+function clamp(value: number, low: number, high: number): number {
+  return Math.max(low, Math.min(value, high))
+}
+
+/** Mirrors JudgingContextPolicy.capacity_reserve, including Python's half-to-even round(). */
+export function capacityReserve(modelLimit: number): number {
+  const prompt = clamp(roundHalfToEven(0.15 * modelLimit), 2_000, 6_000)
+  const generationCap = modelLimit > 200_000 ? 10_000 : 4_000
+  const generation = clamp(roundHalfToEven(0.10 * modelLimit), 1_000, generationCap)
+  const safety = clamp(roundHalfToEven(0.05 * modelLimit), 1_000, 8_000)
+  return prompt + generation + safety
+}
+
 function partitionCoreTokens(
   turnTokens: readonly number[],
   rawBudget: number,
@@ -19,12 +38,9 @@ function partitionCoreTokens(
   for (let start = 0; start < turnTokens.length;) {
     let current = turnTokens[start]
     let end = start
-    while (end + 1 < turnTokens.length) {
-      const candidate = current + turnTokens[end + 1]
-      if (candidate > rawBudget || current >= target) break
-      if (Math.abs(target - candidate) > Math.abs(target - current)) break
-      current = candidate
+    while (end + 1 < turnTokens.length && current + turnTokens[end + 1] <= target) {
       end += 1
+      current += turnTokens[end]
     }
     cores.push(current)
     start = end + 1
@@ -38,48 +54,27 @@ function estimateSession(
   policy: ContextPolicy,
 ): Required<ModelCapacityEstimate> {
   const tokens = session.judging_token_estimates[model.token_counter]
-  const large = model.max_input_tokens > policy.large_model_threshold_tokens
-  const policyRawTarget = large
-    ? policy.large_model_raw_target_tokens
-    : policy.small_model_raw_target_tokens
-  const rawTarget = Math.min(
-    policyRawTarget,
-    model.raw_window_target_tokens ?? policyRawTarget,
-  )
-  const tierReserve = large
-    ? policy.large_model_reserve_tokens
-    : policy.small_model_reserve_tokens
-  const outputReserve = large
-    ? policy.large_model_output_reserve_tokens
-    : policy.output_reserve_tokens
-  const baseReserve = policy.prompt_reserve_tokens
-    + outputReserve
-    + policy.safety_reserve_tokens
+  const baseReserve = capacityReserve(model.max_input_tokens)
   let chunks = 1
   let coreTokens: number[] | null = null
   const seen = new Set<number>()
   while (!seen.has(chunks)) {
     seen.add(chunks)
-    const reserve = Math.max(
-      tierReserve,
-      baseReserve + Math.max(0, chunks - 1) * policy.digest_max_tokens,
-    )
+    const reserve = baseReserve + Math.max(0, chunks - 1) * policy.digest_max_tokens
     coreTokens = partitionCoreTokens(
       tokens.turn_tokens,
       model.max_input_tokens - reserve,
-      Math.min(rawTarget, model.max_input_tokens - reserve),
+      Math.min(model.window_budget_tokens, model.max_input_tokens - reserve),
     )
     if (coreTokens === null || coreTokens.length === chunks) break
     chunks = coreTokens.length
   }
-  const windowReserve = Math.max(
-    tierReserve,
-    baseReserve + Math.max(0, chunks - 1) * policy.digest_max_tokens,
-  )
+  const windowReserve = baseReserve + Math.max(0, chunks - 1) * policy.digest_max_tokens
+  const target = Math.min(model.window_budget_tokens, model.max_input_tokens - windowReserve)
   const largestCore = coreTokens === null
     ? tokens.largest_turn_tokens
     : Math.max(...coreTokens, 0)
-  const estimatedRawChunk = Math.min(tokens.total_tokens, Math.max(rawTarget, largestCore))
+  const estimatedRawChunk = Math.min(tokens.total_tokens, Math.max(target, largestCore))
   const windowRequest = estimatedRawChunk + windowReserve
   const mergeRequest = baseReserve
     + chunks * (policy.digest_max_tokens + policy.finding_max_tokens)
@@ -100,6 +95,9 @@ export function estimateModelCapacity(
 ): ModelCapacityEstimate {
   if (sessions.length === 0) {
     return { fits: null, estimatedRequestTokens: null, estimatedChunks: null }
+  }
+  if (model.window_budget_tokens === null) {
+    return { fits: false, estimatedRequestTokens: null, estimatedChunks: null }
   }
   const estimates = sessions.map((session) => estimateSession(model, session, policy))
   return {

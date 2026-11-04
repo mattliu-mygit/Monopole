@@ -8,6 +8,12 @@ import RunConfiguration from '../../src/features/runs/RunConfiguration'
 
 afterEach(cleanup)
 
+const budgets = {
+  question_budget_tokens: 4_000,
+  window_budget_tokens: 32_000,
+  whole_budget_tokens: 32_000,
+  merge_budget_tokens: 32_000,
+}
 const writerOpenAI: ModelDescriptor = {
   id: 'writer-openai',
   label: 'Writer OpenAI',
@@ -17,6 +23,7 @@ const writerOpenAI: ModelDescriptor = {
   supported_roles: ['proposal_writer'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
+  ...budgets,
 }
 const writerAnthropic: ModelDescriptor = {
   id: 'writer-anthropic',
@@ -27,6 +34,7 @@ const writerAnthropic: ModelDescriptor = {
   supported_roles: ['proposal_writer'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
+  ...budgets,
 }
 const cliAnthropic: ModelDescriptor = {
   id: 'cli-anthropic',
@@ -37,6 +45,7 @@ const cliAnthropic: ModelDescriptor = {
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
+  ...budgets,
 }
 const cliOpenAI: ModelDescriptor = {
   id: 'cli-openai',
@@ -47,6 +56,7 @@ const cliOpenAI: ModelDescriptor = {
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
+  ...budgets,
 }
 const cliMeta: ModelDescriptor = {
   id: 'cli-meta',
@@ -57,6 +67,7 @@ const cliMeta: ModelDescriptor = {
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
+  ...budgets,
 }
 const cliMetaAlt: ModelDescriptor = {
   id: 'cli-meta-alt',
@@ -67,17 +78,13 @@ const cliMetaAlt: ModelDescriptor = {
   supported_roles: ['judge', 'proposal_evaluator'] as const,
   max_input_tokens: 128_000,
   token_counter: 'utf8_bytes_div_3',
+  ...budgets,
 }
 
 const models: ModelCatalog = {
   catalog_version: 'models-v1',
   judging_context: {
-    contract_version: '3', large_model_threshold_tokens: 200_000,
-    large_model_reserve_tokens: 100_000, small_model_reserve_tokens: 50_000,
-    large_model_raw_target_tokens: 128_000, small_model_raw_target_tokens: 50_000,
-    prompt_reserve_tokens: 6_000, output_reserve_tokens: 4_000,
-    large_model_output_reserve_tokens: 10_000,
-    safety_reserve_tokens: 8_000, digest_max_tokens: 1_000,
+    contract_version: '4', large_model_threshold_tokens: 200_000, digest_max_tokens: 1_000,
     finding_max_tokens: 4_000, overlap_turns: 1, max_chunks: 40,
   },
   available_models: [
@@ -298,10 +305,17 @@ describe('RunConfiguration', () => {
   })
 
   it('shows context capacity and disables models that do not fit selected sessions', () => {
-    const tightWriter = { ...writerAnthropic, max_input_tokens: 99_000 }
+    const tightWriter = { ...writerAnthropic, max_input_tokens: 70_000 }
+    const noWindowJudge: ModelDescriptor = {
+      ...cliMeta,
+      id: 'cli-no-window',
+      label: 'CLI No Window',
+      window_budget_tokens: null,
+      whole_budget_tokens: null,
+    }
     const capacityModels: ModelCatalog = {
       ...models,
-      available_models: [writerOpenAI, tightWriter, cliAnthropic, cliOpenAI, cliMeta],
+      available_models: [writerOpenAI, tightWriter, cliAnthropic, cliOpenAI, cliMeta, noWindowJudge],
     }
     render(
       <RunConfiguration
@@ -320,12 +334,16 @@ describe('RunConfiguration', () => {
     )
 
     const fitOption = screen.getByRole('option', {
-      name: /Writer OpenAI.*128k model limit.*estimated largest request ~110k.*fits/i,
+      name: /Writer OpenAI.*128k model limit.*estimated largest request ~77k.*fits/i,
     })
     const blockedOption = screen.getByRole('option', {
-      name: /Writer Anthropic.*99k model limit.*estimated largest request ~110k.*does not fit/i,
+      name: /Writer Anthropic.*70k model limit.*estimated largest request ~74k.*does not fit/i,
+    })
+    const noWindowOptions = screen.getAllByRole('option', {
+      name: 'CLI No Window · agy · meta · 128k model limit · does not fit',
     })
     expect(fitOption).toHaveProperty('disabled', false)
     expect(blockedOption).toHaveProperty('disabled', true)
+    for (const option of noWindowOptions) expect(option).toHaveProperty('disabled', true)
   })
 })
