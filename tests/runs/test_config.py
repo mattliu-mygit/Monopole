@@ -19,14 +19,12 @@ from weave_agent_signals.run_config import (
 def test_judging_context_policy_uses_capacity_tiers_at_exact_threshold():
     policy = JudgingContextPolicy()
 
-    assert policy.contract_version == "3"
+    assert policy.contract_version == "4"
     assert policy.capacity_reserve(200_000) == 18_000
-    assert policy.capacity_reserve(200_001) == 18_000
+    assert policy.capacity_reserve(200_001) == 24_000
     assert policy.raw_window_target(200_000) == 50_000
     assert policy.raw_window_target(200_001) == 128_000
     assert policy.raw_window_target(1_050_000) == 128_000
-    assert policy.output_reserve_tokens == 4_000
-    assert policy.large_model_output_reserve_tokens == 10_000
     assert policy.generation_budget(200_000) == 4_000
     assert policy.generation_budget(200_001) == 10_000
     assert policy.small_model_raw_target_tokens == 50_000

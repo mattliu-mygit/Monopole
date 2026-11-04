@@ -78,11 +78,6 @@ def _session_with_text(text: str) -> SessionView:
 
 def _small_policy(**overrides: int) -> JudgingContextPolicy:
     values = {
-        "large_model_reserve_tokens": 100_000,
-        "small_model_reserve_tokens": 50_000,
-        "prompt_reserve_tokens": 3_000,
-        "output_reserve_tokens": 3_000,
-        "safety_reserve_tokens": 3_000,
         "digest_max_tokens": 2_000,
         "finding_max_tokens": 1_000,
         "max_chunks": 10,
@@ -249,9 +244,25 @@ def test_small_model_uses_only_protocol_headroom_for_borderline_turn():
         token_counter="o200k_harmony",
     )
 
-    assert plan["capacity_reserve_tokens"] == 18_000
-    assert plan["raw_budget_tokens"] == 113_072
+    assert plan["capacity_reserve_tokens"] == 16_554
+    assert plan["raw_budget_tokens"] == 114_518
     assert plan["chunk_count"] == 1
+
+
+def test_an_8k_model_gets_a_window_plan():
+    session = _session_with_rendered_turn_sizes([3_000])
+
+    plan = build_window_plan(
+        session,
+        # The default 10,000-token findings allowance alone is larger than an 8k model's input.
+        JudgingContextPolicy(finding_max_tokens=1_000),
+        model_limit=8_192,
+        token_counter="utf8_bytes_div_3",
+    )
+
+    assert plan["capacity_reserve_tokens"] == 4_000
+    assert plan["raw_budget_tokens"] == 4_192
+    assert plan["raw_coverage_trace_ids"] == ["t1"]
 
 
 def test_raw_turn_renders_complete_parent_visible_evidence_without_model_identity():
@@ -371,7 +382,7 @@ def test_window_plan_uses_compacted_tool_projection_for_capacity():
 def test_window_plan_covers_every_turn_raw_and_overlaps_one_turn():
     session = _session_with_rendered_turn_sizes([18_000, 18_000, 18_000, 18_000])
     plan = build_window_plan(
-        session, _small_policy(), model_limit=70_000, token_counter="utf8_bytes_div_3"
+        session, _small_policy(), model_limit=32_800, token_counter="utf8_bytes_div_3"
     )
     cores = [window["core_trace_ids"] for window in plan["windows"]]
     assert [trace for core in cores for trace in core] == ["t1", "t2", "t3", "t4"]
@@ -387,10 +398,10 @@ def test_window_plan_preserves_session_order_and_is_deterministic():
     session = _session_with_rendered_turn_sizes([18_000, 18_000, 18_000, 18_000])
 
     first = build_window_plan(
-        session, _small_policy(), model_limit=60_000, token_counter="utf8_bytes_div_3"
+        session, _small_policy(), model_limit=32_800, token_counter="utf8_bytes_div_3"
     )
     second = build_window_plan(
-        session, _small_policy(), model_limit=60_000, token_counter="utf8_bytes_div_3"
+        session, _small_policy(), model_limit=32_800, token_counter="utf8_bytes_div_3"
     )
 
     assert first == second
@@ -438,9 +449,9 @@ def test_window_plan_drops_overlap_when_neighbors_exceed_the_raw_budget():
     session = _session_with_rendered_turn_sizes([18_000, 18_000])
     policy = _small_policy()
 
-    plan = build_window_plan(session, policy, model_limit=61_999, token_counter="utf8_bytes_div_3")
+    plan = build_window_plan(session, policy, model_limit=17_333, token_counter="utf8_bytes_div_3")
 
-    assert plan["raw_budget_tokens"] == 11_999
+    assert plan["raw_budget_tokens"] == 10_000
     assert [window["core_trace_ids"] for window in plan["windows"]] == [["t1"], ["t2"]]
     assert [window["raw_trace_ids"] for window in plan["windows"]] == [["t1"], ["t2"]]
 
@@ -449,7 +460,7 @@ def test_window_plan_accepts_exact_raw_budget_equality():
     session = _session_with_rendered_turn_sizes([18_000, 18_000])
     policy = _small_policy()
 
-    plan = build_window_plan(session, policy, model_limit=62_001, token_counter="utf8_bytes_div_3")
+    plan = build_window_plan(session, policy, model_limit=17_334, token_counter="utf8_bytes_div_3")
 
     assert plan["raw_budget_tokens"] == 12_001
     assert plan["windows"][0]["raw_tokens"] == 12_001
@@ -491,7 +502,7 @@ def test_window_plan_rejects_empty_raw_capacity():
     session = SessionView("session-1", [], "config-1", "main")
     with pytest.raises(WindowPlanInapplicable):
         build_window_plan(
-            session, _small_policy(), model_limit=9_000, token_counter="utf8_bytes_div_3"
+            session, _small_policy(), model_limit=4_000, token_counter="utf8_bytes_div_3"
         )
 
 
@@ -501,23 +512,17 @@ def test_window_plan_rejects_more_than_max_chunks():
         build_window_plan(
             session,
             _small_policy(max_chunks=1),
-            model_limit=70_000,
+            model_limit=32_800,
             token_counter="utf8_bytes_div_3",
         )
 
 
 def test_window_plan_rejects_worst_case_merge_input_over_model_cap():
     session = _session_with_rendered_turn_sizes([18_000, 18_000, 18_000, 18_000])
-    policy = _small_policy(
-        prompt_reserve_tokens=1_000,
-        output_reserve_tokens=1_000,
-        safety_reserve_tokens=1_000,
-        digest_max_tokens=4_000,
-        finding_max_tokens=15_000,
-    )
+    policy = _small_policy(digest_max_tokens=4_000, finding_max_tokens=15_000)
 
     with pytest.raises(WindowPlanInapplicable):
-        build_window_plan(session, policy, model_limit=60_000, token_counter="utf8_bytes_div_3")
+        build_window_plan(session, policy, model_limit=32_800, token_counter="utf8_bytes_div_3")
 
 
 def test_render_raw_window_uses_planned_order_and_visible_evidence_ids():

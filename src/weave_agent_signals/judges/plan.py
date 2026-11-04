@@ -104,12 +104,6 @@ class JudgingPlan(StrictFrozenModel):
             return self
         legacy_body = dict(body)
         changed = False
-        policy_field = "large_model_output_reserve_tokens"
-        if policy_field not in self.context_policy.model_fields_set:
-            legacy_policy = dict(body["context_policy"])
-            legacy_policy.pop(policy_field)
-            legacy_body["context_policy"] = legacy_policy
-            changed = True
         legacy_reviewers = [dict(reviewer) for reviewer in body["reviewers"]]
         for reviewer, legacy_reviewer in zip(self.reviewers, legacy_reviewers, strict=True):
             if "raw_window_target_tokens" not in reviewer.model_fields_set:

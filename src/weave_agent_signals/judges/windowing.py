@@ -288,11 +288,7 @@ def build_window_plan(
     trace_ids = [turn.trace_id for turn in session.turns]
 
     input_cap = model_limit
-    base_reserve = (
-        policy.prompt_reserve_tokens
-        + policy.generation_budget(model_limit)
-        + policy.safety_reserve_tokens
-    )
+    base_reserve = policy.capacity_reserve(model_limit)
     rendered_turns = [
         render_raw_turn(turn, position) for position, turn in enumerate(session.turns, start=1)
     ]
@@ -316,12 +312,10 @@ def build_window_plan(
         for position, turn in enumerate(session.turns, start=1)
     ]
 
-    tier_reserve = policy.capacity_reserve(model_limit)
     tier_target = policy.raw_window_target(model_limit)
     if model_raw_target_tokens is not None:
         tier_target = min(tier_target, model_raw_target_tokens)
-    capacity_reserve = max(tier_reserve, base_reserve)
-    if input_cap - capacity_reserve <= 0:
+    if input_cap - base_reserve <= 0:
         raise WindowPlanInapplicable()
 
     if not session.turns:
@@ -329,12 +323,12 @@ def build_window_plan(
             "contract_version": WINDOW_PLAN_CONTRACT_VERSION,
             "conversation_id": session.conversation_id,
             "input_cap_tokens": input_cap,
-            "raw_budget_tokens": input_cap - capacity_reserve,
-            "target_raw_tokens": min(tier_target, input_cap - capacity_reserve),
+            "raw_budget_tokens": input_cap - base_reserve,
+            "target_raw_tokens": min(tier_target, input_cap - base_reserve),
             "chunk_count": 0,
             "overlap_turns": policy.overlap_turns,
             "token_counter": token_counter,
-            "capacity_reserve_tokens": capacity_reserve,
+            "capacity_reserve_tokens": base_reserve,
             "merge_input_tokens": base_reserve,
             "raw_turns": raw_turns,
             "raw_coverage_trace_ids": [],
@@ -348,8 +342,7 @@ def build_window_plan(
         if chunk_count in seen_counts:
             raise ValueError("window planning did not converge")
         seen_counts.add(chunk_count)
-        protocol_overhead = base_reserve + max(0, chunk_count - 1) * policy.digest_max_tokens
-        capacity_reserve = max(tier_reserve, protocol_overhead)
+        capacity_reserve = base_reserve + max(0, chunk_count - 1) * policy.digest_max_tokens
         raw_budget = input_cap - capacity_reserve
         if raw_budget <= 0:
             raise WindowPlanInapplicable()

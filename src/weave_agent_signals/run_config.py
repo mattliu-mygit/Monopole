@@ -40,50 +40,64 @@ def _require_nonblank_unique(values: Sequence[str], field_name: str) -> None:
         raise ValueError(f"{field_name} must be unique")
 
 
+def _require_model_limit(model_limit: int) -> None:
+    if isinstance(model_limit, bool) or not isinstance(model_limit, int) or model_limit <= 0:
+        raise ValueError("model_limit must be a positive integer")
+
+
+def _clamp(value: int, low: int, high: int) -> int:
+    return max(low, min(value, high))
+
+
 class StrictFrozenModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class JudgingContextPolicy(StrictFrozenModel):
-    contract_version: Literal["3"] = "3"
+    contract_version: Literal["4"] = "4"
     large_model_threshold_tokens: Literal[200_000] = 200_000
-    large_model_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 18_000
-    small_model_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 18_000
     large_model_raw_target_tokens: Annotated[int, Field(strict=True, ge=1)] = 128_000
     small_model_raw_target_tokens: Annotated[int, Field(strict=True, ge=1)] = 50_000
-    prompt_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 6_000
-    output_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 4_000
-    large_model_output_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 10_000
-    safety_reserve_tokens: Annotated[int, Field(strict=True, ge=1)] = 8_000
     digest_max_tokens: Annotated[int, Field(strict=True, ge=1)] = 1_000
     finding_max_tokens: Annotated[int, Field(strict=True, ge=1)] = 10_000
     overlap_turns: Literal[1] = 1
     max_chunks: Annotated[int, Field(strict=True, ge=1)] = 40
 
     def capacity_reserve(self, model_limit: int) -> int:
-        """Return the configured reserve tier for a validated model capacity."""
+        """Return the prompt, generation, and safety reserve for a model capacity."""
 
-        if isinstance(model_limit, bool) or not isinstance(model_limit, int) or model_limit <= 0:
-            raise ValueError("model_limit must be a positive integer")
-        if model_limit > self.large_model_threshold_tokens:
-            return self.large_model_reserve_tokens
-        return self.small_model_reserve_tokens
+        return (
+            self.prompt_reserve(model_limit)
+            + self.generation_budget(model_limit)
+            + self.safety_reserve(model_limit)
+        )
 
     def raw_window_target(self, model_limit: int) -> int:
         """Return the soft raw-window target for a validated model capacity."""
 
-        self.capacity_reserve(model_limit)
+        _require_model_limit(model_limit)
         if model_limit > self.large_model_threshold_tokens:
             return self.large_model_raw_target_tokens
         return self.small_model_raw_target_tokens
 
+    def prompt_reserve(self, model_limit: int) -> int:
+        """Return the rubric and instruction prompt allowance for a model capacity."""
+
+        _require_model_limit(model_limit)
+        return _clamp(round(0.15 * model_limit), 2_000, 6_000)
+
     def generation_budget(self, model_limit: int) -> int:
         """Return the structured-generation allowance for a model capacity."""
 
-        self.capacity_reserve(model_limit)
-        if model_limit > self.large_model_threshold_tokens:
-            return self.large_model_output_reserve_tokens
-        return self.output_reserve_tokens
+        _require_model_limit(model_limit)
+        cap = 10_000 if model_limit > self.large_model_threshold_tokens else 4_000
+        return _clamp(round(0.10 * model_limit), 1_000, cap)
+
+    def safety_reserve(self, model_limit: int) -> int:
+        """Return the token-estimate safety margin for a model capacity."""
+
+        _require_model_limit(model_limit)
+        return _clamp(round(0.05 * model_limit), 1_000, 8_000)
 
 
 DEFAULT_JUDGING_CONTEXT_POLICY = JudgingContextPolicy()

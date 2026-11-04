@@ -151,21 +151,10 @@ def test_canonical_plan_id_authenticates_evidence_model_and_policy() -> None:
     )
 
 
-def test_canonical_plan_accepts_authenticated_policy_before_large_output_reserve() -> None:
+def test_canonical_plan_rejects_tampered_content() -> None:
     payload = _canonical_plan().model_dump(mode="json")
-    del payload["context_policy"]["large_model_output_reserve_tokens"]
-    payload["plan_id"] = plan_module._digest(
-        {key: value for key, value in payload.items() if key != "plan_id"}
-    )
-
-    restored = JudgingPlan.model_validate(payload)
-
-    assert restored.plan_id == payload["plan_id"]
-    assert (
-        restored.context_policy.large_model_output_reserve_tokens
-        == DEFAULT_JUDGING_CONTEXT_POLICY.large_model_output_reserve_tokens
-    )
     payload["cohort_id"] = "tampered"
+
     with pytest.raises(ValueError, match="plan ID does not match"):
         JudgingPlan.model_validate(payload)
 

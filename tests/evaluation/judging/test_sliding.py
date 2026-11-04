@@ -71,11 +71,6 @@ def _turn(trace_id: str, position: int, size: int = 9_000) -> TurnSpan:
 
 def _policy(**updates: int) -> JudgingContextPolicy:
     values = {
-        "large_model_reserve_tokens": 100_000,
-        "small_model_reserve_tokens": 50_000,
-        "prompt_reserve_tokens": 3_000,
-        "output_reserve_tokens": 3_000,
-        "safety_reserve_tokens": 3_000,
         "digest_max_tokens": 2_000,
         "finding_max_tokens": 1_000,
         "max_chunks": 10,
@@ -92,7 +87,7 @@ def _judge(**updates: object) -> PositionedJudge:
         "provider_model": "judge-1",
         "family": "family-1",
         "supported_roles": ("judge",),
-        "max_input_tokens": 60_000,
+        "max_input_tokens": 16_384,
         "position": 1,
     }
     values.update(updates)
@@ -692,8 +687,8 @@ def test_reviewer_narrates_each_live_inference_phase_with_context() -> None:
         "item_index": 1,
         "item_total": 2,
         "estimated_input_tokens": activity[0]["estimated_input_tokens"],
-        "max_output_tokens": 3_000,
-        "model_context_tokens": 60_000,
+        "max_output_tokens": 1_638,
+        "model_context_tokens": 16_384,
     }
     assert activity[0]["estimated_input_tokens"] > 0
     assert activity[2]["rubric"] == "judge.session_outcome"

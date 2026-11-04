@@ -383,7 +383,9 @@ class SlidingReviewer:
             self.judge.token_counter,
         )
         if (
-            input_tokens + max_tokens + self.context_policy.safety_reserve_tokens
+            input_tokens
+            + max_tokens
+            + self.context_policy.safety_reserve(self.judge.max_input_tokens)
             > self.judge.max_input_tokens
         ):
             raise InferenceContextExceeded()

@@ -440,7 +440,7 @@ def test_runner_rejects_alternate_later_judge_before_reviewer_instantiation(monk
 def test_runner_synthesizes_authenticated_skip_without_creating_reviewer(monkeypatch) -> None:
     session = _session()
     judges = (_judge("small", 1), _judge("large", 2))
-    judges = (judges[0].model_copy(update={"max_input_tokens": 16_000}), judges[1])
+    judges = (judges[0].model_copy(update={"max_input_tokens": 4_000}), judges[1])
     rubrics = build_rubric_catalog().rubrics[:1]
     plan = build_canonical_judging_plan(
         [session],
