@@ -66,8 +66,8 @@ ID and digest.
    body is a conflict.
 4. `429` and `503` are retried after `Retry-After`.
 5. Trajectory-row search has no filter, so session Score reads page every row.
-6. W&B Inference uses bearer W&B authentication plus the entity/project header;
-   HTTP 402 means inference credits are unavailable.
+6. CoreWeave Serverless Inference uses bearer W&B authentication plus the
+   entity/project header; HTTP 402 means inference credits are unavailable.
 
 Credentials come from `WANDB_API_KEY` or the `api.wandb.ai` netrc entry. The CES
 URL, scope, and Dataset come from flags, `WEAVE_AGENT_SIGNALS_CES_*` env vars, or

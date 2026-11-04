@@ -160,8 +160,9 @@ non-improvements.
 Writer, evaluator, run-judge, and A/B-judge choices all resolve through one
 versioned model catalog. A model's provider-qualified ID is the durable
 selection and audit identity; its pinned provider and exact provider model name
-determine whether the call uses Claude, Codex, Antigravity, W&B Inference, or
-OpenAI. Roles may independently select models from different providers.
+determine whether the call uses Claude, Codex, Antigravity, CoreWeave
+Serverless Inference, or OpenAI. Roles may independently select models from
+different providers.
 
 Every proposal is a complete action set against A, not an unstructured patch.
 The writer must return valid create or update actions for registry locators,

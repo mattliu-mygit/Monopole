@@ -62,8 +62,8 @@ If you already use the W&B CLI, its `api.wandb.ai` entry in `~/.netrc` also
 works. Monopole finds the CES scope and Dataset in the adapter's
 `~/.weave-agent-adapter/evaluations.json`; override them with `--ces-scope-ref`,
 `--ces-dataset-id`, and `--ces-url`, or the matching `WEAVE_AGENT_SIGNALS_CES_*`
-env vars. The global `--entity` and `--project` arguments only choose the W&B
-Inference project for judges.
+env vars. The global `--entity` and `--project` arguments only choose the
+CoreWeave Serverless Inference project for judges.
 
 ### 4. Create your local instruction-target registry
 
@@ -153,7 +153,8 @@ Then open [http://127.0.0.1:8787](http://127.0.0.1:8787).
 Deterministic scoring and trace inspection need only W&B access. Judging and
 reflection additionally need a usable model backend:
 
-- W&B Inference uses `WANDB_API_KEY` and requires inference credits.
+- CoreWeave Serverless Inference uses `WANDB_API_KEY` and requires
+  inference credits.
 - OpenAI inference uses `OPENAI_API_KEY`.
 - Local Claude, Codex, or Antigravity inference requires an installed,
   authenticated `claude`, `codex`, or `agy` CLI on `PATH`.
@@ -294,5 +295,5 @@ and optional webhook before loading it into `~/Library/LaunchAgents/`.
   exists. Prepared task repositories additionally require host `git` access to
   their exact commit on GitHub, GitLab, Bitbucket, or Codeberg; bootstrap tasks
   require guest network access when cloning or pulling is part of the agent task.
-- **W&B Inference returns HTTP 402:** inference credits are disabled for the
-  configured project; choose another backend or enable credits.
+- **CoreWeave Serverless Inference returns HTTP 402:** inference credits are
+  disabled for the configured project; choose another backend or enable credits.

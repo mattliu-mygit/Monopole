@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from pydantic import ValidationError
 
@@ -217,6 +219,13 @@ def test_resolve_run_config_rejects_wrong_role_or_unknown_ids(changes, message):
     models, rubrics, request = _catalog_request(**changes)
 
     with pytest.raises(ValueError, match=message):
+        resolve_run_config(request, model_catalog=models, rubric_catalog=rubrics)
+
+
+def test_config_naming_a_removed_model_fails():
+    models, rubrics, request = _catalog_request(judge_models=("wandb:granite-4.1-8b",))
+
+    with pytest.raises(ValueError, match=re.escape("wandb:granite-4.1-8b")):
         resolve_run_config(request, model_catalog=models, rubric_catalog=rubrics)
 
 

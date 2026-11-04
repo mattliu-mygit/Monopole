@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import re
 from dataclasses import replace
 
@@ -24,38 +25,30 @@ def _assert_sha256_version(value: str) -> None:
 
 
 EXPECTED_WANDB_MODELS = {
-    "JetBrains/Mellum2-12B-A2.5B-Instruct": 131_000,
-    "MiniMaxAI/MiniMax-M2.5": 197_000,
-    "OpenPipe/Qwen3-14B-Instruct": 32_800,
-    "Qwen/Qwen3-30B-A3B-Instruct-2507": 262_000,
-    "Qwen/Qwen3-Coder-480B-A35B-Instruct": 262_000,
-    "Qwen/Qwen3.5-35B-A3B": 262_000,
-    "Qwen/Qwen3.6-27B": 262_000,
+    "MiniMaxAI/MiniMax-M3": 262_000,
     "Qwen/Qwen3.6-35B-A3B": 262_000,
+    "Qwen/Qwen3.8-27B": 262_000,
     "deepseek-ai/DeepSeek-V3.1": 161_000,
-    "deepseek-ai/DeepSeek-V4-Flash": 1_049_000,
-    "deepseek-ai/DeepSeek-V4-Pro": 1_049_000,
+    "deepseek-ai/DeepSeek-V4-Flash-0731": 262_000,
+    "deepseek-ai/DeepSeek-V4-Pro-0813": 1_049_000,
+    "deepseek-ai/DeepSeek-V4.1-Flash": 1_049_000,
+    "deepseek-ai/DeepSeek-V4.1-Flash-1017": 1_000_000,
+    "google/gemma-4-26B-A4B-it": 262_000,
     "google/gemma-4-31B-it": 262_000,
-    "ibm-granite/granite-4.1-8b": 131_072,
-    "meta-llama/Llama-3.1-70B-Instruct": 128_000,
+    "ibm-granite/granite-4.2-8b": 131_072,
     "meta-llama/Llama-3.1-8B-Instruct": 131_072,
     "meta-llama/Llama-3.3-70B-Instruct": 128_000,
     "moonshotai/Kimi-K2.6": 262_000,
     "moonshotai/Kimi-K2.7-Code": 262_000,
-    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8": 262_000,
     "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": 262_000,
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B": 262_000,
+    "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B": 1_049_000,
     "openai/gpt-oss-120b": 131_072,
     "openai/gpt-oss-20b": 131_072,
-    "zai-org/GLM-5.1": 203_000,
-    "zai-org/GLM-5.2": 262_000,
-}
-
-DEPRECATED_WANDB_MODELS = {
-    "microsoft/Phi-4-mini-instruct",
-    "moonshotai/Kimi-K2.5",
-    "Qwen/Qwen3.5-27B",
-    "Qwen/Qwen3-235B-A22B-Instruct-2507",
-    "Qwen/Qwen3-235B-A22B-Thinking-2507",
+    "reflection/Beam-1.0-501B-A23B": 1_049_000,
+    "zai-org/GLM-5.2": 1_049_000,
+    "zai-org/GLM-5.3": 1_049_000,
+    "zai-org/GLM-5.3-Flash": 1_049_000,
 }
 
 MID_BUDGETS = {
@@ -141,15 +134,20 @@ def test_model_catalog_is_one_provider_qualified_source_for_every_role():
         assert recommendation in by_id
 
 
-def test_wandb_catalog_contains_every_non_deprecated_live_model():
+def test_wandb_descriptors_match_the_recorded_live_list():
+    catalog = build_model_catalog(which=lambda _name: None)
+
+    assert {
+        model.provider_model for model in catalog.available_models if model.provider == "wandb"
+    } == set(EXPECTED_WANDB_MODELS)
+
+
+def test_wandb_models_pin_context_size_roles_and_token_counter():
     catalog = build_model_catalog(which=lambda _name: "/usr/bin/model")
     models = [model for model in catalog.available_models if model.provider == "wandb"]
 
-    assert {model.provider_model: model.max_input_tokens for model in models} == (
-        EXPECTED_WANDB_MODELS
-    )
-    assert not DEPRECATED_WANDB_MODELS & {model.provider_model for model in models}
     for model in models:
+        assert model.max_input_tokens == EXPECTED_WANDB_MODELS[model.provider_model]
         assert set(model.supported_roles) == {
             "proposal_writer",
             "judge",
@@ -162,21 +160,21 @@ def test_wandb_catalog_contains_every_non_deprecated_live_model():
         )
 
 
-def test_wandb_inference_is_preferred_and_supports_every_run_role():
+def test_recommendations_follow_each_role_preference_order():
     catalog = build_model_catalog(which=lambda _name: "/usr/bin/model")
     by_id = {model.id: model for model in catalog.available_models}
 
     assert catalog.recommended_proposal_model == "wandb:gpt-oss-120b"
     assert catalog.recommended_judges == (
-        "wandb:gpt-oss-120b",
-        "wandb:Llama-3.1-8B",
-        "wandb:granite-4.1-8b",
+        "claude:claude-sonnet-5",
+        "codex:gpt-5.6-sol",
+        "wandb:DeepSeek-V4.1-Flash",
     )
-    assert catalog.recommended_challenge_judges == ("wandb:gpt-oss-120b",)
+    assert catalog.recommended_challenge_judges == ("claude:claude-sonnet-5",)
     assert catalog.proposal_evaluator_preferences[:4] == (
         "wandb:gpt-oss-120b",
         "wandb:Llama-3.1-8B",
-        "wandb:granite-4.1-8b",
+        "wandb:granite-4.2-8b",
         "wandb:gpt-oss-20b",
     )
     for model_id in catalog.proposal_evaluator_preferences[:4]:
@@ -185,6 +183,22 @@ def test_wandb_inference_is_preferred_and_supports_every_run_role():
             "judge",
             "proposal_evaluator",
         }
+
+
+@pytest.mark.parametrize(
+    "installed",
+    [
+        subset
+        for size in range(4)
+        for subset in itertools.combinations(("claude", "codex", "agy"), size)
+    ],
+    ids=lambda installed: "+".join(installed) or "none",
+)
+def test_recommended_judges_span_three_families(installed):
+    catalog = build_model_catalog(which=lambda name: f"/bin/{name}" if name in installed else None)
+    families = [catalog.model(model_id).family for model_id in catalog.recommended_judges]
+
+    assert len(set(families)) == len(families) == 3
 
 
 def test_model_catalog_version_tracks_local_availability():
@@ -207,8 +221,6 @@ def test_model_catalog_version_tracks_local_availability():
         "codex:gpt-5.6-sol",
         "codex:gpt-5.6-terra",
         "codex:gpt-5.6-luna",
-        "codex:gpt-5.5",
-        "codex:gpt-5.4",
         "codex:gpt-5.4-mini",
     ]
     assert none_available.recommended_proposal_model == "wandb:gpt-oss-120b"
@@ -221,8 +233,6 @@ def test_codex_models_are_available_for_every_run_role():
         "codex:gpt-5.6-sol",
         "codex:gpt-5.6-terra",
         "codex:gpt-5.6-luna",
-        "codex:gpt-5.5",
-        "codex:gpt-5.4",
         "codex:gpt-5.4-mini",
     }
 
@@ -252,10 +262,8 @@ def test_every_non_wandb_model_declares_exact_input_capacity_and_token_counter()
         "codex:gpt-5.6-sol": (272_000, "o200k_base"),
         "codex:gpt-5.6-terra": (272_000, "o200k_base"),
         "codex:gpt-5.6-luna": (272_000, "o200k_base"),
-        "codex:gpt-5.5": (272_000, "o200k_base"),
-        "codex:gpt-5.4": (272_000, "o200k_base"),
         "codex:gpt-5.4-mini": (272_000, "o200k_base"),
-        "claude:claude-sonnet-5": (200_000, "utf8_bytes_div_3"),
+        "claude:claude-sonnet-5": (1_000_000, "utf8_bytes_div_3"),
         "claude:claude-haiku-4-5": (200_000, "utf8_bytes_div_3"),
         "agy:gemini-3.5-flash-medium": (1_048_576, "utf8_bytes_div_3"),
         "agy:gemini-3.5-flash-high": (1_048_576, "utf8_bytes_div_3"),
@@ -266,6 +274,18 @@ def test_every_non_wandb_model_declares_exact_input_capacity_and_token_counter()
         "openai:gpt-4o": (128_000, "o200k_base"),
         "openai:gpt-4o-mini": (128_000, "o200k_base"),
     }
+
+
+def test_claude_sonnet_5_has_a_1m_window():
+    sonnet = build_model_catalog(which=_all_executables).model("claude:claude-sonnet-5")
+
+    assert sonnet.max_input_tokens == 1_000_000
+
+
+def test_retired_codex_models_are_gone():
+    catalog = build_model_catalog(which=_all_executables)
+
+    assert not {"codex:gpt-5.4", "codex:gpt-5.5"} & {model.id for model in catalog.available_models}
 
 
 def test_model_catalog_version_tracks_recommendations_and_evaluator_order():
@@ -531,24 +551,25 @@ def test_budgets_equal_to_usable_context_are_accepted():
     assert descriptor.merge_budget_tokens == 22_960
 
 
-def test_deepseek_v4_pro_keeps_its_96k_window_budget():
-    deepseek = build_model_catalog(which=lambda _name: None).model("wandb:DeepSeek-V4-Pro")
+def test_deepseek_v4_pro_caps_its_window_and_whole_budgets_at_96k():
+    deepseek = build_model_catalog(which=lambda _name: None).model("wandb:DeepSeek-V4-Pro-0813")
 
     assert (
         deepseek.question_budget_tokens,
         deepseek.window_budget_tokens,
         deepseek.whole_budget_tokens,
         deepseek.merge_budget_tokens,
-    ) == (8_000, 96_000, 128_000, 128_000)
+    ) == (8_000, 96_000, 96_000, 128_000)
 
 
-@pytest.mark.parametrize(
-    ("budget_class", "window"), [("frontier", 128_001), ("small_dense", 1_000)]
-)
-def test_window_budget_override_must_fit_its_budget_class(budget_class, window):
+@pytest.mark.parametrize(("budget_class", "cap"), [("frontier", 128_001), ("small_dense", 1_000)])
+def test_raw_budget_cap_must_fit_its_budget_class(budget_class, cap):
     with pytest.raises(
         ValueError,
-        match=f"model wandb:example window_budget_tokens must not exceed the {budget_class} window",
+        match=(
+            f"model wandb:example raw_budget_cap_tokens must not exceed the {budget_class} "
+            "window budget"
+        ),
     ):
         catalogs_module._wandb_model(
             "wandb:example",
@@ -557,5 +578,5 @@ def test_window_budget_override_must_fit_its_budget_class(budget_class, window):
             "example",
             1_000_000,
             budget_class,
-            window_budget_tokens=window,
+            raw_budget_cap_tokens=cap,
         )

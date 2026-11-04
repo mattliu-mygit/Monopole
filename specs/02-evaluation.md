@@ -207,12 +207,12 @@ mix providers without a separate backend selection, and execution dispatches
 each selected model through its pinned provider.
 
 Model selection keeps separate provider-qualified entries when multiple
-inference harnesses expose the same underlying model. W&B Inference entries are
-ordered and recommended ahead of local CLI variants; fitting local and direct
-API variants remain explicit alternatives. Every option shows its pinned input
-context capacity and, once sessions are selected, whether the model can support
-the estimated judging requests. A non-fitting option is disabled and a selected
-configuration that becomes non-fitting cannot start.
+inference harnesses expose the same underlying model. CoreWeave Serverless
+Inference entries are ordered and recommended ahead of local CLI variants;
+fitting local and direct API variants remain explicit alternatives. Every option
+shows its pinned input context capacity and, once sessions are selected, whether
+the model can support the estimated judging requests. A non-fitting option is
+disabled and a selected configuration that becomes non-fitting cannot start.
 
 The W&B entries cover its generally available Serverless Inference catalog and
 exclude models that W&B marks deprecated. Their provider IDs, families, context
@@ -238,9 +238,9 @@ schema, and other provider errors remain failures.
 Only planned reviewers call inference. A capacity skip remains in the judging
 plan and attempt audit, but does not count as a completed reviewer attempt or an
 inference failure. Within one session, rubric panels and their one through three
-selected reviewers are eligible to run concurrently. Each reviewer still
-creates one rubric-neutral digest set and shares it across that reviewer's
-rubrics. Live provider calls are bounded independently of cached work: W&B
+selected reviewers are eligible to run concurrently. Each reviewer still creates
+one rubric-neutral digest set and shares it across that reviewer's rubrics. Live
+provider calls are bounded independently of cached work: CoreWeave Serverless
 Inference permits four active calls and Codex permits two. Sessions remain
 sequential, and outcomes are aggregated in pinned rubric and reviewer order so
 scheduling cannot change persisted results. A scored rubric is complete when
@@ -301,11 +301,11 @@ ones; reads take the newest Score per Scorer, and write failures remain visible.
 
 ## Inference trust boundary
 
-Catalog-backed HTTP evaluation supports direct OpenAI and W&B Inference. Local
-evaluation supports Claude, Codex, and Antigravity (`agy`) from the same
-provider-qualified catalog. Every local provider receives a minimal child
-environment and an isolated working directory. Claude is tool-disabled. Codex
-uses isolated state and a deny-by-default filesystem profile; its
+Catalog-backed HTTP evaluation supports direct OpenAI and CoreWeave Serverless
+Inference. Local evaluation supports Claude, Codex, and Antigravity (`agy`) from
+the same provider-qualified catalog. Every local provider receives a minimal
+child environment and an isolated working directory. Claude is tool-disabled.
+Codex uses isolated state and a deny-by-default filesystem profile; its
 repository-check override only removes a CLI precondition.
 
 Antigravity receives each request through a unique, mode-`0600` temporary

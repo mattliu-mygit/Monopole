@@ -57,17 +57,18 @@ def _wandb_model(
     max_input_tokens: int,
     budget_class: str,
     token_counter: TokenCounterName = "utf8_bytes_div_3",
-    window_budget_tokens: int | None = None,
+    raw_budget_cap_tokens: int | None = None,
 ) -> ModelDescriptor:
     budgets = _budget_fields(budget_class)
-    if window_budget_tokens is not None:
+    if raw_budget_cap_tokens is not None:
         class_window = budgets["window_budget_tokens"]
-        if class_window is None or window_budget_tokens > class_window:
+        if class_window is None or raw_budget_cap_tokens > class_window:
             raise ValueError(
-                f"model {model_id} window_budget_tokens must not exceed the {budget_class} "
+                f"model {model_id} raw_budget_cap_tokens must not exceed the {budget_class} "
                 "window budget"
             )
-        budgets["window_budget_tokens"] = window_budget_tokens
+        budgets["window_budget_tokens"] = raw_budget_cap_tokens
+        budgets["whole_budget_tokens"] = raw_budget_cap_tokens
     return ModelDescriptor(
         id=model_id,
         label=label,
@@ -81,58 +82,19 @@ def _wandb_model(
     )
 
 
+# Ids from https://api.inference.wandb.ai/v1/models on 2026-11-03, which lists no context sizes.
+# Sizes come from https://docs.coreweave.com/products/inference/serverless/models unless noted.
 _WANDB_MODELS = tuple(
     _wandb_model(*spec)
     for spec in (
         (
-            "wandb:Mellum2-12B-A2.5B-Instruct",
-            "Mellum2 12B A2.5B",
-            "JetBrains/Mellum2-12B-A2.5B-Instruct",
-            "jetbrains",
-            131_000,
-            "small_moe",
-        ),
-        (
-            "wandb:MiniMax-M2.5",
-            "MiniMax M2.5",
-            "MiniMaxAI/MiniMax-M2.5",
+            "wandb:MiniMax-M3",
+            "MiniMax M3",
+            "MiniMaxAI/MiniMax-M3",
             "minimax",
-            197_000,
-            "frontier",
-        ),
-        (
-            "wandb:Qwen3-14B-Instruct",
-            "Qwen3 14B Instruct",
-            "OpenPipe/Qwen3-14B-Instruct",
-            "qwen",
-            32_800,
-            "small_moe",
-        ),
-        (
-            "wandb:Qwen3-30B-A3B-Instruct-2507",
-            "Qwen3 30B A3B Instruct",
-            "Qwen/Qwen3-30B-A3B-Instruct-2507",
-            "qwen",
-            262_000,
-            "small_moe",
-        ),
-        (
-            "wandb:Qwen3-Coder-480B-A35B-Instruct",
-            "Qwen3 Coder 480B A35B",
-            "Qwen/Qwen3-Coder-480B-A35B-Instruct",
-            "qwen",
             262_000,
             "frontier",
         ),
-        (
-            "wandb:Qwen3.5-35B-A3B",
-            "Qwen3.5 35B A3B",
-            "Qwen/Qwen3.5-35B-A3B",
-            "qwen",
-            262_000,
-            "small_moe",
-        ),
-        ("wandb:Qwen3.6-27B", "Qwen3.6 27B", "Qwen/Qwen3.6-27B", "qwen", 262_000, "mid"),
         (
             "wandb:Qwen3.6-35B-A3B",
             "Qwen3.6 35B A3B",
@@ -141,6 +103,7 @@ _WANDB_MODELS = tuple(
             262_000,
             "small_moe",
         ),
+        ("wandb:Qwen3.8-27B", "Qwen3.8 27B", "Qwen/Qwen3.8-27B", "qwen", 262_000, "mid"),
         (
             "wandb:DeepSeek-V3.1",
             "DeepSeek V3.1",
@@ -150,22 +113,46 @@ _WANDB_MODELS = tuple(
             "frontier",
         ),
         (
-            "wandb:DeepSeek-V4-Flash",
-            "DeepSeek V4 Flash",
-            "deepseek-ai/DeepSeek-V4-Flash",
+            "wandb:DeepSeek-V4-Flash-0731",
+            "DeepSeek V4 Flash 0731",
+            "deepseek-ai/DeepSeek-V4-Flash-0731",
             "deepseek",
-            1_049_000,
+            262_000,
             "frontier",
         ),
         (
-            "wandb:DeepSeek-V4-Pro",
-            "DeepSeek V4 Pro",
-            "deepseek-ai/DeepSeek-V4-Pro",
+            "wandb:DeepSeek-V4-Pro-0813",
+            "DeepSeek V4 Pro 0813",
+            "deepseek-ai/DeepSeek-V4-Pro-0813",
             "deepseek",
             1_049_000,
             "frontier",
             "utf8_bytes_div_3",
             96_000,
+        ),
+        (
+            "wandb:DeepSeek-V4.1-Flash",
+            "DeepSeek V4.1 Flash",
+            "deepseek-ai/DeepSeek-V4.1-Flash",
+            "deepseek",
+            1_049_000,
+            "frontier",
+        ),
+        (
+            "wandb:DeepSeek-V4.1-Flash-1017",
+            "DeepSeek V4.1 Flash 1017",
+            "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+            "deepseek",
+            1_000_000,  # https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017
+            "frontier",
+        ),
+        (
+            "wandb:gemma-4-26B-A4B-it",
+            "Gemma 4 26B A4B",
+            "google/gemma-4-26B-A4B-it",
+            "google",
+            262_000,
+            "small_moe",
         ),
         (
             "wandb:gemma-4-31B-it",
@@ -176,20 +163,12 @@ _WANDB_MODELS = tuple(
             "mid",
         ),
         (
-            "wandb:granite-4.1-8b",
-            "Granite 4.1 8B",
-            "ibm-granite/granite-4.1-8b",
+            "wandb:granite-4.2-8b",
+            "Granite 4.2 8B",
+            "ibm-granite/granite-4.2-8b",
             "ibm",
             131_072,
             "small_dense",
-        ),
-        (
-            "wandb:Llama-3.1-70B",
-            "Llama 3.1 70B",
-            "meta-llama/Llama-3.1-70B-Instruct",
-            "meta",
-            128_000,
-            "mid",
         ),
         (
             "wandb:Llama-3.1-8B",
@@ -224,20 +203,28 @@ _WANDB_MODELS = tuple(
             "frontier",
         ),
         (
-            "wandb:Nemotron-3-Super-120B",
-            "Nemotron 3 Super 120B",
-            "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
-            "nvidia",
-            262_000,
-            "mid",
-        ),
-        (
             "wandb:Nemotron-3-Ultra-550B",
             "Nemotron 3 Ultra 550B",
             "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
             "nvidia",
             262_000,
             "frontier",
+        ),
+        (
+            "wandb:Nemotron-3.5-Lightning-30B",
+            "Nemotron 3.5 Lightning 30B",
+            "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B",
+            "nvidia",
+            262_000,
+            "small_moe",
+        ),
+        (
+            "wandb:Nemotron-3.5-Super-VL-120B",
+            "Nemotron 3.5 Super VL 120B",
+            "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B",
+            "nvidia",
+            1_049_000,
+            "mid",
         ),
         (
             "wandb:gpt-oss-20b",
@@ -257,8 +244,24 @@ _WANDB_MODELS = tuple(
             "mid",
             "o200k_harmony",
         ),
-        ("wandb:GLM-5.1", "GLM 5.1", "zai-org/GLM-5.1", "zai", 203_000, "frontier"),
-        ("wandb:GLM-5.2", "GLM 5.2", "zai-org/GLM-5.2", "zai", 262_000, "frontier"),
+        (
+            "wandb:Beam-1.0-501B-A23B",
+            "Beam 1.0 501B A23B",
+            "reflection/Beam-1.0-501B-A23B",
+            "reflection",
+            1_049_000,
+            "frontier",
+        ),
+        ("wandb:GLM-5.2", "GLM 5.2", "zai-org/GLM-5.2", "zai", 1_049_000, "frontier"),
+        ("wandb:GLM-5.3", "GLM 5.3", "zai-org/GLM-5.3", "zai", 1_049_000, "frontier"),
+        (
+            "wandb:GLM-5.3-Flash",
+            "GLM 5.3 Flash",
+            "zai-org/GLM-5.3-Flash",
+            "zai",
+            1_049_000,
+            "small_moe",
+        ),
     )
 )
 
@@ -281,7 +284,7 @@ _MODEL_DESCRIPTORS = (
         provider_model="claude-sonnet-5",
         family="anthropic",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
-        max_input_tokens=200_000,
+        max_input_tokens=1_000_000,
         **_budget_fields("frontier"),
     ),
     ModelDescriptor(
@@ -311,28 +314,6 @@ _MODEL_DESCRIPTORS = (
         label="GPT-5.6 Luna",
         provider="codex",
         provider_model="gpt-5.6-luna",
-        family="openai",
-        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
-        max_input_tokens=272_000,
-        token_counter="o200k_base",
-        **_budget_fields("frontier"),
-    ),
-    ModelDescriptor(
-        id="codex:gpt-5.5",
-        label="GPT-5.5",
-        provider="codex",
-        provider_model="gpt-5.5",
-        family="openai",
-        supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
-        max_input_tokens=272_000,
-        token_counter="o200k_base",
-        **_budget_fields("frontier"),
-    ),
-    ModelDescriptor(
-        id="codex:gpt-5.4",
-        label="GPT-5.4",
-        provider="codex",
-        provider_model="gpt-5.4",
         family="openai",
         supported_roles=(_PROPOSAL_ROLE, _JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
         max_input_tokens=272_000,
@@ -454,13 +435,15 @@ _LOCAL_MODEL_EXECUTABLES = MappingProxyType(
     }
 )
 _JUDGE_PREFERENCES = (
-    "wandb:gpt-oss-120b",
-    "wandb:Llama-3.1-8B",
-    "wandb:granite-4.1-8b",
-    "wandb:gpt-oss-20b",
     "claude:claude-sonnet-5",
     "codex:gpt-5.6-sol",
+    "wandb:DeepSeek-V4.1-Flash",
     "agy:gemini-3.1-pro-high",
+    "wandb:GLM-5.3",
+    "wandb:gpt-oss-120b",
+    "wandb:Llama-3.1-8B",
+    "wandb:granite-4.2-8b",
+    "wandb:gpt-oss-20b",
     "claude:claude-haiku-4-5",
     "agy:gpt-oss-120b-medium",
     "openai:gpt-4o-mini",
@@ -469,7 +452,7 @@ _JUDGE_PREFERENCES = (
 _EVALUATOR_PREFERENCES = (
     "wandb:gpt-oss-120b",
     "wandb:Llama-3.1-8B",
-    "wandb:granite-4.1-8b",
+    "wandb:granite-4.2-8b",
     "wandb:gpt-oss-20b",
     "codex:gpt-5.6-sol",
     "agy:gemini-3.1-pro-high",
@@ -482,7 +465,7 @@ _EVALUATOR_PREFERENCES = (
 _PROPOSAL_PREFERENCES = (
     "wandb:gpt-oss-120b",
     "wandb:Llama-3.1-8B",
-    "wandb:granite-4.1-8b",
+    "wandb:granite-4.2-8b",
     "wandb:gpt-oss-20b",
     "codex:gpt-5.6-sol",
     "agy:gemini-3.1-pro-high",
@@ -492,8 +475,6 @@ _PROPOSAL_PREFERENCES = (
     "agy:gpt-oss-120b-medium",
     "codex:gpt-5.6-terra",
     "codex:gpt-5.6-luna",
-    "codex:gpt-5.5",
-    "codex:gpt-5.4",
     "codex:gpt-5.4-mini",
     "claude:claude-haiku-4-5",
 )

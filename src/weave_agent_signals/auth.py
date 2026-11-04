@@ -1,4 +1,4 @@
-"""The W&B API key, which authorizes CES and W&B Inference."""
+"""The W&B API key, which authorizes CES and CoreWeave Serverless Inference."""
 
 from __future__ import annotations
 
