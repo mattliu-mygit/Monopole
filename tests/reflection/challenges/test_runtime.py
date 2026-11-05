@@ -76,6 +76,21 @@ def test_runtime_declares_the_executables_its_image_provides(tmp_path):
             load_sandbox_runtime(_document(tmp_path, executables=invalid))
 
 
+def test_runtime_gives_each_sandbox_4_gib_of_memory_unless_configured(tmp_path, monkeypatch):
+    assert load_sandbox_runtime(_document(tmp_path)).memory_mib == 4096
+    with pytest.raises(ValueError, match="memory_mib"):
+        load_sandbox_runtime(_document(tmp_path, memory_mib=128))
+    created: dict = {}
+    monkeypatch.setattr(
+        "weave_agent_signals.runs.challenges.runtime.SmolMachineRunner",
+        lambda **kwargs: created.update(kwargs),
+    )
+
+    create_challenge_runner(load_sandbox_runtime(_document(tmp_path, memory_mib=8192)))
+
+    assert created == {"memory_mib": 8192}
+
+
 def test_runtime_requires_workspace_and_content_addressed_image(tmp_path):
     missing = tmp_path / "missing"
     with pytest.raises(ValueError, match="workspace_root"):

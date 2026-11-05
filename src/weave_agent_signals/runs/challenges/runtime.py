@@ -77,6 +77,9 @@ class SandboxRuntime(BaseModel):
     passthrough_environment: tuple[StrictStr, ...] = ()
     # The executables the image provides. When listed, challenge tasks may require only these.
     executables: tuple[StrictStr, ...] = ()
+    # Memory for each sandbox. Smol's default is about 232 MiB, too little for an agent, which
+    # was killed with exit code 137 about a minute into each arm.
+    memory_mib: Annotated[int, Field(strict=True, ge=256)] = 4096
 
     @model_validator(mode="after")
     def validate_runtime(self) -> SandboxRuntime:
@@ -152,7 +155,7 @@ def create_challenge_runner(
 
     With `ces_factory`, a decided challenge is also recorded in CES."""
 
-    machine_runner = pair_runner or SmolMachineRunner()
+    machine_runner = pair_runner or SmolMachineRunner(memory_mib=runtime.memory_mib)
 
     def challenge_runner(
         *,

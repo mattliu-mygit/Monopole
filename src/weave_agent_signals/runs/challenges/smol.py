@@ -21,6 +21,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Protocol
 
@@ -127,7 +128,14 @@ class _CliExecResult:
 class _CliMachine:
     """Small adapter over the official self-contained local Smol CLI."""
 
-    def __init__(self, executable: str, name: str, image: str, network_enabled: bool) -> None:
+    def __init__(
+        self,
+        executable: str,
+        name: str,
+        image: str,
+        network_enabled: bool,
+        memory_mib: int | None = None,
+    ) -> None:
         self._executable = executable
         self._name = name
         self._data_dir: Path | None = None
@@ -135,6 +143,8 @@ class _CliMachine:
         command = [executable, "machine", "create", "--name", name, image_flag, image]
         if network_enabled:
             command.append("--net")
+        if memory_mib is not None:
+            command.extend(("--mem", str(memory_mib)))
         try:
             created = self._run(command)
         except BaseException:
@@ -457,8 +467,10 @@ def _validate_smol_cli_version(value: str) -> None:
         raise RuntimeError("Smol CLI 1.6.13 or newer is required")
 
 
-def _create_machine(name: str, image: str, network_enabled: bool) -> Machine:
-    return _CliMachine(_smol_executable(), name, image, network_enabled)
+def _create_machine(
+    name: str, image: str, network_enabled: bool, memory_mib: int | None = None
+) -> Machine:
+    return _CliMachine(_smol_executable(), name, image, network_enabled, memory_mib)
 
 
 def _task_text(task: AuthoredTask) -> str:
@@ -584,8 +596,10 @@ def _runtime_archive(files: tuple[RuntimeFile, ...]) -> bytes:
 class SmolMachineRunner:
     """Run both arms concurrently and classify agent versus infrastructure outcomes."""
 
-    def __init__(self, *, machine_factory: MachineFactory = _create_machine) -> None:
-        self._machine_factory = machine_factory
+    def __init__(
+        self, *, machine_factory: MachineFactory | None = None, memory_mib: int | None = None
+    ) -> None:
+        self._machine_factory = machine_factory or partial(_create_machine, memory_mib=memory_mib)
 
     def preflight(
         self,

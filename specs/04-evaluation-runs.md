@@ -245,7 +245,9 @@ The service creates two concurrent local Smol Machines microVMs from one
 content-addressed OCI image or digest-authenticated local `.smolmachine`
 artifact. Each receives a private copy of the same prepared or bootstrap
 workspace snapshot, allowlisted environment, declared config and credential files,
-network policy, timeout, and command. The image digest pins the remaining
+network policy, memory, timeout, and command. Memory defaults to 4 GiB per
+machine, because Smol's own default is too small for an agent. The image digest
+pins the remaining
 toolchain and filesystem. A gets
 the captured managed Markdown; B gets exactly the provisional bundle changes.
 The Smol CLI owns machine lifecycle and agent execution, because the SDK cannot

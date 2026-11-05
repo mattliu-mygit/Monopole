@@ -429,6 +429,19 @@ def test_workspace_archive_has_no_host_paths() -> None:
         assert archive.getnames() == ["AGENTS.md"]
 
 
+def test_cli_adapter_creates_the_machine_with_the_requested_memory(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def run(command, *, env=None):
+        calls.append(command)
+        return CompletedProcess(command, 0, stdout="done", stderr="")
+
+    monkeypatch.setattr(_CliMachine, "_run", staticmethod(run))
+    _CliMachine("/bin/smol", "pair-baseline", "runtime@sha256:digest", False, memory_mib=4096)
+
+    assert calls[0][-2:] == ["--mem", "4096"]
+
+
 def test_cli_adapter_uses_local_machine_and_secret_environment_references(monkeypatch) -> None:
     calls: list[tuple[list[str], dict[str, str] | None]] = []
     popen_calls: list[tuple[list[str], dict[str, str]]] = []
