@@ -66,6 +66,16 @@ def test_runtime_document_is_closed_and_requires_guest_environment(tmp_path):
         load_sandbox_runtime(_document(tmp_path, environment_overrides={}))
 
 
+def test_runtime_declares_the_executables_its_image_provides(tmp_path):
+    runtime = load_sandbox_runtime(_document(tmp_path, executables=["python", "git"]))
+
+    assert runtime.executables == ("python", "git")
+    assert load_sandbox_runtime(_document(tmp_path)).executables == ()
+    for invalid in (["python", "python"], ["/usr/bin/python"], [""]):
+        with pytest.raises(ValueError, match="executables"):
+            load_sandbox_runtime(_document(tmp_path, executables=invalid))
+
+
 def test_runtime_requires_workspace_and_content_addressed_image(tmp_path):
     missing = tmp_path / "missing"
     with pytest.raises(ValueError, match="workspace_root"):
@@ -123,9 +133,11 @@ def test_runtime_files_cannot_change_the_paired_workspace(tmp_path, target):
         )
 
 
-def _call_challenge_runner(tmp_path, monkeypatch, **runner_kwargs):
+def _call_challenge_runner(
+    tmp_path, monkeypatch, *, document_updates=None, run_kwargs=None, **runner_kwargs
+):
     (tmp_path / "AGENTS.md").write_text("baseline\n", encoding="utf-8")
-    runtime = load_sandbox_runtime(_document(tmp_path))
+    runtime = load_sandbox_runtime(_document(tmp_path, **(document_updates or {})))
     baseline = BundleSnapshot(
         (TargetSnapshot(kind="file", locator="agents", exists=True, content="baseline\n"),)
     )
@@ -153,6 +165,8 @@ def _call_challenge_runner(tmp_path, monkeypatch, **runner_kwargs):
             ),
         )
         captured["prepared"] = kwargs["prepare_pair"](plan)
+        if run_kwargs is not None:
+            run_kwargs.update(kwargs)
         return "challenge"
 
     monkeypatch.setattr(
@@ -243,6 +257,22 @@ def test_challenge_runtime_prepares_public_material_once_before_forking_arms(
     assert prepared.arms.baseline.read_text("task/app.py") == "print('fixture')\n"
     assert prepared.arms.baseline.read_text("AGENTS.md") == "baseline\n"
     assert prepared.arms.candidate.read_text("AGENTS.md") == "candidate\n"
+
+
+def test_challenge_runtime_passes_the_declared_executables_to_the_challenge(
+    tmp_path,
+    monkeypatch,
+):
+    run_kwargs: dict = {}
+
+    _call_challenge_runner(
+        tmp_path,
+        monkeypatch,
+        document_updates={"executables": ["git", "python"]},
+        run_kwargs=run_kwargs,
+    )
+
+    assert run_kwargs["sandbox_executables"] == ("git", "python")
 
 
 def test_challenge_runtime_records_the_result_in_ces_when_given_a_session_factory(

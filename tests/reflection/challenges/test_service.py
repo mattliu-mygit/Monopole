@@ -438,6 +438,34 @@ def test_challenge_missing_required_file_stops_before_sandbox_preflight() -> Non
     assert runner.calls == []
 
 
+def test_challenge_task_needing_an_undeclared_executable_stops_before_sandbox_preflight() -> None:
+    snapshot = WorkspaceSnapshot((WorkspaceFile("README.md", b"same"),))
+    runner = _Runner((_arm("baseline"), _arm("candidate")))
+    author_client = _Client([_material_response(), _author_response(), _author_response()])
+
+    result = run_challenge(
+        candidate_id="candidate-1",
+        coaching_digest="verification was weak",
+        authoring_snapshot=snapshot,
+        baseline_snapshot=snapshot,
+        candidate_snapshot=snapshot,
+        environment=_environment(),
+        author=_descriptor("claude-sonnet-5"),
+        judges=(_descriptor("gpt-5.6-sol", position=1),),
+        rubrics=(VERIFICATION_DISCIPLINE,),
+        author_client=author_client,
+        judge_clients={},
+        runner=runner,
+        sandbox_executables=("git", "node"),
+    )
+
+    assert result.status == "invalid_task"
+    assert "does not provide required executables: python" in result.reason
+    assert len(author_client.calls) == 3  # the material plan, the task, and one correction
+    assert runner.preflight_calls == []
+    assert runner.calls == []
+
+
 def test_challenge_preflight_infrastructure_failure_is_not_an_invalid_task() -> None:
     snapshot = WorkspaceSnapshot((WorkspaceFile("README.md", b"same"),))
     runner = _Runner(

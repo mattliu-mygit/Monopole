@@ -683,6 +683,48 @@ def test_task_author_corrects_one_task_that_names_a_missing_file() -> None:
     assert "prepared workspace is missing required files: missing.py" in retry
 
 
+def test_task_author_corrects_one_task_that_needs_an_executable_the_sandbox_lacks() -> None:
+    cargo = _authored("README.md")
+    cargo[0]["required_executables"] = ["cargo"]
+    client = _Client([cargo, _authored("README.md")])
+    workspace = WorkspaceSnapshot((WorkspaceFile("README.md", b"same\n"),))
+
+    task = author_task(
+        client,
+        author=_author(),
+        coaching_digest="Agents often assumed tools existed without checking.",
+        material_plan=TaskMaterialPlan(setup_mode="prepared_workspace"),
+        workspace_digest=workspace.digest,
+        workspace=workspace,
+        initial_workspace=workspace,
+        sandbox_executables=("git", "python"),
+    )
+
+    assert task.required_executables == ("python",)
+    assert json.loads(client.calls[0]["messages"][1]["content"])["sandbox_executables"] == [
+        "git",
+        "python",
+    ]
+    retry = str(client.calls[1]["messages"])
+    assert "sandbox image does not provide required executables: cargo" in retry
+
+
+def test_material_planner_is_told_which_executables_the_sandbox_has() -> None:
+    client = _Client([({"setup_mode": "agent_bootstrap", "materials": []}, "planner")])
+
+    plan_task_materials(
+        client,
+        author=_author(),
+        coaching_digest="verification was weak",
+        workspace_digest="sha256:seed",
+        workspace=WorkspaceSnapshot((WorkspaceFile("README.md", b"same\n"),)),
+        sandbox_executables=("git", "python"),
+    )
+
+    payload = json.loads(client.calls[0]["messages"][1]["content"])
+    assert payload["sandbox_executables"] == ["git", "python"]
+
+
 def test_task_author_returns_a_second_invalid_task_for_preflight_to_reject() -> None:
     client = _Client([_authored("missing.py"), _authored("still-missing.py")])
 

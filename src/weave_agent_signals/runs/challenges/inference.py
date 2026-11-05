@@ -179,7 +179,9 @@ pins the repository's current HEAD; do not supply a commit, tag, or branch. Do n
 credentials, private sources, or host shell commands. Supported repository hosts are github.com,
 gitlab.com, bitbucket.org, and codeberg.org. Choose a maintained repository with real source and
 tests that can support a realistic task analogous to the measured weakness. Do not choose toy,
-demo, example, or placeholder repositories.
+demo, example, or placeholder repositories. When sandbox_executables is present, the sandbox image
+provides only those executables; choose material whose task can be built, run, and tested with
+them alone.
 """
 
 _TASK_SYSTEM = """\
@@ -191,11 +193,12 @@ starting-state checks, and declarative preflight requirements.
 
 required_files are safe relative file paths that must exist before either agent starts.
 required_executables are bare executable names that must be available in the sandbox image.
-requires_git_metadata declares whether the task needs repository history or status. A
-prepared_workspace excludes Git metadata, so such a task must set requires_git_metadata to false
-and must not ask agents to inspect commits, branches, status, or logs. Starting-state checks are
-judge context and are not host commands. Do not request credentials, private sources, commits,
-tags, pushes, dependency-version changes, or unrelated generated artifacts.
+When sandbox_executables is present, name only executables from it, and do not write a task that
+needs any other tool. requires_git_metadata declares whether the task needs repository history or
+status. A prepared_workspace excludes Git metadata, so such a task must set requires_git_metadata
+to false and must not ask agents to inspect commits, branches, status, or logs. Starting-state
+checks are judge context and are not host commands. Do not request credentials, private sources,
+commits, tags, pushes, dependency-version changes, or unrelated generated artifacts.
 
 The workspace_manifest is the material-aware authoring context. The initial_workspace_manifest is
 what agents actually receive before work begins. In agent_bootstrap mode, required_files may name
@@ -276,6 +279,7 @@ def plan_task_materials(
     workspace_digest: str,
     workspace: WorkspaceSnapshot,
     resolve_revision: Callable[[str], str] = resolve_repository_head,
+    sandbox_executables: tuple[str, ...] = (),
 ) -> TaskMaterialPlan:
     """Select immutable public material before the final task is authored."""
 
@@ -283,20 +287,16 @@ def plan_task_materials(
         raise ValueError("task author must support proposal evaluation")
     if not isinstance(coaching_digest, str) or not coaching_digest.strip():
         raise ValueError("task author requires a nonblank coaching digest")
+    payload: dict[str, object] = {
+        "evaluation_digest": coaching_digest,
+        "seed_workspace_digest": workspace_digest,
+        "workspace_summary": _workspace_summary(workspace),
+    }
+    if sandbox_executables:
+        payload["sandbox_executables"] = list(sandbox_executables)
     messages = [
         {"role": "system", "content": _MATERIAL_SYSTEM},
-        {
-            "role": "user",
-            "content": json.dumps(
-                {
-                    "evaluation_digest": coaching_digest,
-                    "seed_workspace_digest": workspace_digest,
-                    "workspace_summary": _workspace_summary(workspace),
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-        },
+        {"role": "user", "content": json.dumps(payload, sort_keys=True, separators=(",", ":"))},
     ]
     rejected_urls: list[str] = []
     resolved_revisions: dict[str, str] = {}
@@ -390,6 +390,7 @@ def author_task(
     workspace_digest: str,
     workspace: WorkspaceSnapshot,
     initial_workspace: WorkspaceSnapshot | None = None,
+    sandbox_executables: tuple[str, ...] = (),
 ) -> AuthoredTask:
     """Author one complete task package without exposing either instruction arm."""
 
@@ -401,25 +402,21 @@ def author_task(
     initial_manifest, initial_manifest_truncated = _workspace_manifest(
         workspace if initial_workspace is None else initial_workspace, author
     )
+    payload: dict[str, object] = {
+        "evaluation_digest": coaching_digest,
+        "material_plan": material_plan.to_dict(),
+        "prepared_workspace_digest": workspace_digest,
+        "workspace_summary": _workspace_summary(workspace),
+        "workspace_manifest": manifest,
+        "workspace_manifest_truncated": manifest_truncated,
+        "initial_workspace_manifest": initial_manifest,
+        "initial_workspace_manifest_truncated": initial_manifest_truncated,
+    }
+    if sandbox_executables:
+        payload["sandbox_executables"] = list(sandbox_executables)
     task_messages = [
         {"role": "system", "content": _TASK_SYSTEM},
-        {
-            "role": "user",
-            "content": json.dumps(
-                {
-                    "evaluation_digest": coaching_digest,
-                    "material_plan": material_plan.to_dict(),
-                    "prepared_workspace_digest": workspace_digest,
-                    "workspace_summary": _workspace_summary(workspace),
-                    "workspace_manifest": manifest,
-                    "workspace_manifest_truncated": manifest_truncated,
-                    "initial_workspace_manifest": initial_manifest,
-                    "initial_workspace_manifest_truncated": initial_manifest_truncated,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-        },
+        {"role": "user", "content": json.dumps(payload, sort_keys=True, separators=(",", ":"))},
     ]
     expected = {
         "prompt",
@@ -459,7 +456,9 @@ def author_task(
         )
         try:
             validate_task_workspace(
-                workspace if initial_workspace is None else initial_workspace, task
+                workspace if initial_workspace is None else initial_workspace,
+                task,
+                executables=sandbox_executables,
             )
         except TaskPreflightError as error:
             if attempt == 0:
@@ -474,7 +473,8 @@ def author_task(
                         "role": "user",
                         "content": "The previous task failed deterministic workspace validation: "
                         f"{error}. Return one corrected task that references only paths in "
-                        "initial_workspace_manifest.",
+                        "initial_workspace_manifest and, when sandbox_executables is present, "
+                        "only executables it lists.",
                     },
                 ]
                 continue

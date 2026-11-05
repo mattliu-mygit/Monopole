@@ -122,6 +122,7 @@ def run_challenge(
     candidate_runtime_files: tuple[RuntimeFile, ...] = (),
     prepare_pair: Callable[[TaskMaterialPlan], PreparedPair] | None = None,
     cancel_requested: Callable[[], bool] = lambda: False,
+    sandbox_executables: tuple[str, ...] = (),
 ) -> ChallengeResult:
     """Run one full comparison; every non-clear-B outcome conservatively keeps A."""
 
@@ -136,6 +137,7 @@ def run_challenge(
             coaching_digest=coaching_digest,
             workspace_digest=environment.identity.workspace_digest,
             workspace=authoring_snapshot,
+            sandbox_executables=sandbox_executables,
         )
     except InferenceCancelled:
         raise
@@ -202,8 +204,9 @@ def run_challenge(
             workspace_digest=environment.identity.workspace_digest,
             workspace=prepared_authoring_snapshot,
             initial_workspace=initial_workspace,
+            sandbox_executables=sandbox_executables,
         )
-        validate_task_workspace(initial_workspace, task)
+        validate_task_workspace(initial_workspace, task, executables=sandbox_executables)
     except InferenceCancelled:
         raise
     except TaskPreflightError as exc:

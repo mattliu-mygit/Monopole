@@ -19,6 +19,7 @@ Winner = Literal["baseline", "candidate", "tie"]
 ChallengeStatus = Literal["complete", "incomplete", "invalid_task"]
 ArmStatus = Literal["exited", "timed_out", "infrastructure_failed"]
 _PUBLIC_GIT_HOSTS = frozenset({"github.com", "gitlab.com", "bitbucket.org", "codeberg.org"})
+BARE_EXECUTABLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 
 
 class TaskPreflightError(RuntimeError):
@@ -205,7 +206,7 @@ class AuthoredTask(_Contract):
                 raise ValueError("required files cannot depend on Git metadata")
             normalized_files.append(path.as_posix())
         executables = tuple(self.required_executables)
-        if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", item) for item in executables):
+        if any(not BARE_EXECUTABLE.fullmatch(item) for item in executables):
             raise ValueError("required executables must use a bare executable name")
         if self.setup_mode == "prepared_workspace" and self.requires_git_metadata:
             raise ValueError("prepared workspaces cannot require Git metadata")

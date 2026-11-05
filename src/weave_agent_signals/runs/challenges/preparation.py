@@ -151,12 +151,22 @@ def prepare_task_workspace(
     return prepare_task_context(seed, task, fetch_repository=fetch_repository)
 
 
-def validate_task_workspace(workspace: WorkspaceSnapshot, task: AuthoredTask) -> None:
-    """Reject authored file assumptions that the prepared snapshot cannot satisfy."""
+def validate_task_workspace(
+    workspace: WorkspaceSnapshot,
+    task: AuthoredTask,
+    executables: tuple[str, ...] = (),
+) -> None:
+    """Reject authored file assumptions that the prepared snapshot cannot satisfy, and required
+    executables outside the sandbox image's declared ones. Empty `executables` declares none."""
 
     available = frozenset(workspace.paths)
     missing = tuple(path for path in task.required_files if path not in available)
     if missing:
         raise TaskPreflightError(
             f"prepared workspace is missing required files: {', '.join(missing)}"
+        )
+    undeclared = tuple(name for name in task.required_executables if name not in executables)
+    if executables and undeclared:
+        raise TaskPreflightError(
+            f"sandbox image does not provide required executables: {', '.join(undeclared)}"
         )

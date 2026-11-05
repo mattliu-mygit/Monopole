@@ -229,7 +229,9 @@ require Git metadata. Exact required files are checked against the common
 initial snapshot. The task author checks its own task against that snapshot
 first and gets one corrective attempt when the task names a missing file; a
 second invalid task remains visible in the run and fails closed before sandbox
-preflight. One disposable sandbox verifies the pinned harness and
+preflight. When the sandbox runtime declares the executables its image provides,
+both calls receive that list, and a required executable outside it fails the
+same check, with the same one correction, before any sandbox boots. One disposable sandbox verifies the pinned harness and
 required executable names before either arm starts. Fetch, file-preflight, or
 capability-preflight failure invalidates the task without running A or B. The
 product does not choose a different harness by task category; coding and

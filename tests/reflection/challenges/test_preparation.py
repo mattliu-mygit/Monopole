@@ -115,6 +115,21 @@ def test_task_workspace_preflight_rejects_missing_required_files() -> None:
         validate_task_workspace(workspace, task)
 
 
+def test_task_workspace_preflight_rejects_executables_the_sandbox_lacks() -> None:
+    task = AuthoredTask.model_validate(
+        {
+            **_task("prepared_workspace", _material()).model_dump(mode="json"),
+            "task_id": "pending",
+            "required_executables": ["python", "cargo"],
+        }
+    )
+    workspace = WorkspaceSnapshot((WorkspaceFile("task/src/parser.py", b"pass\n"),))
+
+    with pytest.raises(TaskPreflightError, match="does not provide required executables: cargo"):
+        validate_task_workspace(workspace, task, executables=("git", "python"))
+    validate_task_workspace(workspace, task)
+
+
 def test_task_workspace_preflight_accepts_exact_required_files() -> None:
     task = AuthoredTask.model_validate(
         {

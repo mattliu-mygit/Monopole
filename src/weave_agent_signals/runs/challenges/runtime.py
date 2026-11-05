@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, model_
 from weave_agent_signals.ces_client import CesSession
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.runs.challenges.ces_record import record_safely
-from weave_agent_signals.runs.challenges.contracts import TaskMaterialPlan
+from weave_agent_signals.runs.challenges.contracts import BARE_EXECUTABLE, TaskMaterialPlan
 from weave_agent_signals.runs.challenges.environment import (
     RuntimeFile,
     capture_execution_environment,
@@ -75,6 +75,8 @@ class SandboxRuntime(BaseModel):
     runtime_files: tuple[RuntimeFileSource, ...] = ()
     # Host variables beyond the defaults that arms need, named explicitly.
     passthrough_environment: tuple[StrictStr, ...] = ()
+    # The executables the image provides. When listed, challenge tasks may require only these.
+    executables: tuple[StrictStr, ...] = ()
 
     @model_validator(mode="after")
     def validate_runtime(self) -> SandboxRuntime:
@@ -104,6 +106,10 @@ class SandboxRuntime(BaseModel):
         targets = tuple(item.target for item in self.runtime_files)
         if len(targets) != len(set(targets)):
             raise ValueError("runtime file targets must be unique")
+        if len(self.executables) != len(set(self.executables)) or any(
+            not BARE_EXECUTABLE.fullmatch(item) for item in self.executables
+        ):
+            raise ValueError("executables must be unique bare executable names")
         return self
 
     def environment(
@@ -235,6 +241,7 @@ def create_challenge_runner(
             candidate_runtime_files=arms.candidate_runtime_files,
             prepare_pair=prepare_pair,
             cancel_requested=cancel_requested,
+            sandbox_executables=runtime.executables,
         )
         return result if ces_factory is None else record_safely(result, ces_factory)
 
