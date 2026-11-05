@@ -18,7 +18,6 @@ from weave_agent_signals.ces_client import (
     session_view,
     turns_from_rows,
 )
-from weave_agent_signals.ces_score_index import ScoreIndex
 from weave_agent_signals.models import Score
 from weave_agent_signals.scorers.outcome import _extract_exit_code
 
@@ -411,53 +410,13 @@ def test_a_turn_without_a_prompt_keeps_its_span_ids_distinct_from_its_turn_id():
 
 
 @respx.mock
-def test_session_scores_fall_back_to_the_local_index_without_the_route(tmp_path):
+@pytest.mark.parametrize("status", [400, 404, 405])
+def test_a_trajectory_row_route_error_is_raised(status):
     _catalog_routes()
-    client = CesClient(
-        "http://ces.test", "scope-1", api_key="k", score_index=ScoreIndex(str(tmp_path / "i.jsonl"))
-    )
-    catalog = client.ensure_catalog("ds-1")
-    respx.post(f"{BASE}/scores").mock(
-        side_effect=[
-            httpx.Response(200, json={"score_ids": ["old-v", "old-d"]}),
-            httpx.Response(200, json={"score_ids": ["new-v", "new-d"]}),
-        ]
-    )
-    for value in (False, True):
-        score = Score("implicit.completion", value, [], {}, "session")
-        client.write_scores(catalog, f"pass-{value}", "trajectory", "s1", [score])
-    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
-        return_value=httpx.Response(404, json={"error": {"code": "not_found"}})
-    )
-    respx.get(url__regex=rf"{BASE}/scores/.*").mock(
-        side_effect=lambda request: httpx.Response(
-            200,
-            json={
-                "score_id": request.url.path.rsplit("/", 1)[-1],
-                "scorer_id": "x",
-                "scorer_version_id": "v",
-                "value": True,
-                "attributes": {},
-            },
-        )
-    )
-
-    rows = client.session_scores(catalog, ["s1", "s2"])
-
-    assert sorted(r["score_id"] for r in rows["s1"]) == ["new-d", "new-v"]
-    assert set(rows["s1"][0]) == {"score_id", "scorer_id", "scorer_version_id", "value"}
-    assert "s2" not in rows
-
-
-@respx.mock
-def test_a_route_error_other_than_missing_is_not_hidden_by_the_fallback(tmp_path):
-    _catalog_routes()
-    client = CesClient(
-        "http://ces.test", "scope-1", api_key="k", score_index=ScoreIndex(str(tmp_path / "i.jsonl"))
-    )
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
     catalog = client.ensure_catalog("ds-1")
     respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
-        return_value=httpx.Response(400, json={"error": {"code": "invalid_request"}})
+        return_value=httpx.Response(status, json={"error": {"code": "not_found"}})
     )
 
     with pytest.raises(httpx.HTTPStatusError):
@@ -467,9 +426,7 @@ def test_a_route_error_other_than_missing_is_not_hidden_by_the_fallback(tmp_path
 @respx.mock
 def test_read_all_scores_turns_ces_rows_into_feedback_records(tmp_path):
     _catalog_routes()
-    client = CesClient(
-        "http://ces.test", "scope-1", api_key="k", score_index=ScoreIndex(str(tmp_path / "i.jsonl"))
-    )
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
     catalog = client.ensure_catalog("ds-1")
     case_input = {
         "config_version": "cfg1",
@@ -943,19 +900,6 @@ def test_read_session_reads_each_subagent_once_in_launch_order():
         "traj-b": 1,
         "traj-c": 1,
     }
-
-
-@respx.mock
-def test_clients_sharing_a_score_cache_fetch_each_score_once():
-    score = {"score_id": "s-1", "scorer_id": "sc-1", "scorer_version_id": "v-1", "value": 0.5}
-    fetched = respx.get(f"{BASE}/scores/s-1").mock(return_value=httpx.Response(200, json=score))
-    rows: dict[str, dict] = {}
-
-    for _ in range(2):
-        client = CesClient("http://ces.test", "scope-1", api_key="k", score_rows=rows)
-        assert client._indexed("s-1") == score
-
-    assert fetched.call_count == 1
 
 
 def test_scorer_names_are_looked_up_concurrently(monkeypatch):

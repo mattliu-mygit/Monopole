@@ -47,9 +47,7 @@ forced rescore writes newer Scores and never purges. Without force, a Scorer tha
 already has a Score on the target is skipped.
 
 Turn Scores are read through the turns Evaluation's rows; session Scores through
-its Trajectory rows. Until the Trajectory-row route deploys, a 404 or 405 falls
-back to `ces_score_index.py`, a local index of the session Score IDs this machine
-wrote. Delete that module and its fallbacks once the route is deployed.
+its Trajectory rows, which include Scores written from anywhere.
 
 Analysis, reflection, and the session pages read Scores as records shaped
 `{id, feedback_type, target_id, payload}`. Reflection pins each record's Score

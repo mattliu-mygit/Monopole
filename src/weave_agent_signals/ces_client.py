@@ -29,7 +29,6 @@ from weave_agent_signals.ces_catalog import (
     ScorerSpec,
     judge_spec,
 )
-from weave_agent_signals.ces_score_index import ScoreIndex
 from weave_agent_signals.models import (
     ChatSpan,
     Score,
@@ -133,11 +132,6 @@ def plan_judge_writes(
         if todo:
             writes[sid] = todo
     return catalog, writes
-
-
-def _score_row(score: dict[str, Any]) -> dict[str, Any]:
-    """A get-score result in the shape Evaluation rows return Scores."""
-    return {k: score.get(k) for k in ("score_id", "scorer_id", "scorer_version_id", "value")}
 
 
 def _score_record(target_id: str, case_input: dict, scores: list[dict], names: dict) -> list[dict]:
@@ -429,19 +423,14 @@ class CesClient:
         namespace: str = "wandb",
         http: httpx.Client | None = None,
         sleep=time.sleep,
-        score_index: ScoreIndex | None = None,
         scorer_names: dict[tuple[str, str], str] | None = None,
-        score_rows: dict[str, dict] | None = None,
     ):
         self.base = f"/v1/namespaces/{namespace}/scopes/{quote(scope_ref, safe='')}"
         self._owns_http = http is None
         self._http = http or ces_http(base_url, api_key)
         self._sleep = sleep
-        self._index = score_index or ScoreIndex()
         # A Scorer version's name never changes, so callers may share one cache across clients.
         self._scorer_names = {} if scorer_names is None else scorer_names
-        # Scores never change once written, so fetched ones can be shared the same way.
-        self._score_rows = {} if score_rows is None else score_rows
 
     def close(self) -> None:
         if self._owns_http:
@@ -694,22 +683,7 @@ class CesClient:
     def _session_targets(self, catalog: Catalog, wanted=None) -> list[tuple[str, dict, list]]:
         """(Trajectory ID, session Case input, Score rows) for each session Trajectory, or only
         the wanted ones. The route has no filter, so this pages every row."""
-        try:
-            rows = self._rows(
-                f"/evaluations/{catalog.sessions_evaluation_id}/trajectory-rows", None
-            )
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code not in (404, 405):
-                raise
-            # Workaround until the Trajectory-row route deploys; see ces_score_index.
-            newest = self._index.newest(wanted)
-            ids = [score_id for scores in newest.values() for score_id in scores.values()]
-            with ThreadPoolExecutor(max_workers=CONCURRENT_READS) as pool:
-                found = dict(zip(ids, pool.map(self._indexed, ids)))
-            return [
-                (trajectory, {}, [row for sid in scores.values() if (row := found[sid])])
-                for trajectory, scores in newest.items()
-            ]
+        rows = self._rows(f"/evaluations/{catalog.sessions_evaluation_id}/trajectory-rows", None)
         return [
             (
                 r["trajectory"]["trajectory_id"],
@@ -744,19 +718,6 @@ class CesClient:
             key=lambda r: r["payload"]["details"].get("turn_started_at") or "", reverse=True
         )
         return records
-
-    def _indexed(self, score_id: str) -> dict | None:
-        """An indexed Score as a row, or None when CES no longer has it."""
-        if (cached := self._score_rows.get(score_id)) is not None:
-            return cached
-        try:
-            row = _score_row(self.get_score(score_id))
-            self._score_rows[score_id] = row
-            return row
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code != 404:
-                raise
-            return None
 
     def _scorer_name(self, scorer_id: str, version_id: str) -> str | None:
         """The Scorer version's name, or None when CES has no such version, so a Score from a
@@ -849,8 +810,4 @@ class CesClient:
             body={"scores": body},
             key=f"score-v2:{pass_id}:{target_kind}:{target_id}:{_digest({'scores': body})}",
         )
-        if target_kind == "trajectory":
-            self._index.record(
-                target_id, list(zip((b["scorer_id"] for b in body), result["score_ids"]))
-            )
         return result["score_ids"]
