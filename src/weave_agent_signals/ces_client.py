@@ -627,6 +627,8 @@ class CesClient:
                         key=f"monopole-scorer-v1:{name}:{value_type}:{spec.target_kind}",
                     )
                 )
+                # Reads name a Score by its Scorer version; this one needs no lookup.
+                self._scorer_names[(made[-1]["scorer_id"], made[-1]["version_id"])] = name
             refs[spec.name] = ScorerRef(
                 spec,
                 made[0]["scorer_id"],

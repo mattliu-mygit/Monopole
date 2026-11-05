@@ -892,6 +892,28 @@ def test_clients_sharing_a_scorer_name_cache_look_each_version_up_once():
 
 
 @respx.mock
+def test_scores_from_the_catalogs_scorers_are_named_without_a_lookup():
+    _catalog_routes()
+    versions = respx.get(url__regex=rf"{BASE}/scorers/[^/]+/versions/[^/]+").mock(
+        return_value=httpx.Response(200, json={"name": "judge.x.panel-1"})
+    )
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    ref = client.ensure_catalog("ds-1").scorers["efficiency"]
+    own = {"scorer_id": ref.scorer_id, "scorer_version_id": ref.version_id}
+    judge = {"scorer_id": "sc-judge", "scorer_version_id": "v-judge"}
+    scores = [{"score_id": "1", **own, "value": 0.5}, {"score_id": "2", **judge, "value": 0.25}]
+
+    records = client._score_records([("case-1", {}, scores)])
+
+    assert sorted(r["payload"]["details"]["ces_scorer"] for r in records) == [
+        "efficiency",
+        "judge.x.panel-1",
+    ]
+    # Only the judge panel's Scorer, which the catalog doesn't hold, is looked up.
+    assert [c.request.url.path.split("/")[-3] for c in versions.calls] == ["sc-judge"]
+
+
+@respx.mock
 def test_read_session_without_subagents_names_them_without_reading_them():
     respx.get(f"{BASE}/trajectories/traj-s/cases").mock(
         return_value=httpx.Response(200, json={"cases": SESSION})
