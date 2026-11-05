@@ -8,6 +8,7 @@ Without `--force`, a scorer that already has a Score on a target is skipped.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
+from weave_agent_signals import ces_queries
 from weave_agent_signals.ces_catalog import Catalog
 from weave_agent_signals.ces_client import (
     CesClient,
@@ -23,6 +25,7 @@ from weave_agent_signals.ces_client import (
     session_or_none,
 )
 from weave_agent_signals.models import Score, SessionView, session_is_evaluable
+from weave_agent_signals.patterns import ConfigStats
 from weave_agent_signals.scorers import score_session, score_turn
 from weave_agent_signals.scorers.outcome import classify_command
 
@@ -312,7 +315,16 @@ def write_judge_scores(client, catalog: Catalog, pending: list, *, force: bool) 
 
 
 def read_scores(args: argparse.Namespace) -> list[dict]:
-    """The newest `args.limit` Scores as feedback records, for analyze, monitor, and reflect."""
+    """The Scores on the newest `args.limit` turns and their sessions as feedback records."""
     with connect(args) as ces:
         client, catalog = ces.client, ces.catalog
         return client.read_all_scores(catalog, limit=args.limit)
+
+
+def read_analysis(args: argparse.Namespace, *, feedback: bool) -> tuple[ConfigStats, list[dict]]:
+    """Every config's Score stats from CES queries, and, with `feedback`, the Scores on the
+    newest `args.limit` turns and their sessions as feedback records."""
+    with connect(args) as ces:
+        records = functools.cache(lambda: ces.client.read_all_scores(ces.catalog, limit=args.limit))
+        stats = ces_queries.config_stats(ces.client, ces.catalog, ces_queries.QueryState(), records)
+        return stats, records() if feedback else []

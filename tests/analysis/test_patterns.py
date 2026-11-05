@@ -1,17 +1,30 @@
-"""Tests for pattern analysis: A/B leaderboards, trends, coaching digest."""
+"""Tests for pattern analysis: summaries, A/B leaderboards, config regressions, trends, coaching."""
 
 from __future__ import annotations
+
+from datetime import datetime, timezone
 
 import pytest
 
 from weave_agent_signals.patterns import (
+    ConfigStats,
     ScoreSummary,
+    Stat,
+    _ci,
+    _stat,
+    _summarize,
+    _wilson_ci,
     ab_leaderboard,
     aggregate_scores,
     coaching_digest,
-    detect_config_regressions,
+    config_latest,
+    config_regressions,
     detect_regressions,
+    difference_ci,
     is_evaluation_feedback_eligible,
+    stat_leaderboard,
+    stat_summaries,
+    stats_from_feedback,
 )
 
 
@@ -335,7 +348,7 @@ def test_legacy_episode_judgments_do_not_enter_any_ordinary_analytics():
     assert next(iter(summaries.values())).mean == 0.8
     assert [result.config_version for result in ab_leaderboard(feedback)] == ["current"]
     assert detect_regressions(feedback) == []
-    assert detect_config_regressions(feedback, min_samples=2) == []
+    assert set(config_latest(feedback)) == {"current"}
     digest = coaching_digest(feedback)
     assert "current-only" in digest
     assert "legacy-only" not in digest
@@ -424,7 +437,7 @@ def test_noncomplete_session_judgments_do_not_enter_ab_or_trend_analysis():
 
     assert [item.config_version for item in ab_leaderboard(feedback)] == ["v1"]
     assert detect_regressions(feedback) == []
-    assert detect_config_regressions(feedback) == []
+    assert set(config_latest(feedback)) == {"v1"}
 
 
 # --- ab_leaderboard tests ---
@@ -551,124 +564,210 @@ def test_detect_regressions_orders_by_run_time_not_score_time():
     assert regressions[0]["recent_mean"] == 0.0
 
 
-# --- detect_config_regressions (A/B safety net) ---
+# --- config_regressions (A/B safety net) ---
+
+_DAYS = {f"v{day}": datetime(2026, 7, day, tzinfo=timezone.utc) for day in range(1, 10)}
 
 
-def test_detect_config_regressions_flags_worse_new_config():
-    old = [
-        _fb("outcome.test", 1.0, config_version="v_old", scored_at="2026-07-01T00:00:00")
-        for _ in range(6)
-    ]
-    new = [
-        _fb("outcome.test", 0.0, config_version="v_new", scored_at="2026-07-09T00:00:00")
-        for _ in range(6)
-    ]
-    regs = detect_config_regressions(old + new)
+def _stats(by_config, targets=None):
+    return ConfigStats(by_config, targets or {})
+
+
+def test_config_regressions_flags_worse_new_config():
+    stats = _stats(
+        {
+            "v1": {"outcome.test": Stat(6, 1.0, True)},
+            "v9": {"outcome.test": Stat(6, 0.0, True)},
+        }
+    )
+
+    regs = config_regressions(stats, _DAYS)
+
     assert len(regs) == 1
     r = regs[0]
     assert r["scorer"] == "outcome.test"
-    assert r["config"] == "v_new" and r["prev_config"] == "v_old"
+    assert r["config"] == "v9" and r["prev_config"] == "v1"
+    assert (r["sample_count"], r["prev_sample_count"]) == (6, 6)
+    assert r["difference_ci"][1] < 0
     assert r["significant"] is True
 
 
-def test_detect_config_regressions_needs_two_configs():
-    fb = [_fb("outcome.test", 1.0, config_version="v1") for _ in range(6)]
-    assert detect_config_regressions(fb) == []
+def test_config_regressions_flag_a_drop_whose_own_intervals_overlap():
+    """Behavior change: 40/50 then 30/50 passing. The two Wilson intervals overlap
+    (0.67-0.89 and 0.46-0.72), which the old test called not significant, but the interval
+    on the difference, -0.36 to -0.02, excludes 0."""
+    prev, new = Stat(50, 0.8, True), Stat(50, 0.6, True)
+    stats = _stats({"v1": {"outcome.test": prev}, "v9": {"outcome.test": new}})
+
+    (reg,) = config_regressions(stats, _DAYS)
+
+    assert _ci(new)[1] > _ci(prev)[0]
+    assert reg["difference_ci"] == (-0.364, -0.02)
+    assert reg["significant"] is True
 
 
-def test_detect_config_regressions_skips_tie_in_run_time():
-    # both configs stamped with the SAME time (e.g. one backfill) → can't tell
-    # which is newer, so don't guess a direction.
-    a = [
-        _fb("outcome.test", 1.0, config_version="v_a", scored_at="2026-07-01T00:00:00")
-        for _ in range(6)
-    ]
-    b = [
-        _fb("outcome.test", 0.0, config_version="v_b", scored_at="2026-07-01T00:00:00")
-        for _ in range(6)
-    ]
-    assert detect_config_regressions(a + b) == []
-
-
-def test_detect_config_regressions_ignores_improvement():
-    old = [
-        _fb("outcome.test", 0.0, config_version="v_old", scored_at="2026-07-01T00:00:00")
-        for _ in range(6)
-    ]
-    new = [
-        _fb("outcome.test", 1.0, config_version="v_new", scored_at="2026-07-09T00:00:00")
-        for _ in range(6)
-    ]
-    # newer config is better — not a regression
-    assert detect_config_regressions(old + new) == []
-
-
-def test_config_regression_does_not_compare_different_session_evaluation_contexts():
-    old = [
-        _session_judge_fb(
-            "judge.session_outcome",
-            1.0,
-            review_status="complete",
-            config_version="v_old",
-            scored_at="2026-07-01T00:00:00",
-        )
-        for _ in range(6)
-    ]
-    new = [
-        _session_judge_fb(
-            "judge.session_outcome",
-            0.0,
-            review_status="complete",
-            config_version="v_new",
-            scored_at="2026-07-09T00:00:00",
-            context_overrides={"panel_contract_version": "2"},
-        )
-        for _ in range(6)
-    ]
-
-    assert detect_config_regressions(old + new) == []
-
-
-def test_config_regression_compares_latest_two_configs_within_evaluation_context():
-    first_context_old = [
-        _session_judge_fb(
-            "judge.session_outcome",
-            1.0,
-            review_status="complete",
-            config_version="v1",
-            scored_at="2026-07-01T00:00:00",
-        )
-        for _ in range(6)
-    ]
-    other_context_middle = [
-        _session_judge_fb(
-            "judge.session_outcome",
-            1.0,
-            review_status="complete",
-            config_version="v2",
-            scored_at="2026-07-05T00:00:00",
-            context_overrides={"rubric_version": "3"},
-        )
-        for _ in range(6)
-    ]
-    first_context_new = [
-        _session_judge_fb(
-            "judge.session_outcome",
-            0.0,
-            review_status="complete",
-            config_version="v3",
-            scored_at="2026-07-09T00:00:00",
-        )
-        for _ in range(6)
-    ]
-
-    regressions = detect_config_regressions(
-        first_context_old + other_context_middle + first_context_new
+def test_config_regressions_keep_a_small_sample_drop_tentative():
+    stats = _stats(
+        {"v1": {"outcome.test": Stat(2, 1.0, True)}, "v9": {"outcome.test": Stat(2, 0.5, True)}}
     )
 
-    assert len(regressions) == 1
-    assert regressions[0]["config"] == "v3"
-    assert regressions[0]["prev_config"] == "v1"
+    (reg,) = config_regressions(stats, _DAYS)
+
+    assert reg["difference_ci"][1] > 0
+    assert reg["significant"] is False
+
+
+@pytest.mark.parametrize("stddev", [None, 0.0])
+def test_config_regressions_need_a_spread_for_a_continuous_scorer(stddev):
+    # One rating has no spread, even when CES reports 0 for it.
+    stats = _stats(
+        {
+            "v1": {"efficiency": Stat(1, 0.9, False, stddev)},
+            "v9": {"efficiency": Stat(9, 0.1, False, 0.1)},
+        }
+    )
+
+    (reg,) = config_regressions(stats, _DAYS)
+
+    assert (reg["difference_ci"], reg["significant"]) == (None, False)
+
+
+def test_config_regressions_need_two_ordered_configs():
+    stats = _stats(
+        {"v1": {"outcome.test": Stat(6, 1.0, True)}, "v9": {"outcome.test": Stat(6, 0.0, True)}}
+    )
+
+    assert config_regressions(_stats({"v1": stats.by_config["v1"]}), _DAYS) == []
+    # A config with no run time among the newest turns can't be ordered.
+    assert config_regressions(stats, {"v9": _DAYS["v9"]}) == []
+    unknown = _stats({**stats.by_config, "unknown": {"outcome.test": Stat(6, 1.0, True)}})
+    assert config_regressions(unknown, {"unknown": _DAYS["v1"], "v9": _DAYS["v9"]}) == []
+
+
+def test_config_regressions_skip_a_tie_in_run_time():
+    # both configs stamped with the SAME time (e.g. one backfill) → can't tell
+    # which is newer, so don't guess a direction.
+    stats = _stats(
+        {"v_a": {"outcome.test": Stat(6, 1.0, True)}, "v_b": {"outcome.test": Stat(6, 0.0, True)}}
+    )
+    tie = datetime(2026, 7, 1, tzinfo=timezone.utc)
+
+    assert config_regressions(stats, {"v_a": tie, "v_b": tie}) == []
+
+
+def test_config_regressions_ignore_improvement():
+    stats = _stats(
+        {"v1": {"outcome.test": Stat(6, 0.0, True)}, "v9": {"outcome.test": Stat(6, 1.0, True)}}
+    )
+
+    assert config_regressions(stats, _DAYS) == []
+
+
+def test_config_regressions_compare_each_scorers_latest_two_configs():
+    # A panel Scorer that only v1 and v3 have skips v2, which scored a different panel.
+    panel_a, panel_b = "judge.session_outcome.panel-a", "judge.session_outcome.panel-b"
+    stats = _stats(
+        {
+            "v1": {panel_a: Stat(6, 0.9, False, 0.05)},
+            "v2": {panel_b: Stat(6, 0.9, False, 0.05)},
+            "v3": {panel_a: Stat(6, 0.1, False, 0.05)},
+        }
+    )
+
+    (reg,) = config_regressions(stats, _DAYS)
+
+    assert (reg["scorer"], reg["config"], reg["prev_config"]) == (panel_a, "v3", "v1")
+    assert reg["significant"] is True
+
+
+def test_config_latest_orders_configs_by_agent_run_time():
+    feedback = [
+        _fb("outcome.test", 1.0, config_version="v_old", scored_at="2026-07-01T00:00:00"),
+        _fb("outcome.test", 1.0, config_version="v_old", scored_at="2026-07-03T00:00:00"),
+        _fb("outcome.test", 0.0, config_version="v_new", scored_at="2026-07-09T00:00:00"),
+        _fb("outcome.test", 0.0, config_version="v_bad", scored_at="not a time"),
+    ]
+
+    assert config_latest(feedback) == {
+        "v_old": datetime(2026, 7, 3, tzinfo=timezone.utc),
+        "v_new": datetime(2026, 7, 9, tzinfo=timezone.utc),
+    }
+
+
+# --- difference CI and query stats ---
+
+
+@pytest.mark.parametrize(
+    ("new", "prev", "want"),
+    [
+        # Newcombe (1998), Statistics in Medicine 17:873, Table II, method 10.
+        ((56, 70), (48, 80), (0.0524, 0.3339)),
+        ((9, 10), (3, 10), (0.1705, 0.8090)),
+    ],
+)
+def test_difference_ci_matches_newcombes_published_intervals(new, prev, want):
+    got = difference_ci(Stat(new[1], new[0] / new[1], True), Stat(prev[1], prev[0] / prev[1], True))
+
+    assert got == pytest.approx(want, abs=1e-4)
+
+
+def test_difference_ci_uses_welchs_standard_error_for_continuous_scorers():
+    # se = sqrt(0.2^2/50 + 0.3^2/40) = 0.05523; -0.1 +- 1.96 * se
+    got = difference_ci(Stat(50, 0.5, False, 0.2), Stat(40, 0.6, False, 0.3))
+
+    assert got == pytest.approx((-0.20824, 0.00824), abs=1e-5)
+
+
+def test_stat_summaries_pool_configs_exactly():
+    values = {"v1": [0.2, 0.4, 0.9], "v2": [0.5, 0.7]}
+    stats = _stats(
+        {config: {"efficiency": _stat(ratings, binary=False)} for config, ratings in values.items()}
+    )
+
+    pooled = stat_summaries(stats)["efficiency"]
+    direct = _summarize("efficiency", values["v1"] + values["v2"], [])
+
+    assert (pooled.count, pooled.binary) == (5, False)
+    assert pooled.mean == pytest.approx(direct.mean)
+    assert pooled.ci == pytest.approx(direct.ci)
+
+
+def test_stat_summaries_give_binary_scorers_a_pass_rate_and_wilson_interval():
+    stats = _stats(
+        {"v1": {"outcome.test": Stat(3, 2 / 3, True)}, "v2": {"outcome.test": Stat(1, 1.0, True)}}
+    )
+
+    summary = stat_summaries(stats)["outcome.test"]
+
+    assert (summary.count, summary.pass_rate) == (4, 0.75)
+    assert summary.ci == pytest.approx(_wilson_ci(3, 4))
+
+
+def test_stat_leaderboard_reports_each_config_and_its_scored_targets():
+    stats = _stats(
+        {
+            "v2": {"outcome.test": Stat(4, 0.5, True)},
+            "v1": {"efficiency": Stat(3, 0.4, False, 0.1)},
+        },
+        {"v1": 5, "v2": 4},
+    )
+
+    board = stat_leaderboard(stats)
+
+    assert [(r.config_version, r.evaluated_target_count) for r in board] == [("v1", 5), ("v2", 4)]
+    assert board[1].scores["outcome.test"].pass_rate == 0.5
+
+
+def test_stats_from_feedback_keys_continuous_stats_by_ces_scorer_and_config():
+    def record(rating, config):
+        feedback = _fb("efficiency", rating, config_version=config)
+        feedback["payload"]["details"]["ces_scorer"] = "efficiency"
+        return feedback
+
+    found = stats_from_feedback([record(0.0, "v1"), record(1.0, "v1"), record(0.5, "v2")])
+
+    assert found["v1"]["efficiency"] == Stat(2, 0.5, False, pytest.approx(0.7071, abs=1e-4))
+    assert found["v2"]["efficiency"] == Stat(1, 0.5, False)
 
 
 # --- coaching_digest tests ---
@@ -919,9 +1018,7 @@ def test_coaching_digest_does_not_merge_session_evaluation_contexts():
 
 
 def test_pass_rate_binary_scorer():
-    s = ScoreSummary(
-        scorer="outcome.test", count=4, mean=0.75, min_val=0.0, max_val=1.0, binary=True
-    )
+    s = ScoreSummary(scorer="outcome.test", count=4, mean=0.75, binary=True)
     assert s.pass_rate == 0.75
 
 
@@ -932,8 +1029,6 @@ def test_pass_rate_continuous_scorer_with_extreme_values():
         scorer="judge.verification",
         count=3,
         mean=0.5,
-        min_val=0.0,
-        max_val=1.0,
         binary=False,
     )
     assert s.pass_rate is None

@@ -17,6 +17,7 @@ from weave_agent_signals.ces_catalog import (
 )
 from weave_agent_signals.ces_client import CesSession, session_view
 from weave_agent_signals.models import Score, SessionView, TraceRole
+from weave_agent_signals.patterns import ConfigStats, Stat
 
 CATALOG = Catalog(
     "ev-turns",
@@ -293,12 +294,37 @@ def test_judge_judges_found_sessions_and_writes_finished_scores(monkeypatch, cap
     assert client.closed
 
 
-def test_analysis_commands_read_feedback_from_ces(monkeypatch):
-    records = [{"feedback_type": "weave_agent_signals.efficiency", "payload": {"rating": 1.0}}]
-    monkeypatch.setattr(ces_commands, "read_scores", lambda args: records)
-    args = cli.build_parser().parse_args(["analyze"])
+class _ScoresOnly:
+    def __init__(self, records):
+        self.records, self.reads = records, []
 
-    assert cli._project_scores(args) is records
+    def read_all_scores(self, catalog, limit=None):
+        self.reads.append(limit)
+        return self.records
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize(("feedback", "fallback", "reads"), [(True, True, [7]), (False, False, [])])
+def test_read_analysis_reads_the_newest_scores_at_most_once(monkeypatch, feedback, fallback, reads):
+    records = [{"feedback_type": "weave_agent_signals.efficiency", "payload": {"rating": 1.0}}]
+    client = _ScoresOnly(records)
+    stats = ConfigStats({"v1": {"efficiency": Stat(1, 1.0, False)}}, {"v1": 1})
+
+    def config_stats(_client, _catalog, _state, raw):
+        if fallback:
+            raw()  # a CES without stddev reads the same records
+        return stats
+
+    monkeypatch.setattr(ces_commands, "connect", lambda args: CesSession(client, CATALOG))
+    monkeypatch.setattr(ces_commands.ces_queries, "config_stats", config_stats)
+    args = cli.build_parser().parse_args(["analyze", "--limit", "7"])
+
+    got = ces_commands.read_analysis(args, feedback=feedback)
+
+    assert got == (stats, records if feedback else [])
+    assert client.reads == reads
 
 
 def test_score_and_backfill_return_cleanly_when_no_sessions_match(fake, monkeypatch, capsys):

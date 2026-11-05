@@ -36,16 +36,45 @@ numeric strings, non-finite values, and out-of-range values are rejected rather
 than coerced. Because every persisted score is higher-is-better, downward
 movement always has one interpretation.
 
+## Where the numbers come from
+
+`analyze`, `monitor`, and the Analyze page read two kinds of evidence:
+
+| Numbers | Source | Scope |
+| --- | --- | --- |
+| Summaries, the A/B leaderboard, config regressions | CES EvaluationQueries (`ces_queries.py`) | every Score the Evaluations hold, by config version |
+| Trends, config order, coaching examples | raw Scores (`read_all_scores`) | the newest `--limit` turns and their sessions |
+| Reflection's digest (runs and `reflect`) | the raw Scores it pins | that cohort or the newest `--limit` turns |
+
+The queries count only the main agent: the turn query keeps the null `agent_id`
+group, and the session query keeps depth 0. A summary over every Score differs
+from the older newest-`--limit` summary when older turns scored differently.
+
+Trends wait for a day field from the adapter, because CES queries have no time.
+Coaching examples are session judge Scores, and a filtered session-row search
+waits on a CES deploy. Configs are ordered by their latest turn among the newest
+`--limit` turns, so a config missing from that window is not compared.
+
+Until CES ships its spread aggregation (`stddev`), a query cannot give a
+continuous Scorer's interval. Then continuous Scorers' summaries, leaderboard
+entries, and comparisons come from the raw newest-`--limit` Scores, and binary
+Scorers still come from queries. Monopole finds out once per process, when CES
+rejects a query that names `stddev`.
+
 ## Analysis surfaces
 
-Summaries report sample count, mean, tags, and an interval appropriate to binary
-or continuous ratings. A pass rate is shown only when every observed rating is
-binary. Small samples are labeled as low confidence instead of being presented
-as conclusive.
+Summaries report sample count, mean, and an interval appropriate to binary or
+continuous ratings: Wilson for binary Scorers, the normal approximation for
+continuous ones. A pass rate is shown only for binary Scorers, the outcome
+Scorers and `implicit.completion`, whose every value is 0 or 1. Tag counts appear
+only in summaries built from raw Scores, because queries cannot count tags.
+Small samples are labeled as low confidence instead of being presented as
+conclusive.
 
-Configuration analysis groups feedback by the adapter's observed configuration
-version, while keeping incomparable judge contexts separate. It describes
-association, not causal attribution.
+Configuration analysis groups Scores by the adapter's observed configuration
+version. Each judge rubric and panel is its own Scorer, so incomparable judge
+contexts stay separate. A rubric threshold change within one rubric version and
+panel is not separated. It describes association, not causal attribution.
 
 Trend analysis orders scores by agent execution time stored in feedback
 details, not by the later feedback-write time. It compares older and recent
@@ -69,6 +98,16 @@ evaluation.
 Monitoring reports only new statistically significant downward movements in
 eligible time trends or configuration comparisons. Alerts identify the score,
 sample context, magnitude, and comparison rather than claiming a root cause.
+
+A configuration comparison takes each Scorer's newest two configs and reports a
+drop of at least 0.2. The drop is significant when the 95% interval on the
+difference lies wholly below 0: Newcombe's interval for binary Scorers, and
+Welch's standard error with the normal approximation for continuous ones, which
+need at least two ratings per config. This replaced asking whether the two
+configs' own intervals were disjoint with at least five ratings each, a test
+stricter than 95% that missed real drops. For example, 40 of 50 passing then 30
+of 50 has overlapping intervals but a difference interval of -0.36 to -0.02, so
+it now alerts. A trend still uses the older rule.
 
 When a state file is configured, monitoring retains stable keys for regressions
 that are currently significant. An ongoing regression is not sent repeatedly;

@@ -24,6 +24,9 @@ class ScorerSpec:
     value_type: str  # "number" or "boolean"
     granularity: str  # "turn", "session", or "comparison"
     description: str | None = None
+    # Every value is 0 or 1, so a summary is a pass rate with a Wilson interval. It isn't part of
+    # the CES Scorer, whose create key names only the name, value type, and target kind.
+    binary: bool = False
 
     @property
     def target_kind(self) -> str:
@@ -32,15 +35,15 @@ class ScorerSpec:
 
 DETERMINISTIC = (
     ScorerSpec("efficiency", "number", "turn"),
-    ScorerSpec("outcome.test", "number", "turn"),
-    ScorerSpec("outcome.build", "number", "turn"),
-    ScorerSpec("outcome.lint", "number", "turn"),
-    ScorerSpec("outcome.install", "number", "turn"),
-    ScorerSpec("outcome.git", "number", "turn"),
-    ScorerSpec("outcome.command", "number", "turn"),
+    ScorerSpec("outcome.test", "number", "turn", binary=True),
+    ScorerSpec("outcome.build", "number", "turn", binary=True),
+    ScorerSpec("outcome.lint", "number", "turn", binary=True),
+    ScorerSpec("outcome.install", "number", "turn", binary=True),
+    ScorerSpec("outcome.git", "number", "turn", binary=True),
+    ScorerSpec("outcome.command", "number", "turn", binary=True),
     ScorerSpec("efficiency.session", "number", "session"),
     ScorerSpec("implicit.correction_free_rate", "number", "session"),
-    ScorerSpec("implicit.completion", "boolean", "session"),
+    ScorerSpec("implicit.completion", "boolean", "session", binary=True),
 )
 
 VERDICT = ScorerSpec(

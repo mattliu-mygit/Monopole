@@ -55,6 +55,26 @@ Analysis, reflection, and the session pages read Scores as records shaped
 `{id, feedback_type, target_id, payload}`. Reflection pins each record's Score
 ID and digest.
 
+## Queries
+
+`ces_queries.py` asks CES for each config's count, mean, and spread per Scorer
+with two saved EvaluationQueries. A Case query groups turn Scores by
+`i.config_version` and `i.agent_id`; a Trajectory query groups session Scores by
+the root Case's `i.config_version` and `depth`. Turn Scores target only a turn's
+first Case, so its other Cases have no Score and drop out of a mean and count.
+
+CES runs queries only on an Evaluation whose primary target kind is case, and
+list-trajectory-rows only on one whose kind is trajectory. Both queries therefore
+run on the turns Evaluation, which also selects every session Scorer. Judge panel
+Scorers are found in the sessions Evaluation's selection.
+
+A query definition never changes. Its create is keyed
+`monopole-query-v1:<evaluation>:<body digest>`, so a rerun replays to the same
+query ID, and a new Scorer such as a new judge panel makes a new query. A query
+holds at most 100 metrics, so a Scorer list that needs more is split. Query calls
+retry a busy CES's 503 with waits of 1, 2, 4, 8, and 16 seconds, because CES runs
+only two queries at a time per instance.
+
 ## External correctness constraints
 
 1. Every path sits under `/v1/namespaces/wandb/scopes/<scope>`, where the scope
@@ -64,7 +84,8 @@ ID and digest.
    pattern operators.
 3. Creates are idempotent by `Idempotency-Key`; reusing a key with a different
    body is a conflict.
-4. `429` and `503` are retried after `Retry-After`.
+4. `429` and `503` are retried with doubling waits, never shorter than
+   `Retry-After`.
 5. list-trajectory-rows has no filter, so session Score reads page every row.
 6. CoreWeave Serverless Inference uses bearer W&B authentication plus the
    entity/project header; HTTP 402 means inference credits are unavailable.

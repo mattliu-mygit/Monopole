@@ -1,0 +1,313 @@
+"""CES EvaluationQueries: create once by content, page results, retry busy, detect stddev."""
+
+from __future__ import annotations
+
+import json
+
+import httpx
+import pytest
+import respx
+
+from weave_agent_signals.ces_catalog import DETERMINISTIC, Catalog, ScorerRef
+from weave_agent_signals.ces_client import CesClient
+from weave_agent_signals.ces_queries import QueryState, config_stats
+from weave_agent_signals.patterns import Stat
+
+BASE = "http://ces.test/v1/namespaces/wandb/scopes/scope-1"
+QUERIES = f"{BASE}/evaluations/ev-turns/queries"
+JUDGE = "judge.goal.panel-abc"
+CATALOG = Catalog(
+    "ev-turns",
+    "ev-sessions",
+    {
+        spec.name: ScorerRef(
+            spec, f"sc-{spec.name}", f"v-{spec.name}", f"sc-{spec.name}.d", f"v-{spec.name}.d"
+        )
+        for spec in DETERMINISTIC
+    },
+)
+SESSION_SELECTION = [
+    {"scorer_id": f"sc-{spec.name}{suffix}", "version_id": f"v-{spec.name}{suffix}"}
+    for spec in DETERMINISTIC
+    if spec.granularity == "session"
+    for suffix in ("", ".d")
+]
+TURN_ROWS = [
+    {
+        "group": ["cfg1", None],
+        "targets": 30,
+        "metrics": [
+            {"name": "efficiency:mean", "value": 0.6},
+            {"name": "efficiency:count", "value": 4},
+            {"name": "efficiency:stddev", "value": 0.1},
+            {"name": "outcome.test:mean", "value": 0.75},
+            {"name": "outcome.test:count", "value": 4},
+            {"name": "outcome.build:mean", "value": None},
+            {"name": "outcome.build:count", "value": 0},
+        ],
+    },
+    {
+        "group": ["cfg1", "sub-agent"],
+        "targets": 9,
+        "metrics": [
+            {"name": "efficiency:mean", "value": 0.1},
+            {"name": "efficiency:count", "value": 2},
+        ],
+    },
+    {
+        "group": [None, None],
+        "targets": 3,
+        "metrics": [
+            {"name": "outcome.test:mean", "value": 1.0},
+            {"name": "outcome.test:count", "value": 1},
+        ],
+    },
+]
+SESSION_ROWS = [
+    {
+        "group": ["cfg1", 0],
+        "targets": 2,
+        "metrics": [
+            {"name": "implicit.completion:mean", "value": 0.5},
+            {"name": "implicit.completion:count", "value": 2},
+            {"name": f"{JUDGE}:mean", "value": 0.7},
+            {"name": f"{JUDGE}:count", "value": 2},
+            {"name": f"{JUDGE}:stddev", "value": 0.1},
+        ],
+    },
+    {
+        "group": ["cfg1", 1],
+        "targets": 5,
+        "metrics": [
+            {"name": f"{JUDGE}:mean", "value": 0.0},
+            {"name": f"{JUDGE}:count", "value": 5},
+        ],
+    },
+]
+
+
+class Routes:
+    """The CES routes one config_stats call uses, recording what it sends."""
+
+    def __init__(self, *, judges=((JUDGE, "sc-j", "v-j"),), turn_rows=TURN_ROWS):
+        self.creates: list[tuple[str, dict]] = []
+        self.selected: list[dict] = []
+        selection = list(SESSION_SELECTION)
+        for name, scorer_id, version_id in judges:
+            for suffix in ("", ".details"):
+                selection.append({"scorer_id": scorer_id + suffix, "version_id": version_id})
+                respx.get(f"{BASE}/scorers/{scorer_id}{suffix}/versions/{version_id}").mock(
+                    return_value=httpx.Response(200, json={"name": name + suffix})
+                )
+        respx.patch(f"{BASE}/evaluations/ev-sessions/scorers").mock(
+            return_value=httpx.Response(200, json={"scorers": selection})
+        )
+        respx.patch(f"{BASE}/evaluations/ev-turns/scorers").mock(side_effect=self._select)
+        self.create = respx.post(QUERIES).mock(side_effect=self._create)
+        respx.get(f"{QUERIES}/q-case/results").mock(
+            return_value=httpx.Response(200, json={"rows": turn_rows})
+        )
+        respx.get(f"{QUERIES}/q-trajectory/results").mock(
+            return_value=httpx.Response(200, json={"rows": SESSION_ROWS})
+        )
+
+    def _select(self, request):
+        self.selected = json.loads(request.content)["scorers"]
+        return httpx.Response(200, json={"scorers": self.selected})
+
+    def _create(self, request):
+        body = json.loads(request.content)
+        self.creates.append((request.headers["Idempotency-Key"], body))
+        kind = body["definition"]["target_kind"]
+        return httpx.Response(200, json={"evaluation_query_id": f"q-{kind}"})
+
+    def keys(self) -> list[str]:
+        return [key for key, _ in self.creates]
+
+
+def _client(**kwargs) -> CesClient:
+    return CesClient("http://ces.test", "scope-1", api_key="k", **kwargs)
+
+
+def _no_feedback():
+    pytest.fail("raw Scores are read only without a CES stddev")
+
+
+@respx.mock
+def test_config_stats_keep_the_main_agent_groups_by_config():
+    Routes()
+    state = QueryState()
+
+    stats = config_stats(_client(), CATALOG, state, _no_feedback)
+
+    assert stats.by_config == {
+        "cfg1": {
+            "efficiency": Stat(4, 0.6, False, 0.1),
+            "outcome.test": Stat(4, 0.75, True),
+            "implicit.completion": Stat(2, 0.5, True),
+            JUDGE: Stat(2, 0.7, False, 0.1),
+        },
+        "unknown": {"outcome.test": Stat(1, 1.0, True)},
+    }
+    # The most-counted Scorer per group: 4 turns and 2 sessions.
+    assert stats.targets == {"cfg1": 6, "unknown": 1}
+    assert state.stddev is True
+
+
+@respx.mock
+def test_config_stats_query_the_turns_evaluation_with_every_session_scorer():
+    routes = Routes()
+
+    config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+
+    assert sorted(s["scorer_id"] for s in routes.selected) == [
+        "sc-efficiency.session",
+        "sc-implicit.completion",
+        "sc-implicit.correction_free_rate",
+        "sc-j",
+    ]
+    (_, turns), (_, sessions) = routes.creates
+    assert turns["definition"]["target_kind"] == "case"
+    assert [c.get("name") for c in turns["definition"]["group_by"]] == [
+        "config_version",
+        "agent_id",
+    ]
+    assert sessions["definition"]["group_by"][1] == {"kind": "depth"}
+    metrics = {m["name"]: m for m in turns["definition"]["metrics"]}
+    assert metrics["efficiency:stddev"]["scorer_version_id"] == "v-efficiency"
+    assert "outcome.test:stddev" not in metrics
+    assert {m["scorer_version_id"] for m in sessions["definition"]["metrics"]} >= {"v-j"}
+
+
+@respx.mock
+def test_a_query_is_created_once_per_process_and_replayed_by_content():
+    routes = Routes()
+    state = QueryState()
+
+    config_stats(_client(), CATALOG, state, _no_feedback)
+    config_stats(_client(), CATALOG, state, _no_feedback)
+    first = routes.keys()
+    config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+
+    assert len(first) == 2
+    assert all(key.startswith("monopole-query-v1:ev-turns:") for key in first)
+    # A new process replays the same keys, so CES returns the same query IDs.
+    assert routes.keys()[2:] == first
+
+
+@respx.mock
+def test_a_new_judge_panel_makes_a_new_session_query():
+    before = Routes()
+    config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+    respx.reset()
+    after = Routes(judges=((JUDGE, "sc-j", "v-j"), ("judge.goal.panel-new", "sc-n", "v-n")))
+    config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+
+    assert after.keys()[0] == before.keys()[0]
+    assert after.keys()[1] != before.keys()[1]
+
+
+@respx.mock
+def test_results_are_read_page_by_page():
+    routes = Routes()
+    pages = respx.get(f"{QUERIES}/q-case/results").mock(
+        side_effect=[
+            httpx.Response(200, json={"rows": TURN_ROWS[:1], "next_cursor": "p2"}),
+            httpx.Response(200, json={"rows": TURN_ROWS[2:]}),
+        ]
+    )
+
+    stats = config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+
+    assert routes.keys()
+    assert [call.request.url.params.get("cursor") for call in pages.calls] == [None, "p2"]
+    assert stats.by_config["unknown"] == {"outcome.test": Stat(1, 1.0, True)}
+
+
+@respx.mock
+def test_a_busy_ces_is_retried_with_growing_waits_then_raises():
+    Routes()
+    busy = httpx.Response(503, headers={"Retry-After": "1"})
+    respx.get(f"{QUERIES}/q-case/results").mock(
+        side_effect=[busy, busy, httpx.Response(200, json={"rows": []})]
+    )
+    slept: list[float] = []
+
+    config_stats(_client(sleep=slept.append), CATALOG, QueryState(), _no_feedback)
+
+    assert slept == [1.0, 2]
+
+    respx.get(f"{QUERIES}/q-case/results").mock(return_value=busy)
+    slept.clear()
+    with pytest.raises(httpx.HTTPStatusError):
+        config_stats(_client(sleep=slept.append), CATALOG, QueryState(), _no_feedback)
+    assert slept == [1.0, 2, 4, 8, 16]
+
+
+def _raw(scorer, rating, config):
+    return {
+        "id": f"s-{scorer}-{rating}",
+        "feedback_type": f"weave_agent_signals.{scorer.split('.panel-')[0]}",
+        "target_id": "t",
+        "payload": {
+            "rating": rating,
+            "details": {"config_version": config, "ces_scorer": scorer},
+        },
+    }
+
+
+@respx.mock
+def test_without_ces_stddev_continuous_scorers_fall_back_to_raw_scores():
+    routes = Routes()
+    rejected = httpx.Response(
+        422,
+        json={
+            "error": {
+                "code": "unprocessable_entity",
+                "details": [
+                    {
+                        "location": "body.definition.metrics[2].aggregation",
+                        "message": "expected value to be one of mean, sum, min, max, count",
+                    }
+                ],
+            }
+        },
+    )
+
+    def create(request):
+        reply = routes._create(request)
+        return rejected if b'"stddev"' in request.content else reply
+
+    routes.create.side_effect = create
+    reads = []
+
+    def feedback():
+        reads.append(1)
+        return [_raw("efficiency", 0.2, "cfg1"), _raw("efficiency", 0.4, "cfg1")]
+
+    state = QueryState()
+    stats = config_stats(_client(), CATALOG, state, feedback)
+
+    assert state.stddev is False
+    first, retried, sessions = [body for _, body in routes.creates]
+    assert any(m["aggregation"] == "stddev" for m in first["definition"]["metrics"])
+    for body in (retried, sessions):
+        assert all(m["aggregation"] != "stddev" for m in body["definition"]["metrics"])
+    assert len({key for key, _ in routes.creates}) == 3
+    assert reads == [1]
+    assert stats.by_config["cfg1"]["efficiency"] == Stat(
+        2, pytest.approx(0.3), False, pytest.approx(0.1414, abs=1e-4)
+    )
+    # The judge has no raw Scores here, so it has no stats; binary Scorers still come from CES.
+    assert JUDGE not in stats.by_config["cfg1"]
+    assert stats.by_config["cfg1"]["outcome.test"] == Stat(4, 0.75, True)
+    assert stats.targets["cfg1"] == 6
+
+
+@respx.mock
+def test_a_rejection_unrelated_to_stddev_is_raised():
+    routes = Routes()
+    routes.create.side_effect = [httpx.Response(400, json={"error": {"message": "no field"}})]
+
+    with pytest.raises(httpx.HTTPStatusError):
+        config_stats(_client(), CATALOG, QueryState(), _no_feedback)

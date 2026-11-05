@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 
 from weave_agent_signals import cli
+from weave_agent_signals.patterns import ConfigStats, Stat
 
 
 def _fb(scorer, rating, config, scored_at):
@@ -22,14 +23,22 @@ def _regressing_feedback():
     # old config scored 1.0; newer config scored 0.0 → significant config regression
     old = [_fb("outcome.test", 1.0, "v_old", "2026-07-01T00:00:00") for _ in range(6)]
     new = [_fb("outcome.test", 0.0, "v_new", "2026-07-09T00:00:00") for _ in range(6)]
-    return old + new
+    stats = ConfigStats(
+        {
+            "v_old": {"outcome.test": Stat(6, 1.0, True)},
+            "v_new": {"outcome.test": Stat(6, 0.0, True)},
+        },
+        {"v_old": 6, "v_new": 6},
+    )
+    return stats, old + new
 
 
 def _improving_feedback():
     # single config, scores rise over time → a significant IMPROVEMENT, not a drop
     old = [_fb("outcome.test", 0.0, "v1", "2026-07-01T00:00:00") for _ in range(6)]
     new = [_fb("outcome.test", 1.0, "v1", "2026-07-09T00:00:00") for _ in range(6)]
-    return old + new
+    stats = ConfigStats({"v1": {"outcome.test": Stat(12, 0.5, True)}}, {"v1": 12})
+    return stats, old + new
 
 
 def _capturing_send():
@@ -55,7 +64,9 @@ def _args(**over):
 
 
 def test_monitor_alerts_on_significant_regression_then_dedups(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli.ces_commands, "read_scores", lambda _args: _regressing_feedback())
+    monkeypatch.setattr(
+        cli.ces_commands, "read_analysis", lambda _args, feedback: _regressing_feedback()
+    )
 
     sent, fake_send = _capturing_send()
     monkeypatch.setattr(cli.alerts, "send", fake_send)
@@ -84,7 +95,7 @@ def test_monitor_realerts_when_a_regression_recurs_after_recovery(
             _regressing_feedback(),
         ]
     )
-    monkeypatch.setattr(cli.ces_commands, "read_scores", lambda _args: next(feeds))
+    monkeypatch.setattr(cli.ces_commands, "read_analysis", lambda _args, feedback: next(feeds))
 
     sent, fake_send = _capturing_send()
     monkeypatch.setattr(cli.alerts, "send", fake_send)
@@ -106,10 +117,35 @@ def test_monitor_realerts_when_a_regression_recurs_after_recovery(
 
 
 def test_monitor_does_not_alert_on_improvement(monkeypatch):
-    monkeypatch.setattr(cli.ces_commands, "read_scores", lambda _args: _improving_feedback())
+    monkeypatch.setattr(
+        cli.ces_commands, "read_analysis", lambda _args, feedback: _improving_feedback()
+    )
     sent, fake_send = _capturing_send()
     monkeypatch.setattr(cli.alerts, "send", fake_send)
 
     rc = cli.cmd_monitor(_args())
     assert rc == 0
     assert sent == []  # a significant improvement is not a regression
+
+
+def test_monitor_alerts_on_a_drop_whose_config_intervals_overlap(monkeypatch):
+    """Behavior change: 40/50 then 30/50 passing. The configs' own 95% intervals overlap, which
+    the old rule read as no regression; the interval on the difference lies below 0."""
+    feedback = [
+        _fb("outcome.test", 1.0, "v_old", "2026-07-01T00:00:00"),
+        _fb("outcome.test", 1.0, "v_new", "2026-07-09T00:00:00"),
+    ]
+    stats = ConfigStats(
+        {
+            "v_old": {"outcome.test": Stat(50, 0.8, True)},
+            "v_new": {"outcome.test": Stat(50, 0.6, True)},
+        },
+        {"v_old": 50, "v_new": 50},
+    )
+    monkeypatch.setattr(cli.ces_commands, "read_analysis", lambda _args, **_: (stats, feedback))
+    sent, fake_send = _capturing_send()
+    monkeypatch.setattr(cli.alerts, "send", fake_send)
+
+    assert cli.cmd_monitor(_args()) == 0
+    assert [alert.key for alert in sent] == ["config:v_new:outcome.test"]
+    assert "95% CI -0.36 to -0.02" in sent[0].text

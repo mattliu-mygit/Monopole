@@ -25,11 +25,12 @@ from weave_agent_signals.models import (
     SessionView,
 )
 from weave_agent_signals.patterns import (
-    ab_leaderboard,
     coaching_digest,
-    detect_config_regressions,
+    config_latest,
+    config_regressions,
     detect_regressions,
     is_evaluation_feedback_eligible,
+    stat_leaderboard,
 )
 from weave_agent_signals.run_config import (
     DEFAULT_JUDGING_CONTEXT_POLICY,
@@ -238,21 +239,20 @@ def _report_judging(judging_plan, pending: list, written: int, errors: int) -> i
     return 1 if errors else 0
 
 
-def _project_scores(args: argparse.Namespace) -> list[dict]:
-    return ces_commands.read_scores(args)
-
-
 def cmd_analyze(args: argparse.Namespace) -> int:
-    feedback = _project_scores(args)
+    # Summaries and the A/B leaderboard come from CES queries over every Score; trends and
+    # coaching examples from the Scores on the newest `--limit` turns.
+    digest = args.coaching or not (args.ab or args.trends)
+    stats, feedback = ces_commands.read_analysis(args, feedback=args.trends or digest)
 
-    if not feedback:
+    if not stats.by_config and not feedback:
         print("No scored feedback found.")
         return 0
 
     if args.ab:
-        results = ab_leaderboard(feedback)
+        results = stat_leaderboard(stats)
         if not results:
-            print("No A/B data (config_version not set on scores).")
+            print("No A/B data (no Scores found).")
         else:
             print(f"\nA/B Leaderboard ({len(results)} config versions):\n")
             for r in results:
@@ -289,26 +289,23 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                     f"({r['delta']:+.2f}, n={r['sample_count']}){mark}"
                 )
 
-    if args.coaching:
-        print(coaching_digest(feedback))
-
-    if not (args.ab or args.trends or args.coaching):
-        print(coaching_digest(feedback))
+    if digest:
+        print(coaching_digest(feedback, stats))
 
     return 0
 
 
 def cmd_monitor(args: argparse.Namespace) -> int:
-    feedback = _project_scores(args)
+    stats, feedback = ces_commands.read_analysis(args, feedback=True)
 
-    if not feedback:
+    if not stats.by_config and not feedback:
         print("No scored feedback found.")
         return 0
 
     trend = detect_regressions(feedback)
-    config = detect_config_regressions(feedback)
+    config = config_regressions(stats, config_latest(feedback))
     # Only downward, statistically-significant moves are alerts — an improvement
-    # is significant too but is not a regression. detect_config_regressions
+    # is significant too but is not a regression. config_regressions
     # already returns drops only.
     sig_trend = [r for r in trend if r["significant"] and r["direction"] == "regression"]
     sig_config = [r for r in config if r["significant"]]
@@ -366,7 +363,7 @@ def _render_bundle_diff(past: BundleSnapshot, proposed: BundleSnapshot) -> str:
 
 
 def cmd_reflect(args: argparse.Namespace) -> int:
-    feedback = _project_scores(args)
+    feedback = ces_commands.read_scores(args)
 
     feedback = [item for item in feedback if is_evaluation_feedback_eligible(item)]
     if not feedback:
@@ -522,30 +519,55 @@ def build_parser() -> argparse.ArgumentParser:
     ces_commands.add_arguments(p_insp)
 
     # analyze
-    p_analyze = subs.add_parser("analyze", help="Analyze scored feedback patterns")
+    p_analyze = subs.add_parser(
+        "analyze",
+        help="Analyze scored feedback patterns",
+        description=(
+            "Summaries and the A/B leaderboard cover every Score, by config version, from CES "
+            "queries. Trends and coaching examples cover the Scores on the newest --limit "
+            "turns and their sessions."
+        ),
+    )
     ces_commands.add_arguments(p_analyze)
     p_analyze.add_argument(
         "--limit",
         type=int,
         default=1000,
-        help="Max feedback records to query (default: 1000)",
+        help=(
+            "Newest turns whose Scores feed trends, coaching examples, and, until CES has a "
+            "stddev aggregation, continuous-Scorer summaries (default: 1000)"
+        ),
     )
     p_analyze.add_argument(
-        "--ab", action="store_true", help="Show A/B leaderboard by config_version"
+        "--ab", action="store_true", help="Show A/B leaderboard by config_version (all Scores)"
     )
     p_analyze.add_argument(
-        "--trends", action="store_true", help="Detect score regressions/improvements"
+        "--trends",
+        action="store_true",
+        help="Detect score regressions/improvements over the newest --limit turns",
     )
     p_analyze.add_argument("--coaching", action="store_true", help="Generate coaching digest")
 
     # monitor
-    p_mon = subs.add_parser("monitor", help="Alert on significant score regressions")
+    p_mon = subs.add_parser(
+        "monitor",
+        help="Alert on significant score regressions",
+        description=(
+            "Config regressions compare the newest two config versions over every Score, from "
+            "CES queries; a drop is significant when the 95% interval on the difference lies "
+            "below 0. Configs are ordered, and trends computed, from the Scores on the newest "
+            "--limit turns."
+        ),
+    )
     ces_commands.add_arguments(p_mon)
     p_mon.add_argument(
         "--limit",
         type=int,
         default=1000,
-        help="Max feedback records to query (default: 1000)",
+        help=(
+            "Newest turns whose Scores feed trends, config order, and, until CES has a stddev "
+            "aggregation, continuous-Scorer stats (default: 1000)"
+        ),
     )
     p_mon.add_argument(
         "--alert-webhook",

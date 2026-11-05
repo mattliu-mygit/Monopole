@@ -9,6 +9,7 @@ import pytest
 
 from weave_agent_signals import cli
 from weave_agent_signals.catalogs import build_model_catalog
+from weave_agent_signals.patterns import ConfigStats, Stat
 from weave_agent_signals.runs.bundles import bundle_from_content_map
 
 
@@ -232,3 +233,43 @@ def test_model_help_describes_catalog_selection(command, capsys):
     output = capsys.readouterr().out
     assert "model ID" in output
     assert "custom URL" not in output
+
+
+def _analysis(monkeypatch, records):
+    stats = ConfigStats(
+        {"v1": {"outcome.test": Stat(3, 1.0, True)}, "v2": {"outcome.test": Stat(1, 0.0, True)}},
+        {"v1": 3, "v2": 1},
+    )
+    asked = []
+
+    def read_analysis(_args, *, feedback: bool):
+        asked.append(feedback)
+        return stats, records if feedback else []
+
+    monkeypatch.setattr(cli.ces_commands, "read_analysis", read_analysis)
+    return asked
+
+
+def test_analyze_ab_reads_only_query_stats(monkeypatch, capsys):
+    asked = _analysis(monkeypatch, [])
+
+    assert cli.main(["analyze", "--ab"]) == 0
+
+    out = capsys.readouterr().out
+    assert asked == [False]
+    assert "Config: v1  (3 evaluated targets)" in out
+    assert "outcome.test" in out and "100% pass  (n=3" in out
+
+
+def test_analyze_digest_summarizes_query_stats_with_raw_examples(monkeypatch, capsys):
+    asked = _analysis(
+        monkeypatch, [{"feedback_type": "weave_agent_signals.efficiency", "payload": {"rating": 1}}]
+    )
+
+    assert cli.main(["analyze"]) == 0
+
+    out = capsys.readouterr().out
+    assert asked == [True]
+    assert "**outcome.test**: 75% pass rate (n=4" in out
+    assert "efficiency" not in out  # raw Scores feed only examples and trends
+    assert "## A/B Comparison" in out

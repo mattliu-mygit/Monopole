@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import get_args
 
 from fastapi import APIRouter, HTTPException, Query
 
+from weave_agent_signals import ces_queries
 from weave_agent_signals.ces_client import CesSession, session_or_none, turns_from_rows
 from weave_agent_signals.judges.tokens import TokenCounterName, count_tokens
 from weave_agent_signals.judges.windowing import render_raw_turn
 from weave_agent_signals.models import FEEDBACK_PREFIX, TurnSpan, session_is_evaluable
 from weave_agent_signals.patterns import (
-    ab_leaderboard,
-    aggregate_scores,
     coaching_digest,
     detect_regressions,
+    stat_leaderboard,
+    stat_summaries,
 )
 from weave_agent_signals.routes._time import DateFilterError, parse_selection_bounds
 from weave_agent_signals.routes.models import (
@@ -181,6 +183,8 @@ def _date_error(error: DateFilterError) -> HTTPException:
 
 def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["inspection"])
+    # Query IDs and whether CES has a stddev aggregation, learned once per process.
+    query_state = ces_queries.QueryState()
 
     @router.get("/sessions")
     def get_sessions(
@@ -297,9 +301,13 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
 
     @router.get("/analyze")
     def get_analysis(limit: int = Query(default=1000, ge=1, le=5000)) -> AnalysisResponse:
+        # Summaries and the A/B leaderboard cover every Score, from CES queries. Trends and
+        # coaching examples cover the Scores on the newest `limit` turns and their sessions.
         with ces_factory() as ces:
-            feedback = ces.client.read_all_scores(ces.catalog, limit=limit)
-        if not feedback:
+            records = functools.cache(lambda: ces.client.read_all_scores(ces.catalog, limit=limit))
+            stats = ces_queries.config_stats(ces.client, ces.catalog, query_state, records)
+            feedback = records()
+        if not stats.by_config and not feedback:
             return AnalysisResponse.model_validate(
                 {
                     "summary": [],
@@ -309,7 +317,6 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                 }
             )
 
-        summaries = aggregate_scores(feedback)
         summary = [
             {
                 "scorer": scorer,
@@ -321,7 +328,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                 "tag_counts": dict(value.tag_counts),
                 "confident": value.confident,
             }
-            for scorer, value in sorted(summaries.items())
+            for scorer, value in sorted(stat_summaries(stats).items())
         ]
         leaderboard = [
             {
@@ -332,7 +339,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                     for scorer, value in item.scores.items()
                 },
             }
-            for item in ab_leaderboard(feedback)
+            for item in stat_leaderboard(stats)
         ]
         trends = [
             {
@@ -348,7 +355,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                 "summary": summary,
                 "ab_leaderboard": leaderboard,
                 "trends": trends,
-                "coaching_markdown": coaching_digest(feedback),
+                "coaching_markdown": coaching_digest(feedback, stats),
             }
         )
 

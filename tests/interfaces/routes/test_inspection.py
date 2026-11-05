@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from weave_agent_signals.models import SessionView, SubagentSpan, ToolSpan, TraceRole, TurnSpan
+from weave_agent_signals.patterns import ConfigStats, Stat
+from weave_agent_signals.routes import inspection
 from weave_agent_signals.routes.inspection import create_inspection_router
 
 
@@ -324,7 +326,19 @@ def test_session_detail_returns_children_and_splits_session_and_turn_scores():
     assert "judging_token_estimates" not in body
 
 
-def test_empty_analysis_is_stable():
+def _stats(monkeypatch, stats: ConfigStats) -> list:
+    calls = []
+
+    def config_stats(client, catalog, state, feedback):
+        calls.append(state)
+        return stats
+
+    monkeypatch.setattr(inspection.ces_queries, "config_stats", config_stats)
+    return calls
+
+
+def test_empty_analysis_is_stable(monkeypatch):
+    _stats(monkeypatch, ConfigStats({}, {}))
     client, _backend = _client()
 
     response = client.get("/api/analyze")
@@ -336,6 +350,47 @@ def test_empty_analysis_is_stable():
         "trends": [],
         "coaching_markdown": "",
     }
+
+
+def test_analysis_summarizes_query_stats_and_keeps_trends_on_raw_scores(monkeypatch):
+    calls = _stats(
+        monkeypatch,
+        ConfigStats(
+            {
+                "v1": {"outcome.test": Stat(3, 1.0, True)},
+                "v2": {"outcome.test": Stat(1, 0.0, True)},
+            },
+            {"v1": 3, "v2": 1},
+        ),
+    )
+    client, backend = _client()
+    backend.all_scores = [
+        {
+            **_record(f"t{index}", "efficiency", rating),
+            "payload": {
+                "rating": rating,
+                "details": {"turn_started_at": f"2026-07-{index + 1:02d}T00:00:00Z"},
+            },
+        }
+        for index, rating in enumerate([1.0, 1.0, 0.0, 0.0])
+    ]
+
+    first = client.get("/api/analyze").json()
+    client.get("/api/analyze")
+
+    assert [(s["scorer"], s["count"], s["pass_rate"]) for s in first["summary"]] == [
+        ("outcome.test", 4, 0.75)
+    ]
+    assert [
+        (e["config_version"], e["evaluated_target_count"]) for e in first["ab_leaderboard"]
+    ] == [
+        ("v1", 3),
+        ("v2", 1),
+    ]
+    assert [t["scorer"] for t in first["trends"]] == ["efficiency"]
+    assert "outcome.test**: 75% pass rate (n=4" in first["coaching_markdown"]
+    # One query state per router, so a process creates each query once.
+    assert calls[0] is calls[1]
 
 
 def test_session_listing_includes_judge_token_estimates_only_when_asked():

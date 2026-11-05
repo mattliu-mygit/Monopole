@@ -36,13 +36,15 @@ def trend_alert(reg: dict) -> Alert:
 
 
 def config_alert(reg: dict) -> Alert:
-    """Build an alert from a detect_config_regressions() entry (worse new config)."""
+    """Build an alert from a config_regressions() entry (worse new config)."""
+    lo, hi = reg["difference_ci"]
     return Alert(
         key=f"config:{reg['config']}:{reg['scorer']}",
         text=(
             f"config {reg['config']} worse than {reg['prev_config']}: {reg['scorer']} "
             f"{reg['prev_mean']:.2f} -> {reg['new_mean']:.2f} "
-            f"(delta {reg['delta']:+.2f}, n={reg['sample_count']})"
+            f"(delta {reg['delta']:+.2f}, 95% CI {lo:+.2f} to {hi:+.2f}, "
+            f"n={reg['sample_count']} vs {reg['prev_sample_count']})"
         ),
     )
 

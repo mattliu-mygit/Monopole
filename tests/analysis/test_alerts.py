@@ -29,11 +29,14 @@ def test_config_alert_key_and_text():
         "new_mean": 0.2,
         "prev_mean": 0.9,
         "delta": -0.7,
+        "difference_ci": (-0.95, -0.31),
         "sample_count": 8,
+        "prev_sample_count": 12,
     }
     a = alerts.config_alert(reg)
     assert a.key == "config:abc123:outcome.git"
     assert "abc123" in a.text and "def456" in a.text
+    assert "95% CI -0.95 to -0.31, n=8 vs 12" in a.text
 
 
 def test_send_logs_and_posts_webhook(monkeypatch):

@@ -1,7 +1,9 @@
-"""Pattern analysis: A/B leaderboards, trend detection, coaching digest.
+"""Pattern analysis: summaries, A/B leaderboards, config regressions, trends, coaching digest.
 
-Operates on feedback-shaped records built from CES Scores. All analysis is pure
-computation — no API calls. The CLI orchestrates query → analyze → report.
+Summaries, the A/B leaderboard, and config regressions take `ConfigStats`, the per-config
+count, mean, and spread that CES EvaluationQueries compute over every Score (`ces_queries`).
+Trends, coaching examples, and reflection's digest take feedback-shaped records built from raw
+CES Scores. All analysis is pure computation — no API calls.
 """
 
 from __future__ import annotations
@@ -49,15 +51,83 @@ def _wilson_ci(k: float, n: int, z: float = _Z_95) -> tuple[float, float]:
     return (max(0.0, center - margin), min(1.0, center + margin))
 
 
-def _mean_ci(values: list[float], z: float = _Z_95) -> tuple[float, float]:
-    """95% CI for a mean via the standard error (normal approximation)."""
-    n = len(values)
-    mean = sum(values) / n
-    if n < 2:
-        return (max(0.0, mean), min(1.0, mean))
-    var = sum((v - mean) ** 2 for v in values) / (n - 1)
-    se = math.sqrt(var / n)
-    return (max(0.0, mean - z * se), min(1.0, mean + z * se))
+@dataclass(frozen=True)
+class Stat:
+    """One Scorer's ratings in one group: how many, their mean, and their sample standard
+    deviation. A binary Scorer's spread follows from its mean, so it has no stddev; a
+    continuous one has none below two ratings."""
+
+    count: int
+    mean: float
+    binary: bool
+    stddev: float | None = None
+
+
+@dataclass(frozen=True)
+class ConfigStats:
+    """Each config version's Stat per Scorer, and how many turns and sessions it scored.
+
+    A config the adapter didn't record is "unknown"."""
+
+    by_config: dict[str, dict[str, Stat]]
+    targets: dict[str, int]
+
+
+def _stat(ratings: list[float], binary: bool | None = None) -> Stat:
+    """The Stat of observed ratings. Without `binary`, ratings that are all 0 or 1 are binary."""
+    n = len(ratings)
+    mean = sum(ratings) / n
+    if binary is None:
+        binary = all(r in (0.0, 1.0) for r in ratings)
+    if binary or n < 2:
+        return Stat(n, mean, binary)
+    return Stat(n, mean, False, math.sqrt(sum((r - mean) ** 2 for r in ratings) / (n - 1)))
+
+
+def _ci(stat: Stat, z: float = _Z_95) -> tuple[float, float]:
+    """A 95% interval for the mean: Wilson for a binary Scorer, the normal approximation from
+    the standard error otherwise, which collapses to the mean without a stddev."""
+    if stat.binary:
+        return _wilson_ci(stat.mean * stat.count, stat.count, z)
+    margin = 0.0 if stat.stddev is None else z * stat.stddev / math.sqrt(stat.count)
+    return (max(0.0, stat.mean - margin), min(1.0, stat.mean + margin))
+
+
+def _pool(stats: list[Stat]) -> Stat:
+    """The Stat of several groups' ratings taken together, exact for the sample variance:
+    within-group squares plus each group's squared distance from the pooled mean."""
+    n = sum(s.count for s in stats)
+    mean = sum(s.count * s.mean for s in stats) / n
+    binary = all(s.binary for s in stats)
+    if binary or n < 2 or any(s.stddev is None and s.count > 1 for s in stats):
+        return Stat(n, mean, binary)
+    squares = sum(
+        (s.count - 1) * (s.stddev or 0.0) ** 2 + s.count * (s.mean - mean) ** 2 for s in stats
+    )
+    return Stat(n, mean, False, math.sqrt(squares / (n - 1)))
+
+
+def difference_ci(new: Stat, prev: Stat, z: float = _Z_95) -> tuple[float, float] | None:
+    """A 95% interval for `new.mean - prev.mean`, or None when a continuous side has no stddev
+    or fewer than two ratings.
+
+    Binary Scorers use Newcombe's hybrid score interval, built from each side's Wilson interval.
+    Continuous ones use Welch's standard error with the normal approximation. Unlike asking
+    whether the two groups' own intervals overlap, which is stricter than a 95% test, this
+    flags a difference whenever the interval excludes 0."""
+    delta = new.mean - prev.mean
+    if new.binary and prev.binary:
+        new_lo, new_hi = _ci(new, z)
+        prev_lo, prev_hi = _ci(prev, z)
+        return (
+            delta - math.hypot(new.mean - new_lo, prev_hi - prev.mean),
+            delta + math.hypot(new_hi - new.mean, prev.mean - prev_lo),
+        )
+    # One rating has no spread, whatever stddev CES reports for it.
+    if new.stddev is None or prev.stddev is None or min(new.count, prev.count) < 2:
+        return None
+    se = math.sqrt(new.stddev**2 / new.count + prev.stddev**2 / prev.count)
+    return (delta - z * se, delta + z * se)
 
 
 @dataclass
@@ -65,8 +135,6 @@ class ScoreSummary:
     scorer: str
     count: int
     mean: float
-    min_val: float
-    max_val: float
     tag_counts: dict[str, int] = field(default_factory=dict)
     binary: bool = False
     ci: tuple[float, float] = (0.0, 1.0)
@@ -257,25 +325,23 @@ def _extract_run_time(feedback: dict) -> object:
     )
 
 
+def _summary(scorer: str, stat: Stat, tag_counts: dict[str, int] | None = None) -> ScoreSummary:
+    return ScoreSummary(
+        scorer=scorer,
+        count=stat.count,
+        mean=stat.mean,
+        tag_counts=tag_counts or {},
+        binary=stat.binary,
+        ci=_ci(stat),
+    )
+
+
 def _summarize(scorer: str, ratings: list[float], tags: list[list[str]]) -> ScoreSummary:
     tag_counts: dict[str, int] = defaultdict(int)
     for tag_list in tags:
         for tag in tag_list:
             tag_counts[tag] += 1
-
-    binary = all(r in (0.0, 1.0) for r in ratings)
-    ci = _wilson_ci(sum(ratings), len(ratings)) if binary else _mean_ci(ratings)
-
-    return ScoreSummary(
-        scorer=scorer,
-        count=len(ratings),
-        mean=sum(ratings) / len(ratings),
-        min_val=min(ratings),
-        max_val=max(ratings),
-        tag_counts=dict(tag_counts),
-        binary=binary,
-        ci=ci,
-    )
+    return _summary(scorer, _stat(ratings), dict(tag_counts))
 
 
 def aggregate_scores(feedback: list[dict]) -> dict[str, ScoreSummary]:
@@ -326,6 +392,55 @@ def ab_leaderboard(feedback: list[dict]) -> list[ABResult]:
         )
 
     return results
+
+
+def stat_summaries(stats: ConfigStats) -> dict[str, ScoreSummary]:
+    """Each Scorer's summary across every config. Query results carry no tags."""
+    by_scorer: dict[str, list[Stat]] = defaultdict(list)
+    for scorers in stats.by_config.values():
+        for scorer, stat in scorers.items():
+            by_scorer[scorer].append(stat)
+    return {scorer: _summary(scorer, _pool(group)) for scorer, group in by_scorer.items()}
+
+
+def stat_leaderboard(stats: ConfigStats) -> list[ABResult]:
+    """The A/B leaderboard: each config's summaries, configs in name order."""
+    return [
+        ABResult(
+            config_version=config,
+            evaluated_target_count=stats.targets.get(config, 0),
+            scores={scorer: _summary(scorer, stat) for scorer, stat in scorers.items()},
+        )
+        for config, scorers in sorted(stats.by_config.items())
+    ]
+
+
+def stats_from_feedback(feedback: list[dict]) -> dict[str, dict[str, Stat]]:
+    """Continuous Stats by config and CES Scorer name from raw Score records, for a CES
+    without a spread aggregation. Every Scorer this serves is continuous."""
+    ratings: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    for fb in feedback:
+        name = _details(fb).get("ces_scorer")
+        rating = _extract_rating(fb)
+        if is_evaluation_feedback_eligible(fb) and isinstance(name, str) and rating is not None:
+            ratings[_extract_config(fb)][name].append(rating)
+    return {
+        config: {name: _stat(values, binary=False) for name, values in scorers.items()}
+        for config, scorers in ratings.items()
+    }
+
+
+def config_latest(feedback: list[dict]) -> dict[str, datetime]:
+    """Each config's latest agent run time among these Score records. CES queries have no
+    time, so this orders configs for config regressions."""
+    latest: dict[str, datetime] = {}
+    for fb in feedback:
+        if not is_evaluation_feedback_eligible(fb):
+            continue
+        config, run_time = _extract_config(fb), _parse_dt(_extract_run_time(fb))
+        if run_time is not None and (config not in latest or run_time > latest[config]):
+            latest[config] = run_time
+    return latest
 
 
 def _parse_dt(val: object) -> datetime | None:
@@ -402,8 +517,8 @@ def detect_regressions(
             # "significant" = the two windows' 95% CIs don't overlap and each has
             # enough samples. Small-sample swings are still surfaced (a human may
             # want them) but flagged non-significant so they aren't over-read.
-            older_ci = _mean_ci(older)
-            recent_ci = _mean_ci(recent)
+            older_ci = _ci(_stat(older, binary=False))
+            recent_ci = _ci(_stat(recent, binary=False))
             disjoint = older_ci[0] > recent_ci[1] or recent_ci[0] > older_ci[1]
             significant = (
                 disjoint
@@ -425,66 +540,51 @@ def detect_regressions(
     return regressions
 
 
-def detect_config_regressions(
-    feedback: list[dict],
-    min_samples: int = MIN_CONFIDENT_SAMPLES,
+def config_regressions(
+    stats: ConfigStats,
+    latest: dict[str, datetime],
     threshold: float = 0.2,
 ) -> list[dict[str, Any]]:
-    """Compare the newest two configs within each comparable score cohort.
+    """Compare each Scorer's newest two configs.
 
     The instruction-change safety net: catch a config change (a CLAUDE.md/skill edit) that made
-    scores worse. Only drops are reported (improvements are not regressions);
-    ``significant`` marks drops where the two cohorts' 95% CIs don't overlap and
-    both have enough samples. Configs are ordered by their latest agent run time
-    separately for each scorer and session-judge evaluation context.
+    scores worse. Configs are ordered by their latest agent run time in `latest`; a config
+    missing from it, or "unknown", isn't compared. Only drops of at least `threshold` are
+    reported. A drop is ``significant`` when the 95% interval on the difference
+    (`difference_ci`) lies wholly below 0.
     """
-    by_scorer: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
-    latest: dict[str, dict[str, datetime]] = defaultdict(dict)
-    for fb in feedback:
-        if not is_evaluation_feedback_eligible(fb):
-            continue
-        scorer = _analytics_scorer(fb)
-        cfg = _extract_config(fb)
-        if scorer is None or _extract_rating(fb) is None or cfg == "unknown":
-            continue
-        by_scorer[scorer][cfg].append(fb)
-        rt = _parse_dt(_extract_run_time(fb))
-        if rt is not None and (cfg not in latest[scorer] or rt > latest[scorer][cfg]):
-            latest[scorer][cfg] = rt
-
+    ordered = sorted(
+        (config for config in stats.by_config if config in latest and config != "unknown"),
+        key=latest.__getitem__,
+    )
+    scorers = sorted({scorer for config in ordered for scorer in stats.by_config[config]})
     regressions = []
-    for scorer in sorted(by_scorer):
-        scorer_latest = latest[scorer]
-        ordered = sorted(
-            (cfg for cfg in by_scorer[scorer] if cfg in scorer_latest),
-            key=lambda cfg: scorer_latest[cfg],
-        )
-        if len(ordered) < 2:
+    for scorer in scorers:
+        having = [config for config in ordered if scorer in stats.by_config[config]]
+        if len(having) < 2:
             continue
-        new_cfg, prev_cfg = ordered[-1], ordered[-2]
-        if scorer_latest[new_cfg] == scorer_latest[prev_cfg]:
+        new_cfg, prev_cfg = having[-1], having[-2]
+        if latest[new_cfg] == latest[prev_cfg]:
             # Equal latest run times (e.g. a single backfill with no per-turn
             # timestamps) leave no defensible new-vs-previous direction.
             continue
-        ns = aggregate_scores(by_scorer[scorer][new_cfg]).get(scorer)
-        ps = aggregate_scores(by_scorer[scorer][prev_cfg]).get(scorer)
-        if ns is None or ps is None:
-            continue
-        delta = ns.mean - ps.mean
+        new, prev = stats.by_config[new_cfg][scorer], stats.by_config[prev_cfg][scorer]
+        delta = new.mean - prev.mean
         if delta > -threshold:  # only drops are regressions
             continue
-        disjoint = ns.ci[1] < ps.ci[0]  # new cohort's upper bound below prev's lower
-        significant = disjoint and ns.count >= min_samples and ps.count >= min_samples
+        ci = difference_ci(new, prev)
         regressions.append(
             {
                 "scorer": scorer,
                 "config": new_cfg,
                 "prev_config": prev_cfg,
-                "new_mean": round(ns.mean, 3),
-                "prev_mean": round(ps.mean, 3),
+                "new_mean": round(new.mean, 3),
+                "prev_mean": round(prev.mean, 3),
                 "delta": round(delta, 3),
-                "sample_count": ns.count,
-                "significant": significant,
+                "difference_ci": None if ci is None else (round(ci[0], 3), round(ci[1], 3)),
+                "sample_count": new.count,
+                "prev_sample_count": prev.count,
+                "significant": ci is not None and ci[1] < 0,
             }
         )
     return regressions
@@ -625,13 +725,14 @@ def _behavioral_examples(feedback: list[dict]) -> dict[str, list[dict[str, objec
     return dict(by_rubric)
 
 
-def coaching_digest(feedback: list[dict]) -> str:
-    """Build a human-readable coaching digest from scored feedback."""
-    if not feedback:
-        return "No scores found."
+def coaching_digest(feedback: list[dict], stats: ConfigStats | None = None) -> str:
+    """Build a human-readable coaching digest from scored feedback.
 
+    With `stats`, the summary and A/B sections come from them, and `feedback` supplies only
+    the behavioral examples and trends. Without, every section comes from `feedback`, as
+    reflection needs: its digest must describe exactly the records it pinned."""
     representative = [fb for fb in feedback if is_evaluation_feedback_eligible(fb)]
-    summaries = aggregate_scores(representative)
+    summaries = aggregate_scores(representative) if stats is None else stat_summaries(stats)
     if not summaries:
         return "No scores found."
 
@@ -693,7 +794,7 @@ def coaching_digest(feedback: list[dict]) -> str:
                 f"({r['delta']:+.2f}, n={r['sample_count']}){mark}"
             )
 
-    ab = ab_leaderboard(representative)
+    ab = ab_leaderboard(representative) if stats is None else stat_leaderboard(stats)
     if len(ab) > 1:
         lines.extend(["", "## A/B Comparison", ""])
         for result in ab:
