@@ -34,7 +34,7 @@ from typing import Any
 
 import httpx
 
-from weave_agent_signals.ces_catalog import DETAILS_SUFFIX, Catalog
+from weave_agent_signals.ces_catalog import DETAILS_SUFFIX, RATING, Catalog
 from weave_agent_signals.ces_client import CesClient, content_digest
 from weave_agent_signals.patterns import ConfigStats, Stat, stats_from_feedback
 
@@ -169,11 +169,12 @@ def run_query(
 
 
 def session_scorers(client: CesClient, catalog: Catalog) -> list[QueryScorer]:
-    """Every session value Scorer the sessions Evaluation selects. Judge panel Scorers aren't in
-    the catalog, so their names are read."""
-    refs = [ref for ref in catalog.scorers.values() if ref.spec.target_kind == "trajectory"]
+    """Every session rating Scorer the sessions Evaluation selects: no measurement. Judge panel
+    Scorers aren't in the catalog, so their names are read."""
+    sessions = [r for r in catalog.scorers.values() if r.spec.target_kind == "trajectory"]
+    refs = [r for r in sessions if r.spec.kind == RATING]
     scorers = [QueryScorer(r.spec.name, r.scorer_id, r.version_id, r.spec.binary) for r in refs]
-    known = {r.scorer_id for r in refs} | {r.details_scorer_id for r in refs}
+    known = {r.scorer_id for r in sessions} | {r.details_scorer_id for r in sessions}
     selection = client.select_scorers(
         catalog.sessions_evaluation_id,
         [{"scorer_id": s.scorer_id, "version_id": s.version_id} for s in scorers],
@@ -244,7 +245,7 @@ def config_stats(
         (
             QueryScorer(ref.spec.name, ref.scorer_id, ref.version_id, ref.spec.binary)
             for ref in catalog.scorers.values()
-            if ref.spec.target_kind == "case"
+            if ref.spec.target_kind == "case" and ref.spec.kind == RATING
         ),
         key=lambda s: s.name,
     )

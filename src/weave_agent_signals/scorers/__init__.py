@@ -7,7 +7,7 @@ from weave_agent_signals.scorers.efficiency import (
 )
 from weave_agent_signals.scorers.implicit import score_session_implicit
 from weave_agent_signals.scorers.outcome import score_turn_outcomes
-from weave_agent_signals.scorers.session import score_session_outcomes
+from weave_agent_signals.scorers.session import score_session_measures, score_session_outcomes
 
 
 def score_turn(turn: TurnSpan) -> list[Score]:
@@ -27,4 +27,4 @@ def score_trajectory(trajectory: SessionView) -> list[Score]:
     write them; a run pins only some of a session's turns, so it doesn't."""
     if not trajectory.turns:
         return []
-    return score_session_outcomes(trajectory)
+    return score_session_outcomes(trajectory) + score_session_measures(trajectory)

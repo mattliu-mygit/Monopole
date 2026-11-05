@@ -24,6 +24,7 @@ from weave_agent_signals.auth import get_api_key
 from weave_agent_signals.ces_catalog import (
     DETAILS_SUFFIX,
     DETERMINISTIC,
+    NOT_RATINGS,
     Catalog,
     ScorerRef,
     ScorerSpec,
@@ -159,6 +160,8 @@ def _score_record(target_id: str, case_input: dict, scores: list[dict], names: d
             ids[name] = score["score_id"]
     records = []
     for name, value in values.items():
+        if name in NOT_RATINGS:
+            continue  # records feed rating analysis only
         if not isinstance(value, (bool, int, float)) or not math.isfinite(value):
             continue  # not a rating; one malformed Score must not break a whole read
         extra = details.get(name) if isinstance(details.get(name), dict) else {}
@@ -253,6 +256,11 @@ def session_view(
                 tool_calls=[
                     _tool_span(c) for c in child_cases if c["input"].get("kind") == "tool_call"
                 ],
+                tokens=sum(
+                    _int((c.get("output") or {}).get("turn_input_tokens"))
+                    + _int((c.get("output") or {}).get("turn_output_tokens"))
+                    for c in child_cases
+                ),
             )
             for child, child_cases in children.items()
             if launch_case(child) in step_ids

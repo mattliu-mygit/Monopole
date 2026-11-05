@@ -67,6 +67,7 @@ class SubagentSpan:
     span_id: str
     agent_type: str | None
     tool_calls: list[ToolSpan] = field(default_factory=list)
+    tokens: int = 0  # input plus output tokens of the subagent's own turns
 
 
 @dataclass

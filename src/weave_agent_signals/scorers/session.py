@@ -13,6 +13,9 @@ from weave_agent_signals.scorers.outcome import BuildOutcome, TestRunOutcome, ex
 SESSION_TESTS = "outcome.session_tests_passed"
 SESSION_BUILDS = "outcome.session_no_failed_builds"
 SESSION_OUTCOMES = (SESSION_TESTS, SESSION_BUILDS)
+MEASURE_TURNS = "measure.turns"
+MEASURE_TOKENS = "measure.tokens"
+MEASURE_DURATION = "measure.duration_s"
 
 
 def _tool_calls(session: SessionView) -> list[ToolSpan]:
@@ -57,6 +60,45 @@ def score_session_outcomes(session: SessionView) -> list[Score]:
                 metadata={"runs": len(builds), "failed": [b.to_dict() for b in failed_builds]},
                 granularity="session",
                 reason=f"{len(failed_builds)} of {len(builds)} builds failed",
+            )
+        )
+    return scores
+
+
+def _measure(name: str, value: float, reason: str, **metadata) -> Score:
+    return Score(name, float(value), [], metadata, "session", confidence=1.0, reason=reason)
+
+
+def score_session_measures(session: SessionView) -> list[Score]:
+    """How much the Trajectory took. These are measurements, not ratings: none is better high.
+
+    - turns: the Trajectory's own turns.
+    - tokens: input plus output tokens of its own turns and of every subagent below it, so a
+      session's count is everything it spent. Cache reads aren't counted.
+    - duration: seconds its own turns ran, each from its first Case's start to its last Case's
+      end, summed, so the gaps between turns, when the user was reading or typing, don't
+      count. Turns without timestamps are left out, and with none timed there's no Score."""
+    own = session.total_tokens
+    below = sum(sub.tokens for turn in session.turns for sub in turn.subagents)
+    scores = [
+        _measure(MEASURE_TURNS, len(session.turns), f"{len(session.turns)} turns"),
+        _measure(
+            MEASURE_TOKENS,
+            own + below,
+            f"{own + below} tokens ({below} in subagents)",
+            own_tokens=own,
+            subagent_tokens=below,
+        ),
+    ]
+    timed = [t for t in session.turns if t.ended_at is not None]
+    if timed:
+        seconds = sum((t.ended_at - t.started_at).total_seconds() for t in timed)
+        scores.append(
+            _measure(
+                MEASURE_DURATION,
+                round(seconds, 3),
+                f"{seconds:.0f} s across {len(timed)} timed turns",
+                timed_turns=len(timed),
             )
         )
     return scores

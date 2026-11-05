@@ -17,6 +17,10 @@ from typing import Any
 
 TARGET_KINDS = {"turn": "case", "session": "trajectory", "comparison": "comparison"}
 DETAILS_SUFFIX = ".details"
+# What a Scorer's value means. A rating is a boolean or a [0, 1] number where higher is better;
+# summaries, the A/B leaderboard, trends, alerts, and coaching read only ratings. A measurement
+# is a number with no better direction, such as a token count, that queries sum and count.
+RATING, MEASUREMENT = "rating", "measurement"
 
 
 @dataclass(frozen=True)
@@ -28,6 +32,7 @@ class ScorerSpec:
     # Every value is 0 or 1, so a summary is a pass rate with a Wilson interval. It isn't part of
     # the CES Scorer, whose create key names only the name, value type, and target kind.
     binary: bool = False
+    kind: str = RATING
 
     @property
     def target_kind(self) -> str:
@@ -48,7 +53,12 @@ DETERMINISTIC = (
     # Session outcomes also score subagent Trajectories (`scorers/session.py`).
     ScorerSpec("outcome.session_tests_passed", "boolean", "session", binary=True),
     ScorerSpec("outcome.session_no_failed_builds", "boolean", "session", binary=True),
+    ScorerSpec("measure.turns", "number", "session", kind=MEASUREMENT),
+    ScorerSpec("measure.tokens", "number", "session", kind=MEASUREMENT),
+    ScorerSpec("measure.duration_s", "number", "session", kind=MEASUREMENT),
 )
+# Scorers whose Scores never join a rating path.
+NOT_RATINGS = frozenset(spec.name for spec in DETERMINISTIC if spec.kind != RATING)
 
 VERDICT = ScorerSpec(
     "ab.verdict",

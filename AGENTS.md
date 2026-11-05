@@ -108,6 +108,11 @@ product behavior; standalone reflection does not mutate managed files.
 - Feedback types use `weave_agent_signals.<scorer_name>`.
 - Ratings are booleans or finite floats in `[0, 1]`, always use higher-is-better
   direction, and declare turn/session granularity.
+- Measurements (`measure.*`, catalog kind `measurement`) are numbers with no
+  better direction, such as turns or tokens. Queries sum and count them; they
+  never enter rating summaries, the A/B leaderboard's ratings, trends, alerts,
+  or coaching. Mark any new non-rating Scorer with its catalog kind so those
+  paths skip it.
 - Payloads include scorer version and score time; scorer-specific data belongs
   under `payload.details`.
 - Trend ordering uses `details.turn_started_at`, not write time.

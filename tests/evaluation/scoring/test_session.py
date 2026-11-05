@@ -8,8 +8,12 @@ from datetime import datetime, timedelta, timezone
 from weave_agent_signals.models import SessionView, SubagentSpan, ToolSpan, TurnSpan
 from weave_agent_signals.scorers import score_trajectory
 from weave_agent_signals.scorers.session import (
+    MEASURE_DURATION,
+    MEASURE_TOKENS,
+    MEASURE_TURNS,
     SESSION_BUILDS,
     SESSION_TESTS,
+    score_session_measures,
     score_session_outcomes,
 )
 
@@ -112,3 +116,27 @@ def test_a_subagent_trajectory_is_scored_from_its_own_turns():
 
     [score] = [s for s in score_trajectory(subagent) if s.scorer == SESSION_TESTS]
     assert (score.value, score.granularity) == (True, "session")
+
+
+def test_measures_count_own_turns_all_tokens_below_and_turn_time_without_gaps():
+    helper = SubagentSpan("traj-a", "worker", [], tokens=500)
+    session = _session(
+        _turn(0, subagents=[helper]),  # 4 minutes
+        _turn(1),  # 4 minutes, after a 6-minute gap
+        _turn(2, ended_at=None),  # no timestamps
+    )
+
+    measures = _by_name(score_session_measures(session))
+
+    assert measures[MEASURE_TURNS].value == 3.0
+    # Each turn has 100 input and 10 output tokens; cache reads aren't counted.
+    assert measures[MEASURE_TOKENS].value == 3 * 110 + 500
+    assert measures[MEASURE_TOKENS].metadata == {"own_tokens": 330, "subagent_tokens": 500}
+    assert measures[MEASURE_DURATION].value == 480.0
+    assert measures[MEASURE_DURATION].metadata == {"timed_turns": 2}
+
+
+def test_no_timed_turn_means_no_duration():
+    measures = _by_name(score_session_measures(_session(_turn(0, ended_at=None))))
+
+    assert MEASURE_DURATION not in measures and measures[MEASURE_TURNS].value == 1.0

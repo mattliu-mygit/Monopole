@@ -28,8 +28,31 @@ Process evaluation produces:
   steering or denial event; and
 - session completion, the complement of a conservative abandonment signal.
 
+Session outcomes read every turn of a session, or of a subagent run, and are
+written on that session or subagent Trajectory:
+
+- the last test run passed, taking turns in order and each turn's own and
+  subagents' tool calls by start time; and
+- no build failed.
+
+A Trajectory with no test run, or no build, has no Score for it, so a rate
+covers only Trajectories that produced the evidence. No combined "resolved"
+rating exists: the outcome evidence shows what commands returned, not whether
+the user's task was done, and a composite of weak signals would hide which one
+moved.
+
 Raw correction density, abandonment, token counts, duration, tool counts, and
-model tier remain explanatory context rather than negative-direction ratings.
+model tier are not ratings. Turns, tokens, and duration are recorded as
+measurements: numbers with no better direction, written per session and
+subagent Trajectory so queries can sum them by config, for example tokens per
+successful session. Measurements never enter rating summaries, leaderboards,
+trends, alerts, or coaching. A session's tokens include the subagents below it;
+its turns and duration are its own, and duration counts only time inside turns.
+No cost in currency is recorded, because the session data has no prices.
+
+Whole-session Scorers are written by `score` and `backfill`, which read the
+whole session. Evaluation runs pin a subset of a session's turns, so they don't
+write them.
 
 Deterministic parsers favor precision over coverage. They inspect only retained
 tool evidence and do not claim intent, semantic code quality, test quality, or

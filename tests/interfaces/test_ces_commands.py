@@ -186,7 +186,11 @@ def test_score_writes_whole_trajectory_scores_on_the_session_and_each_subagent(
     _run("score", "--since", "2026-11-02")
     _run("score", "--since", "2026-11-02", "--force")
 
-    sessions = [(target, names) for _, kind, target, names in fake.writes if kind == "trajectory"]
+    sessions = [
+        (target, [n for n in names if not n.startswith("measure.")])
+        for _, kind, target, names in fake.writes
+        if kind == "trajectory"
+    ]
     assert sessions == [
         ("s1", ["implicit.completion", "outcome.session_tests_passed"]),
         ("traj-a", []),

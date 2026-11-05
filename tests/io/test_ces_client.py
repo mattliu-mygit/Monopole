@@ -1022,3 +1022,28 @@ def test_session_scores_with_subagents_adds_every_trajectory_below_the_sessions(
 
     assert set(client.session_scores(catalog, ["s1"], subagents=True)) == {"s1", "a1", "b1"}
     assert set(client.session_scores(catalog, ["s1"])) == {"s1"}
+
+
+def test_a_subagent_span_counts_the_tokens_of_its_own_turns():
+    totals = {"turn_input_tokens": 40, "turn_output_tokens": 2}
+    child = [
+        _case("a1", "user_message", "k1", 0, output=totals),
+        _case("a2", "assistant_message", "k1", 1, output={"input_tokens": 99}),
+        _case("a3", "user_message", "k2", 0, output=totals),
+    ]
+
+    view = session_view("traj-s", SESSION, {"traj-a": child})
+
+    assert view.turns[0].subagents[0].tokens == 84
+
+
+def test_a_measurement_score_never_becomes_a_rating_record():
+    names = {("sc-m", "v"): "measure.turns", ("sc-r", "v"): "implicit.completion"}
+    scores = [
+        {"score_id": "1", "scorer_id": "sc-m", "scorer_version_id": "v", "value": 1.0},
+        {"score_id": "2", "scorer_id": "sc-r", "scorer_version_id": "v", "value": True},
+    ]
+
+    records = _score_record("s1", {}, scores, names)
+
+    assert [r["feedback_type"] for r in records] == ["weave_agent_signals.implicit.completion"]
