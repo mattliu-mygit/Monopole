@@ -14,6 +14,7 @@ from weave_agent_signals.ces_queries import (
     QueryScorer,
     QueryState,
     config_stats,
+    judge_tables,
     run_query,
     subagent_counts,
 )
@@ -519,3 +520,54 @@ def test_an_unscored_session_group_adds_no_config_to_config_stats():
 
     assert stats.targets == {"cfg1": 6, "unknown": 1}
     assert "cfg2" not in stats.by_config
+
+
+GOAL_NEW = "judge.goal.panel-new"
+TOOL = "judge.tool.panel-x"
+JUDGE_SCORERS = [
+    QueryScorer("implicit.completion", "sc-c", "v-implicit.completion", True),
+    QueryScorer(JUDGE, "sc-j", "v-j", False),
+    QueryScorer(GOAL_NEW, "sc-n", "v-n", False),
+    QueryScorer(TOOL, "sc-t", "v-t", False),
+]
+
+
+@respx.mock
+def test_judge_tables_pair_each_panel_with_completion_and_other_panels_of_its_rubric():
+    def results(definition):
+        judge = definition["group_by"][1]["name"]
+        return [
+            _row([True, 0.75], 6, **{f"{judge}:mean": 0.75, f"{judge}:count": 6}),
+            _row([False, 0.25], 3, **{f"{judge}:mean": 0.25, f"{judge}:count": 3}),
+            # Sessions without the reference Score, or without the judge's, aren't paired.
+            _row([None, 0.5], 4, **{f"{judge}:mean": 0.5, f"{judge}:count": 4}),
+            _row([True, None], 2, **{f"{judge}:mean": None, f"{judge}:count": 0}),
+        ]
+
+    routes = Insight(results)
+
+    tables = judge_tables(_client(), CATALOG, QueryState(), JUDGE_SCORERS)
+
+    assert [(judge, reference) for judge, reference, _ in tables] == [
+        (JUDGE, "implicit.completion"),
+        (GOAL_NEW, "implicit.completion"),
+        (TOOL, "implicit.completion"),
+        (JUDGE, GOAL_NEW),
+    ]
+    assert tables[0][2] == {(True, 0.75): 6, (False, 0.25): 3}
+    pair = routes.definitions[-1]
+    assert pair["target_kind"] == "trajectory"
+    assert pair["group_by"] == [
+        {"kind": "score", "name": GOAL_NEW},
+        {"kind": "score", "name": JUDGE},
+    ]
+    assert {m["scorer_version_id"] for m in pair["metrics"]} == {"v-j", "v-n"}
+
+
+@respx.mock
+def test_judge_tables_select_the_reference_too_when_falling_back():
+    routes = Insight(lambda _definition: [], sessions_create=CASE_EVALUATIONS_ONLY)
+
+    judge_tables(_client(), CATALOG, QueryState(), JUDGE_SCORERS[:2])
+
+    assert [s["version_id"] for s in routes.turn_selections[0]] == ["v-j", "v-implicit.completion"]

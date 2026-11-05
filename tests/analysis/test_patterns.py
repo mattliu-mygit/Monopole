@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
 
+from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.patterns import (
     ConfigStats,
     ScoreSummary,
@@ -16,12 +18,14 @@ from weave_agent_signals.patterns import (
     _wilson_ci,
     ab_leaderboard,
     aggregate_scores,
+    agreement,
     coaching_digest,
     config_latest,
     config_regressions,
     detect_regressions,
     difference_ci,
     is_evaluation_feedback_eligible,
+    pass_threshold,
     stat_leaderboard,
     stat_summaries,
     stats_from_feedback,
@@ -1177,3 +1181,40 @@ def test_continuous_trends_use_welchs_interval():
 
     assert (steady_reg["delta"], steady_reg["significant"]) == (-0.25, True)
     assert noisy_reg["significant"] is False
+
+
+def test_agreement_counts_matching_pass_fail_and_the_judge_gap_from_exact_pairs():
+    joint = {(True, 0.75): 6, (True, 0.25): 2, (False, 0.25): 3, (False, 0.75): 1}
+
+    got = agreement("judge.verification.panel-abc", "implicit.completion", joint)
+
+    assert (got.count, got.agree) == (12, 9)
+    # Wilson's interval for 9 of 12.
+    assert got.ci == pytest.approx((0.4677, 0.9111), abs=1e-4)
+    assert got.passing == Stat(8, 0.625, False, pytest.approx(0.2315, abs=1e-4))
+    assert got.failing == Stat(4, 0.375, False, 0.25)
+    # Welch: 0.25 ± 1.96 × sqrt(0.05357/8 + 0.0625/4).
+    assert got.gap_ci == pytest.approx((-0.0428, 0.5428), abs=1e-4)
+
+
+def test_agreement_passes_a_rating_at_the_rubric_threshold(monkeypatch):
+    rubric = SESSION_RUBRICS["judge.verification"]
+    monkeypatch.setitem(SESSION_RUBRICS, "judge.verification", replace(rubric, threshold=0.75))
+
+    # 0.75 passes the 0.75 threshold; 0.5 fails it, though it passes the other panel's 0.5.
+    got = agreement(
+        "judge.verification.panel-a",
+        "judge.retired.panel-b",
+        {(0.5, 0.75): 2, (0.5, 0.5): 1, (0.25, 0.5): 4},
+    )
+
+    assert pass_threshold("judge.verification.panel-a") == 0.75
+    assert pass_threshold("judge.retired.panel-b") == 0.5
+    assert (got.count, got.agree) == (7, 6)
+
+
+def test_agreement_without_a_failing_reference_has_no_gap():
+    got = agreement("judge.verification.panel-abc", "implicit.completion", {(True, 1.0): 3})
+
+    assert got.failing is None and got.gap_ci is None
+    assert (got.count, got.agree) == (3, 3)

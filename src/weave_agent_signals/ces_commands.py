@@ -326,14 +326,17 @@ class Insights(NamedTuple):
     """Query results for `analyze`'s opt-in insights; None where not asked for."""
 
     subagents: dict[str, Counter] | None
+    judge_tables: list[tuple[str, str, dict[tuple, int]]] | None
 
 
 def read_insights(args: argparse.Namespace) -> Insights:
-    """The insights `args` asks for, from CES queries over every Trajectory."""
+    """The insights `args` asks for, from CES queries over every Trajectory and session Score."""
     with connect(args) as ces:
         client, catalog, state = ces.client, ces.catalog, ces_queries.QueryState()
         subagents = ces_queries.subagent_counts(client, catalog, state) if args.subagents else None
-    return Insights(subagents)
+        scorers = ces_queries.session_scorers(client, catalog) if args.judges else []
+        tables = ces_queries.judge_tables(client, catalog, state, scorers) if args.judges else None
+    return Insights(subagents, tables)
 
 
 def read_analysis(args: argparse.Namespace, *, feedback: bool) -> tuple[ConfigStats, list[dict]]:

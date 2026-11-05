@@ -18,6 +18,7 @@ from typing import Any, Iterable, Mapping
 
 from weave_agent_signals.ces_catalog import DETERMINISTIC
 from weave_agent_signals.judges.review import PANEL_CONTRACT_VERSION
+from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.models import FEEDBACK_PREFIX
 
 # Below this many samples a scorer's mean/pass-rate is not trustworthy on its own.
@@ -601,6 +602,57 @@ def config_regressions(
             }
         )
     return regressions
+
+
+def pass_threshold(scorer: str) -> float:
+    """The rating at or above which a Scorer passes: a judge panel's rubric threshold from the
+    rubric catalog, else 0.5, which a binary Scorer's 1 or true passes. A query sees only the
+    rating, so a run that pinned another threshold for the same panel isn't separated."""
+    rubric = SESSION_RUBRICS.get(scorer.split(".panel-")[0])
+    return 0.5 if rubric is None else rubric.threshold
+
+
+@dataclass(frozen=True)
+class Agreement:
+    """How a judge panel's ratings line up with a reference Scorer's on the sessions both rated.
+
+    `agree` counts sessions where both pass or both fail. `passing` and `failing` are the
+    judge's ratings on the sessions where the reference passes and where it fails."""
+
+    judge: str
+    reference: str
+    count: int
+    agree: int
+    passing: Stat | None
+    failing: Stat | None
+
+    @property
+    def ci(self) -> tuple[float, float]:
+        return _wilson_ci(self.agree, self.count)
+
+    @property
+    def gap_ci(self) -> tuple[float, float] | None:
+        """A 95% interval for the judge's mean where the reference passes minus where it fails."""
+        if self.passing is None or self.failing is None:
+            return None
+        return difference_ci(self.passing, self.failing)
+
+
+def agreement(judge: str, reference: str, joint: Mapping[tuple, int]) -> Agreement:
+    """`joint` maps (reference rating, judge rating) to how many sessions got that pair. The
+    pairs are exact, so the judge's spread on each side comes from them, not from CES."""
+    judge_threshold, reference_threshold = pass_threshold(judge), pass_threshold(reference)
+    agree = 0
+    ratings: dict[bool, list[float]] = {True: [], False: []}
+    for (reference_rating, judge_rating), sessions in joint.items():
+        reference_passes = reference_rating >= reference_threshold
+        if (judge_rating >= judge_threshold) == reference_passes:
+            agree += sessions
+        ratings[reference_passes] += [float(judge_rating)] * sessions
+    passing, failing = (
+        _stat(ratings[side], binary=False) if ratings[side] else None for side in (True, False)
+    )
+    return Agreement(judge, reference, sum(joint.values()), agree, passing, failing)
 
 
 def _bounded_text(value: object, limit: int) -> str | None:

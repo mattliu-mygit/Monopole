@@ -100,10 +100,10 @@ evaluation.
 
 ## Query insights
 
-`analyze --subagents` adds a Trajectory query
-over every Trajectory, run on the sessions Evaluation with the same fallback and
-create keys as the session query ([`01-ces-io.md`](01-ces-io.md#queries)). It is
-CLI-only; `monitor` and the Analyze page don't run it.
+`analyze --subagents` and `--judges` each add Trajectory queries
+over every session, run on the sessions Evaluation with the same fallback and
+create keys as the session query ([`01-ces-io.md`](01-ces-io.md#queries)). They
+are CLI-only; `monitor` and the Analyze page don't run them.
 
 ### Subagents
 
@@ -116,7 +116,31 @@ sessions, 12 subagents (0.30 per session; depth 1: 10, depth 2: 2)", not a
 main-versus-subagent score gap. A subagent's root Case is the parent's Case
 that launched it, which carries the same config version.
 
-A query returns at most 10,000 groups, which this query stays far below.
+### Judge agreement
+
+Each judge panel Scorer is compared with a reference Scorer on the sessions
+both rated: with `implicit.completion`, and with every other panel of the same
+rubric. Each pair is one query grouped by both Score columns, which returns
+exact counts of each (reference, judge) rating pair. A panel's rating is the
+mean of one to three judges' five anchors, so a column has at most 13 values and
+needs no bucketing. From the pairs the insight reports:
+
+- agreement: the share of sessions where both pass or both fail, with a Wilson
+  interval. A rating passes at or above its rubric's catalog threshold, and a
+  true `implicit.completion` passes. A query sees only ratings, so a run that
+  pinned another threshold is judged by the catalog's.
+- the judge's mean where the reference passes versus where it fails, with a
+  Welch difference interval computed from the exact pairs, so it needs no CES
+  `stddev`.
+
+Only session Scorers are compared. Judges score sessions, and the outcome
+Scorers (`outcome.test` and the rest) score turns, which a Trajectory query
+can't read, so `implicit.completion` is the only outcome reference. It is weak:
+it says only that the last turn didn't end in an error, and every session of two
+turns or fewer counts as completed. Agreement is raw, not corrected for chance: two judges
+that both pass 90% of sessions agree on at least 80% by construction.
+
+A query returns at most 10,000 groups, which these queries stay far below.
 
 ## Monitoring
 

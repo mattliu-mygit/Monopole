@@ -281,8 +281,8 @@ def _insights(monkeypatch, **found):
     asked = []
 
     def read_insights(args):
-        asked.append(args.subagents)
-        return Insights(found.get("subagents"))
+        asked.append((args.subagents, args.judges))
+        return Insights(found.get("subagents"), found.get("judge_tables"))
 
     def read_analysis(*_args, **_kwargs):
         pytest.fail("an insight flag alone reads no Score analysis")
@@ -299,11 +299,33 @@ def test_analyze_subagents_reports_trajectory_counts_by_config(monkeypatch, caps
     assert cli.main(["analyze", "--subagents"]) == 0
 
     out = capsys.readouterr().out
-    assert asked == [True]
+    assert asked == [(True, False)]
     assert (
         "Config: v1  sessions=40  subagents=12 (0.30 per session; depth 1: 10, depth 2: 2)" in out
     )
     assert "Config: v2  sessions=5  subagents=0 (0.00 per session)" in out
+
+
+def test_analyze_judges_reports_agreement_and_the_gap(monkeypatch, capsys):
+    tables = [
+        (
+            "judge.verification.panel-abc",
+            "implicit.completion",
+            {(True, 0.75): 6, (True, 0.25): 2, (False, 0.25): 3, (False, 0.75): 1},
+        ),
+        ("judge.verification.panel-abc", "judge.verification.panel-new", {}),
+    ]
+    _insights(monkeypatch, judge_tables=tables)
+
+    assert cli.main(["analyze", "--judges"]) == 0
+
+    out = capsys.readouterr().out
+    assert "judge.verification.panel-abc vs implicit.completion" in out
+    assert (
+        "n=12  agree 75% (CI 47%–91%)  judge mean 0.62 when the reference passes vs 0.38 when "
+        "it fails (+0.25, CI -0.04–+0.54)\n"
+    ) in out
+    assert "no session has both Scores" in out
 
 
 def test_analyze_with_an_insight_and_ab_reads_both(monkeypatch, capsys):
@@ -311,7 +333,7 @@ def test_analyze_with_an_insight_and_ab_reads_both(monkeypatch, capsys):
     monkeypatch.setattr(
         cli.ces_commands,
         "read_insights",
-        lambda args: Insights({"v1": Counter({0: 1})}),
+        lambda args: Insights({"v1": Counter({0: 1})}, None),
     )
 
     assert cli.main(["analyze", "--ab", "--subagents"]) == 0

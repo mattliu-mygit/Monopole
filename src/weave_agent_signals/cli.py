@@ -26,6 +26,8 @@ from weave_agent_signals.models import (
     SessionView,
 )
 from weave_agent_signals.patterns import (
+    Agreement,
+    agreement,
     coaching_digest,
     config_latest,
     config_regressions,
@@ -241,7 +243,7 @@ def _report_judging(judging_plan, pending: list, written: int, errors: int) -> i
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
-    insights = args.subagents
+    insights = args.subagents or args.judges
     digest = args.coaching or not (args.ab or args.trends or insights)
     if args.ab or args.trends or digest:
         _print_score_analysis(args, digest)
@@ -249,6 +251,8 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         found = ces_commands.read_insights(args)
         if found.subagents is not None:
             _print_subagents(found.subagents)
+        if found.judge_tables is not None:
+            _print_agreements([agreement(*table) for table in found.judge_tables])
     return 0
 
 
@@ -322,6 +326,33 @@ def _print_subagents(counts: dict[str, Counter]) -> None:
             f"  Config: {config}  sessions={sessions}  "
             f"subagents={subagents} ({per_session}{detail})"
         )
+
+
+def _print_agreements(agreements: list[Agreement]) -> None:
+    if not agreements:
+        print("No judge panel Scorers found.")
+        return
+    print(
+        "\nJudge agreement (sessions both Scorers rated; a rating at or above its rubric "
+        "threshold passes, as does a true implicit.completion):\n"
+    )
+    for item in agreements:
+        print(f"  {item.judge} vs {item.reference}")
+        if not item.count:
+            print("    no session has both Scores")
+            continue
+        lo, hi = item.ci
+        line = f"    n={item.count}  agree {item.agree / item.count:.0%} (CI {lo:.0%}–{hi:.0%})"
+        if item.passing is not None and item.failing is not None:
+            gap = item.passing.mean - item.failing.mean
+            ci = item.gap_ci
+            interval = "no interval" if ci is None else f"CI {ci[0]:+.2f}–{ci[1]:+.2f}"
+            mark = "  significant" if ci is not None and (ci[0] > 0 or ci[1] < 0) else ""
+            line += (
+                f"  judge mean {item.passing.mean:.2f} when the reference passes vs "
+                f"{item.failing.mean:.2f} when it fails ({gap:+.2f}, {interval}){mark}"
+            )
+        print(line)
 
 
 def cmd_monitor(args: argparse.Namespace) -> int:
@@ -580,6 +611,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--subagents",
         action="store_true",
         help="Count each config's sessions and subagent Trajectories (every Trajectory)",
+    )
+    p_analyze.add_argument(
+        "--judges",
+        action="store_true",
+        help=(
+            "Compare each judge panel with implicit.completion and with other panels of its "
+            "rubric: agreement and mean gap (every session Score)"
+        ),
     )
 
     # monitor

@@ -331,6 +331,7 @@ def test_read_analysis_reads_the_newest_scores_at_most_once(monkeypatch, feedbac
     ("flags", "want"),
     [
         (["--subagents"], ["subagents"]),
+        (["--judges"], ["scorers", "judges"]),
     ],
 )
 def test_read_insights_runs_only_the_asked_queries_on_one_connection(monkeypatch, flags, want):
@@ -341,13 +342,24 @@ def test_read_insights_runs_only_the_asked_queries_on_one_connection(monkeypatch
         connections.append(args)
         return CesSession(client, CATALOG)
 
+    def session_scorers(_client, _catalog):
+        calls.append("scorers")
+        return ["s"]
+
+    def judge_tables(_client, _catalog, _state, scorers):
+        calls.append("judges")
+        return [("j", "r", {})] if scorers == ["s"] else []
+
     monkeypatch.setattr(ces_commands, "connect", connect)
     monkeypatch.setattr(queries, "subagent_counts", lambda *_: calls.append("subagents") or {})
+    monkeypatch.setattr(queries, "session_scorers", session_scorers)
+    monkeypatch.setattr(queries, "judge_tables", judge_tables)
 
     got = ces_commands.read_insights(cli.build_parser().parse_args(["analyze", *flags]))
 
     assert calls == want and len(connections) == 1
     assert (got.subagents is None) == ("subagents" not in want)
+    assert got.judge_tables == ([("j", "r", {})] if "judges" in want else None)
 
 
 def test_score_and_backfill_return_cleanly_when_no_sessions_match(fake, monkeypatch, capsys):

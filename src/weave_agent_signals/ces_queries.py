@@ -16,7 +16,7 @@ which selects every session Scorer: the deterministic ones and each judge panel'
 query there; then the turns Evaluation also selects the session Scorers and runs it.
 
 `analyze`'s opt-in insights add more Trajectory queries, with the same fallback: Trajectories by
-config and depth (subagent counts).
+config and depth (subagent counts) and judge Scores by a reference Score (judge agreement).
 
 A query definition never changes. Its create key holds the Evaluation ID and a digest of its
 body, so a rerun replays to the same query ID, and a new judge panel, which is a new Scorer,
@@ -28,6 +28,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from itertools import combinations
 from typing import Any
 
 import httpx
@@ -166,7 +167,7 @@ def run_query(
     return [Group(values, targets[values], stats) for values, stats in groups.items()]
 
 
-def _session_scorers(client: CesClient, catalog: Catalog) -> list[QueryScorer]:
+def session_scorers(client: CesClient, catalog: Catalog) -> list[QueryScorer]:
     """Every session value Scorer the sessions Evaluation selects. Judge panel Scorers aren't in
     the catalog, so their names are read."""
     refs = [ref for ref in catalog.scorers.values() if ref.spec.target_kind == "trajectory"]
@@ -246,7 +247,7 @@ def config_stats(
         ),
         key=lambda s: s.name,
     )
-    session_scorers = _session_scorers(client, catalog)
+    trajectory_scorers = session_scorers(client, catalog)
     turns = run_query(
         client,
         state,
@@ -262,7 +263,7 @@ def config_stats(
         state,
         name="monopole sessions by config",
         group_by=[_CONFIG, _DEPTH],
-        scorers=session_scorers,
+        scorers=trajectory_scorers,
     )
     by_config: dict[str, dict[str, Stat]] = defaultdict(dict)
     targets: Counter[str] = Counter()
@@ -277,7 +278,7 @@ def config_stats(
     if state.stddev is False:
         # Fallback: delete when CES stddev ships. Continuous Scorers take today's raw-Score
         # path, which covers only the newest turns that `feedback` reads.
-        continuous = {s.name for s in turn_scorers + session_scorers if not s.binary}
+        continuous = {s.name for s in turn_scorers + trajectory_scorers if not s.binary}
         for scorers in by_config.values():
             for name in continuous & scorers.keys():
                 del scorers[name]
@@ -311,3 +312,39 @@ def subagent_counts(client: CesClient, catalog: Catalog, state: QueryState) -> d
         config, depth = group.values
         counts[config or "unknown"][depth] += group.targets
     return dict(counts)
+
+
+def judge_tables(
+    client: CesClient, catalog: Catalog, state: QueryState, scorers: list[QueryScorer]
+) -> list[tuple[str, str, dict[tuple, int]]]:
+    """For each judge panel Scorer and a reference, how many sessions got each pair of values:
+    (judge, reference, {(reference value, judge value): sessions}), only where both rated.
+
+    The references are `implicit.completion` and each other panel of the same rubric. All are
+    session Scorers; turn Scorers such as `outcome.test` can't join a Trajectory query. Each
+    pair is one query grouped by both Score columns. A panel's rating is the mean of one to
+    three judges' five anchors, so a column has at most 13 values and a table at most 169."""
+    by_name = {s.name: s for s in scorers}
+    judges = sorted(name for name in by_name if ".panel-" in name)
+    pairs = [(judge, COMPLETION) for judge in judges if COMPLETION in by_name] + [
+        (a, b) for a, b in combinations(judges, 2) if a.split(".panel-")[0] == b.split(".panel-")[0]
+    ]
+    tables = []
+    for judge, reference in pairs:
+        groups = _trajectory_groups(
+            client,
+            catalog,
+            state,
+            name=f"monopole {judge} by {reference}",
+            group_by=[{"kind": "score", "name": reference}, {"kind": "score", "name": judge}],
+            # Only the judge's count is read. Naming the reference too makes the fallback select
+            # it on the turns Evaluation, which a Score column needs.
+            scorers=[by_name[judge], by_name[reference]],
+        )
+        joint = {
+            group.values: group.stats[judge].count
+            for group in groups
+            if group.values[0] is not None and judge in group.stats
+        }
+        tables.append((judge, reference, joint))
+    return tables
