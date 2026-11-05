@@ -10,7 +10,7 @@ import respx
 
 from weave_agent_signals.ces_catalog import DETERMINISTIC, Catalog, ScorerRef
 from weave_agent_signals.ces_client import CesClient
-from weave_agent_signals.ces_queries import QueryState, config_stats
+from weave_agent_signals.ces_queries import QueryScorer, QueryState, config_stats, run_query
 from weave_agent_signals.patterns import Stat
 
 BASE = "http://ces.test/v1/namespaces/wandb/scopes/scope-1"
@@ -184,6 +184,36 @@ def test_a_query_is_created_once_per_process_and_replayed_by_content():
     assert all(key.startswith("monopole-query-v1:ev-turns:") for key in first)
     # A new process replays the same keys, so CES returns the same query IDs.
     assert routes.keys()[2:] == first
+
+
+@respx.mock
+def test_the_same_query_on_another_evaluation_gets_its_own_create_key():
+    # A query ID saved for one Evaluation must never be reused for another.
+    keys = []
+
+    def create(request):
+        keys.append(request.headers["Idempotency-Key"])
+        return httpx.Response(200, json={"evaluation_query_id": f"q-{len(keys)}"})
+
+    for evaluation in ("ev-turns", "ev-sessions"):
+        queries = f"{BASE}/evaluations/{evaluation}/queries"
+        respx.post(queries).mock(side_effect=create)
+        for query_id in ("q-1", "q-2"):
+            respx.get(f"{queries}/{query_id}/results").mock(
+                return_value=httpx.Response(200, json={"rows": []})
+            )
+    state = QueryState()
+    scorers = [QueryScorer("implicit.completion", "sc-c", "v-c", True)]
+    query = {"name": "q", "target_kind": "trajectory", "group_by": [], "scorers": scorers}
+
+    for evaluation in ("ev-turns", "ev-sessions", "ev-turns"):
+        run_query(_client(), state, evaluation, **query)
+
+    turns, sessions = keys
+    assert turns.startswith("monopole-query-v1:ev-turns:")
+    assert sessions.startswith("monopole-query-v1:ev-sessions:")
+    assert turns.split(":")[-1] == sessions.split(":")[-1]
+    assert state.ids == {turns: "q-1", sessions: "q-2"}
 
 
 @respx.mock
