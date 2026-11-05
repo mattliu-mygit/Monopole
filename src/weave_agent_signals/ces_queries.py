@@ -160,6 +160,9 @@ def _session_scorers(client: CesClient, catalog: Catalog) -> list[QueryScorer]:
         # could mix panels in one mean; details Scorers hold JSON.
         if name and ".panel-" in name and not name.endswith(DETAILS_SUFFIX):
             scorers.append(QueryScorer(name, item["scorer_id"], item["version_id"], False))
+    # CES runs queries only on Case-kind Evaluations, so session Scorers ride on the turns
+    # Evaluation. Move session queries to the sessions Evaluation once CES runs queries on
+    # Trajectory Evaluations.
     client.select_scorers(
         catalog.turns_evaluation_id,
         [{"scorer_id": s.scorer_id, "version_id": s.version_id} for s in scorers],

@@ -70,7 +70,10 @@ by a field no Case has set, which is every Dataset that never ran a subagent.
 CES runs queries only on an Evaluation whose primary target kind is case, and
 list-trajectory-rows only on one whose kind is trajectory. Both queries therefore
 run on the turns Evaluation, which also selects every session Scorer. Judge panel
-Scorers are found in the sessions Evaluation's selection.
+Scorers are found in the sessions Evaluation's selection. This relies on the
+turns Evaluation accepting new Scorers: a fixed Evaluation, whose Scorer list is
+chosen at creation, would reject the added Scorers with 409. Session queries move
+to the sessions Evaluation once CES runs queries on Trajectory Evaluations.
 
 A query definition never changes. Its create is keyed
 `monopole-query-v1:<evaluation>:<body digest>`, so a rerun replays to the same
