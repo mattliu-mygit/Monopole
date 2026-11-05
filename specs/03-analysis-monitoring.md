@@ -100,12 +100,14 @@ and `outcome.session_tests_passed`, keeps depth 0, and takes each
 measurement's mean and count, whose product is its sum. A session succeeds when
 its last test run passed. The success rate covers sessions that ran a test,
 with a Wilson interval; sessions with no test run, including ones Monopole
-never scored, are counted apart. Spend per success divides the tokens, turns,
-and seconds of every session that ran a test by the successes, so failed
-attempts count as the cost of the successes. A session's tokens include its
-subagents', so subagent spend is counted once. For example, 3 passing sessions
-of 1,000 tokens and 2 failing of 4,000 give 60% success and 11,000 / 3 ≈ 3,667
-tokens per success.
+never scored, are counted apart. Spend per success counts only sessions with a
+test outcome: it divides the tokens, turns, and seconds of every session that
+ran a test by the successes, so failed attempts count as the cost of the
+successes, and a session that ran no test adds neither spend nor success. The
+seconds are `measure.duration_s`, agent working time inside turns. A session's
+tokens include its subagents', so subagent spend is counted once. For example,
+3 passing sessions of 1,000 tokens, 2 failing of 4,000, and 5 untested of 50
+give 60% success and 11,000 / 3 ≈ 3,667 tokens per success.
 
 The digest is input to reflection, not an independent score or proof of the
 cause of a regression. Reflection separately pins the exact feedback records it

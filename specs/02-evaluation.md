@@ -47,7 +47,11 @@ measurements: numbers with no better direction, written per session and
 subagent Trajectory so queries can sum them by config, for example tokens per
 successful session. Measurements never enter rating summaries, leaderboards,
 trends, alerts, or coaching. A session's tokens include the subagents below it;
-its turns and duration are its own, and duration counts only time inside turns.
+its turns and duration are its own. `measure.duration_s` is time inside turns,
+which is agent working time, not wall time: each turn counts from its first
+Case's start to its last Case's end, and the gaps between turns, while the user
+reads or types, don't count. A session of two 4-minute turns an hour apart
+measures 480 seconds.
 No cost in currency is recorded, because the session data has no prices.
 
 Dimensions are string Scores that let queries slice sessions the same way
