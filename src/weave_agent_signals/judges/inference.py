@@ -176,9 +176,15 @@ _SECRET_ASSIGNMENT = re.compile(
     r"[^\s,;}]+"
 )
 _BEARER_SECRET = re.compile(r"(?i)\bbearer\s+[^\s,;}]+")
-# W&B rejects a request that turns reasoning off for these models with HTTP 400 "This model always
-# reasons; reasoning cannot be disabled". Every other W&B catalog model accepted it on 2026-11-04.
-_WANDB_ALWAYS_REASONING_MODELS = frozenset({"reflection/Beam-1.0-501B-A23B"})
+# Most W&B models turn reasoning off with enable_thinking=false. These models turn it down with
+# reasoning_effort instead (measured 2026-11-04): Beam rejects enable_thinking=false with HTTP
+# 400 and reasons least at minimal; GLM 5.3 and GLM 5.3 Flash accept it but keep reasoning, and
+# reason about 100 tokens at low.
+_WANDB_REASONING_EFFORT = {
+    "reflection/Beam-1.0-501B-A23B": "minimal",
+    "zai-org/GLM-5.3": "low",
+    "zai-org/GLM-5.3-Flash": "low",
+}
 
 
 def _raw_output_digest(raw_output: str) -> str:
@@ -252,10 +258,16 @@ def _json_object_recovery_messages(
     return _output_contract_messages(messages, json_schema["schema"])
 
 
+def _wandb_reasoning_off(model: str) -> dict[str, Any]:
+    """The request fields that turn a W&B model's reasoning off, or as far down as it goes."""
+    effort = _WANDB_REASONING_EFFORT.get(model)
+    if effort:
+        return {"reasoning_effort": effort}
+    return {"chat_template_kwargs": {"enable_thinking": False}}
+
+
 def _wandb_retry_body(body: dict[str, Any]) -> dict[str, Any]:
-    recovered = dict(body)
-    if body["model"] not in _WANDB_ALWAYS_REASONING_MODELS:
-        recovered["chat_template_kwargs"] = {"enable_thinking": False}
+    recovered = {**body, **_wandb_reasoning_off(body["model"])}
     response_format = recovered.get("response_format")
     if isinstance(response_format, Mapping) and response_format.get("type") == "json_schema":
         recovered["response_format"] = {"type": "json_object"}
@@ -783,12 +795,8 @@ class InferenceClient:
         }
         if response_format:
             body["response_format"] = response_format
-        if (
-            self.backend == "wandb"
-            and reasoning == "disabled"
-            and model not in _WANDB_ALWAYS_REASONING_MODELS
-        ):
-            body["chat_template_kwargs"] = {"enable_thinking": False}
+        if self.backend == "wandb" and reasoning == "disabled":
+            body.update(_wandb_reasoning_off(model))
 
         data, request_count = self._post_with_retry("/chat/completions", body)
 

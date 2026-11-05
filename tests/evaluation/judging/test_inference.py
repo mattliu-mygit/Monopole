@@ -484,7 +484,20 @@ def test_wandb_transport_retry_uses_concise_json_mode(client, monkeypatch):
     assert events[6]["output_mode"] == "json_object_fallback"
 
 
-def test_wandb_never_disables_reasoning_for_a_model_that_always_reasons(client, monkeypatch):
+@pytest.mark.parametrize(
+    ("model", "reasoning_fields"),
+    [
+        (
+            "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+            {"chat_template_kwargs": {"enable_thinking": False}},
+        ),
+        ("reflection/Beam-1.0-501B-A23B", {"reasoning_effort": "minimal"}),
+        ("zai-org/GLM-5.3-Flash", {"reasoning_effort": "low"}),
+    ],
+)
+def test_wandb_turns_reasoning_down_the_way_each_model_honors(
+    client, monkeypatch, model, reasoning_fields
+):
     request = httpx.Request("POST", "https://api.inference.wandb.ai/v1/chat/completions")
     responses = iter(
         [
@@ -506,14 +519,16 @@ def test_wandb_never_disables_reasoning_for_a_model_that_always_reasons(client, 
     monkeypatch.setattr(inference.time, "sleep", lambda _delay: None)
 
     client.chat_json(
-        model="reflection/Beam-1.0-501B-A23B",
+        model=model,
         messages=_messages(),
         response_schema=_schema(),
         reasoning="disabled",
     )
 
     assert [call["response_format"]["type"] for call in calls] == ["json_schema", "json_object"]
-    assert all("chat_template_kwargs" not in call for call in calls)
+    reasoning_keys = ("chat_template_kwargs", "reasoning_effort")
+    for call in calls:
+        assert {key: call[key] for key in reasoning_keys if key in call} == reasoning_fields
 
 
 def test_wandb_reuses_recovery_mode_for_same_model_and_schema(client, monkeypatch):

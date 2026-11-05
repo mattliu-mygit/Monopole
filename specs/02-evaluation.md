@@ -113,7 +113,9 @@ feedback. The merge cites finding IDs; the host derives the final canonical
 trace citations from those immutable findings.
 
 CoreWeave Serverless Inference digest and verdict-merge requests disable
-optional model reasoning through the provider's documented request setting.
+optional model reasoning through the provider's documented request setting, or,
+for a model that ignores or rejects that setting, request the lowest reasoning
+effort the model honors.
 Those phases compress or consolidate the substantive rubric analysis already
 performed in the raw-evidence window reviews, so spending their output budget on
 hidden reasoning reduces reliability. Window review retains each model's default
