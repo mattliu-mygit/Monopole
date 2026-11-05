@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -12,6 +14,7 @@ import respx
 from weave_agent_signals.ces_catalog import VERDICT, Catalog, ScorerSpec
 from weave_agent_signals.ces_client import (
     MAX_RETRY_AFTER_S,
+    QUERY_SLOTS,
     CesClient,
     _score_record,
     _tool_span,
@@ -1084,3 +1087,52 @@ def test_root_case_input_reads_the_trajectory_then_its_root_case():
     root = CesClient("http://ces.test", "scope-1", api_key="k").root_case_input("traj-s")
 
     assert root == {"kind": "session", "cwd": "/r/core"}
+
+
+class _InFlight:
+    """A respx side effect that holds each request briefly and records the most in flight."""
+
+    def __init__(self, response: dict):
+        self.response, self.now, self.most = response, 0, 0
+        self.lock = threading.Lock()
+
+    def __call__(self, request):
+        with self.lock:
+            self.now += 1
+            self.most = max(self.most, self.now)
+        time.sleep(0.05)
+        with self.lock:
+            self.now -= 1
+        return httpx.Response(200, json=self.response)
+
+
+@respx.mock
+def test_reads_that_take_a_ces_query_slot_run_at_most_query_slots_at_once():
+    rows = _InFlight({"rows": []})
+    respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(side_effect=rows)
+    launch = _case("c1", "tool_call", "t1", 0, children=[f"traj-{i}" for i in range(8)])
+    respx.get(f"{BASE}/trajectories/traj-s/cases").mock(
+        return_value=httpx.Response(200, json={"cases": [launch]})
+    )
+    cases = _InFlight({"cases": []})
+    respx.get(url__regex=rf"{BASE}/trajectories/traj-\d/cases").mock(side_effect=cases)
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+
+    client.session_turn_rows(Catalog("ev-turns", "ev-sessions", {}), [f"s{i}" for i in range(8)])
+    client.read_session("traj-s")
+
+    assert rows.most == QUERY_SLOTS
+    assert cases.most > QUERY_SLOTS  # plain entity reads take no slot
+
+
+@respx.mock
+def test_a_row_read_gets_the_query_retries_on_a_busy_ces():
+    busy = httpx.Response(503, headers={"Retry-After": "1"})
+    respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
+        side_effect=[busy] * 5 + [httpx.Response(200, json={"rows": []})]
+    )
+    slept = []
+    client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=slept.append)
+
+    assert client.turn_scores(Catalog("ev-turns", "ev-sessions", {}), "s1") == {}
+    assert slept == [1.0, 2, 4, 8, 16]

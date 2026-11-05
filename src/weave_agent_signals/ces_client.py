@@ -8,9 +8,11 @@ Trajectory. The adapter's `specs/EVALUATIONS_CASE_CONTRACT.md` defines the field
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -43,13 +45,18 @@ from weave_agent_signals.models import (
 )
 
 ATTEMPTS = 3
-# An EvaluationQuery run takes one of CES's 2 query slots per instance for up to 10 s, and CES
-# answers a busy instance with 503 and Retry-After: 1, so query calls back off longer: 1, 2, 4,
-# 8, and 16 s, about 31 s in all.
+# CES runs at most 2 queries at a time per instance: row reads, Trajectory-row reads, and
+# EvaluationQuery results share them, and a request with none free gets 503 with Retry-After: 1.
+# Monopole sends at most QUERY_SLOTS of those requests at once from the whole process, so its own
+# concurrent reads can't fill every slot, and retries them longer: 1, 2, 4, 8, and 16 s, about
+# 31 s in all. Other clients still take slots, so a 503 stays possible and the retries matter.
+QUERY_SLOTS = 2
 QUERY_ATTEMPTS = 6
+_query_slots = threading.BoundedSemaphore(QUERY_SLOTS)
 MAX_RETRY_AFTER_S = 30.0
 PAGE_LIMIT = 1000
-# Independent reads (one session's turn rows, one subagent's Cases) run this many at once.
+# Independent reads (one session's turn rows, one subagent's Cases) run this many at once. Reads
+# that take a CES query slot still wait for one of QUERY_SLOTS.
 CONCURRENT_READS = 16
 # A turn's row is its first Case; the adapter numbers each turn's Cases from 0. Subagent turns
 # carry an agent ID and belong to the session turn that launched them, so they're left out.
@@ -469,17 +476,21 @@ class CesClient:
         params=None,
         body=None,
         key: str | None = None,
-        attempts: int = ATTEMPTS,
+        slot: bool = False,
     ) -> dict:
         """Retries network errors, 429, and 5xx with doubling waits, waiting at least any
-        Retry-After. Raises the last error."""
+        Retry-After. Raises the last error. A `slot` request takes a CES query slot: it waits
+        for one of QUERY_SLOTS, holding it only while the request is in flight, and gets
+        QUERY_ATTEMPTS."""
         headers = {"Idempotency-Key": key} if key else {}
+        attempts = QUERY_ATTEMPTS if slot else ATTEMPTS
         for attempt in range(1, attempts + 1):
             backoff = 2 ** (attempt - 1)
             try:
-                response = self._http.request(
-                    method, self.base + path, params=params, json=body, headers=headers
-                )
+                with _query_slots if slot else contextlib.nullcontext():
+                    response = self._http.request(
+                        method, self.base + path, params=params, json=body, headers=headers
+                    )
             except httpx.TransportError:
                 if attempt == attempts:
                     raise
@@ -563,16 +574,16 @@ class CesClient:
             found = pool.map(lambda sid: self._rows(path, {"filter": _turns_of(sid)}), session_ids)
             return dict(zip(session_ids, found))
 
-    def _rows(
-        self, path: str, body: dict | None, limit: int | None = None, attempts: int = ATTEMPTS
-    ) -> list[dict]:
+    def _rows(self, path: str, body: dict | None, limit: int | None = None) -> list[dict]:
+        """Every row of a paged route that takes a CES query slot: Evaluation rows, Trajectory
+        rows, or EvaluationQuery results."""
         rows, cursor = [], None
         while True:
             paging = {"limit": PAGE_LIMIT, **({"cursor": cursor} if cursor else {})}
             page = (
-                self._request("GET", path, params=paging, attempts=attempts)
+                self._request("GET", path, params=paging, slot=True)
                 if body is None
-                else self._request("POST", path, body={**body, **paging}, attempts=attempts)
+                else self._request("POST", path, body={**body, **paging}, slot=True)
             )
             rows.extend(page.get("rows") or [])
             if limit is not None and len(rows) >= limit:
@@ -655,16 +666,11 @@ class CesClient:
             f"/evaluations/{evaluation_id}/queries",
             body=body,
             key=key,
-            attempts=QUERY_ATTEMPTS,
         )["evaluation_query_id"]
 
     def query_results(self, evaluation_id: str, query_id: str) -> list[dict]:
         """Every result row of the query on the Evaluation's latest data."""
-        return self._rows(
-            f"/evaluations/{evaluation_id}/queries/{query_id}/results",
-            None,
-            attempts=QUERY_ATTEMPTS,
-        )
+        return self._rows(f"/evaluations/{evaluation_id}/queries/{query_id}/results", None)
 
     def create_comparison(
         self, members: list[tuple[str, str]], *, key: str, attributes: dict | None = None
@@ -699,7 +705,10 @@ class CesClient:
                 **({"cursor": cursor} if cursor else {}),
             }
             page = self._request(
-                "POST", f"/evaluations/{catalog.turns_evaluation_id}/rows/search", body=body
+                "POST",
+                f"/evaluations/{catalog.turns_evaluation_id}/rows/search",
+                body=body,
+                slot=True,
             )
             for row in page.get("rows") or []:
                 started, session = (

@@ -90,9 +90,15 @@ A query definition never changes. Its create is keyed
 `monopole-query-v1:<evaluation>:<body digest>`, so a rerun replays to the same
 query ID, a query saved on the turns Evaluation is never reused for the sessions
 Evaluation, and a new Scorer such as a new judge panel makes a new query. A query
-holds at most 100 metrics, so a Scorer list that needs more is split. Query calls
-retry a busy CES's 503 with waits of 1, 2, 4, 8, and 16 seconds, because CES runs
-only two queries at a time per instance.
+holds at most 100 metrics, so a Scorer list that needs more is split.
+
+CES runs only two queries at a time per instance. Row reads, Trajectory-row
+reads, and query results share those two slots, and a request that finds none
+free gets 503. So Monopole sends at most two of those requests at once from the
+whole process, however many sessions it reads in parallel, and retries each one's
+503 with waits of 1, 2, 4, 8, and 16 seconds. Entity reads (a Trajectory's Cases,
+a Case, a Score, a Scorer version) and creates take no slot and keep the
+ordinary three attempts.
 
 ## External correctness constraints
 
