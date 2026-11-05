@@ -1048,6 +1048,32 @@ def test_http_output_exhaustion_retries_once_and_combines_audit(client, monkeypa
     assert learned_response.output_mode == "json_object_fallback"
 
 
+def test_wandb_model_that_cannot_turn_reasoning_off_gets_a_third_attempt(client, monkeypatch):
+    bodies: list[dict] = []
+    client.backend = "wandb"
+
+    def fake_post(_path, body):
+        bodies.append(body)
+        if len(bodies) < 3:
+            payload = _completion("unfinished reasoning", finish_reason="length")
+            payload["usage"] = {"prompt_tokens": 100, "completion_tokens": 4, "total_tokens": 104}
+            return payload, 1
+        return _completion(), 1
+
+    monkeypatch.setattr(client, "_post_with_retry", fake_post)
+
+    parsed, response = client.chat_json(
+        model="reflection/Beam-1.0-501B-A23B",
+        messages=_messages(),
+        max_tokens=4,
+        response_schema=_schema(),
+    )
+
+    assert parsed == {"score": 0.75}
+    assert response.transport_request_count == 3
+    assert [body.get("reasoning_effort") for body in bodies] == [None, "minimal", "minimal"]
+
+
 def test_http_repeated_output_exhaustion_raises_with_combined_audit(client, monkeypatch):
     calls = 0
     events: list[dict[str, object]] = []

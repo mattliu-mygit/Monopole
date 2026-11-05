@@ -195,9 +195,10 @@ Invalid model content does not weaken canonical runtime validation. CoreWeave
 Serverless Inference retries preserve evidence constraints while using
 JSON-object mode with optional thinking disabled;
 other backends retry the same strict request. Invalid JSON that consumes the
-exact generation allowance retries once under the same budget. A second
-exhaustion fails closed as explicit
-output-limit exhaustion while retaining both attempts' usage and request counts.
+exact generation allowance retries once under the same budget, or twice for a
+model that cannot turn reasoning off. Exhausting the last retry fails closed as
+explicit output-limit exhaustion while retaining every attempt's usage and request
+counts.
 After a CoreWeave Serverless Inference model and schema pair requires recovery,
 later calls for that pair within the same run start in concise JSON recovery
 mode instead of repeating the known-expensive failing path. Exact schema
