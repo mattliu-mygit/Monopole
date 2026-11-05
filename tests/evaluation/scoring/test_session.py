@@ -144,6 +144,35 @@ def test_measures_count_own_turns_all_tokens_below_and_turn_time_without_gaps():
     assert measures[MEASURE_DURATION].metadata == {"timed_turns": 2}
 
 
+def test_overlapping_turns_count_their_shared_time_once():
+    # Session d258ec50's shape: the third turn's first Case is an earlier reply copied in with
+    # its old start, so the turn seems to span from before the session's first turn. Summed,
+    # the three turns made 4 + 4 + 70 = 78 minutes in a 34-minute session.
+    session = _session(
+        _turn(0),  # 0 to 4
+        _turn(1),  # 10 to 14
+        _turn(2, started_at=START - timedelta(minutes=40), ended_at=START + timedelta(minutes=30)),
+        _turn(3, started_at=START + timedelta(minutes=12), ended_at=START + timedelta(minutes=34)),
+    )
+
+    measures = _by_name(score_session_measures(session))
+
+    # 4 + 4, then the third turn from 14 to 30 and the fourth from 30 to 34.
+    assert measures[MEASURE_DURATION].value == (4 + 4 + 16 + 4) * 60
+    assert measures[MEASURE_DURATION].metadata == {"timed_turns": 4}
+
+
+def test_a_turn_wholly_inside_earlier_turns_adds_no_time():
+    session = _session(
+        _turn(0, ended_at=START + timedelta(minutes=20)),
+        _turn(1, started_at=START + timedelta(minutes=5), ended_at=START + timedelta(minutes=8)),
+        # Still counts from the first turn's end at 20, not the second's at 8.
+        _turn(2, started_at=START + timedelta(minutes=10), ended_at=START + timedelta(minutes=25)),
+    )
+
+    assert _by_name(score_session_measures(session))[MEASURE_DURATION].value == 25 * 60
+
+
 def test_no_timed_turn_means_no_duration():
     measures = _by_name(score_session_measures(_session(_turn(0, ended_at=None))))
 

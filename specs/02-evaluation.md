@@ -51,7 +51,12 @@ its turns and duration are its own. `measure.duration_s` is time inside turns,
 which is agent working time, not wall time: each turn counts from its first
 Case's start to its last Case's end, and the gaps between turns, while the user
 reads or types, don't count. A session of two 4-minute turns an hour apart
-measures 480 seconds.
+measures 480 seconds. Time that turns share counts once: in turn order, each
+turn counts only its time after every earlier turn ended, so the measure never
+exceeds the session's wall time. The adapter can copy an earlier turn's reply
+and compaction, with their old timestamps, into the first Cases of a later
+turn, which then seems to start hours before the turns around it; counted
+alone, such turns once measured one 22-hour session at 61 hours.
 No cost in currency is recorded, because the session data has no prices.
 
 Dimensions are string Scores that let queries slice sessions the same way

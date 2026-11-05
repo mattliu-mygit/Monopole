@@ -15,7 +15,7 @@ import urllib.parse
 from collections.abc import Mapping
 from datetime import datetime, timezone
 
-from weave_agent_signals.models import Score, SessionView, ToolSpan
+from weave_agent_signals.models import Score, SessionView, ToolSpan, TurnSpan
 from weave_agent_signals.scorers.outcome import BuildOutcome, TestRunOutcome, extract_outcomes
 
 SESSION_TESTS = "outcome.session_tests_passed"
@@ -96,6 +96,23 @@ def _measure(name: str, value: float, reason: str, **metadata) -> Score:
     return Score(name, float(value), [], metadata, "session", confidence=1.0, reason=reason)
 
 
+def _working_seconds(turns: list[TurnSpan]) -> float:
+    """Seconds inside these timed turns, taken in turn order, where each turn counts only its
+    time after every earlier turn ended, so overlapping turns count the shared time once.
+
+    The adapter can file an earlier turn's reply and compaction, with their own old timestamps,
+    as the first Cases of a later turn, so that turn appears to start hours before the turns
+    around it. Example: turns from 20:00 to 20:10 and from 20:30 to 20:40, then a turn whose
+    copied first Case is from 19:00 and whose own work runs to 21:00, count 10 + 10 + 20
+    minutes: the third turn counts from 20:40, not from 19:00."""
+    seconds, latest = 0.0, None
+    for turn in turns:
+        start = turn.started_at if latest is None else max(turn.started_at, latest)
+        seconds += max(0.0, (turn.ended_at - start).total_seconds())
+        latest = turn.ended_at if latest is None else max(latest, turn.ended_at)
+    return seconds
+
+
 def score_session_measures(session: SessionView) -> list[Score]:
     """How much the Trajectory took. These are measurements, not ratings: none is better high.
 
@@ -104,7 +121,8 @@ def score_session_measures(session: SessionView) -> list[Score]:
       session's count is everything it spent. Cache reads aren't counted.
     - duration: seconds its own turns ran, each from its first Case's start to its last Case's
       end, summed, so the gaps between turns, when the user was reading or typing, don't
-      count. Turns without timestamps are left out, and with none timed there's no Score."""
+      count. Turns without timestamps are left out, and with none timed there's no Score.
+      Overlaps count once (`_working_seconds`)."""
     own = session.total_tokens
     below = sum(sub.tokens for turn in session.turns for sub in turn.subagents)
     scores = [
@@ -119,7 +137,7 @@ def score_session_measures(session: SessionView) -> list[Score]:
     ]
     timed = [t for t in session.turns if t.ended_at is not None]
     if timed:
-        seconds = sum((t.ended_at - t.started_at).total_seconds() for t in timed)
+        seconds = _working_seconds(timed)
         scores.append(
             _measure(
                 MEASURE_DURATION,
