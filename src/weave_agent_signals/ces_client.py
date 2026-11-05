@@ -57,12 +57,13 @@ _query_slots = threading.BoundedSemaphore(QUERY_SLOTS)
 ATTEMPTS = 6
 MAX_RETRY_AFTER_S = 30.0
 PAGE_LIMIT = 1000
-# Prod CES answers most Evaluation row searches of 200 or more rows with 503
-# storage_capacity_exceeded, its storage limit rather than a busy query slot, and most of 50
-# (measured 2026-11-05: 1000 rows 0 of 6 single attempts, 100 rows 1 of 5, 50 rows 5 of 5).
-# Turn rows carry each turn's first Case, whose input can hold a pasted prompt of hundreds of KB.
-# Raise this once CES serves full pages again.
-ROW_SEARCH_PAGE_LIMIT = 50
+# Pages that carry whole Cases: a Trajectory's Cases and Evaluation row searches. Prod CES answers
+# a large page of them with 503 storage_capacity_exceeded, a storage limit rather than a busy
+# query slot, and it keeps failing on retry. Measured 2026-11-05: Trajectory Case lists of 1000
+# and 100 Cases (about 450 KB) failed 3 tries in a row on 4 of 6 Trajectories, 20 Cases on none;
+# turn row searches of 200 to 1000 rows failed 17 of 18 single tries, 100 rows 4 of 5. Raise
+# this once CES serves full pages again.
+CASE_PAGE_LIMIT = 20
 # Independent reads (one session's turn rows, one subagent's Cases) run this many at once. Reads
 # that take a CES query slot still wait for one of QUERY_SLOTS.
 CONCURRENT_READS = 16
@@ -514,7 +515,7 @@ class CesClient:
     def trajectory_cases(self, trajectory_id: str) -> list[dict]:
         cases, cursor = [], None
         while True:
-            params = {"limit": PAGE_LIMIT, **({"cursor": cursor} if cursor else {})}
+            params = {"limit": CASE_PAGE_LIMIT, **({"cursor": cursor} if cursor else {})}
             page = self._request("GET", f"/trajectories/{trajectory_id}/cases", params=params)
             cases.extend(page.get("cases") or [])
             cursor = page.get("next_cursor")
@@ -582,9 +583,9 @@ class CesClient:
 
     def _rows(self, path: str, body: dict | None, limit: int | None = None) -> list[dict]:
         """Every row of a paged route that takes a CES query slot: an Evaluation row search
-        (`body`, paged by ROW_SEARCH_PAGE_LIMIT), Trajectory rows, or EvaluationQuery results."""
+        (`body`, paged by CASE_PAGE_LIMIT), Trajectory rows, or EvaluationQuery results."""
         rows, cursor = [], None
-        page_limit = PAGE_LIMIT if body is None else ROW_SEARCH_PAGE_LIMIT
+        page_limit = PAGE_LIMIT if body is None else CASE_PAGE_LIMIT
         while True:
             paging = {"limit": page_limit, **({"cursor": cursor} if cursor else {})}
             page = (
@@ -710,7 +711,7 @@ class CesClient:
             body = {
                 "filter": FIRST_STEP,
                 "order_by": "i.started_at desc",
-                "limit": ROW_SEARCH_PAGE_LIMIT,
+                "limit": CASE_PAGE_LIMIT,
                 **({"cursor": cursor} if cursor else {}),
             }
             page = self._request(

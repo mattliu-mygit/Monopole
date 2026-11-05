@@ -105,11 +105,12 @@ Every request retries a 429, 5xx, or network error with waits of 1, 2, 4, 8, and
 kind, entity reads and Score writes included, with 503
 `storage_capacity_exceeded`, whether Monopole sent 2 requests at once or 16.
 
-Prod CES also answers large Evaluation row searches with 503
-`storage_capacity_exceeded`, a storage limit rather than a busy slot: in
-November 2026 a search of 200 or more turn rows almost always failed and one of
-50 almost always succeeded. So row searches page 50 rows at a time, and other
-paged reads 1,000.
+Prod CES also answers a large page of whole Cases with 503
+`storage_capacity_exceeded`, a storage limit rather than a busy slot, and keeps
+failing it on retry: in November 2026 a page of 100 Cases (about 450 KB) or 200
+turn rows usually failed and a page of 20 Cases did not. So a Trajectory's Case
+list and Evaluation row searches page 20 at a time, and other paged reads
+(Trajectory rows, query results) 1,000.
 
 ## External correctness constraints
 

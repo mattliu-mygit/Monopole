@@ -13,10 +13,10 @@ import respx
 
 from weave_agent_signals.ces_catalog import VERDICT, Catalog, ScorerSpec
 from weave_agent_signals.ces_client import (
+    CASE_PAGE_LIMIT,
     MAX_RETRY_AFTER_S,
     PAGE_LIMIT,
     QUERY_SLOTS,
-    ROW_SEARCH_PAGE_LIMIT,
     CesClient,
     _score_record,
     _tool_span,
@@ -1128,7 +1128,7 @@ def test_reads_that_take_a_ces_query_slot_run_at_most_query_slots_at_once():
 
 
 @respx.mock
-def test_row_searches_page_by_the_row_search_limit_and_other_rows_by_the_page_limit():
+def test_reads_of_whole_cases_page_by_the_case_page_limit_and_other_rows_by_the_page_limit():
     catalog = Catalog("ev-turns", "ev-sessions", {})
     search = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
         return_value=httpx.Response(200, json={"rows": []})
@@ -1136,13 +1136,18 @@ def test_row_searches_page_by_the_row_search_limit_and_other_rows_by_the_page_li
     listing = respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
         return_value=httpx.Response(200, json={"rows": []})
     )
+    cases = respx.get(f"{BASE}/trajectories/traj-s/cases").mock(
+        return_value=httpx.Response(200, json={"cases": []})
+    )
     client = CesClient("http://ces.test", "scope-1", api_key="k")
 
     client.read_all_scores(catalog)
     client.find_sessions(catalog, since=datetime(2026, 11, 1, tzinfo=timezone.utc))
+    client.trajectory_cases("traj-s")
 
     assert [json.loads(c.request.content)["limit"] for c in search.calls] == [
-        ROW_SEARCH_PAGE_LIMIT,
-        ROW_SEARCH_PAGE_LIMIT,
+        CASE_PAGE_LIMIT,
+        CASE_PAGE_LIMIT,
     ]
+    assert cases.calls[0].request.url.params["limit"] == str(CASE_PAGE_LIMIT)
     assert listing.calls[0].request.url.params["limit"] == str(PAGE_LIMIT)
