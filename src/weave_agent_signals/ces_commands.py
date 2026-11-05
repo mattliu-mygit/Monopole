@@ -15,7 +15,7 @@ import os
 import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from weave_agent_signals import ces_queries
 from weave_agent_signals.ces_catalog import Catalog
@@ -26,7 +26,7 @@ from weave_agent_signals.ces_client import (
     session_or_none,
 )
 from weave_agent_signals.models import Score, SessionView, session_is_evaluable
-from weave_agent_signals.patterns import ConfigStats
+from weave_agent_signals.patterns import ConfigStats, Stat
 from weave_agent_signals.scorers import score_session, score_turn
 from weave_agent_signals.scorers.outcome import classify_command
 
@@ -327,6 +327,7 @@ class Insights(NamedTuple):
 
     subagents: dict[str, Counter] | None
     judge_tables: list[tuple[str, str, dict[tuple, int]]] | None
+    segments: dict[tuple[str, Any], dict[str, Stat]] | None
 
 
 def read_insights(args: argparse.Namespace) -> Insights:
@@ -334,9 +335,16 @@ def read_insights(args: argparse.Namespace) -> Insights:
     with connect(args) as ces:
         client, catalog, state = ces.client, ces.catalog, ces_queries.QueryState()
         subagents = ces_queries.subagent_counts(client, catalog, state) if args.subagents else None
-        scorers = ces_queries.session_scorers(client, catalog) if args.judges else []
+        scorers = (
+            ces_queries.session_scorers(client, catalog) if args.judges or args.segments else []
+        )
         tables = ces_queries.judge_tables(client, catalog, state, scorers) if args.judges else None
-    return Insights(subagents, tables)
+        segments = (
+            ces_queries.segment_stats(client, catalog, state, scorers, args.segments)
+            if args.segments
+            else None
+        )
+    return Insights(subagents, tables, segments)
 
 
 def read_analysis(args: argparse.Namespace, *, feedback: bool) -> tuple[ConfigStats, list[dict]]:

@@ -16,6 +16,7 @@ from weave_agent_signals.ces_queries import (
     config_stats,
     judge_tables,
     run_query,
+    segment_stats,
     subagent_counts,
 )
 from weave_agent_signals.patterns import Stat
@@ -571,3 +572,30 @@ def test_judge_tables_select_the_reference_too_when_falling_back():
     judge_tables(_client(), CATALOG, QueryState(), JUDGE_SCORERS[:2])
 
     assert [s["version_id"] for s in routes.turn_selections[0]] == ["v-j", "v-implicit.completion"]
+
+
+@respx.mock
+def test_segment_stats_keep_scored_sessions_by_config_and_field():
+    rows = [
+        _row(
+            ["cfg1", "main"],
+            5,
+            **{"implicit.completion:mean": 0.8, "implicit.completion:count": 5},
+        ),
+        _row([None, None], 2, **{"implicit.completion:mean": 0.5, "implicit.completion:count": 2}),
+        # A subagent's root Case is a turn Case, which has a branch, but no session Score.
+        _row(["cfg1", "dev"], 3),
+    ]
+    routes = Insight(lambda _definition: rows)
+
+    segments = segment_stats(_client(), CATALOG, QueryState(), JUDGE_SCORERS[:1], "git_branch")
+
+    assert segments == {
+        ("cfg1", "main"): {"implicit.completion": Stat(5, 0.8, True)},
+        ("unknown", None): {"implicit.completion": Stat(2, 0.5, True)},
+    }
+    (definition,) = routes.definitions
+    assert definition["group_by"] == [
+        CONFIG,
+        {"kind": "dataset_field", "source": "input", "name": "git_branch"},
+    ]

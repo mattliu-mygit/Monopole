@@ -281,8 +281,8 @@ def _insights(monkeypatch, **found):
     asked = []
 
     def read_insights(args):
-        asked.append((args.subagents, args.judges))
-        return Insights(found.get("subagents"), found.get("judge_tables"))
+        asked.append((args.subagents, args.judges, args.segments))
+        return Insights(found.get("subagents"), found.get("judge_tables"), found.get("segments"))
 
     def read_analysis(*_args, **_kwargs):
         pytest.fail("an insight flag alone reads no Score analysis")
@@ -299,7 +299,7 @@ def test_analyze_subagents_reports_trajectory_counts_by_config(monkeypatch, caps
     assert cli.main(["analyze", "--subagents"]) == 0
 
     out = capsys.readouterr().out
-    assert asked == [(True, False)]
+    assert asked == [(True, False, None)]
     assert (
         "Config: v1  sessions=40  subagents=12 (0.30 per session; depth 1: 10, depth 2: 2)" in out
     )
@@ -328,12 +328,42 @@ def test_analyze_judges_reports_agreement_and_the_gap(monkeypatch, capsys):
     assert "no session has both Scores" in out
 
 
+def test_analyze_segments_reports_only_segments_with_enough_sessions(monkeypatch, capsys):
+    completion = "implicit.completion"
+    segments = {
+        ("v1", "main"): {completion: Stat(70, 56 / 70, True)},
+        ("v1", "dev"): {completion: Stat(80, 48 / 80, True)},
+        ("v1", "tiny"): {completion: Stat(3, 1.0, True)},
+    }
+    asked = _insights(monkeypatch, segments=segments)
+
+    assert cli.main(["analyze", "--segments", "cwd"]) == 0
+
+    out = capsys.readouterr().out
+    assert asked == [(False, False, "cwd")]
+    assert "Segments by cwd" in out
+    # The 3 "tiny" sessions join the rest of v1 but get no line of their own.
+    assert "main  implicit.completion" in out and "80% vs 61%  (n=70 vs 83" in out
+    assert "significant" in out
+    assert "tiny" not in out
+
+
+def test_analyze_segments_says_when_no_session_has_the_field(monkeypatch, capsys):
+    segments = {("v1", None): {"implicit.completion": Stat(70, 0.8, True)}}
+    asked = _insights(monkeypatch, segments=segments)
+
+    assert cli.main(["analyze", "--segments"]) == 0
+
+    assert asked == [(False, False, "git_branch")]
+    assert "Every scored session's root Case lacks i.git_branch" in capsys.readouterr().out
+
+
 def test_analyze_with_an_insight_and_ab_reads_both(monkeypatch, capsys):
     asked = _analysis(monkeypatch, [])
     monkeypatch.setattr(
         cli.ces_commands,
         "read_insights",
-        lambda args: Insights({"v1": Counter({0: 1})}, None),
+        lambda args: Insights({"v1": Counter({0: 1})}, None, None),
     )
 
     assert cli.main(["analyze", "--ab", "--subagents"]) == 0

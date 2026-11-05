@@ -26,6 +26,7 @@ from weave_agent_signals.patterns import (
     difference_ci,
     is_evaluation_feedback_eligible,
     pass_threshold,
+    segment_gaps,
     stat_leaderboard,
     stat_summaries,
     stats_from_feedback,
@@ -1218,3 +1219,52 @@ def test_agreement_without_a_failing_reference_has_no_gap():
 
     assert got.failing is None and got.gap_ci is None
     assert (got.count, got.agree) == (3, 3)
+
+
+def test_segment_gaps_compare_each_segment_with_the_rest_of_its_config():
+    completion = "implicit.completion"
+    segments = {
+        ("v1", "main"): {
+            completion: Stat(70, 56 / 70, True),
+            "efficiency.session": Stat(20, 0.5, False),
+        },
+        ("v1", "dev"): {
+            completion: Stat(80, 48 / 80, True),
+            "efficiency.session": Stat(20, 0.4, False),
+        },
+        # Too few sessions on one side or the other: not shown.
+        ("v2", "main"): {completion: Stat(9, 1.0, True)},
+        ("v2", None): {completion: Stat(50, 0.5, True)},
+        ("v3", "only"): {completion: Stat(50, 0.5, True)},
+    }
+
+    gaps = {(g["config"], g["segment"], g["scorer"]): g for g in segment_gaps(segments)}
+
+    assert set(gaps) == {
+        ("v1", "main", completion),
+        ("v1", "dev", completion),
+        ("v1", "main", "efficiency.session"),
+        ("v1", "dev", "efficiency.session"),
+    }
+    main = gaps[("v1", "main", completion)]
+    # Newcombe's published interval for 56/70 − 48/80.
+    assert main["difference_ci"] == (0.052, 0.334)
+    assert main["significant"] and main["rest_sample_count"] == 80
+    assert gaps[("v1", "dev", completion)]["difference_ci"] == (-0.334, -0.052)
+    # Without a stddev from CES, a continuous Scorer has a gap but no interval.
+    efficiency = gaps[("v1", "main", "efficiency.session")]
+    assert efficiency["delta"] == 0.1 and efficiency["difference_ci"] is None
+    assert not efficiency["significant"]
+
+
+def test_segment_gaps_pool_the_other_segments_as_the_rest():
+    completion = "implicit.completion"
+    segments = {
+        ("v1", "a"): {completion: Stat(10, 1.0, True)},
+        ("v1", "b"): {completion: Stat(10, 0.5, True)},
+        ("v1", "c"): {completion: Stat(30, 0.5, True)},
+    }
+
+    (a,) = [g for g in segment_gaps(segments) if g["segment"] == "a"]
+
+    assert (a["rest_mean"], a["rest_sample_count"]) == (0.5, 40)

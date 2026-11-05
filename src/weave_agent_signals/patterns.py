@@ -23,6 +23,10 @@ from weave_agent_signals.models import FEEDBACK_PREFIX
 
 # Below this many samples a scorer's mean/pass-rate is not trustworthy on its own.
 MIN_CONFIDENT_SAMPLES = 5
+# A segment needs this many rated sessions, and so does the rest of its config, to be shown.
+# With 10 on each side, a 95% interval on a pass-rate difference still reaches about ±0.37, so
+# only large gaps are significant; raise it if small segments crowd the output.
+MIN_SEGMENT_SESSIONS = 10
 _Z_95 = 1.96  # z for a 95% interval
 # Raw Score records name a deterministic Scorer the way the catalog does; judge Scorers are
 # continuous.
@@ -653,6 +657,48 @@ def agreement(judge: str, reference: str, joint: Mapping[tuple, int]) -> Agreeme
         _stat(ratings[side], binary=False) if ratings[side] else None for side in (True, False)
     )
     return Agreement(judge, reference, sum(joint.values()), agree, passing, failing)
+
+
+def segment_gaps(
+    segments: Mapping[tuple[str, Any], Mapping[str, Stat]],
+    min_sessions: int = MIN_SEGMENT_SESSIONS,
+) -> list[dict[str, Any]]:
+    """Each segment's mean per Scorer against the rest of its config's sessions.
+
+    `segments` maps (config, field value) to Stats. Comparing with the rest, not with the whole
+    config, keeps the two sides independent, as `difference_ci` assumes. A segment is shown only
+    when it and the rest each have at least `min_sessions` ratings from the Scorer. It is
+    ``significant`` when the 95% interval on the difference excludes 0."""
+    by_scorer: dict[tuple[str, str], dict[Any, Stat]] = defaultdict(dict)
+    for (config, value), scorers in segments.items():
+        for scorer, stat in scorers.items():
+            by_scorer[(config, scorer)][value] = stat
+    gaps = []
+    for (config, scorer), stats in sorted(by_scorer.items()):
+        for value, stat in sorted(stats.items(), key=lambda item: str(item[0])):
+            others = [other for key, other in stats.items() if key != value]
+            if stat.count < min_sessions or not others:
+                continue
+            rest = _pool(others)
+            if rest.count < min_sessions:
+                continue
+            ci = difference_ci(stat, rest)
+            gaps.append(
+                {
+                    "config": config,
+                    "segment": value,
+                    "scorer": scorer,
+                    "binary": stat.binary,
+                    "mean": round(stat.mean, 3),
+                    "rest_mean": round(rest.mean, 3),
+                    "delta": round(stat.mean - rest.mean, 3),
+                    "difference_ci": None if ci is None else (round(ci[0], 3), round(ci[1], 3)),
+                    "sample_count": stat.count,
+                    "rest_sample_count": rest.count,
+                    "significant": ci is not None and (ci[0] > 0 or ci[1] < 0),
+                }
+            )
+    return gaps
 
 
 def _bounded_text(value: object, limit: int) -> str | None:

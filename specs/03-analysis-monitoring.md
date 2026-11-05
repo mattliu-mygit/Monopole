@@ -100,7 +100,7 @@ evaluation.
 
 ## Query insights
 
-`analyze --subagents` and `--judges` each add Trajectory queries
+`analyze --subagents`, `--judges`, and `--segments` each add Trajectory queries
 over every session, run on the sessions Evaluation with the same fallback and
 create keys as the session query ([`01-ces-io.md`](01-ces-io.md#queries)). They
 are CLI-only; `monitor` and the Analyze page don't run them.
@@ -140,7 +140,23 @@ it says only that the last turn didn't end in an error, and every session of two
 turns or fewer counts as completed. Agreement is raw, not corrected for chance: two judges
 that both pass 90% of sessions agree on at least 80% by construction.
 
-A query returns at most 10,000 groups, which these queries stay far below.
+### Segments
+
+The query groups session Scores by the root Case's `i.config_version` and one
+input field, `git_branch` by default or `cwd`, `model`, or `harness`. Each
+segment is compared with the rest of its config's sessions, not the whole
+config, so the two sides are independent; the difference interval is the one
+config regressions use. A segment is shown only when it and the rest each have
+at least 10 ratings from the Scorer. Continuous Scorers have no interval until
+CES has `stddev`.
+
+The adapter sets `git_branch` only on turn Cases, not on the session Case that
+roots a session Trajectory, so today every session is in one unknown branch
+segment and the insight says so. `cwd` (the working directory, close to the
+repository), `model`, and `harness` are on the session Case.
+
+A query returns at most 10,000 groups, which the subagent and judge queries stay
+far below; a segment field with thousands of values per config would reach it.
 
 ## Monitoring
 

@@ -26,6 +26,7 @@ from weave_agent_signals.models import (
     SessionView,
 )
 from weave_agent_signals.patterns import (
+    MIN_SEGMENT_SESSIONS,
     Agreement,
     agreement,
     coaching_digest,
@@ -33,6 +34,7 @@ from weave_agent_signals.patterns import (
     config_regressions,
     detect_regressions,
     is_evaluation_feedback_eligible,
+    segment_gaps,
     stat_leaderboard,
 )
 from weave_agent_signals.run_config import (
@@ -46,6 +48,11 @@ from weave_agent_signals.runs.reflection import run_reflection
 from weave_agent_signals.runs.targets import load_target_registry
 
 log = logging.getLogger("weave_agent_signals")
+
+# Input fields `analyze --segments` can group sessions by. A Trajectory query reads its root
+# Case: the adapter's session Case sets cwd, model, and harness, but git_branch only on turn
+# Cases, so today every session falls in git_branch's unknown segment.
+SEGMENT_FIELDS = ("git_branch", "cwd", "model", "harness")
 
 
 def _parse_datetime(s: str) -> datetime:
@@ -243,7 +250,7 @@ def _report_judging(judging_plan, pending: list, written: int, errors: int) -> i
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
-    insights = args.subagents or args.judges
+    insights = args.subagents or args.judges or args.segments
     digest = args.coaching or not (args.ab or args.trends or insights)
     if args.ab or args.trends or digest:
         _print_score_analysis(args, digest)
@@ -253,6 +260,8 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             _print_subagents(found.subagents)
         if found.judge_tables is not None:
             _print_agreements([agreement(*table) for table in found.judge_tables])
+        if found.segments is not None:
+            _print_segments(args.segments, found.segments)
     return 0
 
 
@@ -353,6 +362,37 @@ def _print_agreements(agreements: list[Agreement]) -> None:
                 f"{item.failing.mean:.2f} when it fails ({gap:+.2f}, {interval}){mark}"
             )
         print(line)
+
+
+def _print_segments(field: str, segments: dict) -> None:
+    if not segments:
+        print("No scored sessions found.")
+        return
+    print(
+        f"\nSegments by {field} (each against the rest of its config's sessions; "
+        f"at least {MIN_SEGMENT_SESSIONS} rated sessions on each side):\n"
+    )
+    if all(value is None for _, value in segments):
+        print(f"  Every scored session's root Case lacks i.{field}, so there is one segment.")
+        return
+    gaps = segment_gaps(segments)
+    if not gaps:
+        print("  No segment has enough sessions on both sides.")
+    for g in gaps:
+        segment = "unknown" if g["segment"] is None else g["segment"]
+        means = (
+            f"{g['mean']:.0%} vs {g['rest_mean']:.0%}"
+            if g["binary"]
+            else f"{g['mean']:.2f} vs {g['rest_mean']:.2f}"
+        )
+        ci = g["difference_ci"]
+        interval = "no interval" if ci is None else f"CI {ci[0]:+.2f}–{ci[1]:+.2f}"
+        mark = "  significant" if g["significant"] else ""
+        print(
+            f"  Config: {g['config']}  {segment}  {g['scorer']:35s} {means}  "
+            f"(n={g['sample_count']} vs {g['rest_sample_count']}, {g['delta']:+.2f}, "
+            f"{interval}){mark}"
+        )
 
 
 def cmd_monitor(args: argparse.Namespace) -> int:
@@ -618,6 +658,18 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Compare each judge panel with implicit.completion and with other panels of its "
             "rubric: agreement and mean gap (every session Score)"
+        ),
+    )
+    p_analyze.add_argument(
+        "--segments",
+        nargs="?",
+        const="git_branch",
+        choices=SEGMENT_FIELDS,
+        metavar="FIELD",
+        help=(
+            "Compare session Scores across values of a session root-Case input field within "
+            f"each config (every session Score). FIELD is one of {', '.join(SEGMENT_FIELDS)}; "
+            "default git_branch"
         ),
     )
 

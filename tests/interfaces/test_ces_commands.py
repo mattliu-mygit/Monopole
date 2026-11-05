@@ -331,7 +331,7 @@ def test_read_analysis_reads_the_newest_scores_at_most_once(monkeypatch, feedbac
     ("flags", "want"),
     [
         (["--subagents"], ["subagents"]),
-        (["--judges"], ["scorers", "judges"]),
+        (["--judges", "--segments", "cwd"], ["scorers", "judges", "segments cwd"]),
     ],
 )
 def test_read_insights_runs_only_the_asked_queries_on_one_connection(monkeypatch, flags, want):
@@ -350,10 +350,15 @@ def test_read_insights_runs_only_the_asked_queries_on_one_connection(monkeypatch
         calls.append("judges")
         return [("j", "r", {})] if scorers == ["s"] else []
 
+    def segment_stats(_client, _catalog, _state, scorers, field):
+        calls.append(f"segments {field}")
+        return {}
+
     monkeypatch.setattr(ces_commands, "connect", connect)
     monkeypatch.setattr(queries, "subagent_counts", lambda *_: calls.append("subagents") or {})
     monkeypatch.setattr(queries, "session_scorers", session_scorers)
     monkeypatch.setattr(queries, "judge_tables", judge_tables)
+    monkeypatch.setattr(queries, "segment_stats", segment_stats)
 
     got = ces_commands.read_insights(cli.build_parser().parse_args(["analyze", *flags]))
 

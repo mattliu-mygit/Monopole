@@ -16,7 +16,8 @@ which selects every session Scorer: the deterministic ones and each judge panel'
 query there; then the turns Evaluation also selects the session Scorers and runs it.
 
 `analyze`'s opt-in insights add more Trajectory queries, with the same fallback: Trajectories by
-config and depth (subagent counts) and judge Scores by a reference Score (judge agreement).
+config and depth (subagent counts), judge Scores by a reference Score (judge agreement), and
+session Scores by config and a root-Case field (segments).
 
 A query definition never changes. Its create key holds the Evaluation ID and a digest of its
 body, so a rerun replays to the same query ID, and a new judge panel, which is a new Scorer,
@@ -348,3 +349,29 @@ def judge_tables(
         }
         tables.append((judge, reference, joint))
     return tables
+
+
+def segment_stats(
+    client: CesClient,
+    catalog: Catalog,
+    state: QueryState,
+    scorers: list[QueryScorer],
+    field: str,
+) -> dict[tuple[str, Any], dict[str, Stat]]:
+    """Session Stats by config and the root Case's input `field`: {(config, value): {Scorer:
+    Stat}}. A value the root Case doesn't set is None. Subagent Trajectories join the groups
+    but have no session Score, so they change no Stat, and a group of only them is dropped."""
+    groups = _trajectory_groups(
+        client,
+        catalog,
+        state,
+        name=f"monopole sessions by config and {field}",
+        group_by=[_CONFIG, {"kind": "dataset_field", "source": "input", "name": field}],
+        scorers=scorers,
+    )
+    segments = {}
+    for group in groups:
+        config, value = group.values
+        if group.stats:
+            segments[(config or "unknown", value)] = group.stats
+    return segments
