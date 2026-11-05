@@ -46,6 +46,10 @@ MAX_RETRY_AFTER_S = 30.0
 PAGE_LIMIT = 1000
 # Independent reads (one session's turn rows, one subagent's Cases) run this many at once.
 CONCURRENT_READS = 16
+# Row searches run as CES ClickHouse queries, which CES admits only 2 at a time per instance.
+CONCURRENT_SEARCHES = 2
+# Bounds one search filter's length: about 70 bytes per session.
+SESSIONS_PER_SEARCH = 50
 # A turn's row is its first Case; the adapter numbers each turn's Cases from 0. Subagent turns
 # carry an agent ID and belong to the session turn that launched them, so they're left out.
 FIRST_STEP = "i.step_index = 0 AND i.agent_id = null"
@@ -391,9 +395,14 @@ def turns_from_rows(trajectory_id: str, rows: list[dict]) -> list[TurnSpan]:
 
 
 def _turns_of(session_id: str) -> str:
-    """A rows/search filter for one session's turns. Deployed CES filters join predicates with
-    AND only, without OR or parentheses, so each session takes its own search."""
+    """A rows/search filter for one session's turns."""
     return f"{FIRST_STEP} AND i.session_trajectory_id = {json.dumps(session_id)}"
+
+
+def _turns_of_any(session_ids: list[str]) -> str:
+    """A rows/search filter for several sessions' turns. CES has no IN operator."""
+    either = " OR ".join(f"i.session_trajectory_id = {json.dumps(sid)}" for sid in session_ids)
+    return f"{FIRST_STEP} AND ({either})"
 
 
 @dataclass
@@ -514,12 +523,32 @@ class CesClient:
         return turn.subagents if turn is not None and turn.trace_id == turn_case_id else None
 
     def session_turn_rows(self, catalog: Catalog, session_ids: list[str]) -> dict[str, list]:
-        """Each session's turn rows with their Scores, subagent turns included, read
-        concurrently."""
+        """Each session's turn rows with their Scores, subagent turns included.
+
+        CES runs only a few searches at a time and rejects the rest with 503 and a 1 s
+        Retry-After, so sessions are read in batches with one search each. A deployment whose
+        filters lack OR gets one search per session, a few at a time."""
         path = f"/evaluations/{catalog.turns_evaluation_id}/rows/search"
-        with ThreadPoolExecutor(max_workers=CONCURRENT_READS) as pool:
-            found = pool.map(lambda sid: self._rows(path, {"filter": _turns_of(sid)}), session_ids)
-            return dict(zip(session_ids, found))
+        batches = [
+            session_ids[i : i + SESSIONS_PER_SEARCH]
+            for i in range(0, len(session_ids), SESSIONS_PER_SEARCH)
+        ]
+        found: dict[str, list] = {sid: [] for sid in session_ids}
+        try:
+            with ThreadPoolExecutor(max_workers=CONCURRENT_SEARCHES) as pool:
+                for rows in pool.map(
+                    lambda batch: self._rows(path, {"filter": _turns_of_any(batch)}), batches
+                ):
+                    for row in rows:
+                        if (sid := row["input"].get("session_trajectory_id")) in found:
+                            found[sid].append(row)
+            return found
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 400:
+                raise
+        with ThreadPoolExecutor(max_workers=CONCURRENT_SEARCHES) as pool:
+            rows = pool.map(lambda sid: self._rows(path, {"filter": _turns_of(sid)}), session_ids)
+            return dict(zip(session_ids, rows))
 
     def _rows(self, path: str, body: dict | None, limit: int | None = None) -> list[dict]:
         rows, cursor = [], None

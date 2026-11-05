@@ -635,22 +635,50 @@ def test_a_limit_reads_the_newest_turns_and_only_their_sessions_scores():
     assert names.call_count == 1
 
 
+def _turn_row(session_id: str, case_id: str) -> dict:
+    return {"case_id": case_id, "input": {"session_trajectory_id": session_id}}
+
+
 @respx.mock
-def test_cohort_scores_searches_each_sessions_turns_with_an_and_only_filter():
+def test_session_turn_rows_reads_every_session_in_one_search():
     client = CesClient("http://ces.test", "scope-1", api_key="k")
+    rows = [_turn_row("s2", "c3"), _turn_row("s1", "c1"), _turn_row("s1", "c2")]
     turns = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
-        return_value=httpx.Response(200, json={"rows": []})
-    )
-    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
-        return_value=httpx.Response(200, json={"rows": []})
+        return_value=httpx.Response(200, json={"rows": rows})
     )
 
-    client.cohort_scores(Catalog("ev-turns", "ev-sessions", {}), ["s1", "s2"])
+    found = client.session_turn_rows(Catalog("ev-turns", "ev-sessions", {}), ["s1", "s2", "s3"])
 
-    assert sorted(json.loads(call.request.content)["filter"] for call in turns.calls) == [
-        'i.step_index = 0 AND i.agent_id = null AND i.session_trajectory_id = "s1"',
-        'i.step_index = 0 AND i.agent_id = null AND i.session_trajectory_id = "s2"',
-    ]
+    assert json.loads(turns.calls.last.request.content)["filter"] == (
+        'i.step_index = 0 AND i.agent_id = null AND (i.session_trajectory_id = "s1"'
+        ' OR i.session_trajectory_id = "s2" OR i.session_trajectory_id = "s3")'
+    )
+    assert {sid: [r["case_id"] for r in found[sid]] for sid in found} == {
+        "s1": ["c1", "c2"],
+        "s2": ["c3"],
+        "s3": [],
+    }
+
+
+@respx.mock
+def test_session_turn_rows_searches_each_session_when_ces_rejects_or():
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+
+    def search(request):
+        query = json.loads(request.content)["filter"]
+        if " OR " in query:
+            return httpx.Response(400, json={"error": {"code": "invalid_request"}})
+        sid = query.rsplit('"', 2)[1]
+        return httpx.Response(200, json={"rows": [_turn_row(sid, f"c-{sid}")]})
+
+    respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(side_effect=search)
+
+    found = client.session_turn_rows(Catalog("ev-turns", "ev-sessions", {}), ["s1", "s2"])
+
+    assert {sid: [r["case_id"] for r in rows] for sid, rows in found.items()} == {
+        "s1": ["c-s1"],
+        "s2": ["c-s2"],
+    }
 
 
 def test_a_score_that_is_not_a_rating_is_skipped():
