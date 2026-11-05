@@ -34,7 +34,7 @@ SESSION_SELECTION = [
 ]
 TURN_ROWS = [
     {
-        "group": ["cfg1", None],
+        "group": ["cfg1"],
         "targets": 30,
         "metrics": [
             {"name": "efficiency:mean", "value": 0.6},
@@ -47,15 +47,7 @@ TURN_ROWS = [
         ],
     },
     {
-        "group": ["cfg1", "sub-agent"],
-        "targets": 9,
-        "metrics": [
-            {"name": "efficiency:mean", "value": 0.1},
-            {"name": "efficiency:count", "value": 2},
-        ],
-    },
-    {
-        "group": [None, None],
+        "group": [None],
         "targets": 3,
         "metrics": [
             {"name": "outcome.test:mean", "value": 1.0},
@@ -134,7 +126,7 @@ def _no_feedback():
 
 
 @respx.mock
-def test_config_stats_keep_the_main_agent_groups_by_config():
+def test_config_stats_group_turns_by_config_and_keep_depth_0_sessions():
     Routes()
     state = QueryState()
 
@@ -168,9 +160,8 @@ def test_config_stats_query_the_turns_evaluation_with_every_session_scorer():
     ]
     (_, turns), (_, sessions) = routes.creates
     assert turns["definition"]["target_kind"] == "case"
-    assert [c.get("name") for c in turns["definition"]["group_by"]] == [
-        "config_version",
-        "agent_id",
+    assert turns["definition"]["group_by"] == [
+        {"kind": "dataset_field", "source": "input", "name": "config_version"}
     ]
     assert sessions["definition"]["group_by"][1] == {"kind": "depth"}
     metrics = {m["name"]: m for m in turns["definition"]["metrics"]}
@@ -213,7 +204,7 @@ def test_results_are_read_page_by_page():
     pages = respx.get(f"{QUERIES}/q-case/results").mock(
         side_effect=[
             httpx.Response(200, json={"rows": TURN_ROWS[:1], "next_cursor": "p2"}),
-            httpx.Response(200, json={"rows": TURN_ROWS[2:]}),
+            httpx.Response(200, json={"rows": TURN_ROWS[1:]}),
         ]
     )
 
@@ -311,3 +302,25 @@ def test_a_rejection_unrelated_to_stddev_is_raised():
 
     with pytest.raises(httpx.HTTPStatusError):
         config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+
+
+@respx.mock
+def test_a_dataset_without_subagents_gets_turn_stats():
+    # CES doesn't catalogue a field no Case ever set, so on a Dataset that never ran a subagent
+    # it rejects grouping by agent_id. Turn Scores only ever target main-agent Cases, so the
+    # turn query needs no agent_id group.
+    routes = Routes()
+    uncatalogued = httpx.Response(
+        400,
+        json={"error": {"message": "column input.agent_id is not catalogued on the Dataset"}},
+    )
+
+    def create(request):
+        reply = routes._create(request)
+        return uncatalogued if b'"agent_id"' in request.content else reply
+
+    routes.create.side_effect = create
+
+    stats = config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+
+    assert stats.by_config["cfg1"]["efficiency"] == Stat(4, 0.6, False, 0.1)

@@ -59,9 +59,13 @@ ID and digest.
 
 `ces_queries.py` asks CES for each config's count, mean, and spread per Scorer
 with two saved EvaluationQueries. A Case query groups turn Scores by
-`i.config_version` and `i.agent_id`; a Trajectory query groups session Scores by
-the root Case's `i.config_version` and `depth`. Turn Scores target only a turn's
-first Case, so its other Cases have no Score and drop out of a mean and count.
+`i.config_version`; a Trajectory query groups session Scores by the root Case's
+`i.config_version` and `depth`. Turn Scores target only a turn's first Case, so
+its other Cases have no Score and drop out of a mean and count. Every scored
+Case belongs to the main agent, because turns are read from the session
+Trajectory's own Cases and the adapter writes subagent Cases to child
+Trajectories. The turn query does not group by `i.agent_id`: CES rejects grouping
+by a field no Case has set, which is every Dataset that never ran a subagent.
 
 CES runs queries only on an Evaluation whose primary target kind is case, and
 list-trajectory-rows only on one whose kind is trajectory. Both queries therefore

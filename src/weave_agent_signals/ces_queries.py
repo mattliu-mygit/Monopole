@@ -2,9 +2,11 @@
 
 Two saved queries cover every Score the Evaluations hold, not a newest-N window:
 
-- turns: a Case query grouped by `i.config_version` and `i.agent_id`. Turn Scores target each
-  turn's first Case, so the turn's other Cases have no Score and drop out of a mean and count.
-  The null `agent_id` group is the main agent, as `FIRST_STEP` reads it.
+- turns: a Case query grouped by `i.config_version`. Turn Scores target each turn's first Case,
+  so the turn's other Cases have no Score and drop out of a mean and count. Every scored Case is
+  a main-agent Case: Monopole reads turns only from the session Trajectory's own Cases, and the
+  adapter writes subagent Cases to child Trajectories. The query doesn't group by `i.agent_id`,
+  because CES rejects grouping by a field no Case has set, as on a Dataset with no subagents.
 - sessions: a Trajectory query grouped by the root Case's `i.config_version` and `depth`.
   Session Scores target the depth-0 session Trajectory.
 
@@ -34,7 +36,6 @@ from weave_agent_signals.patterns import ConfigStats, Stat, stats_from_feedback
 STDDEV = "stddev"
 _MAX_METRICS = 100  # CES's limit per query
 _CONFIG = {"kind": "dataset_field", "source": "input", "name": "config_version"}
-_AGENT = {"kind": "dataset_field", "source": "input", "name": "agent_id"}
 _DEPTH = {"kind": "depth"}
 
 
@@ -192,7 +193,7 @@ def config_stats(
         evaluation,
         name="monopole turns by config",
         target_kind="case",
-        group_by=[_CONFIG, _AGENT],
+        group_by=[_CONFIG],
         scorers=turn_scorers,
     )
     sessions = run_query(
@@ -206,7 +207,7 @@ def config_stats(
     )
     by_config: dict[str, dict[str, Stat]] = defaultdict(dict)
     targets: Counter[str] = Counter()
-    main = [g for g in turns if g.values[1] is None] + [g for g in sessions if g.values[1] == 0]
+    main = turns + [g for g in sessions if g.values[1] == 0]
     for group in main:
         config = group.values[0] or "unknown"
         by_config[config].update(group.stats)

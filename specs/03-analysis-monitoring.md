@@ -46,8 +46,8 @@ movement always has one interpretation.
 | Trends, config order, coaching examples, summary tag counts | raw Scores (`read_all_scores`) | the newest `--limit` turns and their sessions |
 | Reflection's digest (runs and `reflect`) | the raw Scores it pins | that cohort or the newest `--limit` turns |
 
-The queries count only the main agent: the turn query keeps the null `agent_id`
-group, and the session query keeps depth 0. A summary over every Score differs
+The queries count only the main agent: turn Scores only target main-agent
+Cases, and the session query keeps depth 0. A summary over every Score differs
 from the older newest-`--limit` summary when older turns scored differently.
 
 Trends wait for a day field from the adapter, because CES queries have no time.
