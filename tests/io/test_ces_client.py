@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -1125,6 +1126,44 @@ def test_reads_that_take_a_ces_query_slot_run_at_most_query_slots_at_once():
 
     assert rows.most == QUERY_SLOTS
     assert cases.most > QUERY_SLOTS  # plain entity reads take no slot
+
+
+_SINCE = datetime(2026, 11, 1, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "read"),
+    [
+        ("POST", "evaluations/ev-turns/rows/search", lambda c, cat: c.turn_scores(cat, "s1")),
+        (
+            "POST",
+            "evaluations/ev-turns/rows/search",
+            lambda c, cat: c.find_sessions(cat, since=_SINCE),
+        ),
+        (
+            "GET",
+            "evaluations/ev-sessions/trajectory-rows",
+            lambda c, cat: c.session_scores(cat, ["s1"]),
+        ),
+        (
+            "GET",
+            "evaluations/ev-turns/queries/q1/results",
+            lambda c, cat: c.query_results("ev-turns", "q1"),
+        ),
+    ],
+    ids=["row search", "session search", "trajectory rows", "query results"],
+)
+@respx.mock
+def test_every_read_that_takes_a_ces_query_slot_waits_for_one(method, path, read):
+    in_flight = _InFlight({"rows": []})
+    respx.route(method=method, url=f"{BASE}/{path}").mock(side_effect=in_flight)
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = Catalog("ev-turns", "ev-sessions", {})
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        list(pool.map(lambda _: read(client, catalog), range(6)))
+
+    assert in_flight.most == QUERY_SLOTS
 
 
 @respx.mock
