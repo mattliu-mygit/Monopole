@@ -565,7 +565,9 @@ describe('RunDetail wiring', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Retry configuration catalogs' }))
     await waitFor(() => expect(api.getModels).toHaveBeenCalledTimes(2))
     fireEvent.click(await screen.findByRole('button', { name: 'Retry session discovery' }))
-    await waitFor(() => expect(api.getSessions).toHaveBeenCalledTimes(2))
+    const listCalls = () =>
+      api.getSessions.mock.calls.filter(([params]) => !params?.include_estimates).length
+    await waitFor(() => expect(listCalls()).toBe(2))
     expect(await screen.findByRole('checkbox', { name: 'Select session session-1' })).not.toBeNull()
   })
 

@@ -355,6 +355,25 @@ def test_session_listing_includes_judge_token_estimates_only_when_asked():
     }
 
 
+def test_session_listing_reuses_estimates_while_a_sessions_turns_are_unchanged():
+    client, backend = _client()
+    reads: list[str] = []
+    read_session = backend.read_session
+
+    def counting_read(trajectory_id, **kwargs):
+        reads.append(trajectory_id)
+        return read_session(trajectory_id, **kwargs)
+
+    backend.read_session = counting_read
+    params = {"since": "2026-07-14T00:00:00Z", "limit": 1, "include_estimates": "true"}
+
+    first = client.get("/api/sessions", params=params).json()["sessions"][0]
+    second = client.get("/api/sessions", params=params).json()["sessions"][0]
+
+    assert len(reads) == 1
+    assert second["judging_token_estimates"] == first["judging_token_estimates"]
+
+
 def test_session_detail_names_subagents_without_their_counts():
     client, backend = _client()
     backend.turns[0].subagents.append(SubagentSpan(span_id="traj-sub", agent_type=None))

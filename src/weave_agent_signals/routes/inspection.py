@@ -181,6 +181,9 @@ def _date_error(error: DateFilterError) -> HTTPException:
 
 def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["inspection"])
+    # Estimates read a whole session, subagents included. Stored turns never change, so they're
+    # reused until the session's turn list does.
+    estimates: dict[tuple[str, tuple[str, ...]], dict] = {}
 
     @router.get("/sessions")
     def get_sessions(
@@ -209,6 +212,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             )
             visible: list[tuple[dict, list[TurnSpan]]] = []
             visible_rows: dict[str, list[dict]] = {}
+            turn_ids: dict[str, tuple[str, ...]] = {}
             read = 0
             # Turn rows only: a session's steps and subagents can take hundreds of reads. The
             # rows also carry the turn Scores, so they're read once.
@@ -228,11 +232,17 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                     if in_window:
                         visible.append((_session_summary(sid, in_window), in_window))
                         visible_rows[sid] = rows
+                        turn_ids[sid] = tuple(sorted(turn.trace_id for turn in turns))
             if include_estimates:
                 for summary, _turns in visible:
-                    session = session_or_none(ces.client, summary["conversation_id"])
-                    if session is not None:
-                        summary["judging_token_estimates"] = _judging_token_estimates(session.turns)
+                    sid = summary["conversation_id"]
+                    key = (sid, turn_ids[sid])
+                    if key not in estimates:
+                        session = session_or_none(ces.client, sid)
+                        if session is None:
+                            continue
+                        estimates[key] = _judging_token_estimates(session.turns)
+                    summary["judging_token_estimates"] = estimates[key]
             feedback = _by_target(
                 ces.client.cohort_scores(ces.catalog, list(visible_rows), turn_rows=visible_rows)
                 if visible

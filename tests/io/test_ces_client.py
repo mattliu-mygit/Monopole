@@ -918,6 +918,19 @@ def test_read_session_reads_each_subagent_once_in_launch_order():
 
 
 @respx.mock
+def test_clients_sharing_a_score_cache_fetch_each_score_once():
+    score = {"score_id": "s-1", "scorer_id": "sc-1", "scorer_version_id": "v-1", "value": 0.5}
+    fetched = respx.get(f"{BASE}/scores/s-1").mock(return_value=httpx.Response(200, json=score))
+    rows: dict[str, dict] = {}
+
+    for _ in range(2):
+        client = CesClient("http://ces.test", "scope-1", api_key="k", score_rows=rows)
+        assert client._indexed("s-1") == score
+
+    assert fetched.call_count == 1
+
+
+@respx.mock
 def test_clients_sharing_a_scorer_name_cache_look_each_version_up_once():
     version = respx.get(f"{BASE}/scorers/sc-1/versions/v-1").mock(
         return_value=httpx.Response(200, json={"name": "efficiency"})

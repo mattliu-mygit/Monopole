@@ -422,6 +422,7 @@ class CesClient:
         sleep=time.sleep,
         score_index: ScoreIndex | None = None,
         scorer_names: dict[tuple[str, str], str] | None = None,
+        score_rows: dict[str, dict] | None = None,
     ):
         self.base = f"/v1/namespaces/{namespace}/scopes/{quote(scope_ref, safe='')}"
         self._owns_http = http is None
@@ -430,6 +431,8 @@ class CesClient:
         self._index = score_index or ScoreIndex()
         # A Scorer version's name never changes, so callers may share one cache across clients.
         self._scorer_names = {} if scorer_names is None else scorer_names
+        # Scores never change once written, so fetched ones can be shared the same way.
+        self._score_rows = {} if score_rows is None else score_rows
 
     def close(self) -> None:
         if self._owns_http:
@@ -709,8 +712,12 @@ class CesClient:
 
     def _indexed(self, score_id: str) -> dict | None:
         """An indexed Score as a row, or None when CES no longer has it."""
+        if (cached := self._score_rows.get(score_id)) is not None:
+            return cached
         try:
-            return _score_row(self.get_score(score_id))
+            row = _score_row(self.get_score(score_id))
+            self._score_rows[score_id] = row
+            return row
         except httpx.HTTPStatusError as error:
             if error.response.status_code != 404:
                 raise

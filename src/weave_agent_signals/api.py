@@ -108,6 +108,7 @@ def _build_default_dependencies(
     catalogs: dict[tuple[str, str, str], Catalog] = {}
     catalog_lock = threading.Lock()
     scorer_names: dict[tuple[str, str], str] = {}
+    score_rows: dict[str, dict] = {}
     # One HTTP client per CES URL, so requests reuse connections instead of opening new ones.
     http_clients: dict[str, httpx.Client] = {}
 
@@ -117,7 +118,9 @@ def _build_default_dependencies(
             if settings[0] not in http_clients:
                 http_clients[settings[0]] = ces_http(settings[0])
             http = http_clients[settings[0]]
-        client = CesClient(settings[0], settings[1], http=http, scorer_names=scorer_names)
+        client = CesClient(
+            settings[0], settings[1], http=http, scorer_names=scorer_names, score_rows=score_rows
+        )
         try:
             with catalog_lock:
                 if settings not in catalogs:
