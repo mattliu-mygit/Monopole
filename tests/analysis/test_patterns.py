@@ -743,6 +743,32 @@ def test_stat_summaries_give_binary_scorers_a_pass_rate_and_wilson_interval():
     assert summary.ci == pytest.approx(_wilson_ci(3, 4))
 
 
+def test_stat_summaries_count_tags_from_the_raw_score_records():
+    def record(scorer, ces_scorer, tags):
+        feedback = _fb(scorer, 1.0, tags=tags)
+        feedback["payload"]["details"]["ces_scorer"] = ces_scorer
+        return feedback
+
+    panel = "judge.verification.panel-abc"
+    stats = _stats({"v1": {"outcome.test": Stat(40, 0.5, True), panel: Stat(3, 0.5, False)}})
+    judged = _session_judge_fb("judge.verification", 0.2, review_status="complete", tags=["x"])
+    judged["payload"]["details"]["ces_scorer"] = panel
+    feedback = [
+        record("outcome.test", "outcome.test", ["test_pass"]),
+        record("outcome.test", "outcome.test", ["test_failure"]),
+        record("outcome.test", "outcome.test", ["test_failure"]),
+        judged,
+    ]
+
+    summaries = stat_summaries(stats, feedback)
+
+    assert summaries["outcome.test"].count == 40  # from the query, not the 3 records
+    assert summaries["outcome.test"].tag_counts == {"test_pass": 1, "test_failure": 2}
+    assert summaries[panel].tag_counts == {"x": 1}
+    assert stat_summaries(stats)["outcome.test"].tag_counts == {}
+    assert "Tags: test_failure=2, test_pass=1" in coaching_digest(feedback, stats)
+
+
 def test_stat_leaderboard_reports_each_config_and_its_scored_targets():
     stats = _stats(
         {

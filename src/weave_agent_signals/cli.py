@@ -524,8 +524,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Analyze scored feedback patterns",
         description=(
             "Summaries and the A/B leaderboard cover every Score, by config version, from CES "
-            "queries. Trends and coaching examples cover the Scores on the newest --limit "
-            "turns and their sessions."
+            "queries. Trends, coaching examples, and summary tag counts cover the Scores on the "
+            "newest --limit turns and their sessions."
         ),
     )
     ces_commands.add_arguments(p_analyze)
@@ -534,8 +534,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1000,
         help=(
-            "Newest turns whose Scores feed trends, coaching examples, and, until CES has a "
-            "stddev aggregation, continuous-Scorer summaries (default: 1000)"
+            "Newest turns whose Scores feed trends, coaching examples, summary tag counts, and, "
+            "until CES has a stddev aggregation, continuous-Scorer summaries (default: 1000)"
         ),
     )
     p_analyze.add_argument(

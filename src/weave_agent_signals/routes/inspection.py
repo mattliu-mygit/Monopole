@@ -301,8 +301,8 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
 
     @router.get("/analyze")
     def get_analysis(limit: int = Query(default=1000, ge=1, le=5000)) -> AnalysisResponse:
-        # Summaries and the A/B leaderboard cover every Score, from CES queries. Trends and
-        # coaching examples cover the Scores on the newest `limit` turns and their sessions.
+        # Summaries and the A/B leaderboard cover every Score, from CES queries. Trends, coaching
+        # examples, and tag counts cover the Scores on the newest `limit` turns and their sessions.
         with ces_factory() as ces:
             records = functools.cache(lambda: ces.client.read_all_scores(ces.catalog, limit=limit))
             stats = ces_queries.config_stats(ces.client, ces.catalog, query_state, records)
@@ -328,7 +328,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                 "tag_counts": dict(value.tag_counts),
                 "confident": value.confident,
             }
-            for scorer, value in sorted(stat_summaries(stats).items())
+            for scorer, value in sorted(stat_summaries(stats, feedback).items())
         ]
         leaderboard = [
             {

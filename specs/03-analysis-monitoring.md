@@ -43,7 +43,7 @@ movement always has one interpretation.
 | Numbers | Source | Scope |
 | --- | --- | --- |
 | Summaries, the A/B leaderboard, config regressions | CES EvaluationQueries (`ces_queries.py`) | every Score the Evaluations hold, by config version |
-| Trends, config order, coaching examples | raw Scores (`read_all_scores`) | the newest `--limit` turns and their sessions |
+| Trends, config order, coaching examples, summary tag counts | raw Scores (`read_all_scores`) | the newest `--limit` turns and their sessions |
 | Reflection's digest (runs and `reflect`) | the raw Scores it pins | that cohort or the newest `--limit` turns |
 
 The queries count only the main agent: the turn query keeps the null `agent_id`
@@ -66,8 +66,9 @@ rejects a query that names `stddev`.
 Summaries report sample count, mean, and an interval appropriate to binary or
 continuous ratings: Wilson for binary Scorers, the normal approximation for
 continuous ones. A pass rate is shown only for binary Scorers, the outcome
-Scorers and `implicit.completion`, whose every value is 0 or 1. Tag counts appear
-only in summaries built from raw Scores, because queries cannot count tags.
+Scorers and `implicit.completion`, whose every value is 0 or 1. Queries cannot
+count tags, so a summary's tag counts come from the raw newest-`--limit` Scores
+even when its count and mean cover every Score.
 Small samples are labeled as low confidence instead of being presented as
 conclusive.
 

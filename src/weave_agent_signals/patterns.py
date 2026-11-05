@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import json
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from itertools import islice
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from weave_agent_signals.judges.review import PANEL_CONTRACT_VERSION
 from weave_agent_signals.models import FEEDBACK_PREFIX
@@ -394,13 +394,25 @@ def ab_leaderboard(feedback: list[dict]) -> list[ABResult]:
     return results
 
 
-def stat_summaries(stats: ConfigStats) -> dict[str, ScoreSummary]:
-    """Each Scorer's summary across every config. Query results carry no tags."""
+def stat_summaries(stats: ConfigStats, feedback: Iterable[dict] = ()) -> dict[str, ScoreSummary]:
+    """Each Scorer's summary across every config.
+
+    Query results carry no tags, so tag counts come from the raw Score records in `feedback`,
+    which cover a narrower window than the stats: the newest `--limit` turns and their sessions.
+    """
     by_scorer: dict[str, list[Stat]] = defaultdict(list)
     for scorers in stats.by_config.values():
         for scorer, stat in scorers.items():
             by_scorer[scorer].append(stat)
-    return {scorer: _summary(scorer, _pool(group)) for scorer, group in by_scorer.items()}
+    tags: dict[str, Counter[str]] = defaultdict(Counter)
+    for fb in feedback:
+        name = _details(fb).get("ces_scorer")
+        if is_evaluation_feedback_eligible(fb) and isinstance(name, str):
+            tags[name].update(_extract_tags(fb))
+    return {
+        scorer: _summary(scorer, _pool(group), dict(tags.get(scorer, {})))
+        for scorer, group in by_scorer.items()
+    }
 
 
 def stat_leaderboard(stats: ConfigStats) -> list[ABResult]:
@@ -732,7 +744,9 @@ def coaching_digest(feedback: list[dict], stats: ConfigStats | None = None) -> s
     the behavioral examples and trends. Without, every section comes from `feedback`, as
     reflection needs: its digest must describe exactly the records it pinned."""
     representative = [fb for fb in feedback if is_evaluation_feedback_eligible(fb)]
-    summaries = aggregate_scores(representative) if stats is None else stat_summaries(stats)
+    summaries = (
+        aggregate_scores(representative) if stats is None else stat_summaries(stats, representative)
+    )
     if not summaries:
         return "No scores found."
 
