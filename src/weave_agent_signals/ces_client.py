@@ -32,7 +32,6 @@ from weave_agent_signals.ces_catalog import (
     ScorerSpec,
     judge_spec,
 )
-from weave_agent_signals.ces_score_index import ScoreIndex
 from weave_agent_signals.models import (
     ChatSpan,
     Score,
@@ -150,11 +149,6 @@ def plan_judge_writes(
         if todo:
             writes[sid] = todo
     return catalog, writes
-
-
-def _score_row(score: dict[str, Any]) -> dict[str, Any]:
-    """A get-score result in the shape Evaluation rows return Scores."""
-    return {k: score.get(k) for k in ("score_id", "scorer_id", "scorer_version_id", "value")}
 
 
 def _score_record(target_id: str, case_input: dict, scores: list[dict], names: dict) -> list[dict]:
@@ -361,17 +355,6 @@ def ces_http(base_url: str, api_key: str | None = None) -> httpx.Client:
     )
 
 
-def _below(trajectory: str, roots: set[str], parent: dict[str, str | None]) -> bool:
-    """Whether the Trajectory is one of `roots` or descends from one."""
-    seen = set()
-    while trajectory is not None and trajectory not in seen:
-        if trajectory in roots:
-            return True
-        seen.add(trajectory)
-        trajectory = parent.get(trajectory)
-    return False
-
-
 def _child_ids(cases: list[dict]) -> list[str]:
     return [child for case in cases for child in case.get("child_trajectory_ids") or []]
 
@@ -462,14 +445,12 @@ class CesClient:
         namespace: str = "wandb",
         http: httpx.Client | None = None,
         sleep=time.sleep,
-        score_index: ScoreIndex | None = None,
         scorer_names: dict[tuple[str, str], str] | None = None,
     ):
         self.base = f"/v1/namespaces/{namespace}/scopes/{quote(scope_ref, safe='')}"
         self._owns_http = http is None
         self._http = http or ces_http(base_url, api_key)
         self._sleep = sleep
-        self._index = score_index or ScoreIndex()
         # A Scorer version's name never changes, so callers may share one cache across clients.
         self._scorer_names = {} if scorer_names is None else scorer_names
 
@@ -581,15 +562,18 @@ class CesClient:
             found = pool.map(lambda sid: self._rows(path, {"filter": _turns_of(sid)}), session_ids)
             return dict(zip(session_ids, found))
 
-    def _rows(self, path: str, body: dict | None, limit: int | None = None) -> list[dict]:
+    def _rows(
+        self, path: str, body: dict | None, limit: int | None = None, *, params: dict | None = None
+    ) -> list[dict]:
         """Every row of a paged route that takes a CES query slot: an Evaluation row search
-        (`body`, paged by CASE_PAGE_LIMIT), Trajectory rows, or EvaluationQuery results."""
+        (`body`, paged by CASE_PAGE_LIMIT), or Trajectory rows or EvaluationQuery results, read
+        with GET and its `params`, such as a filter."""
         rows, cursor = [], None
         page_limit = PAGE_LIMIT if body is None else CASE_PAGE_LIMIT
         while True:
             paging = {"limit": page_limit, **({"cursor": cursor} if cursor else {})}
             page = (
-                self._request("GET", path, params=paging, slot=True)
+                self._request("GET", path, params={**(params or {}), **paging}, slot=True)
                 if body is None
                 else self._request("POST", path, body={**body, **paging}, slot=True)
             )
@@ -745,36 +729,40 @@ class CesClient:
         )
         return {r["case_id"]: r.get("scores") or [] for r in rows}
 
+    def _session_rows(self, catalog: Catalog, trajectory_id: str, subagents: bool) -> list[dict]:
+        """One session Trajectory's row, and with `subagents` the row of every subagent
+        Trajectory below it, at any depth. The adapter writes the session's Trajectory ID as
+        `session_trajectory_id` on every Case of the session, so on the root Case of each
+        subagent too, and one filtered read finds them all. Nothing when CES has no such
+        session."""
+        path = f"/evaluations/{catalog.sessions_evaluation_id}/trajectory-rows"
+        try:
+            rows = [self._request("GET", f"{path}/{trajectory_id}", slot=True)]
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 404:
+                raise
+            return []
+        if subagents:
+            below = f"i.session_trajectory_id = {json.dumps(trajectory_id)}"
+            rows += self._rows(path, None, params={"filter": below})
+        return rows
+
     def _session_targets(
         self, catalog: Catalog, wanted=None, *, subagents: bool = False
     ) -> list[tuple[str, dict, list]]:
-        """(Trajectory ID, root Case input, Score rows) for each session Trajectory, or only
-        the wanted ones, with every subagent Trajectory below them when `subagents`. The route
-        has no filter, so this pages every row."""
-        try:
+        """(Trajectory ID, root Case input, Score rows) for every session Trajectory, or only
+        the wanted ones, read concurrently, with every subagent Trajectory below them when
+        `subagents`."""
+        if wanted is None:
             rows = self._rows(
-                f"/evaluations/{catalog.sessions_evaluation_id}/trajectory-rows", None
+                f"/evaluations/{catalog.sessions_evaluation_id}/trajectory-rows",
+                None,
+                params={"filter": "depth = 0"},
             )
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code not in (404, 405):
-                raise
-            # Workaround until the Trajectory-row route deploys; see ces_score_index. The index
-            # doesn't know which session a subagent belongs to, so it finds no subagent Score,
-            # and a rerun writes subagent Scores again; reads still take the newest.
-            newest = self._index.newest(wanted)
-            ids = [score_id for scores in newest.values() for score_id in scores.values()]
+        else:
             with ThreadPoolExecutor(max_workers=CONCURRENT_READS) as pool:
-                found = dict(zip(ids, pool.map(self._indexed, ids)))
-            return [
-                (trajectory, {}, [row for sid in scores.values() if (row := found[sid])])
-                for trajectory, scores in newest.items()
-            ]
-        if wanted is not None and subagents:
-            parent = {
-                r["trajectory"]["trajectory_id"]: r["trajectory"].get("parent_trajectory_id")
-                for r in rows
-            }
-            wanted = {t for t in parent if _below(t, wanted, parent)}
+                found = pool.map(lambda t: self._session_rows(catalog, t, subagents), wanted)
+                rows = [row for part in found for row in part]
         return [
             (
                 r["trajectory"]["trajectory_id"],
@@ -782,11 +770,6 @@ class CesClient:
                 r.get("scores") or [],
             )
             for r in rows
-            if (
-                not r["trajectory"].get("depth")
-                if wanted is None
-                else r["trajectory"]["trajectory_id"] in wanted
-            )
         ]
 
     def session_scores(
@@ -811,15 +794,6 @@ class CesClient:
             key=lambda r: r["payload"]["details"].get("turn_started_at") or "", reverse=True
         )
         return records
-
-    def _indexed(self, score_id: str) -> dict | None:
-        """An indexed Score as a row, or None when CES no longer has it."""
-        try:
-            return _score_row(self.get_score(score_id))
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code != 404:
-                raise
-            return None
 
     def scorer_name(self, scorer_id: str, version_id: str) -> str | None:
         """The Scorer version's name, or None when CES has no such version, so a Score from a
@@ -866,9 +840,6 @@ class CesClient:
             for r in rows
         ]
         return self._score_records(targets + self._session_targets(catalog, set(session_ids)))
-
-    def get_score(self, score_id: str) -> dict:
-        return self._request("GET", f"/scores/{score_id}")
 
     def write_scores(
         self, catalog: Catalog, pass_id: str, target_kind: str, target_id: str, scores: list[Score]
@@ -924,8 +895,4 @@ class CesClient:
             body={"scores": body},
             key=f"score-v2:{pass_id}:{target_kind}:{target_id}:{content_digest({'scores': body})}",
         )
-        if target_kind == "trajectory":
-            self._index.record(
-                target_id, list(zip((b["scorer_id"] for b in body), result["score_ids"]))
-            )
         return result["score_ids"]

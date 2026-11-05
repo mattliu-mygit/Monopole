@@ -55,15 +55,19 @@ already has a Score on the target is skipped, so `backfill` over an old range ad
 only the Scorers each turn, session, and subagent lacks, such as Scorers added
 since it was scored. The exception is a whole-session Scorer whose Score recorded
 other turns than the Trajectory has now; it is rewritten
-([`02-evaluation.md`](02-evaluation.md)). The existing-Score read for `score` and `backfill` finds a
-session's subagent Trajectories by their parent IDs in the Trajectory rows; the
-index fallback below can't, so there a rerun writes subagent Scores again, and
-reads still take the newest.
+([`02-evaluation.md`](02-evaluation.md)).
 
-Turn Scores are read through the turns Evaluation's rows; session Scores through
-its Trajectory rows. Until the Trajectory-row route deploys, a 404 or 405 falls
-back to `ces_score_index.py`, a local index of the session Score IDs this machine
-wrote. Delete that module and its fallbacks once the route is deployed.
+Turn Scores are read through the turns Evaluation's row searches, filtered to
+one session's turns or ordered newest first. Session Scores are read through
+the sessions Evaluation's Trajectory rows, and CES filters them, so a read
+fetches only the sessions it needs: each named session by its own row, every
+session with the filter `depth = 0`, and a session's subagents at every depth
+with `i.session_trajectory_id = "<session>"`. That last filter works because
+a subagent Trajectory's root Case is the parent's Case that launched it, and
+the adapter writes the session's Trajectory ID on every Case of a session.
+`score` and `backfill` read each session's row and its subagents' rows before
+writing, so the number of reads grows with the sessions scored, not with the
+Dataset.
 
 Analysis, reflection, and the session pages read Scores as records shaped
 `{id, feedback_type, target_id, payload}`. Reflection pins each record's Score
@@ -95,10 +99,11 @@ Evaluation, and a new Scorer such as a new judge panel makes a new query. A quer
 holds at most 100 metrics, so a Scorer list that needs more is split.
 
 CES runs only two queries at a time per instance. Row reads, Trajectory-row
-reads, and query results share those two slots, and a request that finds none
-free gets 503. So Monopole sends at most two of those requests at once from the
-whole process, however many sessions it reads in parallel. Entity reads (a
-Trajectory's Cases, a Case, a Score, a Scorer version) and creates take no slot.
+reads (one row or a page), and query results share those two slots, and a
+request that finds none free gets 503. So Monopole sends at most two of those
+requests at once from the whole process, however many sessions it reads in
+parallel. Entity reads (a Trajectory's Cases, a Case, a Scorer version) and
+creates take no slot.
 
 Every request retries a 429, 5xx, or network error with waits of 1, 2, 4, 8, and
 16 seconds. In November 2026 prod CES answered about one request in six of every
@@ -123,8 +128,7 @@ list and Evaluation row searches page 20 at a time, and other paged reads
    body is a conflict.
 4. `429` and `503` are retried with doubling waits, never shorter than
    `Retry-After`.
-5. list-trajectory-rows has no filter, so session Score reads page every row.
-6. CoreWeave Serverless Inference uses bearer W&B authentication plus the
+5. CoreWeave Serverless Inference uses bearer W&B authentication plus the
    entity/project header; HTTP 402 means inference credits are unavailable.
 
 Credentials come from `WANDB_API_KEY` or the `api.wandb.ai` netrc entry. The CES

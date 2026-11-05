@@ -123,7 +123,7 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
     (`scored_turns`): a conversation can stay live, so its Scores follow its new turns."""
     pass_id, stats, sessions = str(uuid.uuid4()), _Stats(), []
     session_ids = list(session_ids)
-    # One read for every session: the session-row read pages all session rows each time.
+    # Two reads per session: its own row, and one filtered read for every subagent below it.
     have_sessions = {} if force else client.session_scores(catalog, session_ids, subagents=True)
     for sid in session_ids:
         if limit is not None and stats.turns >= limit:

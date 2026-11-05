@@ -24,7 +24,6 @@ from weave_agent_signals.ces_client import (
     session_view,
     turns_from_rows,
 )
-from weave_agent_signals.ces_score_index import ScoreIndex
 from weave_agent_signals.models import Score
 from weave_agent_signals.scorers.outcome import _extract_exit_code
 
@@ -385,24 +384,53 @@ def test_find_sessions_skips_a_turn_without_a_start_time_instead_of_stopping():
     assert found == ["s-in"]
 
 
-@respx.mock
-def test_session_scores_keep_only_the_requested_trajectories():
-    _catalog_routes()
-    client = CesClient("http://ces.test", "scope-1", api_key="k")
-    catalog = client.ensure_catalog("ds-1")
-    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "rows": [
-                    {"trajectory": {"trajectory_id": "s1"}, "scores": [{"scorer_id": "sc-1"}]},
-                    {"trajectory": {"trajectory_id": "s9"}, "scores": []},
-                ]
-            },
-        )
+def _trajectory_row(trajectory_id, depth=0, parent=None, scores=None, root_input=None):
+    """A Trajectory row as list-trajectory-rows and get-trajectory-row return it."""
+    return {
+        "trajectory": {
+            "trajectory_id": trajectory_id,
+            "depth": depth,
+            "parent_trajectory_id": parent,
+        },
+        "root_case": {"input": root_input or {}},
+        "scores": [{"score_id": trajectory_id}] if scores is None else scores,
+    }
+
+
+def _session_row_routes(rows: dict[str, dict]):
+    """get-trajectory-row on the sessions Evaluation: each row by its Trajectory ID, else 404."""
+
+    def row(request):
+        found = rows.get(request.url.path.rsplit("/", 1)[-1])
+        return httpx.Response(200, json=found) if found else httpx.Response(404, json={})
+
+    return respx.get(url__regex=rf"{BASE}/evaluations/ev-sessions/trajectory-rows/[^/]+$").mock(
+        side_effect=row
     )
 
-    assert client.session_scores(catalog, ["s1"]) == {"s1": [{"scorer_id": "sc-1"}]}
+
+@respx.mock
+def test_session_scores_read_each_requested_session_by_its_row():
+    rows = _session_row_routes({"s1": _trajectory_row("s1", scores=[{"scorer_id": "sc-1"}])})
+    listing = respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows")
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = Catalog("ev-turns", "ev-sessions", {})
+
+    # s9 isn't in the sessions Evaluation, so get-trajectory-row answers 404.
+    assert client.session_scores(catalog, ["s1", "s9"]) == {"s1": [{"scorer_id": "sc-1"}]}
+    assert rows.call_count == 2
+    assert listing.call_count == 0  # no listing of every Trajectory row
+
+
+@respx.mock
+def test_a_session_row_error_other_than_missing_is_raised():
+    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows/s1").mock(
+        return_value=httpx.Response(400, json={"error": {"code": "invalid_request"}})
+    )
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+
+    with pytest.raises(httpx.HTTPStatusError):
+        client.session_scores(Catalog("ev-turns", "ev-sessions", {}), ["s1"])
 
 
 @respx.mock
@@ -440,65 +468,9 @@ def test_a_turn_without_a_prompt_keeps_its_span_ids_distinct_from_its_turn_id():
 
 
 @respx.mock
-def test_session_scores_fall_back_to_the_local_index_without_the_route(tmp_path):
+def test_read_all_scores_turns_ces_rows_into_feedback_records():
     _catalog_routes()
-    client = CesClient(
-        "http://ces.test", "scope-1", api_key="k", score_index=ScoreIndex(str(tmp_path / "i.jsonl"))
-    )
-    catalog = client.ensure_catalog("ds-1")
-    respx.post(f"{BASE}/scores").mock(
-        side_effect=[
-            httpx.Response(200, json={"score_ids": ["old-v", "old-d"]}),
-            httpx.Response(200, json={"score_ids": ["new-v", "new-d"]}),
-        ]
-    )
-    for value in (False, True):
-        score = Score("implicit.completion", value, [], {}, "session")
-        client.write_scores(catalog, f"pass-{value}", "trajectory", "s1", [score])
-    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
-        return_value=httpx.Response(404, json={"error": {"code": "not_found"}})
-    )
-    respx.get(url__regex=rf"{BASE}/scores/.*").mock(
-        side_effect=lambda request: httpx.Response(
-            200,
-            json={
-                "score_id": request.url.path.rsplit("/", 1)[-1],
-                "scorer_id": "x",
-                "scorer_version_id": "v",
-                "value": True,
-                "attributes": {},
-            },
-        )
-    )
-
-    rows = client.session_scores(catalog, ["s1", "s2"])
-
-    assert sorted(r["score_id"] for r in rows["s1"]) == ["new-d", "new-v"]
-    assert set(rows["s1"][0]) == {"score_id", "scorer_id", "scorer_version_id", "value"}
-    assert "s2" not in rows
-
-
-@respx.mock
-def test_a_route_error_other_than_missing_is_not_hidden_by_the_fallback(tmp_path):
-    _catalog_routes()
-    client = CesClient(
-        "http://ces.test", "scope-1", api_key="k", score_index=ScoreIndex(str(tmp_path / "i.jsonl"))
-    )
-    catalog = client.ensure_catalog("ds-1")
-    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
-        return_value=httpx.Response(400, json={"error": {"code": "invalid_request"}})
-    )
-
-    with pytest.raises(httpx.HTTPStatusError):
-        client.session_scores(catalog, ["s1"])
-
-
-@respx.mock
-def test_read_all_scores_turns_ces_rows_into_feedback_records(tmp_path):
-    _catalog_routes()
-    client = CesClient(
-        "http://ces.test", "scope-1", api_key="k", score_index=ScoreIndex(str(tmp_path / "i.jsonl"))
-    )
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
     catalog = client.ensure_catalog("ds-1")
     case_input = {
         "config_version": "cfg1",
@@ -537,50 +509,22 @@ def test_read_all_scores_turns_ces_rows_into_feedback_records(tmp_path):
             },
         )
     )
-    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "rows": [
-                    {
-                        "trajectory": {"trajectory_id": "s1", "depth": 0},
-                        "root_case": {
-                            "input": {**case_input, "started_at": "2026-11-03T10:00:00.000Z"}
-                        },
-                        "scores": [
-                            {
-                                "score_id": "3",
-                                "scorer_id": "sc-j",
-                                "scorer_version_id": "v1",
-                                "value": 0.75,
-                            },
-                            {
-                                "score_id": "4",
-                                "scorer_id": "sc-jd",
-                                "scorer_version_id": "v1",
-                                "value": {
-                                    "tags": [],
-                                    "reason": "ok",
-                                    "details": {"review_status": "complete"},
-                                },
-                            },
-                        ],
-                    },
-                    {
-                        "trajectory": {"trajectory_id": "a1", "depth": 1},
-                        "root_case": {},
-                        "scores": [
-                            {
-                                "score_id": "5",
-                                "scorer_id": "sc-j",
-                                "scorer_version_id": "v1",
-                                "value": 0.1,
-                            }
-                        ],
-                    },
-                ]
+    session = _trajectory_row(
+        "s1",
+        root_input={**case_input, "started_at": "2026-11-03T10:00:00.000Z"},
+        scores=[
+            {"score_id": "3", "scorer_id": "sc-j", "scorer_version_id": "v1", "value": 0.75},
+            {
+                "score_id": "4",
+                "scorer_id": "sc-jd",
+                "scorer_version_id": "v1",
+                "value": {"tags": [], "reason": "ok", "details": {"review_status": "complete"}},
             },
-        )
+        ],
+    )
+    # Without a limit every session's Scores are read: CES keeps only the depth-0 rows.
+    sessions = respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
+        return_value=httpx.Response(200, json={"rows": [session]})
     )
     names = {
         "sc-v": "efficiency",
@@ -612,6 +556,7 @@ def test_read_all_scores_turns_ces_rows_into_feedback_records(tmp_path):
     )
     assert judge["payload"]["details"]["ces_scorer"] == "judge.tool_choice.panel-abc"
     assert judge["payload"]["details"]["review_status"] == "complete"
+    assert sessions.calls.last.request.url.params["filter"] == "depth = 0"
 
 
 @respx.mock
@@ -630,26 +575,14 @@ def test_a_limit_reads_the_newest_turns_and_only_their_sessions_scores():
             },
         )
     )
-    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "rows": [
-                    {
-                        "trajectory": {"trajectory_id": tid},
-                        "scores": [
-                            {
-                                "score_id": tid,
-                                "scorer_id": "sc",
-                                "scorer_version_id": "v",
-                                "value": 1,
-                            }
-                        ],
-                    }
-                    for tid in ("s-new", "s-old")
-                ]
-            },
-        )
+    sessions = _session_row_routes(
+        {
+            tid: _trajectory_row(
+                tid,
+                scores=[{"score_id": tid, "scorer_id": "sc", "scorer_version_id": "v", "value": 1}],
+            )
+            for tid in ("s-new", "s-old")
+        }
     )
     names = respx.get(f"{BASE}/scorers/sc/versions/v").mock(
         return_value=httpx.Response(200, json={"name": "efficiency.session"})
@@ -661,6 +594,7 @@ def test_a_limit_reads_the_newest_turns_and_only_their_sessions_scores():
     assert turns.call_count == 2
     assert json.loads(turns.calls.last.request.content)["order_by"] == "i.started_at desc"
     assert [r["target_id"] for r in records] == ["s-new"]
+    assert {c.request.url.path.rsplit("/", 1)[-1] for c in sessions.calls} == {"s-new"}
     assert names.call_count == 1
 
 
@@ -670,9 +604,7 @@ def test_cohort_scores_searches_each_sessions_turns_with_an_and_only_filter():
     turns = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
         return_value=httpx.Response(200, json={"rows": []})
     )
-    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
-        return_value=httpx.Response(200, json={"rows": []})
-    )
+    _session_row_routes({})
 
     client.cohort_scores(Catalog("ev-turns", "ev-sessions", {}), ["s1", "s2"])
 
@@ -794,9 +726,9 @@ def test_a_5xx_is_retried_and_a_transport_error_raises_after_the_last_attempt():
     )
     respx.get(f"{BASE}/scores/s2").mock(side_effect=httpx.ConnectError("down"))
 
-    assert client.get_score("s1") == {"score_id": "s1"}
+    assert client._request("GET", "/scores/s1") == {"score_id": "s1"}
     with pytest.raises(httpx.ConnectError):
-        client.get_score("s2")
+        client._request("GET", "/scores/s2")
     assert slept == [1, 1, 2, 4, 8, 16]
 
 
@@ -811,7 +743,7 @@ def test_a_long_retry_after_is_capped():
         ]
     )
 
-    client.get_score("s1")
+    client._request("GET", "/scores/s1")
 
     assert slept == [MAX_RETRY_AFTER_S]
 
@@ -903,9 +835,7 @@ def test_cohort_scores_reads_no_turn_rows_it_is_given():
     turns = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
         return_value=httpx.Response(200, json={"rows": []})
     )
-    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
-        return_value=httpx.Response(200, json={"rows": []})
-    )
+    _session_row_routes({})
 
     CesClient("http://ces.test", "scope-1", api_key="k").cohort_scores(
         Catalog("ev-turns", "ev-sessions", {}), ["s1"], turn_rows={"s1": []}
@@ -1030,27 +960,37 @@ def test_read_session_also_views_each_subagent_trajectory_with_its_own_subagents
 
 
 @respx.mock
-def test_session_scores_with_subagents_adds_every_trajectory_below_the_sessions():
-    def row(trajectory_id, depth, parent=None):
-        trajectory = {"trajectory_id": trajectory_id, "depth": depth}
-        trajectory["parent_trajectory_id"] = parent
-        return {"trajectory": trajectory, "root_case": {}, "scores": [{"score_id": trajectory_id}]}
+def test_session_scores_with_subagents_reads_every_trajectory_below_each_session():
+    _session_row_routes({"s1": _trajectory_row("s1"), "s2": _trajectory_row("s2")})
+    below = {
+        "s1": [_trajectory_row("a1", 1, "s1"), _trajectory_row("b1", 2, "a1")],
+        "s2": [_trajectory_row("a2", 1, "s2")],
+    }
 
-    rows = [
-        row("s1", 0),
-        row("a1", 1, "s1"),
-        row("b1", 2, "a1"),
-        row("s2", 0),
-        row("a2", 1, "s2"),
-    ]
-    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
-        return_value=httpx.Response(200, json={"rows": rows})
+    def subagents(request):
+        # Each subagent's root Case is a Case of its session, which carries the session's ID.
+        [session] = [
+            s for s in below if request.url.params["filter"] == f'i.session_trajectory_id = "{s}"'
+        ]
+        return httpx.Response(200, json={"rows": below[session]})
+
+    listing = respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
+        side_effect=subagents
     )
     client = CesClient("http://ces.test", "scope-1", api_key="k")
     catalog = Catalog("ev-turns", "ev-sessions", {})
 
     assert set(client.session_scores(catalog, ["s1"], subagents=True)) == {"s1", "a1", "b1"}
+    assert set(client.session_scores(catalog, ["s1", "s2"], subagents=True)) == {
+        "s1",
+        "a1",
+        "b1",
+        "s2",
+        "a2",
+    }
+    calls = listing.call_count
     assert set(client.session_scores(catalog, ["s1"])) == {"s1"}
+    assert listing.call_count == calls  # without subagents, only the session's own row
 
 
 def test_a_subagent_span_counts_the_tokens_of_its_own_turns():
@@ -1142,8 +1082,13 @@ _SINCE = datetime(2026, 11, 1, tzinfo=timezone.utc)
         ),
         (
             "GET",
-            "evaluations/ev-sessions/trajectory-rows",
+            "evaluations/ev-sessions/trajectory-rows/s1",
             lambda c, cat: c.session_scores(cat, ["s1"]),
+        ),
+        (
+            "GET",
+            "evaluations/ev-sessions/trajectory-rows(/s1)?",
+            lambda c, cat: c.session_scores(cat, ["s1"], subagents=True),
         ),
         (
             "GET",
@@ -1151,12 +1096,13 @@ _SINCE = datetime(2026, 11, 1, tzinfo=timezone.utc)
             lambda c, cat: c.query_results("ev-turns", "q1"),
         ),
     ],
-    ids=["row search", "session search", "trajectory rows", "query results"],
+    ids=["row search", "session search", "session row", "trajectory rows", "query results"],
 )
 @respx.mock
 def test_every_read_that_takes_a_ces_query_slot_waits_for_one(method, path, read):
-    in_flight = _InFlight({"rows": []})
-    respx.route(method=method, url=f"{BASE}/{path}").mock(side_effect=in_flight)
+    # Shaped both as a page of rows and as one Trajectory row.
+    in_flight = _InFlight({"rows": [], **_trajectory_row("s1")})
+    respx.route(method=method, url__regex=rf"{BASE}/{path}(\?.*)?$").mock(side_effect=in_flight)
     client = CesClient("http://ces.test", "scope-1", api_key="k")
     catalog = Catalog("ev-turns", "ev-sessions", {})
 

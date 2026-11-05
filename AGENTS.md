@@ -165,9 +165,7 @@ These constraints are operationally dangerous to get wrong. The details live in
    is no purge.
 5. Only finished judge reviews write Scores, and each rubric and panel has its
    own Scorer.
-6. `ces_score_index.py` is a temporary fallback for CES deployments without
-   list-trajectory-rows. Delete it once the route is deployed.
-7. CoreWeave Serverless Inference is `https://api.inference.wandb.ai/v1` and
+6. CoreWeave Serverless Inference is `https://api.inference.wandb.ai/v1` and
    requires bearer W&B auth plus `OpenAI-Project: {entity}/{project}`. HTTP 402
    means credits are disabled.
 
