@@ -327,6 +327,29 @@ def test_read_analysis_reads_the_newest_scores_at_most_once(monkeypatch, feedbac
     assert client.reads == reads
 
 
+@pytest.mark.parametrize(
+    ("flags", "want"),
+    [
+        (["--subagents"], ["subagents"]),
+    ],
+)
+def test_read_insights_runs_only_the_asked_queries_on_one_connection(monkeypatch, flags, want):
+    client, calls, connections = _ScoresOnly([]), [], []
+    queries = ces_commands.ces_queries
+
+    def connect(args):
+        connections.append(args)
+        return CesSession(client, CATALOG)
+
+    monkeypatch.setattr(ces_commands, "connect", connect)
+    monkeypatch.setattr(queries, "subagent_counts", lambda *_: calls.append("subagents") or {})
+
+    got = ces_commands.read_insights(cli.build_parser().parse_args(["analyze", *flags]))
+
+    assert calls == want and len(connections) == 1
+    assert (got.subagents is None) == ("subagents" not in want)
+
+
 def test_score_and_backfill_return_cleanly_when_no_sessions_match(fake, monkeypatch, capsys):
     monkeypatch.setattr(fake, "find_sessions", lambda *_args, **_kwargs: [])
 

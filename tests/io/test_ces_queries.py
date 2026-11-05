@@ -10,7 +10,13 @@ import respx
 
 from weave_agent_signals.ces_catalog import DETERMINISTIC, Catalog, ScorerRef
 from weave_agent_signals.ces_client import CesClient
-from weave_agent_signals.ces_queries import QueryScorer, QueryState, config_stats, run_query
+from weave_agent_signals.ces_queries import (
+    QueryScorer,
+    QueryState,
+    config_stats,
+    run_query,
+    subagent_counts,
+)
 from weave_agent_signals.patterns import Stat
 
 BASE = "http://ces.test/v1/namespaces/wandb/scopes/scope-1"
@@ -425,3 +431,91 @@ def test_a_dataset_without_subagents_gets_turn_stats():
     stats = config_stats(_client(), CATALOG, QueryState(), _no_feedback)
 
     assert stats.by_config["cfg1"]["efficiency"] == Stat(4, 0.6, False, 0.1)
+
+
+CONFIG = {"kind": "dataset_field", "source": "input", "name": "config_version"}
+
+
+class Insight:
+    """One Trajectory query on the sessions Evaluation per create, each answered with the rows
+    `results` gives for its definition."""
+
+    def __init__(self, results, *, sessions_create=None):
+        self.definitions: list[dict] = []
+        self.results = results
+        self.turn_selections: list[list[dict]] = []
+        respx.patch(f"{BASE}/evaluations/ev-turns/scorers").mock(side_effect=self._select)
+        for queries in (QUERIES, SESSION_QUERIES):
+            respx.post(queries).mock(side_effect=self._create)
+            respx.get(url__regex=rf"{queries}/q-\d+/results").mock(side_effect=self._results)
+        if sessions_create is not None:
+            respx.post(SESSION_QUERIES).mock(return_value=sessions_create)
+
+    def _select(self, request):
+        self.turn_selections.append(json.loads(request.content)["scorers"])
+        return httpx.Response(200, json={"scorers": self.turn_selections[-1]})
+
+    def _create(self, request):
+        self.definitions.append(json.loads(request.content)["definition"])
+        return httpx.Response(200, json={"evaluation_query_id": f"q-{len(self.definitions) - 1}"})
+
+    def _results(self, request):
+        index = int(request.url.path.split("/")[-2].removeprefix("q-"))
+        return httpx.Response(200, json={"rows": self.results(self.definitions[index])})
+
+
+def _row(group, targets, **metrics):
+    return {
+        "group": group,
+        "targets": targets,
+        "metrics": [{"name": name, "value": value} for name, value in metrics.items()],
+    }
+
+
+@respx.mock
+def test_subagent_counts_count_every_trajectory_by_config_and_depth():
+    rows = [
+        _row(["cfg1", 0], 4, **{"implicit.completion:mean": 0.5, "implicit.completion:count": 3}),
+        # Subagent Trajectories have no session Score, but each group still counts them.
+        _row(["cfg1", 1], 6, **{"implicit.completion:mean": None, "implicit.completion:count": 0}),
+        _row(["cfg1", 2], 1),
+        _row([None, 0], 2),
+    ]
+    routes = Insight(lambda _definition: rows)
+
+    counts = subagent_counts(_client(), CATALOG, QueryState())
+
+    assert counts == {"cfg1": {0: 4, 1: 6, 2: 1}, "unknown": {0: 2}}
+    (definition,) = routes.definitions
+    assert definition["target_kind"] == "trajectory"
+    assert definition["group_by"] == [CONFIG, {"kind": "depth"}]
+    assert {m["scorer_version_id"] for m in definition["metrics"]} == {"v-implicit.completion"}
+
+
+@respx.mock
+def test_insight_queries_fall_back_to_the_turns_evaluation_like_session_queries():
+    routes = Insight(
+        lambda _definition: [_row(["cfg1", 1], 6)], sessions_create=CASE_EVALUATIONS_ONLY
+    )
+    state = QueryState()
+
+    counts = subagent_counts(_client(), CATALOG, state)
+
+    assert counts == {"cfg1": {1: 6}}
+    assert state.trajectory_evaluations is False
+    assert routes.turn_selections == [
+        [{"scorer_id": "sc-implicit.completion", "version_id": "v-implicit.completion"}]
+    ]
+
+
+def test_an_unscored_session_group_adds_no_config_to_config_stats():
+    with respx.mock:
+        Routes()
+        respx.get(f"{SESSION_QUERIES}/q-trajectory/results").mock(
+            return_value=httpx.Response(200, json={"rows": SESSION_ROWS + [_row(["cfg2", 0], 3)]})
+        )
+
+        stats = config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+
+    assert stats.targets == {"cfg1": 6, "unknown": 1}
+    assert "cfg2" not in stats.by_config

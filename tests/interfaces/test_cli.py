@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -9,6 +10,7 @@ import pytest
 
 from weave_agent_signals import cli
 from weave_agent_signals.catalogs import build_model_catalog
+from weave_agent_signals.ces_commands import Insights
 from weave_agent_signals.patterns import ConfigStats, Stat
 from weave_agent_signals.runs.bundles import bundle_from_content_map
 
@@ -273,3 +275,48 @@ def test_analyze_digest_summarizes_query_stats_with_raw_examples(monkeypatch, ca
     assert "**outcome.test**: 75% pass rate (n=4" in out
     assert "efficiency" not in out  # raw Scores feed only examples and trends
     assert "## A/B Comparison" in out
+
+
+def _insights(monkeypatch, **found):
+    asked = []
+
+    def read_insights(args):
+        asked.append(args.subagents)
+        return Insights(found.get("subagents"))
+
+    def read_analysis(*_args, **_kwargs):
+        pytest.fail("an insight flag alone reads no Score analysis")
+
+    monkeypatch.setattr(cli.ces_commands, "read_insights", read_insights)
+    monkeypatch.setattr(cli.ces_commands, "read_analysis", read_analysis)
+    return asked
+
+
+def test_analyze_subagents_reports_trajectory_counts_by_config(monkeypatch, capsys):
+    counts = {"v1": Counter({0: 40, 1: 10, 2: 2}), "v2": Counter({0: 5})}
+    asked = _insights(monkeypatch, subagents=counts)
+
+    assert cli.main(["analyze", "--subagents"]) == 0
+
+    out = capsys.readouterr().out
+    assert asked == [True]
+    assert (
+        "Config: v1  sessions=40  subagents=12 (0.30 per session; depth 1: 10, depth 2: 2)" in out
+    )
+    assert "Config: v2  sessions=5  subagents=0 (0.00 per session)" in out
+
+
+def test_analyze_with_an_insight_and_ab_reads_both(monkeypatch, capsys):
+    asked = _analysis(monkeypatch, [])
+    monkeypatch.setattr(
+        cli.ces_commands,
+        "read_insights",
+        lambda args: Insights({"v1": Counter({0: 1})}),
+    )
+
+    assert cli.main(["analyze", "--ab", "--subagents"]) == 0
+
+    out = capsys.readouterr().out
+    assert asked == [False]
+    assert "A/B Leaderboard" in out and "sessions=1" in out
+    assert "# Coaching Digest" not in out

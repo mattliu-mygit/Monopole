@@ -15,6 +15,7 @@ import os
 import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 
 from weave_agent_signals import ces_queries
 from weave_agent_signals.ces_catalog import Catalog
@@ -319,6 +320,20 @@ def read_scores(args: argparse.Namespace) -> list[dict]:
     with connect(args) as ces:
         client, catalog = ces.client, ces.catalog
         return client.read_all_scores(catalog, limit=args.limit)
+
+
+class Insights(NamedTuple):
+    """Query results for `analyze`'s opt-in insights; None where not asked for."""
+
+    subagents: dict[str, Counter] | None
+
+
+def read_insights(args: argparse.Namespace) -> Insights:
+    """The insights `args` asks for, from CES queries over every Trajectory."""
+    with connect(args) as ces:
+        client, catalog, state = ces.client, ces.catalog, ces_queries.QueryState()
+        subagents = ces_queries.subagent_counts(client, catalog, state) if args.subagents else None
+    return Insights(subagents)
 
 
 def read_analysis(args: argparse.Namespace, *, feedback: bool) -> tuple[ConfigStats, list[dict]]:

@@ -98,6 +98,26 @@ cause of a regression. Reflection separately pins the exact feedback records it
 consumed, so later feedback changes cannot silently alter an active proposal
 evaluation.
 
+## Query insights
+
+`analyze --subagents` adds a Trajectory query
+over every Trajectory, run on the sessions Evaluation with the same fallback and
+create keys as the session query ([`01-ces-io.md`](01-ces-io.md#queries)). It is
+CLI-only; `monitor` and the Analyze page don't run it.
+
+### Subagents
+
+The query groups every Trajectory by the root Case's `i.config_version` and
+`depth`, and reports each group's Trajectory count, scored or not: depth 0 is
+the session, depth 1 and deeper its subagents. No Monopole Scorer scores a
+subagent Trajectory, because turn, session, and judge Scores all target the
+session or its Cases, so the insight shows counts only, such as "config v3: 40
+sessions, 12 subagents (0.30 per session; depth 1: 10, depth 2: 2)", not a
+main-versus-subagent score gap. A subagent's root Case is the parent's Case
+that launched it, which carries the same config version.
+
+A query returns at most 10,000 groups, which this query stays far below.
+
 ## Monitoring
 
 Monitoring reports only new statistically significant downward movements in

@@ -6,6 +6,7 @@ import ipaddress
 import logging
 import os
 import sys
+from collections import Counter
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
@@ -240,14 +241,25 @@ def _report_judging(judging_plan, pending: list, written: int, errors: int) -> i
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
+    insights = args.subagents
+    digest = args.coaching or not (args.ab or args.trends or insights)
+    if args.ab or args.trends or digest:
+        _print_score_analysis(args, digest)
+    if insights:
+        found = ces_commands.read_insights(args)
+        if found.subagents is not None:
+            _print_subagents(found.subagents)
+    return 0
+
+
+def _print_score_analysis(args: argparse.Namespace, digest: bool) -> None:
     # Summaries and the A/B leaderboard come from CES queries over every Score; trends and
     # coaching examples from the Scores on the newest `--limit` turns.
-    digest = args.coaching or not (args.ab or args.trends)
     stats, feedback = ces_commands.read_analysis(args, feedback=args.trends or digest)
 
     if not stats.by_config and not feedback:
         print("No scored feedback found.")
-        return 0
+        return
 
     if args.ab:
         results = stat_leaderboard(stats)
@@ -292,7 +304,24 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     if digest:
         print(coaching_digest(feedback, stats))
 
-    return 0
+
+def _print_subagents(counts: dict[str, Counter]) -> None:
+    if not counts:
+        print("No Trajectories found.")
+        return
+    print("\nSessions and subagents by config (every Trajectory; no Scorer scores a subagent):\n")
+    for config, depths in sorted(counts.items()):
+        sessions = depths.get(0, 0)
+        subagents = sum(n for depth, n in depths.items() if depth > 0)
+        per_session = f"{subagents / sessions:.2f} per session" if sessions else "no sessions"
+        by_depth = ", ".join(
+            f"depth {depth}: {n}" for depth, n in sorted(depths.items()) if depth > 0
+        )
+        detail = f"; {by_depth}" if by_depth else ""
+        print(
+            f"  Config: {config}  sessions={sessions}  "
+            f"subagents={subagents} ({per_session}{detail})"
+        )
 
 
 def cmd_monitor(args: argparse.Namespace) -> int:
@@ -547,6 +576,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Detect score regressions/improvements over the newest --limit turns",
     )
     p_analyze.add_argument("--coaching", action="store_true", help="Generate coaching digest")
+    p_analyze.add_argument(
+        "--subagents",
+        action="store_true",
+        help="Count each config's sessions and subagent Trajectories (every Trajectory)",
+    )
 
     # monitor
     p_mon = subs.add_parser(

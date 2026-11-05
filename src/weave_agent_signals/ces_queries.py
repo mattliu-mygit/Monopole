@@ -15,6 +15,9 @@ which selects every session Scorer: the deterministic ones and each judge panel'
 `<rubric>.panel-<digest>`. A CES that runs queries only on Case Evaluations rejects the session
 query there; then the turns Evaluation also selects the session Scorers and runs it.
 
+`analyze`'s opt-in insights add more Trajectory queries, with the same fallback: Trajectories by
+config and depth (subagent counts).
+
 A query definition never changes. Its create key holds the Evaluation ID and a digest of its
 body, so a rerun replays to the same query ID, and a new judge panel, which is a new Scorer,
 makes a new query.
@@ -39,6 +42,7 @@ STDDEV = "stddev"
 _MAX_METRICS = 100  # CES's limit per query
 _CONFIG = {"kind": "dataset_field", "source": "input", "name": "config_version"}
 _DEPTH = {"kind": "depth"}
+COMPLETION = "implicit.completion"  # the one session outcome Scorer
 # CES's 400 for a query on an Evaluation whose primary target kind isn't case.
 _CASE_EVALUATIONS_ONLY = (
     "EvaluationQueries need an Evaluation with primary_target_kind case, and each query's "
@@ -56,9 +60,11 @@ class QueryScorer:
 
 @dataclass(frozen=True)
 class Group:
-    """One result group: its group-by values in order, and each Scorer's numbers in it."""
+    """One result group: its group-by values in order, how many targets it holds, scored or not,
+    and each Scorer's numbers in it."""
 
     values: tuple
+    targets: int
     stats: dict[str, Stat]
 
 
@@ -117,10 +123,12 @@ def run_query(
     group_by: list[dict],
     scorers: list[QueryScorer],
 ) -> list[Group]:
-    """Each group's Stat per Scorer, from one query per 100 metrics. A Scorer with no Score in
-    a group is left out of that group. A continuous Scorer has a stddev only when CES has the
-    spread aggregation; the first create that names it finds out."""
+    """Each group's Stat per Scorer, from one query per 100 metrics. Every group CES returns is
+    kept, even one with no Score, and a Scorer with no Score in a group is left out of that
+    group. A continuous Scorer has a stddev only when CES has the spread aggregation; the first
+    create that names it finds out."""
     chunk = _MAX_METRICS // 3
+    targets: dict[tuple, int] = {}
     groups: dict[tuple, dict[str, Stat]] = defaultdict(dict)
     for start in range(0, len(scorers), chunk):
         part = scorers[start : start + chunk]
@@ -144,15 +152,18 @@ def run_query(
             if wants_stddev:
                 state.stddev = True
         for row in client.query_results(evaluation_id, query_id):
+            values = tuple(row["group"])
+            targets[values] = row["targets"]
+            stats = groups[values]
             cells = {cell["name"]: cell["value"] for cell in row["metrics"]}
             for scorer in part:
                 count = cells.get(f"{scorer.name}:count") or 0
                 mean = cells.get(f"{scorer.name}:mean")
                 if count and mean is not None:
-                    groups[tuple(row["group"])][scorer.name] = Stat(
+                    stats[scorer.name] = Stat(
                         int(count), float(mean), scorer.binary, cells.get(f"{scorer.name}:{STDDEV}")
                     )
-    return [Group(values, stats) for values, stats in groups.items()]
+    return [Group(values, targets[values], stats) for values, stats in groups.items()]
 
 
 def _session_scorers(client: CesClient, catalog: Catalog) -> list[QueryScorer]:
@@ -176,19 +187,25 @@ def _session_scorers(client: CesClient, catalog: Catalog) -> list[QueryScorer]:
     return sorted(scorers, key=lambda s: s.name)
 
 
-def _session_groups(
-    client: CesClient, catalog: Catalog, state: QueryState, scorers: list[QueryScorer]
+def _trajectory_groups(
+    client: CesClient,
+    catalog: Catalog,
+    state: QueryState,
+    *,
+    name: str,
+    group_by: list[dict],
+    scorers: list[QueryScorer],
 ) -> list[Group]:
-    """The session query's groups, from the sessions Evaluation when CES runs queries there."""
+    """A Trajectory query's groups, from the sessions Evaluation when CES runs queries there."""
 
     def run(evaluation_id: str) -> list[Group]:
         return run_query(
             client,
             state,
             evaluation_id,
-            name="monopole sessions by config",
+            name=name,
             target_kind="trajectory",
-            group_by=[_CONFIG, _DEPTH],
+            group_by=group_by,
             scorers=scorers,
         )
 
@@ -203,7 +220,7 @@ def _session_groups(
             state.trajectory_evaluations = True
             return groups
     # Fallback: delete when wandb/core#61599 is deployed. This CES runs queries only on Case
-    # Evaluations, so the turns Evaluation also selects the session Scorers and runs the query.
+    # Evaluations, so the turns Evaluation also selects the query's Scorers and runs it.
     client.select_scorers(
         catalog.turns_evaluation_id,
         [{"scorer_id": s.scorer_id, "version_id": s.version_id} for s in scorers],
@@ -239,11 +256,18 @@ def config_stats(
         group_by=[_CONFIG],
         scorers=turn_scorers,
     )
-    sessions = _session_groups(client, catalog, state, session_scorers)
+    sessions = _trajectory_groups(
+        client,
+        catalog,
+        state,
+        name="monopole sessions by config",
+        group_by=[_CONFIG, _DEPTH],
+        scorers=session_scorers,
+    )
     by_config: dict[str, dict[str, Stat]] = defaultdict(dict)
     targets: Counter[str] = Counter()
     main = turns + [g for g in sessions if g.values[1] == 0]
-    for group in main:
+    for group in (g for g in main if g.stats):
         config = group.values[0] or "unknown"
         by_config[config].update(group.stats)
         # Every scored turn has an efficiency Score and every scored session its session
@@ -264,3 +288,26 @@ def config_stats(
     return ConfigStats(
         {config: scorers for config, scorers in by_config.items() if scorers}, dict(targets)
     )
+
+
+def subagent_counts(client: CesClient, catalog: Catalog, state: QueryState) -> dict[str, Counter]:
+    """Each config's Trajectories by depth: depth 0 counts sessions, deeper ones their subagents.
+
+    The counts are each group's targets, scored or not. No session Scorer scores a subagent
+    Trajectory, because every writer targets the session, so there are no subagent means to
+    compare. CES needs at least one metric, so the query counts `implicit.completion`."""
+    ref = catalog.scorers[COMPLETION]
+    scorer = QueryScorer(ref.spec.name, ref.scorer_id, ref.version_id, ref.spec.binary)
+    groups = _trajectory_groups(
+        client,
+        catalog,
+        state,
+        name="monopole trajectories by config and depth",
+        group_by=[_CONFIG, _DEPTH],
+        scorers=[scorer],
+    )
+    counts: dict[str, Counter] = defaultdict(Counter)
+    for group in groups:
+        config, depth = group.values
+        counts[config or "unknown"][depth] += group.targets
+    return dict(counts)
