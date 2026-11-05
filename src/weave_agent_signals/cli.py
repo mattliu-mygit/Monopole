@@ -578,7 +578,13 @@ def build_parser() -> argparse.ArgumentParser:
     ces_commands.add_arguments(p_score)
 
     # backfill
-    p_back = subs.add_parser("backfill", help="Backfill scores for a date range")
+    p_back = subs.add_parser(
+        "backfill",
+        help=(
+            "Backfill scores for a date range: each Scorer a turn, session, or subagent lacks, "
+            "or newer Scores for all with --force"
+        ),
+    )
     p_back.add_argument("--start", type=_parse_datetime, required=True)
     p_back.add_argument("--end", type=_parse_datetime, default=None)
     p_back.add_argument("--force", action="store_true")

@@ -44,7 +44,12 @@ A target's Scores and their details go in one create-scores request keyed
 `score-v2:<pass>:<kind>:<target>:<body digest>`. A run's pass is its run ID; a
 command's pass is a new UUID. Reads return the newest Score per Scorer, so a
 forced rescore writes newer Scores and never purges. Without force, a Scorer that
-already has a Score on the target is skipped.
+already has a Score on the target is skipped, so `backfill` over an old range adds
+only the Scorers each turn, session, and subagent lacks, such as Scorers added
+since it was scored. The existing-Score read for `score` and `backfill` finds a
+session's subagent Trajectories by their parent IDs in the Trajectory rows; the
+index fallback below can't, so there a rerun writes subagent Scores again, and
+reads still take the newest.
 
 Turn Scores are read through the turns Evaluation's rows; session Scores through
 its Trajectory rows. Until the Trajectory-row route deploys, a 404 or 405 falls

@@ -18,7 +18,7 @@ from weave_agent_signals.ces_catalog import (
 from weave_agent_signals.ces_client import CesSession, session_view
 from weave_agent_signals.models import Score, SessionView, TraceRole
 from weave_agent_signals.patterns import ConfigStats, Stat
-from weave_agent_signals.scorers import score_trajectory
+from weave_agent_signals.scorers import score_session, score_trajectory
 
 CATALOG = Catalog(
     "ev-turns",
@@ -247,6 +247,39 @@ def test_backfill_reports_bash_coverage(fake, capsys):
     out = capsys.readouterr().out
     assert "Backfilled 2 scores across 1 turns, 1 sessions, 0 subagents." in out
     assert "Bash coverage: 1/1 classified (100%)" in out
+
+
+def test_backfill_adds_only_the_session_scorers_a_historical_session_lacks(fake, monkeypatch):
+    monkeypatch.setattr(ces_commands, "score_session", score_session)
+    monkeypatch.setattr(ces_commands, "score_trajectory", score_trajectory)
+    monkeypatch.setattr(
+        fake, "read_session", lambda sid, **_: replace(SESSION, subagent_trajectories=[SUBAGENT])
+    )
+    # Scored before the whole-Trajectory Scorers existed: only the older session Scorers.
+    older = ["implicit.completion", "implicit.correction_free_rate", "efficiency.session"]
+    fake.session_rows = {"s1": [{"scorer_id": f"sc-{name}"} for name in older]}
+
+    assert _run("backfill", "--start", "2026-11-01") == 0
+
+    written = {target: names for _, kind, target, names in fake.writes if kind == "trajectory"}
+    assert written == {
+        "s1": [
+            "outcome.session_tests_passed",
+            "measure.turns",
+            "measure.tokens",
+            "measure.duration_s",
+            "dim.repo",
+            "dim.day",
+        ],
+        "traj-a": [
+            "outcome.session_tests_passed",
+            "measure.turns",
+            "measure.tokens",
+            "measure.duration_s",
+            "dim.repo",
+            "dim.day",
+        ],
+    }
 
 
 def test_inspect_prints_a_session_with_its_scores(fake, capsys):
