@@ -70,6 +70,32 @@ class Stat:
     mean: float
     binary: bool
     stddev: float | None = None
+    # The stddev is an upper bound (`conservative_stat`), so intervals built from it are wider
+    # than the data's own.
+    conservative: bool = False
+
+
+def histogram_stat(counts: Mapping[float, int]) -> Stat:
+    """The exact Stat of continuous ratings given as how many times each value occurs, such as
+    {0.5: 2, 1.0: 1} for the ratings 0.5, 0.5, and 1.0."""
+    n = sum(counts.values())
+    mean = sum(value * count for value, count in counts.items()) / n
+    if n < 2:
+        return Stat(n, mean, False)
+    squares = sum(count * (value - mean) ** 2 for value, count in counts.items())
+    return Stat(n, mean, False, math.sqrt(squares / (n - 1)))
+
+
+def conservative_stat(stat: Stat) -> Stat:
+    """The Stat with the largest stddev ratings in [0, 1] with its mean can have. Their
+    population variance is at most mean·(1−mean), reached when every rating is 0 or 1, so the
+    sample variance is at most n/(n−1) times that. Example: 4 ratings with mean 0.5 give
+    sqrt(4/3 · 0.25) ≈ 0.577."""
+    if stat.count < 2:
+        return Stat(stat.count, stat.mean, False)
+    mean = min(1.0, max(0.0, stat.mean))
+    variance = stat.count / (stat.count - 1) * mean * (1 - mean)
+    return Stat(stat.count, stat.mean, False, math.sqrt(variance), conservative=True)
 
 
 @dataclass(frozen=True)
@@ -143,7 +169,9 @@ def _pool(stats: list[Stat]) -> Stat:
     squares = sum(
         (s.count - 1) * (s.stddev or 0.0) ** 2 + s.count * (s.mean - mean) ** 2 for s in stats
     )
-    return Stat(n, mean, False, math.sqrt(squares / (n - 1)))
+    # A bound on any group's spread bounds the pooled spread too.
+    conservative = any(s.conservative for s in stats)
+    return Stat(n, mean, False, math.sqrt(squares / (n - 1)), conservative)
 
 
 def difference_ci(new: Stat, prev: Stat, z: float = _Z_95) -> tuple[float, float] | None:
@@ -177,6 +205,7 @@ class ScoreSummary:
     tag_counts: dict[str, int] = field(default_factory=dict)
     binary: bool = False
     ci: tuple[float, float] = (0.0, 1.0)
+    conservative: bool = False  # the interval comes from a bound on the spread
 
     @property
     def pass_rate(self) -> float | None:
@@ -372,6 +401,7 @@ def _summary(scorer: str, stat: Stat, tag_counts: dict[str, int] | None = None) 
         tag_counts=tag_counts or {},
         binary=stat.binary,
         ci=_ci(stat),
+        conservative=stat.conservative,
     )
 
 
@@ -464,21 +494,6 @@ def stat_leaderboard(stats: ConfigStats) -> list[ABResult]:
         )
         for config, scorers in sorted(stats.by_config.items())
     ]
-
-
-def stats_from_feedback(feedback: list[dict]) -> dict[str, dict[str, Stat]]:
-    """Continuous Stats by config and CES Scorer name from raw Score records, for a CES
-    without a spread aggregation. Every Scorer this serves is continuous."""
-    ratings: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
-    for fb in feedback:
-        name = _details(fb).get("ces_scorer")
-        rating = _extract_rating(fb)
-        if is_evaluation_feedback_eligible(fb) and isinstance(name, str) and rating is not None:
-            ratings[_extract_config(fb)][name].append(rating)
-    return {
-        config: {name: _stat(values, binary=False) for name, values in scorers.items()}
-        for config, scorers in ratings.items()
-    }
 
 
 def config_latest(feedback: list[dict]) -> dict[str, datetime]:
@@ -891,8 +906,10 @@ def coaching_digest(feedback: list[dict], stats: ConfigStats | None = None) -> s
                 f"(n={s.count}, 95% CI {lo:.0%}–{hi:.0%}){low_n}"
             )
         else:
+            bound = ", conservative" if s.conservative else ""
             lines.append(
-                f"- **{scorer}**: mean={s.mean:.2f} (n={s.count}, 95% CI {lo:.2f}–{hi:.2f}){low_n}"
+                f"- **{scorer}**: mean={s.mean:.2f} "
+                f"(n={s.count}, 95% CI {lo:.2f}–{hi:.2f}{bound}){low_n}"
             )
 
         top_tags = sorted(s.tag_counts.items(), key=lambda x: -x[1])[:5]

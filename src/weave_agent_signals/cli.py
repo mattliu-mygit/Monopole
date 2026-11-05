@@ -305,9 +305,10 @@ def _print_score_analysis(args: argparse.Namespace, digest: bool) -> None:
                             f"(n={s.count}, CI {lo:.0%}–{hi:.0%}){flag}"
                         )
                     else:
+                        bound = ", conservative" if s.conservative else ""
                         print(
                             f"    {scorer:35s} mean={s.mean:.2f}  "
-                            f"(n={s.count}, CI {lo:.2f}–{hi:.2f}){flag}"
+                            f"(n={s.count}, CI {lo:.2f}–{hi:.2f}{bound}){flag}"
                         )
                 print()
 
@@ -690,8 +691,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1000,
         help=(
-            "Newest turns whose Scores feed trends, coaching examples, summary tag counts, and, "
-            "until CES has a stddev aggregation, continuous-Scorer summaries (default: 1000)"
+            "Newest turns whose Scores feed trends, coaching examples, and summary tag counts "
+            "(default: 1000)"
         ),
     )
     p_analyze.add_argument(
@@ -748,10 +749,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit",
         type=int,
         default=1000,
-        help=(
-            "Newest turns whose Scores feed trends, config order, and, until CES has a stddev "
-            "aggregation, continuous-Scorer stats (default: 1000)"
-        ),
+        help="Newest turns whose Scores feed trends and config order (default: 1000)",
     )
     p_mon.add_argument(
         "--alert-webhook",

@@ -15,6 +15,9 @@ The turn query runs on the turns Evaluation and the session query on the session
 which selects every session Scorer: the deterministic ones and each judge panel's
 `<rubric>.panel-<digest>`.
 
+While CES lacks a spread aggregation, each continuous Scorer also gets a value-histogram query, so
+its stddev is exact without reading raw Scores (`config_stats`).
+
 `analyze` adds more Trajectory queries on the sessions Evaluation: sessions by config and whether
 their last test run passed, summing measurements (success and spend), Trajectories by config and
 depth (subagents against sessions), judge Scores by a reference Score (judge agreement), and
@@ -28,7 +31,6 @@ makes a new query.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any
@@ -41,8 +43,9 @@ from weave_agent_signals.patterns import (
     ConfigStats,
     SessionSuccess,
     Stat,
+    conservative_stat,
+    histogram_stat,
     session_success,
-    stats_from_feedback,
 )
 from weave_agent_signals.scorers.session import (
     MEASURE_DURATION,
@@ -56,6 +59,10 @@ from weave_agent_signals.scorers.session import (
 # denominator are assumptions until it does.
 STDDEV = "stddev"
 _MAX_METRICS = 100  # CES's limit per query
+# A value histogram larger than this many result rows falls back to a conservative interval.
+# Monopole's continuous Scorers round to 3 or 4 decimals, so a config has at most 1,001 or 10,001
+# values; CES refuses a page over 10,000 rows, and this stays well inside it and quick to read.
+HISTOGRAM_MAX_ROWS = 5000
 _CONFIG = {"kind": "dataset_field", "source": "input", "name": "config_version"}
 _DEPTH = {"kind": "depth"}
 COMPLETION = "implicit.completion"
@@ -128,11 +135,12 @@ def run_query(
     target_kind: str,
     group_by: list[dict],
     scorers: list[QueryScorer],
+    limit: int | None = None,
 ) -> list[Group]:
-    """Each group's Stat per Scorer, from one query per 100 metrics. Every group CES returns is
-    kept, even one with no Score, and a Scorer with no Score in a group is left out of that
-    group. A continuous Scorer has a stddev only when CES has the spread aggregation; the first
-    create that names it finds out."""
+    """Each group's Stat per Scorer, from one query per 100 metrics, reading at most `limit`
+    result rows of each. Every group CES returns is kept, even one with no Score, and a Scorer
+    with no Score in a group is left out of that group. A continuous Scorer has a stddev only
+    when CES has the spread aggregation; the first create that names it finds out."""
     chunk = _MAX_METRICS // 3
     targets: dict[tuple, int] = {}
     groups: dict[tuple, dict[str, Stat]] = defaultdict(dict)
@@ -157,7 +165,7 @@ def run_query(
         else:
             if wants_stddev:
                 state.stddev = True
-        for row in client.query_results(evaluation_id, query_id):
+        for row in client.query_results(evaluation_id, query_id, limit):
             values = tuple(row["group"])
             targets[values] = row["targets"]
             stats = groups[values]
@@ -219,16 +227,59 @@ def _trajectory_groups(
     )
 
 
-def config_stats(
-    client: CesClient,
-    catalog: Catalog,
-    state: QueryState,
-    feedback: Callable[[], list[dict[str, Any]]],
-) -> ConfigStats:
-    """Every config's turn and session Stats, main agent only.
+def _too_large(error: httpx.HTTPStatusError) -> bool:
+    # CES answers a page over its result-row guard with 400 "... result rows per request ...".
+    return error.response.status_code == 400 and "result rows" in error.response.text
 
-    `feedback` reads raw Score records. It's called only when CES has no spread aggregation:
-    then continuous Scorers come from those records instead, binary ones still from queries."""
+
+def _value_stats(
+    client: CesClient,
+    state: QueryState,
+    evaluation_id: str,
+    *,
+    target_kind: str,
+    group_by: list[dict],
+    scorer: QueryScorer,
+) -> dict[str, Stat] | None:
+    """Each config's exact Stat for a continuous Scorer, without its raw Scores. One query
+    groups by `group_by` and the Scorer's own value and counts each value; with depth in
+    `group_by`, only depth 0 counts. None when the histogram passes HISTOGRAM_MAX_ROWS rows or
+    CES refuses it as too large.
+
+    Example: a config whose turns rated 0.5, 0.5, and 1.0 comes back as the groups (cfg, 0.5)
+    with count 2 and (cfg, 1.0) with count 1, so its mean is 2/3 and its stddev sqrt(1/12)."""
+    try:
+        groups = run_query(
+            client,
+            state,
+            evaluation_id,
+            name=f"monopole {scorer.name} values by config",
+            target_kind=target_kind,
+            group_by=[*group_by, {"kind": "score", "name": scorer.name}],
+            scorers=[scorer],
+            limit=HISTOGRAM_MAX_ROWS + 1,
+        )
+    except httpx.HTTPStatusError as error:
+        if not _too_large(error):
+            raise
+        return None
+    if len(groups) > HISTOGRAM_MAX_ROWS:
+        return None
+    counts: dict[str, dict[float, int]] = defaultdict(dict)
+    for group in groups:
+        config, *depth, value = group.values
+        # The group of targets without a Score has no Stat.
+        if depth in ([], [0]) and scorer.name in group.stats:
+            counts[config or "unknown"][value] = group.stats[scorer.name].count
+    return {config: histogram_stat(values) for config, values in counts.items()}
+
+
+def config_stats(client: CesClient, catalog: Catalog, state: QueryState) -> ConfigStats:
+    """Every config's turn and session Stats, main agent only, from queries alone.
+
+    Without CES's spread aggregation, each continuous Scorer that has Scores takes one more
+    query, its value histogram (`_value_stats`), for an exact stddev. When that histogram is too
+    large, the Scorer keeps the query's mean with a conservative stddev (`conservative_stat`)."""
     turn_scorers = sorted(
         (
             QueryScorer(ref.spec.name, ref.scorer_id, ref.version_id, ref.spec.binary)
@@ -266,16 +317,27 @@ def config_stats(
         targets[config] += max((stat.count for stat in group.stats.values()), default=0)
 
     if state.stddev is False:
-        # Fallback: delete when CES stddev ships. Continuous Scorers take today's raw-Score
-        # path, which covers only the newest turns that `feedback` reads.
-        continuous = {s.name for s in turn_scorers + trajectory_scorers if not s.binary}
-        for scorers in by_config.values():
-            for name in continuous & scorers.keys():
-                del scorers[name]
-        for config, scorers in stats_from_feedback(feedback()).items():
-            by_config[config].update(
-                (name, stat) for name, stat in scorers.items() if name in continuous
-            )
+        # Delete when CES stddev ships.
+        histograms = [
+            (catalog.turns_evaluation_id, "case", [_CONFIG], turn_scorers),
+            (catalog.sessions_evaluation_id, "trajectory", [_CONFIG, _DEPTH], trajectory_scorers),
+        ]
+        for evaluation_id, target_kind, group_by, scorers in histograms:
+            for scorer in scorers:
+                if scorer.binary or not any(scorer.name in s for s in by_config.values()):
+                    continue
+                exact = _value_stats(
+                    client,
+                    state,
+                    evaluation_id,
+                    target_kind=target_kind,
+                    group_by=group_by,
+                    scorer=scorer,
+                )
+                for config, stats in by_config.items():
+                    if scorer.name in stats:
+                        found = None if exact is None else exact.get(config)
+                        stats[scorer.name] = found or conservative_stat(stats[scorer.name])
     return ConfigStats(
         {config: scorers for config, scorers in by_config.items() if scorers}, dict(targets)
     )

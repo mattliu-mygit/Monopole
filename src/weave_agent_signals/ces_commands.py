@@ -8,7 +8,6 @@ Without `--force`, a scorer that already has a Score on a target is skipped.
 from __future__ import annotations
 
 import argparse
-import functools
 import json
 import logging
 import os
@@ -394,9 +393,9 @@ def read_analysis(
     and their sessions as feedback records."""
     with connect(args) as ces:
         state = ces_queries.QueryState()
-        records = functools.cache(lambda: ces.client.read_all_scores(ces.catalog, limit=args.limit))
-        stats = ces_queries.config_stats(ces.client, ces.catalog, state, records)
+        stats = ces_queries.config_stats(ces.client, ces.catalog, state)
         if success:
             found = ces_queries.session_success_by_config(ces.client, ces.catalog, state)
             stats = replace(stats, success=found)
-        return stats, records() if feedback else []
+        records = ces.client.read_all_scores(ces.catalog, limit=args.limit) if feedback else []
+        return stats, records

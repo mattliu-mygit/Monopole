@@ -22,15 +22,16 @@ from weave_agent_signals.patterns import (
     coaching_digest,
     config_latest,
     config_regressions,
+    conservative_stat,
     detect_regressions,
     difference_ci,
+    histogram_stat,
     is_evaluation_feedback_eligible,
     pass_threshold,
     segment_gaps,
     session_success,
     stat_leaderboard,
     stat_summaries,
-    stats_from_feedback,
     subagent_gaps,
 )
 
@@ -791,16 +792,40 @@ def test_stat_leaderboard_reports_each_config_and_its_scored_targets():
     assert board[1].scores["outcome.test"].pass_rate == 0.5
 
 
-def test_stats_from_feedback_keys_continuous_stats_by_ces_scorer_and_config():
-    def record(rating, config):
-        feedback = _fb("efficiency", rating, config_version=config)
-        feedback["payload"]["details"]["ces_scorer"] = "efficiency"
-        return feedback
+def test_a_value_histogram_gives_the_same_stat_as_its_ratings():
+    ratings = [0.2, 0.2, 0.5, 0.9, 0.9, 0.9]
 
-    found = stats_from_feedback([record(0.0, "v1"), record(1.0, "v1"), record(0.5, "v2")])
+    assert histogram_stat({0.2: 2, 0.5: 1, 0.9: 3}) == Stat(
+        6, pytest.approx(_stat(ratings).mean), False, pytest.approx(_stat(ratings).stddev)
+    )
+    assert histogram_stat({0.4: 1}) == Stat(1, 0.4, False)
 
-    assert found["v1"]["efficiency"] == Stat(2, 0.5, False, pytest.approx(0.7071, abs=1e-4))
-    assert found["v2"]["efficiency"] == Stat(1, 0.5, False)
+
+def test_a_conservative_stddev_bounds_any_ratings_in_0_1_with_that_mean():
+    # Ratings of only 0 and 1 reach the bound; any other ratings with the mean spread less.
+    extreme, spread = [0.0, 1.0, 1.0, 1.0], [0.5, 0.8, 0.9, 0.8]
+
+    bound = conservative_stat(Stat(4, 0.75, False))
+
+    assert bound == Stat(4, 0.75, False, pytest.approx(_stat(extreme, binary=False).stddev), True)
+    assert _stat(spread).stddev < bound.stddev
+    assert conservative_stat(Stat(1, 0.75, False)) == Stat(1, 0.75, False)
+
+
+def test_a_conservative_interval_is_labeled_and_survives_pooling():
+    stats = ConfigStats(
+        {
+            "v1": {"efficiency": conservative_stat(Stat(10, 0.6, False))},
+            "v2": {"efficiency": Stat(10, 0.7, False, 0.1)},
+        },
+        {"v1": 10, "v2": 10},
+    )
+
+    summary = stat_summaries(stats)["efficiency"]
+
+    assert summary.conservative
+    assert [r.scores["efficiency"].conservative for r in stat_leaderboard(stats)] == [True, False]
+    assert "(n=20, 95% CI 0.49–0.81, conservative)" in coaching_digest([], stats)
 
 
 # --- coaching_digest tests ---

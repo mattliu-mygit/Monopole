@@ -60,11 +60,20 @@ Coaching examples are session judge Scores, and a filtered session-row search
 waits on a CES deploy. Configs are ordered by their latest turn among the newest
 `--limit` turns, so a config missing from that window is not compared.
 
-Until CES ships its spread aggregation (`stddev`), a query cannot give a
-continuous Scorer's interval. Then continuous Scorers' summaries, leaderboard
-entries, and comparisons come from the raw newest-`--limit` Scores, and binary
-Scorers still come from queries. Monopole finds out once per process, when CES
-rejects a query that names `stddev`.
+Until CES ships its spread aggregation (`stddev`), the config query gives a
+continuous Scorer's mean and count but not its spread. Monopole finds out once
+per process, when CES rejects a query that names `stddev`. Then each continuous
+Scorer that has Scores gets one more query, grouped by config and by the
+Scorer's own value, counting each value. That histogram gives the exact mean
+and sample stddev over every Score. Example: ratings 0.5, 0.5, and 1.0 come back
+as 0.5 twice and 1.0 once, so the mean is 2/3. No summary reads raw Scores.
+
+When the histogram passes 5,000 result rows, or CES refuses it as too large,
+the Scorer keeps the config query's mean and count with the largest stddev
+ratings in [0, 1] with that mean can have: mean·(1−mean), times n/(n−1) for the
+sample. Its intervals are wider than the data's own and are labeled
+"conservative" in the CLI's leaderboard and digest. The Scorers round to 3 or 4
+decimals, so a config has at most about 1,000 or 10,000 distinct values.
 
 ## Analysis surfaces
 

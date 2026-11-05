@@ -458,19 +458,13 @@ class _ScoresOnly:
         pass
 
 
-@pytest.mark.parametrize(("feedback", "fallback", "reads"), [(True, True, [7]), (False, False, [])])
-def test_read_analysis_reads_the_newest_scores_at_most_once(monkeypatch, feedback, fallback, reads):
+@pytest.mark.parametrize(("feedback", "reads"), [(True, [7]), (False, [])])
+def test_read_analysis_reads_the_newest_scores_only_for_feedback(monkeypatch, feedback, reads):
     records = [{"feedback_type": "weave_agent_signals.efficiency", "payload": {"rating": 1.0}}]
     client = _ScoresOnly(records)
     stats = ConfigStats({"v1": {"efficiency": Stat(1, 1.0, False)}}, {"v1": 1})
-
-    def config_stats(_client, _catalog, _state, raw):
-        if fallback:
-            raw()  # a CES without stddev reads the same records
-        return stats
-
     monkeypatch.setattr(ces_commands, "connect", lambda args: CesSession(client, CATALOG))
-    monkeypatch.setattr(ces_commands.ces_queries, "config_stats", config_stats)
+    monkeypatch.setattr(ces_commands.ces_queries, "config_stats", lambda *_: stats)
     args = cli.build_parser().parse_args(["analyze", "--limit", "7"])
 
     got = ces_commands.read_analysis(args, feedback=feedback)

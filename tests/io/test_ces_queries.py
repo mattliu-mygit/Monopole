@@ -128,16 +128,12 @@ def _client(**kwargs) -> CesClient:
     return CesClient("http://ces.test", "scope-1", api_key="k", **kwargs)
 
 
-def _no_feedback():
-    pytest.fail("raw Scores are read only without a CES stddev")
-
-
 @respx.mock
 def test_config_stats_group_turns_by_config_and_keep_depth_0_sessions():
     Routes()
     state = QueryState()
 
-    stats = config_stats(_client(), CATALOG, state, _no_feedback)
+    stats = config_stats(_client(), CATALOG, state)
 
     assert stats.by_config == {
         "cfg1": {
@@ -157,7 +153,7 @@ def test_config_stats_group_turns_by_config_and_keep_depth_0_sessions():
 def test_session_queries_run_on_the_sessions_evaluation():
     routes = Routes()
 
-    config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+    config_stats(_client(), CATALOG, QueryState())
 
     (turns_key, turns), (sessions_key, sessions) = routes.creates
     assert turns_key.startswith("monopole-query-v1:ev-turns:")
@@ -185,10 +181,10 @@ def test_a_query_is_created_once_per_process_and_replayed_by_content():
     routes = Routes()
     state = QueryState()
 
-    config_stats(_client(), CATALOG, state, _no_feedback)
-    config_stats(_client(), CATALOG, state, _no_feedback)
+    config_stats(_client(), CATALOG, state)
+    config_stats(_client(), CATALOG, state)
     first = routes.keys()
-    config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+    config_stats(_client(), CATALOG, QueryState())
 
     assert len(first) == 2
     # A new process replays the same keys, so CES returns the same query IDs.
@@ -228,10 +224,10 @@ def test_the_same_query_on_another_evaluation_gets_its_own_create_key():
 @respx.mock
 def test_a_new_judge_panel_makes_a_new_session_query():
     before = Routes()
-    config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+    config_stats(_client(), CATALOG, QueryState())
     respx.reset()
     after = Routes(judges=((JUDGE, "sc-j", "v-j"), ("judge.goal.panel-new", "sc-n", "v-n")))
-    config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+    config_stats(_client(), CATALOG, QueryState())
 
     assert after.keys()[0] == before.keys()[0]
     assert after.keys()[1] != before.keys()[1]
@@ -247,7 +243,7 @@ def test_results_are_read_page_by_page():
         ]
     )
 
-    stats = config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+    stats = config_stats(_client(), CATALOG, QueryState())
 
     assert routes.keys()
     assert [call.request.url.params.get("cursor") for call in pages.calls] == [None, "p2"]
@@ -263,75 +259,159 @@ def test_a_busy_ces_is_retried_with_growing_waits_then_raises():
     )
     slept: list[float] = []
 
-    config_stats(_client(sleep=slept.append), CATALOG, QueryState(), _no_feedback)
+    config_stats(_client(sleep=slept.append), CATALOG, QueryState())
 
     assert slept == [1.0, 2]
 
     respx.get(f"{QUERIES}/q-case/results").mock(return_value=busy)
     slept.clear()
     with pytest.raises(httpx.HTTPStatusError):
-        config_stats(_client(sleep=slept.append), CATALOG, QueryState(), _no_feedback)
+        config_stats(_client(sleep=slept.append), CATALOG, QueryState())
     assert slept == [1.0, 2, 4, 8, 16]
 
 
-def _raw(scorer, rating, config):
-    return {
-        "id": f"s-{scorer}-{rating}",
-        "feedback_type": f"weave_agent_signals.{scorer.split('.panel-')[0]}",
-        "target_id": "t",
-        "payload": {
-            "rating": rating,
-            "details": {"config_version": config, "ces_scorer": scorer},
-        },
-    }
+STDDEV_REJECTED = httpx.Response(
+    422,
+    json={
+        "error": {
+            "code": "unprocessable_entity",
+            "details": [
+                {
+                    "location": "body.definition.metrics[2].aggregation",
+                    "message": "expected value to be one of mean, sum, min, max, count",
+                }
+            ],
+        }
+    },
+)
+
+
+def _histograms(routes: Routes, results: dict) -> list[dict]:
+    """Answer a create naming stddev with CES's rejection, and a value-histogram query, one
+    grouped by a Score, with `results[scorer name]`: rows, or a Response. Returns the histogram
+    definitions in create order."""
+    definitions = []
+
+    def create(request):
+        body = json.loads(request.content)
+        if b'"stddev"' in request.content:
+            routes._create(request)
+            return STDDEV_REJECTED
+        column = body["definition"]["group_by"][-1]
+        if column.get("kind") != "score":
+            return routes._create(request)
+        definitions.append(body["definition"])
+        evaluation = request.url.path.split("/")[-2]
+        query = f"q-hist-{column['name']}"
+        reply = results[column["name"]]
+        respx.get(f"{BASE}/evaluations/{evaluation}/queries/{query}/results").mock(
+            return_value=reply
+            if isinstance(reply, httpx.Response)
+            else httpx.Response(200, json={"rows": reply})
+        )
+        return httpx.Response(200, json={"evaluation_query_id": query})
+
+    routes.create.side_effect = create
+    respx.post(SESSION_QUERIES).mock(side_effect=create)
+    return definitions
+
+
+def _counts(scorer, group, value, count):
+    return _row([*group, value], count, **{f"{scorer}:mean": value, f"{scorer}:count": count})
 
 
 @respx.mock
-def test_without_ces_stddev_continuous_scorers_fall_back_to_raw_scores():
+def test_without_ces_stddev_a_continuous_scorer_gets_its_exact_stddev_from_a_value_histogram():
     routes = Routes()
-    rejected = httpx.Response(
-        422,
+    definitions = _histograms(
+        routes,
+        {
+            # Efficiency ratings 0.5, 0.5, 1.0 in cfg1; the unscored group has no count.
+            "efficiency": [
+                _counts("efficiency", ["cfg1"], 0.5, 2),
+                _counts("efficiency", ["cfg1"], 1.0, 1),
+                _row(["cfg1", None], 9),
+            ],
+            # Sessions rated 0.6 and 0.8; a subagent's 0.0 is left out.
+            JUDGE: [
+                _counts(JUDGE, ["cfg1", 0], 0.6, 1),
+                _counts(JUDGE, ["cfg1", 0], 0.8, 1),
+                _counts(JUDGE, ["cfg1", 1], 0.0, 5),
+            ],
+        },
+    )
+    state = QueryState()
+
+    stats = config_stats(_client(), CATALOG, state)
+
+    assert state.stddev is False
+    (first, _), (retried, _), _sessions = routes.creates
+    assert first != retried  # the retry without stddev is new content under a new key
+    assert stats.by_config["cfg1"]["efficiency"] == Stat(
+        3, pytest.approx(2 / 3), False, pytest.approx((1 / 12) ** 0.5)
+    )
+    assert stats.by_config["cfg1"][JUDGE] == Stat(
+        2, pytest.approx(0.7), False, pytest.approx(0.02**0.5)
+    )
+    # Binary Scorers and target counts still come from the config queries.
+    assert stats.by_config["cfg1"]["outcome.test"] == Stat(4, 0.75, True)
+    assert stats.targets["cfg1"] == 6
+    # One histogram per continuous Scorer that has Scores: none for efficiency.session.
+    assert [d["group_by"] for d in definitions] == [
+        [CONFIG, {"kind": "score", "name": "efficiency"}],
+        [CONFIG, {"kind": "depth"}, {"kind": "score", "name": JUDGE}],
+    ]
+    assert [d["target_kind"] for d in definitions] == ["case", "trajectory"]
+    for definition in definitions:
+        assert all(m["aggregation"] != "stddev" for m in definition["metrics"])
+
+
+@respx.mock
+def test_a_histogram_too_large_falls_back_to_a_conservative_stddev(monkeypatch):
+    monkeypatch.setattr("weave_agent_signals.ces_queries.HISTOGRAM_MAX_ROWS", 2)
+    routes = Routes()
+    too_large = httpx.Response(
+        400,
         json={
             "error": {
-                "code": "unprocessable_entity",
-                "details": [
-                    {
-                        "location": "body.definition.metrics[2].aggregation",
-                        "message": "expected value to be one of mean, sum, min, max, count",
-                    }
-                ],
+                "message": "query exceeds the configured limit of 10000 result rows per "
+                "request, request a smaller page"
             }
         },
     )
-
-    def create(request):
-        reply = routes._create(request)
-        return rejected if b'"stddev"' in request.content else reply
-
-    routes.create.side_effect = create
-    reads = []
-
-    def feedback():
-        reads.append(1)
-        return [_raw("efficiency", 0.2, "cfg1"), _raw("efficiency", 0.4, "cfg1")]
-
-    state = QueryState()
-    stats = config_stats(_client(), CATALOG, state, feedback)
-
-    assert state.stddev is False
-    first, retried, sessions = [body for _, body in routes.creates]
-    assert any(m["aggregation"] == "stddev" for m in first["definition"]["metrics"])
-    for body in (retried, sessions):
-        assert all(m["aggregation"] != "stddev" for m in body["definition"]["metrics"])
-    assert len({key for key, _ in routes.creates}) == 3
-    assert reads == [1]
-    assert stats.by_config["cfg1"]["efficiency"] == Stat(
-        2, pytest.approx(0.3), False, pytest.approx(0.1414, abs=1e-4)
+    _histograms(
+        routes,
+        {
+            # Three distinct values pass the limit of 2 rows.
+            "efficiency": [_counts("efficiency", ["cfg1"], v, 1) for v in (0.2, 0.6, 1.0)],
+            JUDGE: too_large,
+        },
     )
-    # The judge has no raw Scores here, so it has no stats; binary Scorers still come from CES.
-    assert JUDGE not in stats.by_config["cfg1"]
-    assert stats.by_config["cfg1"]["outcome.test"] == Stat(4, 0.75, True)
-    assert stats.targets["cfg1"] == 6
+
+    stats = config_stats(_client(), CATALOG, QueryState())
+
+    # The config query's 4 efficiency ratings with mean 0.6: sqrt(4/3 * 0.6 * 0.4).
+    assert stats.by_config["cfg1"]["efficiency"] == Stat(
+        4, 0.6, False, pytest.approx((4 / 3 * 0.24) ** 0.5), conservative=True
+    )
+    assert stats.by_config["cfg1"][JUDGE] == Stat(
+        2, 0.7, False, pytest.approx((2 * 0.21) ** 0.5), conservative=True
+    )
+
+
+@respx.mock
+def test_a_histogram_error_other_than_too_large_is_raised():
+    routes = Routes()
+    _histograms(
+        routes,
+        {
+            "efficiency": httpx.Response(400, json={"error": {"message": "no column"}}),
+            JUDGE: [],
+        },
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        config_stats(_client(), CATALOG, QueryState())
 
 
 @respx.mock
@@ -340,7 +420,7 @@ def test_a_rejection_unrelated_to_stddev_is_raised():
     routes.create.side_effect = [httpx.Response(400, json={"error": {"message": "no field"}})]
 
     with pytest.raises(httpx.HTTPStatusError):
-        config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+        config_stats(_client(), CATALOG, QueryState())
 
 
 @respx.mock
@@ -360,7 +440,7 @@ def test_a_dataset_without_subagents_gets_turn_stats():
 
     routes.create.side_effect = create
 
-    stats = config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+    stats = config_stats(_client(), CATALOG, QueryState())
 
     assert stats.by_config["cfg1"]["efficiency"] == Stat(4, 0.6, False, 0.1)
 
@@ -471,7 +551,7 @@ def test_an_unscored_session_group_adds_no_config_to_config_stats():
             return_value=httpx.Response(200, json={"rows": SESSION_ROWS + [_row(["cfg2", 0], 3)]})
         )
 
-        stats = config_stats(_client(), CATALOG, QueryState(), _no_feedback)
+        stats = config_stats(_client(), CATALOG, QueryState())
 
     assert stats.targets == {"cfg1": 6, "unknown": 1}
     assert "cfg2" not in stats.by_config

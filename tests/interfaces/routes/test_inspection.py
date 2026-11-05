@@ -329,7 +329,7 @@ def test_session_detail_returns_children_and_splits_session_and_turn_scores():
 def _stats(monkeypatch, stats: ConfigStats) -> list:
     calls = []
 
-    def config_stats(client, catalog, state, feedback):
+    def config_stats(client, catalog, state):
         calls.append(state)
         return stats
 

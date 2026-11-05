@@ -668,9 +668,11 @@ class CesClient:
             key=key,
         )["evaluation_query_id"]
 
-    def query_results(self, evaluation_id: str, query_id: str) -> list[dict]:
-        """Every result row of the query on the Evaluation's latest data."""
-        return self._rows(f"/evaluations/{evaluation_id}/queries/{query_id}/results", None)
+    def query_results(
+        self, evaluation_id: str, query_id: str, limit: int | None = None
+    ) -> list[dict]:
+        """Every result row of the query on the Evaluation's latest data, or its first `limit`."""
+        return self._rows(f"/evaluations/{evaluation_id}/queries/{query_id}/results", None, limit)
 
     def create_comparison(
         self, members: list[tuple[str, str]], *, key: str, attributes: dict | None = None

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import get_args
@@ -304,9 +303,8 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
         # Summaries and the A/B leaderboard cover every Score, from CES queries. Trends, coaching
         # examples, and tag counts cover the Scores on the newest `limit` turns and their sessions.
         with ces_factory() as ces:
-            records = functools.cache(lambda: ces.client.read_all_scores(ces.catalog, limit=limit))
-            stats = ces_queries.config_stats(ces.client, ces.catalog, query_state, records)
-            feedback = records()
+            stats = ces_queries.config_stats(ces.client, ces.catalog, query_state)
+            feedback = ces.client.read_all_scores(ces.catalog, limit=limit)
         if not stats.by_config and not feedback:
             return AnalysisResponse.model_validate(
                 {
