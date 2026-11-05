@@ -101,14 +101,17 @@ eligible time trends or configuration comparisons. Alerts identify the score,
 sample context, magnitude, and comparison rather than claiming a root cause.
 
 A configuration comparison takes each Scorer's newest two configs and reports a
-drop of at least 0.2. The drop is significant when the 95% interval on the
-difference lies wholly below 0: Newcombe's interval for binary Scorers, and
-Welch's standard error with the normal approximation for continuous ones, which
-need at least two ratings per config. This replaced asking whether the two
-configs' own intervals were disjoint with at least five ratings each, a test
-stricter than 95% that missed real drops. For example, 40 of 50 passing then 30
-of 50 has overlapping intervals but a difference interval of -0.36 to -0.02, so
-it now alerts. A trend still uses the older rule.
+drop of at least 0.2. A trend compares the older and recent windows and reports
+a change of at least 0.2 either way. Both call a change significant when the 95%
+interval on the difference (newer minus older) excludes 0: Newcombe's interval
+for binary Scorers, and Welch's standard error with the normal approximation for
+continuous ones, which need at least two ratings on each side. This replaced
+asking whether the two sides' own intervals were disjoint with at least five
+ratings each, a test stricter than 95% that missed real drops. For example, 40
+of 50 passing then 30 of 50 has overlapping intervals but a difference interval
+of -0.36 to -0.02, so it now alerts. Without the five-rating floor, a small but
+clean change can be significant: 2 of 2 passing then 0 of 2 has a difference
+interval of -1.0 to -0.07.
 
 When a state file is configured, monitoring retains stable keys for regressions
 that are currently significant. An ongoing regression is not sent repeatedly;

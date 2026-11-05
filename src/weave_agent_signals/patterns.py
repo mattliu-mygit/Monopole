@@ -16,12 +16,16 @@ from datetime import datetime, timedelta, timezone
 from itertools import islice
 from typing import Any, Iterable, Mapping
 
+from weave_agent_signals.ces_catalog import DETERMINISTIC
 from weave_agent_signals.judges.review import PANEL_CONTRACT_VERSION
 from weave_agent_signals.models import FEEDBACK_PREFIX
 
 # Below this many samples a scorer's mean/pass-rate is not trustworthy on its own.
 MIN_CONFIDENT_SAMPLES = 5
 _Z_95 = 1.96  # z for a 95% interval
+# Raw Score records name a deterministic Scorer the way the catalog does; judge Scorers are
+# continuous.
+_BINARY_SCORERS = frozenset(spec.name for spec in DETERMINISTIC if spec.binary)
 _SESSION_EVALUATION_CONTEXT_FIELDS = (
     "rubric_version",
     "rubric_threshold",
@@ -500,7 +504,9 @@ def detect_regressions(
     """Detect score regressions by comparing a recent window against older data.
 
     Entries are ordered by agent run time (``turn_started_at``), not scoring
-    time, so a single backfill does not collapse the timeline.
+    time, so a single backfill does not collapse the timeline. Changes of at least
+    `threshold` are reported; one is ``significant`` when the 95% interval on the
+    difference (`difference_ci`) excludes 0.
     """
     by_scorer: dict[str, list[tuple[datetime, float]]] = defaultdict(list)
 
@@ -526,17 +532,12 @@ def detect_regressions(
         delta = recent_mean - older_mean
 
         if abs(delta) >= threshold:
-            # "significant" = the two windows' 95% CIs don't overlap and each has
-            # enough samples. Small-sample swings are still surfaced (a human may
-            # want them) but flagged non-significant so they aren't over-read.
-            older_ci = _ci(_stat(older, binary=False))
-            recent_ci = _ci(_stat(recent, binary=False))
-            disjoint = older_ci[0] > recent_ci[1] or recent_ci[0] > older_ci[1]
-            significant = (
-                disjoint
-                and len(older) >= MIN_CONFIDENT_SAMPLES
-                and len(recent) >= MIN_CONFIDENT_SAMPLES
-            )
+            # Significant when the 95% interval on recent - older excludes 0, as for config
+            # regressions. Swings without that evidence are still surfaced for a human, but
+            # flagged non-significant so they aren't over-read.
+            binary = scorer in _BINARY_SCORERS
+            ci = difference_ci(_stat(recent, binary), _stat(older, binary))
+            significant = ci is not None and (ci[0] > 0 or ci[1] < 0)
             regressions.append(
                 {
                     "scorer": scorer,
@@ -802,7 +803,7 @@ def coaching_digest(feedback: list[dict], stats: ConfigStats | None = None) -> s
         lines.extend(["", "## Trends", ""])
         for r in regressions:
             arrow = "↓" if r["direction"] == "regression" else "↑"
-            mark = "" if r["significant"] else "  (tentative — small sample)"
+            mark = "" if r["significant"] else "  (tentative — interval includes 0)"
             lines.append(
                 f"- {arrow} **{r['scorer']}**: {r['older_mean']:.2f} → {r['recent_mean']:.2f} "
                 f"({r['delta']:+.2f}, n={r['sample_count']}){mark}"

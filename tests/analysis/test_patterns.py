@@ -1131,12 +1131,49 @@ def test_regression_marked_significant_only_with_evidence():
 
 
 def test_tiny_regression_flagged_but_not_significant():
+    # 1 of 2 passing, then 0 of 2: Newcombe's interval on -0.5 is about -0.91 to 0.27.
     feedback = [
         _fb("outcome.test", 1.0, scored_at="2026-07-01T00:00:00"),
-        _fb("outcome.test", 1.0, scored_at="2026-07-02T00:00:00"),
+        _fb("outcome.test", 0.0, scored_at="2026-07-02T00:00:00"),
         _fb("outcome.test", 0.0, scored_at="2026-07-08T00:00:00"),
         _fb("outcome.test", 0.0, scored_at="2026-07-09T00:00:00"),
     ]
     regs = detect_regressions(feedback)
     assert len(regs) == 1  # still surfaced for the human
     assert regs[0]["significant"] is False  # but flagged as low-confidence
+
+
+def _window(scorer, ratings, day):
+    return [_fb(scorer, rating, scored_at=f"2026-{day}T00:00:00") for rating in ratings]
+
+
+def test_trend_is_significant_when_the_difference_interval_excludes_0():
+    """40 of 50 passing, then 30 of 50. The windows' own Wilson intervals overlap (0.67-0.89
+    and 0.46-0.72), which the old rule called not significant; the difference interval,
+    -0.36 to -0.02, excludes 0."""
+    feedback = _window("outcome.test", [1.0] * 40 + [0.0] * 10, "06-01") + _window(
+        "outcome.test", [1.0] * 30 + [0.0] * 20, "07-01"
+    )
+
+    (reg,) = detect_regressions(feedback, threshold=0.1)
+
+    assert (reg["older_mean"], reg["recent_mean"], reg["delta"]) == (0.8, 0.6, -0.2)
+    assert reg["significant"] is True
+
+
+def test_continuous_trends_use_welchs_interval():
+    # Means 0.85 then 0.6, standard deviations 0.053 and 0.105: -0.25 +- 0.073.
+    steady = _window("efficiency", [0.8, 0.9] * 5, "06-01") + _window(
+        "efficiency", [0.5, 0.7] * 5, "07-01"
+    )
+    # The same drop with a recent spread of 0.52: -0.25 +- 0.32 includes 0. Values of only 0
+    # and 1 don't make a continuous Scorer binary.
+    noisy = _window("efficiency", [0.8, 0.9] * 5, "06-01") + _window(
+        "efficiency", [0.0, 1.0, 1.0] * 3 + [0.0], "07-01"
+    )
+
+    (steady_reg,) = detect_regressions(steady)
+    (noisy_reg,) = detect_regressions(noisy)
+
+    assert (steady_reg["delta"], steady_reg["significant"]) == (-0.25, True)
+    assert noisy_reg["significant"] is False
