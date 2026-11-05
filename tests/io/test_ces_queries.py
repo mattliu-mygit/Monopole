@@ -192,6 +192,8 @@ def test_session_queries_run_on_the_sessions_evaluation_when_ces_accepts_them():
         "v-implicit.completion",
         "v-implicit.correction_free_rate",
         "v-j",
+        "v-outcome.session_no_failed_builds",
+        "v-outcome.session_tests_passed",
     ]
     assert turns["definition"]["target_kind"] == "case"
     assert turns["definition"]["group_by"] == [
@@ -216,6 +218,8 @@ def test_a_ces_without_trajectory_evaluation_queries_runs_them_on_the_turns_eval
         "sc-implicit.completion",
         "sc-implicit.correction_free_rate",
         "sc-j",
+        "sc-outcome.session_no_failed_builds",
+        "sc-outcome.session_tests_passed",
     ]
     assert [key.split(":")[1] for key in routes.keys()] == ["ev-turns", "ev-turns"]
     assert routes.creates[1][1]["definition"]["target_kind"] == "trajectory"

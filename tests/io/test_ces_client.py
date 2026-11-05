@@ -976,3 +976,49 @@ def test_turn_subagents_reads_only_that_turns_subagents():
     assert (first.call_count, second.call_count) == (0, 1)
     assert client.turn_subagents("traj-s", "c4") is None  # a turn is named by its first Case
     assert client.turn_subagents("traj-gone", "c1") is None
+
+
+@respx.mock
+def test_read_session_also_views_each_subagent_trajectory_with_its_own_subagents():
+    respx.get(f"{BASE}/trajectories/traj-s/cases").mock(
+        return_value=httpx.Response(200, json={"cases": SESSION})
+    )
+    respx.get(f"{BASE}/trajectories/traj-a/cases").mock(
+        return_value=httpx.Response(200, json={"cases": AGENT_A})
+    )
+    respx.get(f"{BASE}/trajectories/traj-b/cases").mock(
+        return_value=httpx.Response(200, json={"cases": AGENT_B})
+    )
+
+    view = CesClient("http://ces.test", "scope-1", api_key="k").read_session("traj-s")
+
+    agent_a, agent_b = view.subagent_trajectories
+    assert [t.trace_id for t in agent_a.turns] == ["a1"]
+    # traj-b descends from traj-a's own Case a2, so it attaches to traj-a's turn.
+    assert [s.span_id for s in agent_a.turns[0].subagents] == ["traj-b"]
+    assert (agent_b.conversation_id, [t.trace_id for t in agent_b.turns]) == ("traj-b", ["b1"])
+    assert agent_b.turns[0].subagents == []
+
+
+@respx.mock
+def test_session_scores_with_subagents_adds_every_trajectory_below_the_sessions():
+    def row(trajectory_id, depth, parent=None):
+        trajectory = {"trajectory_id": trajectory_id, "depth": depth}
+        trajectory["parent_trajectory_id"] = parent
+        return {"trajectory": trajectory, "root_case": {}, "scores": [{"score_id": trajectory_id}]}
+
+    rows = [
+        row("s1", 0),
+        row("a1", 1, "s1"),
+        row("b1", 2, "a1"),
+        row("s2", 0),
+        row("a2", 1, "s2"),
+    ]
+    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
+        return_value=httpx.Response(200, json={"rows": rows})
+    )
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = Catalog("ev-turns", "ev-sessions", {})
+
+    assert set(client.session_scores(catalog, ["s1"], subagents=True)) == {"s1", "a1", "b1"}
+    assert set(client.session_scores(catalog, ["s1"])) == {"s1"}

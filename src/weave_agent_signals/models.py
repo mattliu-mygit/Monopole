@@ -116,6 +116,9 @@ class SessionView:
     turns: list[TurnSpan]
     config_version: str | None
     git_branch: str | None
+    # Each subagent Trajectory below this one, nested ones included, as its own view. Filled
+    # only by a read that reads subagents in full.
+    subagent_trajectories: list[SessionView] = field(default_factory=list)
 
     @property
     def total_tokens(self) -> int:

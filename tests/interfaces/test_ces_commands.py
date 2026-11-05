@@ -18,6 +18,7 @@ from weave_agent_signals.ces_catalog import (
 from weave_agent_signals.ces_client import CesSession, session_view
 from weave_agent_signals.models import Score, SessionView, TraceRole
 from weave_agent_signals.patterns import ConfigStats, Stat
+from weave_agent_signals.scorers import score_trajectory
 
 CATALOG = Catalog(
     "ev-turns",
@@ -74,9 +75,11 @@ class FakeCes:
     def turn_scores(self, catalog, trajectory_id):
         return self.turn_rows
 
-    def session_scores(self, catalog, trajectory_ids):
-        self.session_score_reads.append(list(trajectory_ids))
-        return {t: self.session_rows.get(t, []) for t in trajectory_ids}
+    def session_scores(self, catalog, trajectory_ids, *, subagents=False):
+        self.session_score_reads.append((list(trajectory_ids), subagents))
+        # Every Trajectory in session_rows that isn't asked for is taken as a subagent.
+        wanted = [*trajectory_ids, *(self.session_rows if subagents else ())]
+        return {t: self.session_rows.get(t, []) for t in wanted}
 
     def write_scores(self, catalog, pass_id, kind, target, scores):
         self.writes.append((pass_id, kind, target, [s.scorer for s in scores]))
@@ -100,6 +103,7 @@ def fake(monkeypatch):
         "score_session",
         lambda session: [Score("implicit.completion", True, [], {}, "session")],
     )
+    monkeypatch.setattr(ces_commands, "score_trajectory", lambda trajectory: [])
     return client
 
 
@@ -117,7 +121,7 @@ def test_score_writes_turn_scores_on_the_first_case_and_session_scores_on_the_tr
         ("trajectory", "s1", ["implicit.completion"]),
     ]
     assert len({pass_id for pass_id, *_ in fake.writes}) == 1
-    assert "Scored 1 turns, 1 sessions (2 scores). Wrote 2." in capsys.readouterr().out
+    assert "Scored 1 turns, 1 sessions, 0 subagents (2 scores). Wrote 2." in capsys.readouterr().out
     assert fake.closed
 
 
@@ -146,14 +150,57 @@ def test_scoring_reads_existing_session_scores_once_for_all_sessions():
         force=False,
     )
 
-    assert client.session_score_reads == [["s1", "s2"]]
+    assert client.session_score_reads == [(["s1", "s2"], True)]
+
+
+SUBAGENT = session_view(
+    "traj-a",
+    [
+        _case("a1", "user_message", "k1", 0, 3, text="test it", agent_id="worker"),
+        _case(
+            "a2",
+            "tool_call",
+            "k1",
+            1,
+            3,
+            tool_name="Bash",
+            arguments={"command": "pytest -q"},
+            agent_id="worker",
+            output={"status": "completed", "exit_code": 0},
+        ),
+    ],
+    {},
+)
+
+
+def test_score_writes_whole_trajectory_scores_on_the_session_and_each_subagent(
+    fake, monkeypatch, capsys
+):
+    monkeypatch.setattr(ces_commands, "score_trajectory", score_trajectory)
+    monkeypatch.setattr(
+        fake, "read_session", lambda sid, **_: replace(SESSION, subagent_trajectories=[SUBAGENT])
+    )
+    # The subagent already has its test outcome, so only a forced pass writes it again.
+    fake.session_rows = {"traj-a": [{"scorer_id": "sc-outcome.session_tests_passed"}]}
+
+    _run("score", "--since", "2026-11-02")
+    _run("score", "--since", "2026-11-02", "--force")
+
+    sessions = [(target, names) for _, kind, target, names in fake.writes if kind == "trajectory"]
+    assert sessions == [
+        ("s1", ["implicit.completion", "outcome.session_tests_passed"]),
+        ("traj-a", []),
+        ("s1", ["implicit.completion", "outcome.session_tests_passed"]),
+        ("traj-a", ["outcome.session_tests_passed"]),
+    ]
+    assert "1 sessions, 1 subagents" in capsys.readouterr().out
 
 
 def test_backfill_reports_bash_coverage(fake, capsys):
     assert _run("backfill", "--start", "2026-11-02", "--end", "2026-11-04") == 0
 
     out = capsys.readouterr().out
-    assert "Backfilled 2 scores across 1 turns, 1 sessions." in out
+    assert "Backfilled 2 scores across 1 turns, 1 sessions, 0 subagents." in out
     assert "Bash coverage: 1/1 classified (100%)" in out
 
 

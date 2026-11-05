@@ -4,6 +4,7 @@ Each Monopole scorer is two CES Scorers: `<name>` holds the number or boolean
 value, and `<name>.details` holds the tags, reason, confidence, and scorer details
 as JSON. Both go in one create-scores request, so a reader gets them together.
 Turn scorers score the turn's first Case, and session scorers score the session
+Trajectory; the whole-Trajectory ones (`scorers/session.py`) also score each subagent
 Trajectory.
 """
 
@@ -44,6 +45,9 @@ DETERMINISTIC = (
     ScorerSpec("efficiency.session", "number", "session"),
     ScorerSpec("implicit.correction_free_rate", "number", "session"),
     ScorerSpec("implicit.completion", "boolean", "session", binary=True),
+    # Session outcomes also score subagent Trajectories (`scorers/session.py`).
+    ScorerSpec("outcome.session_tests_passed", "boolean", "session", binary=True),
+    ScorerSpec("outcome.session_no_failed_builds", "boolean", "session", binary=True),
 )
 
 VERDICT = ScorerSpec(

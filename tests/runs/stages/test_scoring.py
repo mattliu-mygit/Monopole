@@ -206,7 +206,7 @@ class TrackingCes:
             target: self._rows(kind, target) for kind, target in self.existing if kind == "case"
         }
 
-    def session_scores(self, catalog, trajectory_ids):
+    def session_scores(self, catalog, trajectory_ids, *, subagents=False):
         self.events.append(("query", ("trajectory", tuple(trajectory_ids))))
         return {sid: self._rows("trajectory", sid) for sid in trajectory_ids}
 

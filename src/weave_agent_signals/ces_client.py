@@ -218,11 +218,14 @@ def session_view(
         for child in case.get("child_trajectory_ids") or []
     }
     owner = {c["case_id"]: child for child, cs in children.items() for c in cs}
+    own = {c["case_id"] for c in members}
 
     def launch_case(child: str) -> str | None:
-        """The S Case a subagent descends from, following nested subagents up to S."""
+        """This Trajectory's Case a subagent descends from, following nested subagents up to
+        it. For a subagent's own view, `children` holds every subagent of the session, so the
+        climb stops at the subagent's own Cases."""
         case_id, seen = launched.get(child), {child}
-        while case_id in owner and owner[case_id] not in seen:
+        while case_id in owner and case_id not in own and owner[case_id] not in seen:
             seen.add(owner[case_id])
             case_id = launched.get(owner[case_id])
         return case_id
@@ -332,6 +335,17 @@ def ces_http(base_url: str, api_key: str | None = None) -> httpx.Client:
     return httpx.Client(
         base_url=base_url.rstrip("/"), auth=("api", api_key or get_api_key()), timeout=60.0
     )
+
+
+def _below(trajectory: str, roots: set[str], parent: dict[str, str | None]) -> bool:
+    """Whether the Trajectory is one of `roots` or descends from one."""
+    seen = set()
+    while trajectory is not None and trajectory not in seen:
+        if trajectory in roots:
+            return True
+        seen.add(trajectory)
+        trajectory = parent.get(trajectory)
+    return False
 
 
 def _child_ids(cases: list[dict]) -> list[str]:
@@ -488,8 +502,14 @@ class CesClient:
         tool calls; a session can have hundreds."""
         cases = self.trajectory_cases(trajectory_id)
         launched = _child_ids(cases)
-        children = self._descendants(launched) if subagents else {c: [] for c in launched}
-        return session_view(trajectory_id, cases, children)
+        if not subagents:
+            return session_view(trajectory_id, cases, {c: [] for c in launched})
+        children = self._descendants(launched)
+        view = session_view(trajectory_id, cases, children)
+        view.subagent_trajectories = [
+            session_view(child, child_cases, children) for child, child_cases in children.items()
+        ]
+        return view
 
     def _descendants(self, roots: list[str]) -> dict[str, list[dict]]:
         """The Cases of these subagent Trajectories and every one below them, in launch order,
@@ -691,9 +711,12 @@ class CesClient:
         )
         return {r["case_id"]: r.get("scores") or [] for r in rows}
 
-    def _session_targets(self, catalog: Catalog, wanted=None) -> list[tuple[str, dict, list]]:
-        """(Trajectory ID, session Case input, Score rows) for each session Trajectory, or only
-        the wanted ones. The route has no filter, so this pages every row."""
+    def _session_targets(
+        self, catalog: Catalog, wanted=None, *, subagents: bool = False
+    ) -> list[tuple[str, dict, list]]:
+        """(Trajectory ID, root Case input, Score rows) for each session Trajectory, or only
+        the wanted ones, with every subagent Trajectory below them when `subagents`. The route
+        has no filter, so this pages every row."""
         try:
             rows = self._rows(
                 f"/evaluations/{catalog.sessions_evaluation_id}/trajectory-rows", None
@@ -701,7 +724,9 @@ class CesClient:
         except httpx.HTTPStatusError as error:
             if error.response.status_code not in (404, 405):
                 raise
-            # Workaround until the Trajectory-row route deploys; see ces_score_index.
+            # Workaround until the Trajectory-row route deploys; see ces_score_index. The index
+            # doesn't know which session a subagent belongs to, so it finds no subagent Score,
+            # and a rerun writes subagent Scores again; reads still take the newest.
             newest = self._index.newest(wanted)
             ids = [score_id for scores in newest.values() for score_id in scores.values()]
             with ThreadPoolExecutor(max_workers=CONCURRENT_READS) as pool:
@@ -710,6 +735,12 @@ class CesClient:
                 (trajectory, {}, [row for sid in scores.values() if (row := found[sid])])
                 for trajectory, scores in newest.items()
             ]
+        if wanted is not None and subagents:
+            parent = {
+                r["trajectory"]["trajectory_id"]: r["trajectory"].get("parent_trajectory_id")
+                for r in rows
+            }
+            wanted = {t for t in parent if _below(t, wanted, parent)}
         return [
             (
                 r["trajectory"]["trajectory_id"],
@@ -717,13 +748,24 @@ class CesClient:
                 r.get("scores") or [],
             )
             for r in rows
-            if not r["trajectory"].get("depth")
-            and (wanted is None or r["trajectory"]["trajectory_id"] in wanted)
+            if (
+                not r["trajectory"].get("depth")
+                if wanted is None
+                else r["trajectory"]["trajectory_id"] in wanted
+            )
         ]
 
-    def session_scores(self, catalog: Catalog, trajectory_ids) -> dict[str, list[dict]]:
-        """Score rows on session Trajectories, by Trajectory ID."""
-        return {t: scores for t, _, scores in self._session_targets(catalog, set(trajectory_ids))}
+    def session_scores(
+        self, catalog: Catalog, trajectory_ids, *, subagents: bool = False
+    ) -> dict[str, list[dict]]:
+        """Score rows on session Trajectories, by Trajectory ID, and with `subagents` on every
+        subagent Trajectory below them too."""
+        return {
+            t: scores
+            for t, _, scores in self._session_targets(
+                catalog, set(trajectory_ids), subagents=subagents
+            )
+        }
 
     def _score_records(self, targets: list[tuple[str, dict, list]]) -> list[dict]:
         for _, _, scores in targets:

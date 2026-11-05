@@ -195,7 +195,7 @@ class _Ces:
             catalog.turns_evaluation_id, catalog.sessions_evaluation_id, {**catalog.scorers, **refs}
         )
 
-    def session_scores(self, catalog, trajectory_ids):
+    def session_scores(self, catalog, trajectory_ids, *, subagents=False):
         return {
             sid: [{"scorer_id": f"sc-{name}"} for name in self.existing.get(sid, [])]
             for sid in trajectory_ids

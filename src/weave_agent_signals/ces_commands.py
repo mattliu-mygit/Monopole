@@ -27,7 +27,7 @@ from weave_agent_signals.ces_client import (
 )
 from weave_agent_signals.models import Score, SessionView, session_is_evaluable
 from weave_agent_signals.patterns import ConfigStats, Stat
-from weave_agent_signals.scorers import score_session, score_turn
+from weave_agent_signals.scorers import score_session, score_trajectory, score_turn
 from weave_agent_signals.scorers.outcome import classify_command
 
 log = logging.getLogger("weave_agent_signals")
@@ -97,7 +97,8 @@ def connect(args: argparse.Namespace) -> CesSession:
 
 class _Stats:
     def __init__(self) -> None:
-        self.turns = self.sessions = self.scored = self.written = self.skipped = self.errors = 0
+        self.turns = self.sessions = self.subagents = 0
+        self.scored = self.written = self.skipped = self.errors = 0
         self.tags: list[str] = []
 
 
@@ -113,11 +114,12 @@ def _write(
 
 
 def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=None):
-    """Score each session's turns in the window, then the session. Returns (stats, sessions)."""
+    """Score each session's turns in the window, then the session and each subagent Trajectory
+    below it. Returns (stats, sessions)."""
     pass_id, stats, sessions = str(uuid.uuid4()), _Stats(), []
     session_ids = list(session_ids)
     # One read for every session: the session-row read pages all session rows each time.
-    have_sessions = {} if force else client.session_scores(catalog, session_ids)
+    have_sessions = {} if force else client.session_scores(catalog, session_ids, subagents=True)
     for sid in session_ids:
         if limit is not None and stats.turns >= limit:
             break
@@ -155,21 +157,30 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
             except Exception as error:
                 stats.errors += 1
                 log.warning("Error scoring turn %s: %s", turn.trace_id[:12], error)
-        try:
-            scores = score_session(session)
-            run_time = session.turns[0].started_at if session.turns else None
-            for s in scores:
-                s.stamp(
-                    config_version=session.config_version,
-                    git_branch=session.git_branch,
-                    run_time=run_time,
-                )
-            have = catalog.scored(have_sessions.get(sid, []))
-            _write(client, catalog, pass_id, "trajectory", sid, scores, have, force, stats)
-            stats.sessions += 1
-        except Exception as error:
-            stats.errors += 1
-            log.warning("Error scoring session %s: %s", sid[:12], error)
+        # The session's Scores, then each subagent's whole-Trajectory Scores, all stamped with
+        # the session's config and branch.
+        for view in [session, *session.subagent_trajectories]:
+            try:
+                scores = score_trajectory(view)
+                if view is session:
+                    scores = score_session(view) + scores
+                run_time = view.turns[0].started_at if view.turns else None
+                for s in scores:
+                    s.stamp(
+                        config_version=session.config_version,
+                        git_branch=session.git_branch,
+                        run_time=run_time,
+                    )
+                tid = view.conversation_id
+                have = catalog.scored(have_sessions.get(tid, []))
+                _write(client, catalog, pass_id, "trajectory", tid, scores, have, force, stats)
+                if view is session:
+                    stats.sessions += 1
+                elif scores:
+                    stats.subagents += 1
+            except Exception as error:
+                stats.errors += 1
+                log.warning("Error scoring Trajectory %s: %s", view.conversation_id[:12], error)
     return stats, sessions
 
 
@@ -191,7 +202,7 @@ def score(args: argparse.Namespace) -> int:
             limit=args.limit,
         )
     print(
-        f"Scored {stats.turns} turns, {stats.sessions} sessions"
+        f"Scored {stats.turns} turns, {stats.sessions} sessions, {stats.subagents} subagents"
         f" ({stats.scored} scores). Wrote {stats.written}."
     )
     if stats.errors:
@@ -226,7 +237,8 @@ def backfill(args: argparse.Namespace) -> int:
     classified = sum(1 for command in commands if command and classify_command(command) is not None)
     pct = classified / len(commands) * 100 if commands else 0
     print(
-        f"Backfilled {stats.written} scores across {stats.turns} turns, {stats.sessions} sessions."
+        f"Backfilled {stats.written} scores across {stats.turns} turns, {stats.sessions} sessions,"
+        f" {stats.subagents} subagents."
     )
     if stats.skipped:
         print(f"  Skipped: {stats.skipped} (existing, use --force to write newer scores)")
