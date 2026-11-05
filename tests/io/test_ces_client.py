@@ -930,6 +930,27 @@ def test_clients_sharing_a_score_cache_fetch_each_score_once():
     assert fetched.call_count == 1
 
 
+def test_scorer_names_are_looked_up_concurrently(monkeypatch):
+    import threading
+
+    both_waiting = threading.Barrier(2, timeout=2)
+
+    def scorer_name(_self, scorer_id, _version_id):
+        both_waiting.wait()  # breaks if the lookups run one at a time
+        return f"name-{scorer_id}"
+
+    monkeypatch.setattr(CesClient, "_scorer_name", scorer_name)
+    scores = [
+        {"score_id": f"s-{i}", "scorer_id": f"sc-{i}", "scorer_version_id": "v", "value": 0.5}
+        for i in (1, 2)
+    ]
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+
+    client._score_records([("case-1", {}, scores)])
+
+    assert client._scorer_names == {("sc-1", "v"): "name-sc-1", ("sc-2", "v"): "name-sc-2"}
+
+
 @respx.mock
 def test_clients_sharing_a_scorer_name_cache_look_each_version_up_once():
     version = respx.get(f"{BASE}/scorers/sc-1/versions/v-1").mock(

@@ -698,12 +698,18 @@ class CesClient:
 
     def _score_records(self, targets: list[tuple[str, dict, list]]) -> list[dict]:
         names = self._scorer_names
-        for _, _, scores in targets:
-            for score in scores:
-                key = (score["scorer_id"], score["scorer_version_id"])
-                # Only found names are cached: a Scorer version created later must still resolve.
-                if key not in names and (name := self._scorer_name(*key)) is not None:
-                    names[key] = name
+        missing = list(
+            dict.fromkeys(
+                (score["scorer_id"], score["scorer_version_id"])
+                for _, _, scores in targets
+                for score in scores
+                if (score["scorer_id"], score["scorer_version_id"]) not in names
+            )
+        )
+        with ThreadPoolExecutor(max_workers=CONCURRENT_READS) as pool:
+            found = pool.map(lambda key: self._scorer_name(*key), missing)
+            # Only found names are cached: a Scorer version created later must still resolve.
+            names.update((key, name) for key, name in zip(missing, found) if name is not None)
         records = [record for target in targets for record in _score_record(*target, names)]
         records.sort(
             key=lambda r: r["payload"]["details"].get("turn_started_at") or "", reverse=True
