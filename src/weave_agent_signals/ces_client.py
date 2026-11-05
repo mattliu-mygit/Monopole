@@ -558,10 +558,19 @@ class CesClient:
     def _rows(
         self, path: str, body: dict | None, limit: int | None = None, *, items: str = "rows"
     ) -> list[dict]:
-        """Every page of a list (GET) or search (POST). Large Cases can exceed CES's per-query
-        storage budget at 1,000 rows, which CES rejects with 503 storage_capacity_exceeded, so
-        the page halves until it fits and stays at that size."""
-        rows, cursor, page_limit = [], None, PAGE_LIMIT
+        """Every row of a list (GET) or search (POST), or the first `limit`."""
+        rows = []
+        for page in self._pages(path, body):
+            rows.extend(page.get(items) or [])
+            if limit is not None and len(rows) >= limit:
+                return rows[:limit]
+        return rows
+
+    def _pages(self, path: str, body: dict | None):
+        """Each page of a list (GET) or search (POST), so a caller can stop early. Large Cases
+        can exceed CES's per-query storage budget at 1,000 rows, which CES rejects with 503
+        storage_capacity_exceeded, so the page halves until it fits and stays at that size."""
+        cursor, page_limit = None, PAGE_LIMIT
         while True:
             paging = {"limit": page_limit, **({"cursor": cursor} if cursor else {})}
             try:
@@ -575,12 +584,10 @@ class CesClient:
                     raise
                 page_limit //= 2
                 continue
-            rows.extend(page.get(items) or [])
-            if limit is not None and len(rows) >= limit:
-                return rows[:limit]
+            yield page
             cursor = page.get("next_cursor")
             if not cursor:
-                return rows
+                return
 
     def ensure_catalog(
         self, dataset_id: str, specs: tuple[ScorerSpec, ...] = DETERMINISTIC
@@ -671,17 +678,9 @@ class CesClient:
 
         CES filters can't range-compare string fields, so this reads turns newest first and
         stops at the first one before `since`. The adapter's timestamps sort in time order."""
-        found, cursor = {}, None
-        while True:
-            body = {
-                "filter": FIRST_STEP,
-                "order_by": "i.started_at desc",
-                "limit": PAGE_LIMIT,
-                **({"cursor": cursor} if cursor else {}),
-            }
-            page = self._request(
-                "POST", f"/evaluations/{catalog.turns_evaluation_id}/rows/search", body=body
-            )
+        found = {}
+        path = f"/evaluations/{catalog.turns_evaluation_id}/rows/search"
+        for page in self._pages(path, {"filter": FIRST_STEP, "order_by": "i.started_at desc"}):
             for row in page.get("rows") or []:
                 started, session = (
                     _ts(row["input"].get("started_at")),
@@ -695,9 +694,7 @@ class CesClient:
                     found.setdefault(session, None)
                     if limit is not None and len(found) >= limit:
                         return list(found)
-            cursor = page.get("next_cursor")
-            if not cursor:
-                return list(found)
+        return list(found)
 
     def turn_scores(self, catalog: Catalog, trajectory_id: str) -> dict[str, list[dict]]:
         """Scores on each turn of one session, keyed by the turn's first Case ID."""

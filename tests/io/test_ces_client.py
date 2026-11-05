@@ -801,6 +801,27 @@ def test_a_row_search_shrinks_the_page_when_ces_storage_capacity_is_exceeded():
 
 
 @respx.mock
+def test_finding_sessions_shrinks_the_page_when_ces_storage_capacity_is_exceeded():
+    _catalog_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=lambda _: None)
+    catalog = client.ensure_catalog("ds-1")
+    limits = []
+
+    def page(request):
+        limits.append(json.loads(request.content)["limit"])
+        if limits[-1] > 500:
+            return _capacity("storage_capacity_exceeded")
+        row = {"input": {"started_at": "2026-11-05T10:00:00.000Z", "session_trajectory_id": "s1"}}
+        return httpx.Response(200, json={"rows": [row], "next_cursor": None})
+
+    respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(side_effect=page)
+
+    since = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    assert client.find_sessions(catalog, since=since) == ["s1"]
+    assert limits == [1000, 500]
+
+
+@respx.mock
 def test_busy_ces_query_capacity_is_retried_past_the_usual_attempts():
     slept = []
     client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=slept.append)
