@@ -65,14 +65,14 @@ describe('judge panel configuration state', () => {
       source: 'recommended',
     })
     expect(state.challengeJudgeModels).toEqual({
-      value: [openai.id],
+      value: [openai.id, anthropic.id, meta.id],
       source: 'recommended',
     })
     expect(toRunConfig(state, models, rubrics)).toEqual({
       model_catalog_version: models.catalog_version,
       rubric_catalog_version: rubrics.catalog_version,
       judge_models: [anthropic.id, openai.id, meta.id],
-      challenge_judge_models: [openai.id],
+      challenge_judge_models: [openai.id, anthropic.id, meta.id],
       proposal_model: writer.id,
       proposal_evaluator_model: anthropic.id,
       rubrics: ['judge.verification'],
@@ -98,6 +98,8 @@ describe('judge panel configuration state', () => {
 
   it('configures the A/B verification panel independently', () => {
     let state = initializeRunConfigState(models, rubrics)
+    state = transitionRunConfig(state, { type: 'remove-last-challenge-judge' }, models)
+    state = transitionRunConfig(state, { type: 'remove-last-challenge-judge' }, models)
     state = transitionRunConfig(
       state,
       { type: 'select-challenge-judge', position: 1, modelId: meta.id },
@@ -172,6 +174,16 @@ describe('judge panel configuration state', () => {
     expect(() => toRunConfig(state, models, rubrics, sessions)).toThrow(
       'Select models that fit the selected sessions.',
     )
+  })
+
+  it('recommends up to three judges from distinct families, recommended models first', () => {
+    const state = initializeRunConfigState(
+      { ...models, recommended_judges: [meta.id, metaAlt.id, anthropic.id] },
+      rubrics,
+    )
+
+    expect(state.judgeModels.value).toEqual([meta.id, anthropic.id, openai.id])
+    expect(state.challengeJudgeModels.value).toEqual([openai.id, anthropic.id, meta.id])
   })
 
   it('uses fitting alternatives when recommendations exceed selected-session capacity', () => {

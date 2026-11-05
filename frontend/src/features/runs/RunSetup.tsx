@@ -150,6 +150,17 @@ export default function RunSetup({
   })
   const capacityLoading = estimatesQuery.isLoading
   const capacityError = estimatesQuery.error
+  // Until the user adjusts it, the configuration follows the selection: each time every
+  // selected session has its estimates, it becomes the most diverse panel that fits them.
+  const [configTouched, setConfigTouched] = useState(Boolean(initialConfig))
+  const [populatedFor, setPopulatedFor] = useState('')
+  const estimatesKey = selectedIds.length > 0 && capacitySessions.length === selectedIds.length
+    ? selectedIds.join('\n')
+    : ''
+  if (!configTouched && estimatesKey && estimatesKey !== populatedFor) {
+    setPopulatedFor(estimatesKey)
+    setConfig(transitionRunConfig(config, { type: 'use-recommended' }, models, capacitySessions))
+  }
   const assessment = assessRunConfig(config, models, rubrics, capacitySessions)
   const selectionError =
     selectedIds.length === 0
@@ -169,6 +180,7 @@ export default function RunSetup({
   }
 
   function dispatch(action: RunConfigAction) {
+    setConfigTouched(action.type !== 'use-recommended')
     setConfig((current) => transitionRunConfig(current, action, models, capacitySessions))
   }
 
@@ -202,14 +214,18 @@ export default function RunSetup({
         onSessionIdsChange={setSelectedIds}
         onRetry={() => void sessionsQuery.refetch()}
       />
-      <RunConfiguration
-        state={config}
-        models={models}
-        rubrics={rubrics}
-        sessions={capacitySessions}
-        disabled={pending}
-        onAction={dispatch}
-      />
+      {selectedIds.length > 0 && (capacityLoading
+        ? <p className="text-sm text-gray-500">Sizing the selected sessions…</p>
+        : (
+          <RunConfiguration
+            state={config}
+            models={models}
+            rubrics={rubrics}
+            sessions={capacitySessions}
+            disabled={pending}
+            onAction={dispatch}
+          />
+        ))}
       {selectionError && <ErrorNotice message={selectionError} />}
       <div className="flex flex-wrap items-center gap-4 border-t border-gray-200 pt-4">
         <label className="flex items-center gap-2 text-sm text-gray-700">

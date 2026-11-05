@@ -146,7 +146,7 @@ const requestedConfig: RunConfig = {
   model_catalog_version: models.catalog_version,
   rubric_catalog_version: rubrics.catalog_version,
   judge_models: [judgeOne.id, judgeTwo.id, judgeThree.id],
-  challenge_judge_models: [judgeOne.id],
+  challenge_judge_models: [judgeOne.id, judgeTwo.id, judgeThree.id],
   proposal_model: writer.id,
   proposal_evaluator_model: judgeOne.id,
   rubrics: rubrics.rubrics.map((rubric) => rubric.id),
@@ -551,6 +551,19 @@ describe('RunDetail wiring', () => {
       'textContent',
       expect.stringContaining('Select models that fit the selected sessions.'),
     )
+  })
+
+  it('shows pipeline configuration only once a session is selected', async () => {
+    renderPage()
+
+    const sessionCheckbox = await screen.findByRole('checkbox', {
+      name: 'Select session session-1',
+    })
+    expect(screen.queryByRole('region', { name: 'Run configuration' })).toBeNull()
+
+    fireEvent.click(sessionCheckbox)
+
+    expect(await screen.findByRole('region', { name: 'Run configuration' })).not.toBeNull()
   })
 
   it('retries session discovery and model catalogs in place', async () => {
