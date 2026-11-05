@@ -725,6 +725,21 @@ def test_material_planner_is_told_which_executables_the_sandbox_has() -> None:
     assert payload["sandbox_executables"] == ["git", "python"]
 
 
+def test_material_planner_is_told_the_workspace_limits() -> None:
+    client = _Client([({"setup_mode": "agent_bootstrap", "materials": []}, "planner")])
+
+    plan_task_materials(
+        client,
+        author=_author(),
+        coaching_digest="verification was weak",
+        workspace_digest="sha256:seed",
+        workspace=WorkspaceSnapshot((WorkspaceFile("README.md", b"same\n"),)),
+    )
+
+    payload = json.loads(client.calls[0]["messages"][1]["content"])
+    assert payload["workspace_limits"] == {"max_files": 10_000, "max_file_bytes": 16 * 1024 * 1024}
+
+
 def test_task_author_returns_a_second_invalid_task_for_preflight_to_reject() -> None:
     client = _Client([_authored("missing.py"), _authored("still-missing.py")])
 

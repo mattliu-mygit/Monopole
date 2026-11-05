@@ -199,8 +199,9 @@ regardless of the paired-verification outcome.
 
 After a provisional B is selected, the proposal evaluator acts as a
 blinded material planner and task author. A first structured call receives the
-pinned bounded evaluation digest and a compact deterministic summary of the
-seed workspace, with managed instruction contents removed, and selects a setup
+pinned bounded evaluation digest, a compact deterministic summary of the
+seed workspace with managed instruction contents removed, and the workspace's
+file-count and file-size limits, and selects a setup
 mode plus pinned public materials for a fresh analogous task. After those
 materials are fetched, a second structured call receives their bounded path
 manifest and authors the prompt, measurable goal, task-specific judging

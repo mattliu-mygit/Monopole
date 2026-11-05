@@ -33,7 +33,11 @@ from weave_agent_signals.runs.challenges.preparation import (
     resolve_repository_head,
     validate_task_workspace,
 )
-from weave_agent_signals.runs.challenges.workspace import WorkspaceSnapshot
+from weave_agent_signals.runs.challenges.workspace import (
+    MAX_WORKSPACE_FILE_BYTES,
+    MAX_WORKSPACE_FILES,
+    WorkspaceSnapshot,
+)
 
 _INFERENCE_SAFETY_TOKENS = 1_024
 _JUDGE_MAX_TRANSCRIPT_CHARACTERS = 100_000
@@ -181,7 +185,8 @@ gitlab.com, bitbucket.org, and codeberg.org. Choose a maintained repository with
 tests that can support a realistic task analogous to the measured weakness. Do not choose toy,
 demo, example, or placeholder repositories. When sandbox_executables is present, the sandbox image
 provides only those executables; choose material whose task can be built, run, and tested with
-them alone.
+them alone. The seed workspace plus every fetched repository must fit workspace_limits, so choose a
+repository well under its file count.
 """
 
 _TASK_SYSTEM = """\
@@ -291,6 +296,10 @@ def plan_task_materials(
         "evaluation_digest": coaching_digest,
         "seed_workspace_digest": workspace_digest,
         "workspace_summary": _workspace_summary(workspace),
+        "workspace_limits": {
+            "max_files": MAX_WORKSPACE_FILES,
+            "max_file_bytes": MAX_WORKSPACE_FILE_BYTES,
+        },
     }
     if sandbox_executables:
         payload["sandbox_executables"] = list(sandbox_executables)
