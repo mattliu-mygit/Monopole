@@ -835,13 +835,15 @@ def test_busy_ces_query_capacity_is_retried_past_the_usual_attempts():
 
 
 @respx.mock
-def test_a_query_over_ces_storage_capacity_is_not_resent_unchanged():
+def test_a_single_request_over_ces_storage_capacity_gets_the_usual_retries():
     client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=lambda _: None)
-    route = respx.get(f"{BASE}/scores/s1").mock(return_value=_capacity("storage_capacity_exceeded"))
+    route = respx.get(f"{BASE}/scores/s1").mock(
+        side_effect=[*[_capacity("storage_capacity_exceeded")] * 2, httpx.Response(200, json={})]
+    )
 
-    with pytest.raises(httpx.HTTPStatusError):
-        client.get_score("s1")
-    assert route.call_count == 1
+    client.get_score("s1")
+
+    assert route.call_count == 3
 
 
 @respx.mock

@@ -446,14 +446,21 @@ class CesClient:
             self._http.close()
 
     def _request(
-        self, method: str, path: str, *, params=None, body=None, key: str | None = None
+        self,
+        method: str,
+        path: str,
+        *,
+        params=None,
+        body=None,
+        key: str | None = None,
+        shrinkable: bool = False,
     ) -> dict:
         """Retries network errors, 429, and 5xx, honoring Retry-After. Raises the last error.
 
         CES answers 503 `capacity_unavailable` when it is already running its few concurrent
-        queries; that clears in a second or two, so it gets more attempts. 503
-        `storage_capacity_exceeded` means this query reads too much, so resending it unchanged
-        can't help and it raises at once."""
+        queries; that clears in a second or two, so it gets more attempts. A `shrinkable` page
+        raises 503 `storage_capacity_exceeded` at once, because resending the same page size
+        keeps failing and the pager answers it with a smaller page."""
         headers = {"Idempotency-Key": key} if key else {}
         attempt = 0
         while True:
@@ -468,12 +475,12 @@ class CesClient:
                 self._sleep(2 ** (attempt - 1))
                 continue
             code = _error_code(response) if response.status_code == 503 else None
-            limit = CAPACITY_ATTEMPTS if code == "capacity_unavailable" else ATTEMPTS
+            attempts = CAPACITY_ATTEMPTS if code == "capacity_unavailable" else ATTEMPTS
             if (
                 response.status_code != 429
                 and response.status_code < 500
-                or code == "storage_capacity_exceeded"
-                or attempt >= limit
+                or (shrinkable and code == "storage_capacity_exceeded")
+                or attempt >= attempts
             ):
                 response.raise_for_status()
                 return response.json()
@@ -484,7 +491,6 @@ class CesClient:
                 else 2 ** (attempt - 1)
             )
             self._sleep(min(delay, MAX_RETRY_AFTER_S))
-        raise AssertionError("unreachable")
 
     def trajectory_cases(self, trajectory_id: str) -> list[dict]:
         return self._rows(f"/trajectories/{trajectory_id}/cases", None, items="cases")
@@ -575,9 +581,9 @@ class CesClient:
             paging = {"limit": page_limit, **({"cursor": cursor} if cursor else {})}
             try:
                 page = (
-                    self._request("GET", path, params=paging)
+                    self._request("GET", path, params=paging, shrinkable=True)
                     if body is None
-                    else self._request("POST", path, body={**body, **paging})
+                    else self._request("POST", path, body={**body, **paging}, shrinkable=True)
                 )
             except httpx.HTTPStatusError as error:
                 if page_limit == 1 or _error_code(error.response) != "storage_capacity_exceeded":

@@ -62,7 +62,12 @@ ID and digest.
    pattern operators.
 3. Creates are idempotent by `Idempotency-Key`; reusing a key with a different
    body is a conflict.
-4. `429` and `503` are retried after `Retry-After`.
+4. `429` and `503` are retried after `Retry-After`. CES answers `503
+   capacity_unavailable` while it runs its few concurrent queries, so that error
+   gets more attempts. It answers `503 storage_capacity_exceeded` when one page
+   reads too much, which a session with large Cases hits at 1,000 Cases; lists
+   and searches then halve their page size until CES accepts it, instead of
+   resending the same page.
 5. list-trajectory-rows has no filter, so session Score reads page every row.
 6. CoreWeave Serverless Inference uses bearer W&B authentication plus the
    entity/project header; HTTP 402 means inference credits are unavailable.
