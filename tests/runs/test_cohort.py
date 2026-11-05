@@ -115,6 +115,33 @@ def test_discover_turn_cohort_is_stable_and_pins_case_ids():
     assert (repeat["cohort_id"], repeat["turns"]) == (cohort["cohort_id"], cohort["turns"])
 
 
+def test_a_turn_without_a_model_takes_the_closest_earlier_turns_model_and_effort():
+    def turn(trace_id, minutes, model, effort):
+        started = STARTED + timedelta(minutes=minutes)
+        return replace(_turn(trace_id, "session-1", started, model=model), effort_level=effort)
+
+    ces = FakeCes(
+        turn("compact-1", 0, None, None),
+        turn("reply-1", 1, "claude-opus-5-5", "xhigh"),
+        turn("compact-2", 2, None, None),
+        turn("reply-2", 3, "claude-sonnet-5", "high"),
+    )
+
+    cohort = _discover(ces, "session-1")
+    turns, _ = hydrate_turn_cohort(cohort, ces_factory=lambda: ces)
+
+    expected = [
+        ("compact-1", "claude-opus-5-5", "xhigh"),
+        ("reply-1", "claude-opus-5-5", "xhigh"),
+        ("compact-2", "claude-opus-5-5", "xhigh"),
+        ("reply-2", "claude-sonnet-5", "high"),
+    ]
+    pinned = [(t["trace_id"], t["model"], t["effort_level"]) for t in cohort["turns"]]
+    assert pinned == expected
+    assert cohort["turns"][0]["model_family"] == model_family("claude-opus-5-5")
+    assert [(t.trace_id, t.model, t.effort_level) for t in turns] == expected
+
+
 def test_discover_turn_cohort_reads_each_selected_session_in_full_and_filters_dates():
     early = _turn("early", "session-1", STARTED - timedelta(days=2))
     inside = _turn("inside", "session-1")
