@@ -44,15 +44,17 @@ from weave_agent_signals.models import (
     resolve_trace_role,
 )
 
-ATTEMPTS = 3
 # CES runs at most 2 queries at a time per instance: row reads, Trajectory-row reads, and
 # EvaluationQuery results share them, and a request with none free gets 503 with Retry-After: 1.
 # Monopole sends at most QUERY_SLOTS of those requests at once from the whole process, so its own
-# concurrent reads can't fill every slot, and retries them longer: 1, 2, 4, 8, and 16 s, about
-# 31 s in all. Other clients still take slots, so a 503 stays possible and the retries matter.
+# concurrent reads can't fill every slot.
 QUERY_SLOTS = 2
-QUERY_ATTEMPTS = 6
 _query_slots = threading.BoundedSemaphore(QUERY_SLOTS)
+# Every request retries a 429, 5xx, or network error with waits of 1, 2, 4, 8, and 16 s, about
+# 31 s in all. Prod CES answered about 1 in 6 requests of every kind, single Trajectory Case
+# lists included, with 503 storage_capacity_exceeded in November 2026, at 2 or 16 requests at
+# once alike, sometimes for 30 s running. Creates are keyed by content, so retrying them is safe.
+ATTEMPTS = 6
 MAX_RETRY_AFTER_S = 30.0
 PAGE_LIMIT = 1000
 # Prod CES answers most Evaluation row searches of 200 or more rows with 503
@@ -486,11 +488,9 @@ class CesClient:
     ) -> dict:
         """Retries network errors, 429, and 5xx with doubling waits, waiting at least any
         Retry-After. Raises the last error. A `slot` request takes a CES query slot: it waits
-        for one of QUERY_SLOTS, holding it only while the request is in flight, and gets
-        QUERY_ATTEMPTS."""
+        for one of QUERY_SLOTS, holding it only while the request is in flight."""
         headers = {"Idempotency-Key": key} if key else {}
-        attempts = QUERY_ATTEMPTS if slot else ATTEMPTS
-        for attempt in range(1, attempts + 1):
+        for attempt in range(1, ATTEMPTS + 1):
             backoff = 2 ** (attempt - 1)
             try:
                 with _query_slots if slot else contextlib.nullcontext():
@@ -498,11 +498,11 @@ class CesClient:
                         method, self.base + path, params=params, json=body, headers=headers
                     )
             except httpx.TransportError:
-                if attempt == attempts:
+                if attempt == ATTEMPTS:
                     raise
                 self._sleep(backoff)
                 continue
-            if response.status_code != 429 and response.status_code < 500 or attempt == attempts:
+            if response.status_code != 429 and response.status_code < 500 or attempt == ATTEMPTS:
                 response.raise_for_status()
                 return response.json()
             retry_after = response.headers.get("Retry-After", "")

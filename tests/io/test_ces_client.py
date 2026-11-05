@@ -796,7 +796,7 @@ def test_a_5xx_is_retried_and_a_transport_error_raises_after_the_last_attempt():
     assert client.get_score("s1") == {"score_id": "s1"}
     with pytest.raises(httpx.ConnectError):
         client.get_score("s2")
-    assert slept == [1, 1, 2]
+    assert slept == [1, 1, 2, 4, 8, 16]
 
 
 @respx.mock
@@ -1125,19 +1125,6 @@ def test_reads_that_take_a_ces_query_slot_run_at_most_query_slots_at_once():
 
     assert rows.most == QUERY_SLOTS
     assert cases.most > QUERY_SLOTS  # plain entity reads take no slot
-
-
-@respx.mock
-def test_a_row_read_gets_the_query_retries_on_a_busy_ces():
-    busy = httpx.Response(503, headers={"Retry-After": "1"})
-    respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
-        side_effect=[busy] * 5 + [httpx.Response(200, json={"rows": []})]
-    )
-    slept = []
-    client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=slept.append)
-
-    assert client.turn_scores(Catalog("ev-turns", "ev-sessions", {}), "s1") == {}
-    assert slept == [1.0, 2, 4, 8, 16]
 
 
 @respx.mock

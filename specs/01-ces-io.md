@@ -97,10 +97,13 @@ holds at most 100 metrics, so a Scorer list that needs more is split.
 CES runs only two queries at a time per instance. Row reads, Trajectory-row
 reads, and query results share those two slots, and a request that finds none
 free gets 503. So Monopole sends at most two of those requests at once from the
-whole process, however many sessions it reads in parallel, and retries each one's
-503 with waits of 1, 2, 4, 8, and 16 seconds. Entity reads (a Trajectory's Cases,
-a Case, a Score, a Scorer version) and creates take no slot and keep the
-ordinary three attempts.
+whole process, however many sessions it reads in parallel. Entity reads (a
+Trajectory's Cases, a Case, a Score, a Scorer version) and creates take no slot.
+
+Every request retries a 429, 5xx, or network error with waits of 1, 2, 4, 8, and
+16 seconds. In November 2026 prod CES answered about one request in six of every
+kind, entity reads and Score writes included, with 503
+`storage_capacity_exceeded`, whether Monopole sent 2 requests at once or 16.
 
 Prod CES also answers large Evaluation row searches with 503
 `storage_capacity_exceeded`, a storage limit rather than a busy slot: in
