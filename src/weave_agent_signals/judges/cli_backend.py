@@ -857,7 +857,8 @@ class CliJudgeClient:
 
         content = self._extract_text(stdout, mode)
         if strict:
-            if self._provider == "agy":
+            # Neither CLI can enforce a schema, and both often fence the whole JSON reply.
+            if self._provider in {"agy", "devin"}:
                 content = _unwrap_whole_json_fence(content)
             return _parse_exact_json_object(content), content
         return _extract_json(content), content

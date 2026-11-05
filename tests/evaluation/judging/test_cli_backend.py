@@ -803,6 +803,27 @@ def test_devin_judge_process_starts_in_the_denied_workspace(tmp_path, monkeypatc
     assert started == [str(tmp_path / "devin" / "workspace")]
 
 
+def test_devin_judge_accepts_a_fenced_schema_reply(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_CWD", str(tmp_path / "devin" / "workspace"))
+    fenced = '```json\n{"score": 1}\n```\n'
+    devin = _CliJudgeClient(provider="devin", runner=lambda *_a, **_k: _FakeProc(stdout=fenced))
+    schema = inference.JsonSchemaSpec(
+        name="score",
+        schema={
+            "type": "object",
+            "properties": {"score": {"type": "number"}},
+            "required": ["score"],
+            "additionalProperties": False,
+        },
+    )
+
+    parsed, _ = devin.chat_json(
+        model="claude-opus-5-5-medium", messages=_msgs(), response_schema=schema
+    )
+
+    assert parsed == {"score": 1}
+
+
 # --- JSON extraction from messy CLI output ---
 
 
