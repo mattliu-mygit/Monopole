@@ -81,16 +81,10 @@ Trajectory's own Cases and the adapter writes subagent Cases to child
 Trajectories. The turn query does not group by `i.agent_id`: CES rejects grouping
 by a field no Case has set, which is every Dataset that never ran a subagent.
 
-The turn query runs on the turns Evaluation and the session query on the
-sessions Evaluation, which already selects every session Scorer; judge panel
-Scorers are found in its selection. A CES deployed before wandb/core#61599 runs
-queries only on an Evaluation whose primary target kind is case, and answers a
-session query on the sessions Evaluation with a 400 saying so. On that 400, and
-only that one, Monopole falls back for the rest of the process: the turns
-Evaluation also selects every session Scorer and runs the session query. The
-fallback relies on the turns Evaluation accepting new Scorers: a fixed
-Evaluation, whose Scorer list is chosen at creation, would reject them with 409.
-Delete the fallback once wandb/core#61599 is deployed.
+The turn query runs on the turns Evaluation and every Trajectory query on the
+sessions Evaluation, which already selects every session Scorer, so a query can
+group by any session Score without selecting it first; judge panel Scorers are
+found in its selection. Queries never change either Evaluation's Scorers.
 
 A query definition never changes. Its create is keyed
 `monopole-query-v1:<evaluation>:<body digest>`, so a rerun replays to the same

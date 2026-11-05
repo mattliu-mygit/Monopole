@@ -52,9 +52,7 @@ raw Score records leave out measurements and dimensions, so neither ever enters
 a summary, leaderboard, trend, alert, or coaching digest. A summary over every Score differs
 from the older newest-`--limit` summary when older turns scored differently.
 The turn query runs on the turns Evaluation and the session query on the
-sessions Evaluation. On a CES that runs queries only on Case Evaluations, the
-session query falls back to the turns Evaluation, as
-[`01-ces-io.md`](01-ces-io.md#queries) describes.
+sessions Evaluation ([`01-ces-io.md`](01-ces-io.md#queries)).
 
 Trends still read raw Scores, because CES queries have no time; a query
 grouped by the `dim.day` Score could replace them.
@@ -117,7 +115,7 @@ evaluation.
 ## Query insights
 
 `analyze --subagents`, `--judges`, and `--segments` each add Trajectory queries
-over every session or Trajectory, run on the sessions Evaluation with the same fallback and
+over every session or Trajectory, run on the sessions Evaluation with the same
 create keys as the session query ([`01-ces-io.md`](01-ces-io.md#queries)). They
 are CLI-only; `monitor` and the Analyze page don't run them.
 

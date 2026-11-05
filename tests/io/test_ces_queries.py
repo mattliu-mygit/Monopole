@@ -25,17 +25,6 @@ from weave_agent_signals.patterns import SessionSuccess, Stat
 BASE = "http://ces.test/v1/namespaces/wandb/scopes/scope-1"
 QUERIES = f"{BASE}/evaluations/ev-turns/queries"
 SESSION_QUERIES = f"{BASE}/evaluations/ev-sessions/queries"
-# What CES answers before wandb/core#61599 to a query on a Trajectory Evaluation.
-CASE_EVALUATIONS_ONLY = httpx.Response(
-    400,
-    json={
-        "error": {
-            "code": "invalid_request",
-            "message": "EvaluationQueries need an Evaluation with primary_target_kind case, and "
-            "each query's target_kind picks Cases or Trajectories",
-        }
-    },
-)
 JUDGE = "judge.goal.panel-abc"
 CATALOG = Catalog(
     "ev-turns",
@@ -100,15 +89,12 @@ SESSION_ROWS = [
 
 
 class Routes:
-    """The CES routes one config_stats call uses, recording what it sends. `sessions_create`
-    answers a create on the sessions Evaluation; by default CES accepts it."""
+    """The CES routes one config_stats call uses, recording what it sends. The turn query is
+    created on the turns Evaluation and the session query on the sessions Evaluation; any
+    other request, such as selecting Scorers on the turns Evaluation, isn't mocked and fails."""
 
-    def __init__(
-        self, *, judges=((JUDGE, "sc-j", "v-j"),), turn_rows=TURN_ROWS, sessions_create=None
-    ):
+    def __init__(self, *, judges=((JUDGE, "sc-j", "v-j"),), turn_rows=TURN_ROWS):
         self.creates: list[tuple[str, dict]] = []
-        self.selected: list[dict] = []
-        self.turn_selections = 0
         selection = list(SESSION_SELECTION)
         for name, scorer_id, version_id in judges:
             for suffix in ("", ".details"):
@@ -119,23 +105,14 @@ class Routes:
         respx.patch(f"{BASE}/evaluations/ev-sessions/scorers").mock(
             return_value=httpx.Response(200, json={"scorers": selection})
         )
-        respx.patch(f"{BASE}/evaluations/ev-turns/scorers").mock(side_effect=self._select)
         self.create = respx.post(QUERIES).mock(side_effect=self._create)
-        self.sessions_create = respx.post(SESSION_QUERIES).mock(
-            return_value=sessions_create, side_effect=None if sessions_create else self._create
-        )
+        respx.post(SESSION_QUERIES).mock(side_effect=self._create)
         respx.get(f"{QUERIES}/q-case/results").mock(
             return_value=httpx.Response(200, json={"rows": turn_rows})
         )
-        for queries in (QUERIES, SESSION_QUERIES):
-            respx.get(f"{queries}/q-trajectory/results").mock(
-                return_value=httpx.Response(200, json={"rows": SESSION_ROWS})
-            )
-
-    def _select(self, request):
-        self.turn_selections += 1
-        self.selected = json.loads(request.content)["scorers"]
-        return httpx.Response(200, json={"scorers": self.selected})
+        respx.get(f"{SESSION_QUERIES}/q-trajectory/results").mock(
+            return_value=httpx.Response(200, json={"rows": SESSION_ROWS})
+        )
 
     def _create(self, request):
         body = json.loads(request.content)
@@ -177,14 +154,11 @@ def test_config_stats_group_turns_by_config_and_keep_depth_0_sessions():
 
 
 @respx.mock
-def test_session_queries_run_on_the_sessions_evaluation_when_ces_accepts_them():
+def test_session_queries_run_on_the_sessions_evaluation():
     routes = Routes()
-    state = QueryState()
 
-    config_stats(_client(), CATALOG, state, _no_feedback)
+    config_stats(_client(), CATALOG, QueryState(), _no_feedback)
 
-    assert state.trajectory_evaluations is True
-    assert routes.turn_selections == 0
     (turns_key, turns), (sessions_key, sessions) = routes.creates
     assert turns_key.startswith("monopole-query-v1:ev-turns:")
     assert sessions_key.startswith("monopole-query-v1:ev-sessions:")
@@ -204,55 +178,6 @@ def test_session_queries_run_on_the_sessions_evaluation_when_ces_accepts_them():
     metrics = {m["name"]: m for m in turns["definition"]["metrics"]}
     assert metrics["efficiency:stddev"]["scorer_version_id"] == "v-efficiency"
     assert "outcome.test:stddev" not in metrics
-
-
-@respx.mock
-def test_a_ces_without_trajectory_evaluation_queries_runs_them_on_the_turns_evaluation():
-    routes = Routes(sessions_create=CASE_EVALUATIONS_ONLY)
-    state = QueryState()
-
-    stats = config_stats(_client(), CATALOG, state, _no_feedback)
-
-    assert state.trajectory_evaluations is False
-    assert sorted(s["scorer_id"] for s in routes.selected) == [
-        "sc-efficiency.session",
-        "sc-implicit.completion",
-        "sc-implicit.correction_free_rate",
-        "sc-j",
-        "sc-outcome.session_no_failed_builds",
-        "sc-outcome.session_tests_passed",
-    ]
-    assert [key.split(":")[1] for key in routes.keys()] == ["ev-turns", "ev-turns"]
-    assert routes.creates[1][1]["definition"]["target_kind"] == "trajectory"
-    assert stats.by_config["cfg1"][JUDGE] == Stat(2, 0.7, False, 0.1)
-
-    # The process remembers: later calls go straight to the turns Evaluation.
-    config_stats(_client(), CATALOG, state, _no_feedback)
-    assert routes.sessions_create.call_count == 1
-    assert routes.turn_selections == 2
-
-
-@respx.mock
-def test_an_unrelated_rejection_on_the_sessions_evaluation_is_raised():
-    routes = Routes(
-        sessions_create=httpx.Response(
-            400,
-            json={
-                "error": {
-                    "code": "invalid_request",
-                    "message": "column input.config_version is not catalogued on the "
-                    "Evaluation's Dataset",
-                }
-            },
-        )
-    )
-    state = QueryState()
-
-    with pytest.raises(httpx.HTTPStatusError):
-        config_stats(_client(), CATALOG, state, _no_feedback)
-
-    assert state.trajectory_evaluations is None
-    assert routes.turn_selections == 0
 
 
 @respx.mock
@@ -445,22 +370,13 @@ CONFIG = {"kind": "dataset_field", "source": "input", "name": "config_version"}
 
 class Insight:
     """One Trajectory query on the sessions Evaluation per create, each answered with the rows
-    `results` gives for its definition."""
+    `results` gives for its definition. Nothing on the turns Evaluation is mocked."""
 
-    def __init__(self, results, *, sessions_create=None):
+    def __init__(self, results):
         self.definitions: list[dict] = []
         self.results = results
-        self.turn_selections: list[list[dict]] = []
-        respx.patch(f"{BASE}/evaluations/ev-turns/scorers").mock(side_effect=self._select)
-        for queries in (QUERIES, SESSION_QUERIES):
-            respx.post(queries).mock(side_effect=self._create)
-            respx.get(url__regex=rf"{queries}/q-\d+/results").mock(side_effect=self._results)
-        if sessions_create is not None:
-            respx.post(SESSION_QUERIES).mock(return_value=sessions_create)
-
-    def _select(self, request):
-        self.turn_selections.append(json.loads(request.content)["scorers"])
-        return httpx.Response(200, json={"scorers": self.turn_selections[-1]})
+        respx.post(SESSION_QUERIES).mock(side_effect=self._create)
+        respx.get(url__regex=rf"{SESSION_QUERIES}/q-\d+/results").mock(side_effect=self._results)
 
     def _create(self, request):
         self.definitions.append(json.loads(request.content)["definition"])
@@ -511,23 +427,6 @@ def test_subagent_outcomes_count_every_trajectory_and_rate_outcomes_by_depth():
 
 
 @respx.mock
-def test_insight_queries_fall_back_to_the_turns_evaluation_like_session_queries():
-    routes = Insight(
-        lambda _definition: [_row(["cfg1", 1], 6)], sessions_create=CASE_EVALUATIONS_ONLY
-    )
-    state = QueryState()
-
-    found = subagent_outcomes(_client(), CATALOG, state)
-
-    assert found["cfg1"][1].targets == 6
-    assert state.trajectory_evaluations is False
-    assert [s["version_id"] for s in routes.turn_selections[0]] == [
-        f"v-{TESTS_PASSED}",
-        f"v-{NO_FAILED_BUILDS}",
-    ]
-
-
-@respx.mock
 def test_session_success_splits_each_configs_sessions_by_tests_passed_and_sums_spend():
     def spend(tokens, turns, count):
         return {
@@ -563,15 +462,6 @@ def test_session_success_splits_each_configs_sessions_by_tests_passed_and_sums_s
         "v-measure.duration_s",
     }
     assert {m["aggregation"] for m in definition["metrics"]} >= {"mean", "count"}
-
-
-@respx.mock
-def test_session_success_selects_its_score_column_when_falling_back():
-    routes = Insight(lambda _definition: [], sessions_create=CASE_EVALUATIONS_ONLY)
-
-    session_success_by_config(_client(), CATALOG, QueryState())
-
-    assert f"v-{TESTS_PASSED}" in [s["version_id"] for s in routes.turn_selections[0]]
 
 
 def test_an_unscored_session_group_adds_no_config_to_config_stats():
@@ -630,16 +520,8 @@ def test_judge_tables_pair_each_panel_with_completion_and_other_panels_of_its_ru
         {"kind": "score", "name": GOAL_NEW},
         {"kind": "score", "name": JUDGE},
     ]
-    assert {m["scorer_version_id"] for m in pair["metrics"]} == {"v-j", "v-n"}
-
-
-@respx.mock
-def test_judge_tables_select_the_reference_too_when_falling_back():
-    routes = Insight(lambda _definition: [], sessions_create=CASE_EVALUATIONS_ONLY)
-
-    judge_tables(_client(), CATALOG, QueryState(), [JUDGE_SCORERS[0], JUDGE_SCORERS[2]])
-
-    assert [s["version_id"] for s in routes.turn_selections[0]] == ["v-j", "v-implicit.completion"]
+    # Only the judge's count is read; the reference is a Score column.
+    assert {m["scorer_version_id"] for m in pair["metrics"]} == {"v-j"}
 
 
 @respx.mock
@@ -674,16 +556,4 @@ def test_segment_stats_group_scored_sessions_by_config_and_dimension_score():
         CONFIG,
         {"kind": "depth"},
         {"kind": "score", "name": "dim.repo"},
-    ]
-
-
-@respx.mock
-def test_segment_stats_select_the_dimension_when_falling_back():
-    routes = Insight(lambda _definition: [], sessions_create=CASE_EVALUATIONS_ONLY)
-
-    segment_stats(_client(), CATALOG, QueryState(), JUDGE_SCORERS[:1], "day")
-
-    assert [s["version_id"] for s in routes.turn_selections[0]] == [
-        "v-implicit.completion",
-        "v-dim.day",
     ]

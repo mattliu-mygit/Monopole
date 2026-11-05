@@ -13,10 +13,9 @@ Two saved queries cover every Score the Evaluations hold, not a newest-N window:
 
 The turn query runs on the turns Evaluation and the session query on the sessions Evaluation,
 which selects every session Scorer: the deterministic ones and each judge panel's
-`<rubric>.panel-<digest>`. A CES that runs queries only on Case Evaluations rejects the session
-query there; then the turns Evaluation also selects the session Scorers and runs it.
+`<rubric>.panel-<digest>`.
 
-`analyze` adds more Trajectory queries, with the same fallback: sessions by config and whether
+`analyze` adds more Trajectory queries on the sessions Evaluation: sessions by config and whether
 their last test run passed, summing measurements (success and spend), Trajectories by config and
 depth (subagents against sessions), judge Scores by a reference Score (judge agreement), and
 session Scores by config and a dimension Score (segments).
@@ -61,11 +60,6 @@ _CONFIG = {"kind": "dataset_field", "source": "input", "name": "config_version"}
 _DEPTH = {"kind": "depth"}
 COMPLETION = "implicit.completion"
 MEASURES = (MEASURE_TURNS, MEASURE_TOKENS, MEASURE_DURATION)
-# CES's 400 for a query on an Evaluation whose primary target kind isn't case.
-_CASE_EVALUATIONS_ONLY = (
-    "EvaluationQueries need an Evaluation with primary_target_kind case, and each query's "
-    "target_kind picks Cases or Trajectories"
-)
 
 
 @dataclass(frozen=True)
@@ -88,13 +82,11 @@ class Group:
 
 @dataclass
 class QueryState:
-    """What one process learns from CES: query IDs by create key, whether CES has the spread
-    aggregation, and whether it runs queries on Trajectory Evaluations (each None until a create
-    that needs it answers)."""
+    """What one process learns from CES: query IDs by create key, and whether CES has the spread
+    aggregation (None until a create that names it answers)."""
 
     ids: dict[str, str] = field(default_factory=dict)
     stddev: bool | None = None
-    trajectory_evaluations: bool | None = None
 
 
 def _metrics(scorers: list[QueryScorer], stddev: bool) -> list[dict]:
@@ -115,10 +107,6 @@ def _metrics(scorers: list[QueryScorer], stddev: bool) -> list[dict]:
 def _rejects_stddev(error: httpx.HTTPStatusError) -> bool:
     # CES's schema check answers an unknown enum value with 422; its own checks answer 400.
     return error.response.status_code in (400, 422) and "aggregation" in error.response.text
-
-
-def _rejects_trajectory_evaluation(error: httpx.HTTPStatusError) -> bool:
-    return error.response.status_code == 400 and _CASE_EVALUATIONS_ONLY in error.response.text
 
 
 def _create(
@@ -217,39 +205,18 @@ def _trajectory_groups(
     name: str,
     group_by: list[dict],
     scorers: list[QueryScorer],
-    columns: tuple[QueryScorer, ...] = (),
 ) -> list[Group]:
-    """A Trajectory query's groups, from the sessions Evaluation when CES runs queries there.
-    `columns` are Scorers the query only groups by, which the fallback must also select."""
-
-    def run(evaluation_id: str) -> list[Group]:
-        return run_query(
-            client,
-            state,
-            evaluation_id,
-            name=name,
-            target_kind="trajectory",
-            group_by=group_by,
-            scorers=scorers,
-        )
-
-    if state.trajectory_evaluations is not False:
-        try:
-            groups = run(catalog.sessions_evaluation_id)
-        except httpx.HTTPStatusError as error:
-            if not _rejects_trajectory_evaluation(error):
-                raise
-            state.trajectory_evaluations = False
-        else:
-            state.trajectory_evaluations = True
-            return groups
-    # Fallback: delete when wandb/core#61599 is deployed. This CES runs queries only on Case
-    # Evaluations, so the turns Evaluation also selects the query's Scorers and runs it.
-    client.select_scorers(
-        catalog.turns_evaluation_id,
-        [{"scorer_id": s.scorer_id, "version_id": s.version_id} for s in [*scorers, *columns]],
+    """A Trajectory query's groups on the sessions Evaluation, which selects every session
+    Scorer, so a Score column the query groups by needs no selecting."""
+    return run_query(
+        client,
+        state,
+        catalog.sessions_evaluation_id,
+        name=name,
+        target_kind="trajectory",
+        group_by=group_by,
+        scorers=scorers,
     )
-    return run(catalog.turns_evaluation_id)
 
 
 def config_stats(
@@ -350,7 +317,6 @@ def session_success_by_config(
         name="monopole session success and spend by config",
         group_by=[_CONFIG, _DEPTH, {"kind": "score", "name": SESSION_TESTS}],
         scorers=[_scorer(catalog.scorers[name]) for name in MEASURES],
-        columns=(_scorer(catalog.scorers[SESSION_TESTS]),),
     )
     by_config: dict[str, dict] = defaultdict(dict)
     for group in groups:
@@ -386,9 +352,7 @@ def judge_tables(
             state,
             name=f"monopole {judge} by {reference}",
             group_by=[{"kind": "score", "name": reference}, {"kind": "score", "name": judge}],
-            # Only the judge's count is read. Naming the reference too makes the fallback select
-            # it on the turns Evaluation, which a Score column needs.
-            scorers=[by_name[judge], by_name[reference]],
+            scorers=[by_name[judge]],
         )
         joint = {
             group.values: group.stats[judge].count
@@ -419,7 +383,6 @@ def segment_stats(
         name=f"monopole sessions by config and dim.{field}",
         group_by=[_CONFIG, _DEPTH, {"kind": "score", "name": dimension.name}],
         scorers=scorers,
-        columns=(dimension,),
     )
     segments = {}
     for group in groups:
