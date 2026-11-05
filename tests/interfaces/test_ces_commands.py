@@ -213,6 +213,18 @@ def test_judges_use_the_adapter_project_unless_flags_choose_one(tmp_path, monkey
     assert ces_commands.inference_project("other-team", "judges") == ("other-team", "judges")
 
 
+def test_serve_without_flags_runs_judges_under_the_adapter_project(tmp_path, monkeypatch):
+    state = tmp_path / "evaluations.json"
+    state.write_text('{"project": "demo-team/agent-evals", "scope_ref": "s", "dataset_id": "d"}')
+    monkeypatch.setenv("WEAVE_AGENT_ADAPTER_EVALUATIONS_STATE", str(state))
+    served: list[tuple[str, str]] = []
+    monkeypatch.setattr(cli, "cmd_serve", lambda args: served.append((args.entity, args.project)))
+
+    cli.main(["serve", "--target-registry", "targets.json", "--sandbox-runtime", "runtime.json"])
+
+    assert served == [("demo-team", "agent-evals")]
+
+
 def test_judges_fall_back_to_the_old_project_without_adapter_state(tmp_path, monkeypatch):
     monkeypatch.setenv("WEAVE_AGENT_ADAPTER_EVALUATIONS_STATE", str(tmp_path / "missing.json"))
 

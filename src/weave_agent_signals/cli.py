@@ -467,8 +467,12 @@ def build_parser() -> argparse.ArgumentParser:
         prog="weave-agent-signals",
         description="Score coding-agent sessions in CES",
     )
-    parser.add_argument("--entity", help="W&B entity for judge inference; default: the adapter's")
-    parser.add_argument("--project", help="W&B project for judge inference; default: the adapter's")
+    parser.add_argument(
+        "--entity", help="W&B entity for judge inference (default: from the adapter's project)"
+    )
+    parser.add_argument(
+        "--project", help="W&B project for judge inference (default: from the adapter's project)"
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
 
     subs = parser.add_subparsers(dest="command")
