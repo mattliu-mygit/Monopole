@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 from contextlib import nullcontext
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -11,7 +11,8 @@ import pytest
 from weave_agent_signals import cli
 from weave_agent_signals.catalogs import build_model_catalog
 from weave_agent_signals.ces_commands import Insights
-from weave_agent_signals.patterns import ConfigStats, Stat
+from weave_agent_signals.ces_queries import Group
+from weave_agent_signals.patterns import ConfigStats, SessionSuccess, Stat
 from weave_agent_signals.runs.bundles import bundle_from_content_map
 
 
@@ -244,7 +245,7 @@ def _analysis(monkeypatch, records):
     )
     asked = []
 
-    def read_analysis(_args, *, feedback: bool):
+    def read_analysis(_args, *, feedback: bool, success: bool = False):
         asked.append(feedback)
         return stats, records if feedback else []
 
@@ -292,18 +293,68 @@ def _insights(monkeypatch, **found):
     return asked
 
 
-def test_analyze_subagents_reports_trajectory_counts_by_config(monkeypatch, capsys):
-    counts = {"v1": Counter({0: 40, 1: 10, 2: 2}), "v2": Counter({0: 5})}
-    asked = _insights(monkeypatch, subagents=counts)
+TESTS_PASSED = "outcome.session_tests_passed"
+
+
+def _depths(targets, rates=None):
+    """{depth: Group} with each depth's targets and its tests-passed Stat."""
+    return {
+        depth: Group(
+            (None, depth),
+            n,
+            {} if rates is None or depth not in rates else {TESTS_PASSED: rates[depth]},
+        )
+        for depth, n in targets.items()
+    }
+
+
+def test_analyze_subagents_reports_counts_and_compares_outcome_rates(monkeypatch, capsys):
+    found = {
+        # 35 of 50 sessions passed; subagents at depth 1 and 2 pool to 12 of 30.
+        "v1": _depths(
+            {0: 60, 1: 30, 2: 5},
+            {0: Stat(50, 0.7, True), 1: Stat(25, 0.4, True), 2: Stat(5, 0.4, True)},
+        ),
+        "v2": _depths({0: 5}),
+    }
+    asked = _insights(monkeypatch, subagents=found)
 
     assert cli.main(["analyze", "--subagents"]) == 0
 
     out = capsys.readouterr().out
     assert asked == [(True, False, None)]
     assert (
-        "Config: v1  sessions=40  subagents=12 (0.30 per session; depth 1: 10, depth 2: 2)" in out
+        "Config: v1  sessions=60  subagents=35 (0.58 per session; depth 1: 30, depth 2: 5)" in out
     )
+    assert (
+        f"    {TESTS_PASSED:35s} sessions 70% (n=50) vs subagents 40% (n=30)  -0.30, "
+        "CI -0.49–-0.08  significant"
+    ) in out
     assert "Config: v2  sessions=5  subagents=0 (0.00 per session)" in out
+
+
+def test_analyze_summary_shows_success_rate_and_spend_per_success(monkeypatch, capsys):
+    found = {
+        "v1": SessionSuccess(
+            3, 2, 5, {"measure.tokens": 11000.0, "measure.turns": 32.0, "measure.duration_s": 900.0}
+        ),
+        "v2": SessionSuccess(0, 0, 4, {}),
+        "v3": SessionSuccess(0, 2, 0, {"measure.tokens": 10.0}),
+    }
+
+    def read_analysis(_args, *, feedback, success=False):
+        stats = ConfigStats({"v1": {"outcome.test": Stat(3, 1.0, True)}}, {"v1": 3})
+        return replace(stats, success=found if success else None), []
+
+    monkeypatch.setattr(cli.ces_commands, "read_analysis", read_analysis)
+
+    assert cli.main(["analyze", "--ab"]) == 0
+
+    out = capsys.readouterr().out
+    assert "Config: v1  success 60% (3 of 5, CI 23%–88%)  no test run: 5" in out
+    assert "    per success: 3,667 tokens, 10.7 turns, 300 s" in out
+    assert "Config: v2  no session ran tests (4 sessions)" in out
+    assert "Config: v3  success 0% (0 of 2" in out and "per success: no success yet" in out
 
 
 def test_analyze_judges_reports_agreement_and_the_gap(monkeypatch, capsys):
@@ -337,11 +388,11 @@ def test_analyze_segments_reports_only_segments_with_enough_sessions(monkeypatch
     }
     asked = _insights(monkeypatch, segments=segments)
 
-    assert cli.main(["analyze", "--segments", "cwd"]) == 0
+    assert cli.main(["analyze", "--segments", "git_branch"]) == 0
 
     out = capsys.readouterr().out
-    assert asked == [(False, False, "cwd")]
-    assert "Segments by cwd" in out
+    assert asked == [(False, False, "git_branch")]
+    assert "Segments by git_branch" in out
     # The 3 "tiny" sessions join the rest of v1 but get no line of their own.
     assert "main  implicit.completion" in out and "80% vs 61%  (n=70 vs 83" in out
     assert "significant" in out
@@ -354,8 +405,8 @@ def test_analyze_segments_says_when_no_session_has_the_field(monkeypatch, capsys
 
     assert cli.main(["analyze", "--segments"]) == 0
 
-    assert asked == [(False, False, "git_branch")]
-    assert "Every scored session's root Case lacks i.git_branch" in capsys.readouterr().out
+    assert asked == [(False, False, "repo")]
+    assert "No scored session has a dim.repo Score yet" in capsys.readouterr().out
 
 
 def test_analyze_with_an_insight_and_ab_reads_both(monkeypatch, capsys):
@@ -363,7 +414,7 @@ def test_analyze_with_an_insight_and_ab_reads_both(monkeypatch, capsys):
     monkeypatch.setattr(
         cli.ces_commands,
         "read_insights",
-        lambda args: Insights({"v1": Counter({0: 1})}, None, None),
+        lambda args: Insights({"v1": _depths({0: 1})}, None, None),
     )
 
     assert cli.main(["analyze", "--ab", "--subagents"]) == 0

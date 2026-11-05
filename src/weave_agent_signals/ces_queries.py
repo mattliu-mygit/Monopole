@@ -8,16 +8,18 @@ Two saved queries cover every Score the Evaluations hold, not a newest-N window:
   adapter writes subagent Cases to child Trajectories. The query doesn't group by `i.agent_id`,
   because CES rejects grouping by a field no Case has set, as on a Dataset with no subagents.
 - sessions: a Trajectory query grouped by the root Case's `i.config_version` and `depth`.
-  Session Scores target the depth-0 session Trajectory.
+  Only depth-0 session Trajectories count; the whole-Trajectory Scorers also score subagents.
+  Measurements and dimensions aren't ratings, so these queries never name them.
 
 The turn query runs on the turns Evaluation and the session query on the sessions Evaluation,
 which selects every session Scorer: the deterministic ones and each judge panel's
 `<rubric>.panel-<digest>`. A CES that runs queries only on Case Evaluations rejects the session
 query there; then the turns Evaluation also selects the session Scorers and runs it.
 
-`analyze`'s opt-in insights add more Trajectory queries, with the same fallback: Trajectories by
-config and depth (subagent counts), judge Scores by a reference Score (judge agreement), and
-session Scores by config and a root-Case field (segments).
+`analyze` adds more Trajectory queries, with the same fallback: sessions by config and whether
+their last test run passed, summing measurements (success and spend), Trajectories by config and
+depth (subagents against sessions), judge Scores by a reference Score (judge agreement), and
+session Scores by config and a dimension Score (segments).
 
 A query definition never changes. Its create key holds the Evaluation ID and a digest of its
 body, so a rerun replays to the same query ID, and a new judge panel, which is a new Scorer,
@@ -34,9 +36,22 @@ from typing import Any
 
 import httpx
 
-from weave_agent_signals.ces_catalog import DETAILS_SUFFIX, RATING, Catalog
+from weave_agent_signals.ces_catalog import DETAILS_SUFFIX, RATING, Catalog, ScorerRef
 from weave_agent_signals.ces_client import CesClient, content_digest
-from weave_agent_signals.patterns import ConfigStats, Stat, stats_from_feedback
+from weave_agent_signals.patterns import (
+    ConfigStats,
+    SessionSuccess,
+    Stat,
+    session_success,
+    stats_from_feedback,
+)
+from weave_agent_signals.scorers.session import (
+    MEASURE_DURATION,
+    MEASURE_TOKENS,
+    MEASURE_TURNS,
+    SESSION_OUTCOMES,
+    SESSION_TESTS,
+)
 
 # CES's spread aggregation, from a CES change that hasn't merged. Its name and its sample (n-1)
 # denominator are assumptions until it does.
@@ -44,7 +59,8 @@ STDDEV = "stddev"
 _MAX_METRICS = 100  # CES's limit per query
 _CONFIG = {"kind": "dataset_field", "source": "input", "name": "config_version"}
 _DEPTH = {"kind": "depth"}
-COMPLETION = "implicit.completion"  # the one session outcome Scorer
+COMPLETION = "implicit.completion"
+MEASURES = (MEASURE_TURNS, MEASURE_TOKENS, MEASURE_DURATION)
 # CES's 400 for a query on an Evaluation whose primary target kind isn't case.
 _CASE_EVALUATIONS_ONLY = (
     "EvaluationQueries need an Evaluation with primary_target_kind case, and each query's "
@@ -168,12 +184,15 @@ def run_query(
     return [Group(values, targets[values], stats) for values, stats in groups.items()]
 
 
+def _scorer(ref: ScorerRef) -> QueryScorer:
+    return QueryScorer(ref.spec.name, ref.scorer_id, ref.version_id, ref.spec.binary)
+
+
 def session_scorers(client: CesClient, catalog: Catalog) -> list[QueryScorer]:
     """Every session rating Scorer the sessions Evaluation selects: no measurement. Judge panel
     Scorers aren't in the catalog, so their names are read."""
     sessions = [r for r in catalog.scorers.values() if r.spec.target_kind == "trajectory"]
-    refs = [r for r in sessions if r.spec.kind == RATING]
-    scorers = [QueryScorer(r.spec.name, r.scorer_id, r.version_id, r.spec.binary) for r in refs]
+    scorers = [_scorer(r) for r in sessions if r.spec.kind == RATING]
     known = {r.scorer_id for r in sessions} | {r.details_scorer_id for r in sessions}
     selection = client.select_scorers(
         catalog.sessions_evaluation_id,
@@ -198,8 +217,10 @@ def _trajectory_groups(
     name: str,
     group_by: list[dict],
     scorers: list[QueryScorer],
+    columns: tuple[QueryScorer, ...] = (),
 ) -> list[Group]:
-    """A Trajectory query's groups, from the sessions Evaluation when CES runs queries there."""
+    """A Trajectory query's groups, from the sessions Evaluation when CES runs queries there.
+    `columns` are Scorers the query only groups by, which the fallback must also select."""
 
     def run(evaluation_id: str) -> list[Group]:
         return run_query(
@@ -226,7 +247,7 @@ def _trajectory_groups(
     # Evaluations, so the turns Evaluation also selects the query's Scorers and runs it.
     client.select_scorers(
         catalog.turns_evaluation_id,
-        [{"scorer_id": s.scorer_id, "version_id": s.version_id} for s in scorers],
+        [{"scorer_id": s.scorer_id, "version_id": s.version_id} for s in [*scorers, *columns]],
     )
     return run(catalog.turns_evaluation_id)
 
@@ -293,27 +314,50 @@ def config_stats(
     )
 
 
-def subagent_counts(client: CesClient, catalog: Catalog, state: QueryState) -> dict[str, Counter]:
-    """Each config's Trajectories by depth: depth 0 counts sessions, deeper ones their subagents.
-
-    The counts are each group's targets, scored or not. No session Scorer scores a subagent
-    Trajectory, because every writer targets the session, so there are no subagent means to
-    compare. CES needs at least one metric, so the query counts `implicit.completion`."""
-    ref = catalog.scorers[COMPLETION]
-    scorer = QueryScorer(ref.spec.name, ref.scorer_id, ref.version_id, ref.spec.binary)
+def subagent_outcomes(
+    client: CesClient, catalog: Catalog, state: QueryState
+) -> dict[str, dict[int, Group]]:
+    """Each config's Trajectories by depth, {config: {depth: Group}}: depth 0 holds sessions,
+    deeper ones their subagents. A group's targets count every Trajectory, scored or not, and
+    its Stats are the session outcome Scorers, which score subagents too."""
     groups = _trajectory_groups(
         client,
         catalog,
         state,
-        name="monopole trajectories by config and depth",
+        name="monopole trajectory outcomes by config and depth",
         group_by=[_CONFIG, _DEPTH],
-        scorers=[scorer],
+        scorers=[_scorer(catalog.scorers[name]) for name in SESSION_OUTCOMES],
     )
-    counts: dict[str, Counter] = defaultdict(Counter)
+    by_config: dict[str, dict[int, Group]] = defaultdict(dict)
     for group in groups:
         config, depth = group.values
-        counts[config or "unknown"][depth] += group.targets
-    return dict(counts)
+        by_config[config or "unknown"][depth] = group
+    return dict(by_config)
+
+
+def session_success_by_config(
+    client: CesClient, catalog: Catalog, state: QueryState
+) -> dict[str, SessionSuccess]:
+    """Each config's sessions split by `outcome.session_tests_passed`, with what they spent.
+
+    One query groups sessions by config, depth, and that Score's value, and takes each
+    measurement's mean and count; a sum is the mean times the count. Subagents are left out:
+    a session's tokens already include them."""
+    groups = _trajectory_groups(
+        client,
+        catalog,
+        state,
+        name="monopole session success and spend by config",
+        group_by=[_CONFIG, _DEPTH, {"kind": "score", "name": SESSION_TESTS}],
+        scorers=[_scorer(catalog.scorers[name]) for name in MEASURES],
+        columns=(_scorer(catalog.scorers[SESSION_TESTS]),),
+    )
+    by_config: dict[str, dict] = defaultdict(dict)
+    for group in groups:
+        config, depth, passed = group.values
+        if depth == 0:
+            by_config[config or "unknown"][passed] = (group.targets, group.stats)
+    return {config: session_success(found) for config, found in by_config.items()}
 
 
 def judge_tables(
@@ -322,13 +366,16 @@ def judge_tables(
     """For each judge panel Scorer and a reference, how many sessions got each pair of values:
     (judge, reference, {(reference value, judge value): sessions}), only where both rated.
 
-    The references are `implicit.completion` and each other panel of the same rubric. All are
-    session Scorers; turn Scorers such as `outcome.test` can't join a Trajectory query. Each
-    pair is one query grouped by both Score columns. A panel's rating is the mean of one to
-    three judges' five anchors, so a column has at most 13 values and a table at most 169."""
+    The references are the session outcome Scorers, `implicit.completion`, and each other
+    panel of the same rubric. All are session Scorers; turn Scorers such as `outcome.test`
+    can't join a Trajectory query. Each pair is one query grouped by both Score columns.
+    Subagents have outcome Scores but no judge Score, so they pair with nothing. A panel's
+    rating is the mean of one to three judges' five anchors, so a column has at most 13 values
+    and a table at most 169."""
     by_name = {s.name: s for s in scorers}
     judges = sorted(name for name in by_name if ".panel-" in name)
-    pairs = [(judge, COMPLETION) for judge in judges if COMPLETION in by_name] + [
+    references = [name for name in (*SESSION_OUTCOMES, COMPLETION) if name in by_name]
+    pairs = [(judge, reference) for judge in judges for reference in references] + [
         (a, b) for a, b in combinations(judges, 2) if a.split(".panel-")[0] == b.split(".panel-")[0]
     ]
     tables = []
@@ -359,20 +406,24 @@ def segment_stats(
     scorers: list[QueryScorer],
     field: str,
 ) -> dict[tuple[str, Any], dict[str, Stat]]:
-    """Session Stats by config and the root Case's input `field`: {(config, value): {Scorer:
-    Stat}}. A value the root Case doesn't set is None. Subagent Trajectories join the groups
-    but have no session Score, so they change no Stat, and a group of only them is dropped."""
+    """Session Stats by config and the session's `dim.<field>` Score: {(config, value): {Scorer:
+    Stat}}. A session without that Score has the value None. The dimension Score covers old
+    sessions, derived from their Cases, and new ones, from their root Case, so both take this
+    one path. Subagents carry their session's dimensions and outcome Scores, so the query
+    groups by depth and keeps only sessions."""
+    dimension = _scorer(catalog.scorers[f"dim.{field}"])
     groups = _trajectory_groups(
         client,
         catalog,
         state,
-        name=f"monopole sessions by config and {field}",
-        group_by=[_CONFIG, {"kind": "dataset_field", "source": "input", "name": field}],
+        name=f"monopole sessions by config and dim.{field}",
+        group_by=[_CONFIG, _DEPTH, {"kind": "score", "name": dimension.name}],
         scorers=scorers,
+        columns=(dimension,),
     )
     segments = {}
     for group in groups:
-        config, value = group.values
-        if group.stats:
+        config, depth, value = group.values
+        if depth == 0 and group.stats:
             segments[(config or "unknown", value)] = group.stats
     return segments

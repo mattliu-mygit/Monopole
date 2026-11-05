@@ -80,6 +80,36 @@ class ConfigStats:
 
     by_config: dict[str, dict[str, Stat]]
     targets: dict[str, int]
+    # Each config's session success and spend, read only for `analyze`'s summary.
+    success: dict[str, SessionSuccess] | None = None
+
+
+@dataclass(frozen=True)
+class SessionSuccess:
+    """One config's sessions by `outcome.session_tests_passed`: passed, failed, or no test run
+    (no Score, including sessions Monopole never scored), and each measurement summed over the
+    sessions that ran a test.
+
+    A session succeeds when its last test run passed. Spend per success divides what every
+    session that ran a test spent by the successes, so failed attempts count as the cost of
+    the successes; sessions with no test run are left out of both."""
+
+    passed: int
+    failed: int
+    untested: int
+    spent: dict[str, float]
+
+    @property
+    def rate(self) -> float | None:
+        tested = self.passed + self.failed
+        return self.passed / tested if tested else None
+
+    @property
+    def ci(self) -> tuple[float, float]:
+        return _wilson_ci(self.passed, self.passed + self.failed)
+
+    def per_success(self, measure: str) -> float | None:
+        return self.spent[measure] / self.passed if self.passed and measure in self.spent else None
 
 
 def _stat(ratings: list[float], binary: bool | None = None) -> Stat:
@@ -919,3 +949,49 @@ def coaching_digest(feedback: list[dict], stats: ConfigStats | None = None) -> s
                 lines.append(f"  - {scorer}: mean={s.mean:.2f} (n={s.count})")
 
     return "\n".join(lines)
+
+
+def session_success(groups: Mapping[Any, tuple[int, Mapping[str, Stat]]]) -> SessionSuccess:
+    """`groups` maps a session's `outcome.session_tests_passed` value (true, false, or None for
+    no Score) to (sessions, measurement Stats). A measurement's sum is its mean times its
+    count, so a session without that measurement adds nothing."""
+    counts = {True: 0, False: 0, None: 0}
+    spent: dict[str, float] = defaultdict(float)
+    for value, (sessions, stats) in groups.items():
+        side = None if value is None else bool(value)
+        counts[side] += sessions
+        if side is not None:
+            for measure, stat in stats.items():
+                spent[measure] += stat.mean * stat.count
+    return SessionSuccess(counts[True], counts[False], counts[None], dict(spent))
+
+
+def subagent_gaps(by_depth: Mapping[int, Mapping[str, Stat]]) -> list[dict[str, Any]]:
+    """Each outcome's rate in sessions (depth 0) against subagents (every deeper depth pooled),
+    with the 95% interval on subagents minus sessions, when both sides have a rating.
+
+    A session's outcomes include its subagents' tool calls, so the two sides can share a test
+    run. That shared evidence pulls them together, which makes this independent-samples
+    interval wider than the truth, not narrower."""
+    sessions = by_depth.get(0, {})
+    gaps = []
+    for scorer in sorted(sessions):
+        deeper = [stats[scorer] for depth, stats in by_depth.items() if depth and scorer in stats]
+        if not deeper:
+            continue
+        session, subagent = sessions[scorer], _pool(deeper)
+        ci = difference_ci(subagent, session)
+        gaps.append(
+            {
+                "scorer": scorer,
+                "binary": session.binary and subagent.binary,
+                "session_mean": round(session.mean, 3),
+                "subagent_mean": round(subagent.mean, 3),
+                "delta": round(subagent.mean - session.mean, 3),
+                "difference_ci": None if ci is None else (round(ci[0], 3), round(ci[1], 3)),
+                "session_count": session.count,
+                "subagent_count": subagent.count,
+                "significant": ci is not None and (ci[0] > 0 or ci[1] < 0),
+            }
+        )
+    return gaps

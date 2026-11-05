@@ -27,9 +27,11 @@ from weave_agent_signals.patterns import (
     is_evaluation_feedback_eligible,
     pass_threshold,
     segment_gaps,
+    session_success,
     stat_leaderboard,
     stat_summaries,
     stats_from_feedback,
+    subagent_gaps,
 )
 
 
@@ -1268,3 +1270,49 @@ def test_segment_gaps_pool_the_other_segments_as_the_rest():
     (a,) = [g for g in segment_gaps(segments) if g["segment"] == "a"]
 
     assert (a["rest_mean"], a["rest_sample_count"]) == (0.5, 40)
+
+
+def test_spend_per_success_divides_what_tested_sessions_spent_by_the_successes():
+    # 3 passing sessions averaging 1000 tokens and 2 failing ones averaging 4000 spent 11000;
+    # the 5 untested sessions' tokens count toward neither side.
+    found = session_success(
+        {
+            True: (3, {"measure.tokens": Stat(3, 1000.0, False)}),
+            False: (2, {"measure.tokens": Stat(2, 4000.0, False)}),
+            None: (5, {"measure.tokens": Stat(5, 50.0, False)}),
+        }
+    )
+
+    assert (found.passed, found.failed, found.untested) == (3, 2, 5)
+    assert found.spent == {"measure.tokens": 11000.0}
+    assert found.per_success("measure.tokens") == pytest.approx(11000 / 3)
+    assert found.rate == 0.6
+    assert found.ci == pytest.approx(_wilson_ci(3, 5))
+    assert found.per_success("measure.turns") is None
+
+
+def test_no_success_or_no_test_run_has_no_spend_per_success_or_rate():
+    failed = session_success({False: (2, {"measure.tokens": Stat(2, 10.0, False)})})
+    untested = session_success({None: (4, {})})
+
+    assert failed.rate == 0.0 and failed.per_success("measure.tokens") is None
+    assert untested.rate is None and untested.untested == 4
+
+
+def test_subagent_gaps_pool_every_depth_below_sessions():
+    tests = "outcome.session_tests_passed"
+    by_depth = {
+        0: {tests: Stat(50, 0.7, True)},
+        1: {tests: Stat(25, 0.4, True)},
+        2: {tests: Stat(5, 0.4, True)},
+    }
+
+    [gap] = subagent_gaps(by_depth)
+
+    # Newcombe's interval for 12/30 - 35/50, by hand: -0.4887 to -0.0760.
+    assert (gap["session_count"], gap["subagent_count"], gap["delta"]) == (50, 30, -0.3)
+    assert gap["difference_ci"] == (-0.489, -0.076) and gap["significant"]
+
+
+def test_a_subagentless_outcome_has_no_gap():
+    assert subagent_gaps({0: {"outcome.session_tests_passed": Stat(5, 1.0, True)}}) == []

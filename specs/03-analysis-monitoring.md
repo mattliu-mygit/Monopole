@@ -42,19 +42,22 @@ movement always has one interpretation.
 
 | Numbers | Source | Scope |
 | --- | --- | --- |
-| Summaries, the A/B leaderboard, config regressions | CES EvaluationQueries (`ces_queries.py`) | every Score the Evaluations hold, by config version |
+| Summaries, the A/B leaderboard, config regressions, session success and spend | CES EvaluationQueries (`ces_queries.py`) | every Score the Evaluations hold, by config version |
 | Trends, config order, coaching examples, summary tag counts | raw Scores (`read_all_scores`) | the newest `--limit` turns and their sessions |
 | Reflection's digest (runs and `reflect`) | the raw Scores it pins | that cohort or the newest `--limit` turns |
 
 The queries count only the main agent: turn Scores only target main-agent
-Cases, and the session query keeps depth 0. A summary over every Score differs
+Cases, and the session query keeps depth 0. They name only rating Scorers, and
+raw Score records leave out measurements and dimensions, so neither ever enters
+a summary, leaderboard, trend, alert, or coaching digest. A summary over every Score differs
 from the older newest-`--limit` summary when older turns scored differently.
 The turn query runs on the turns Evaluation and the session query on the
 sessions Evaluation. On a CES that runs queries only on Case Evaluations, the
 session query falls back to the turns Evaluation, as
 [`01-ces-io.md`](01-ces-io.md#queries) describes.
 
-Trends wait for a day field from the adapter, because CES queries have no time.
+Trends still read raw Scores, because CES queries have no time; a query
+grouped by the `dim.day` Score could replace them.
 Coaching examples are session judge Scores, and a filtered session-row search
 waits on a CES deploy. Configs are ordered by their latest turn among the newest
 `--limit` turns, so a config missing from that window is not compared.
@@ -93,6 +96,19 @@ include bounded session and evidence identities plus merged reviewer success,
 problem, and desired-behavior fields. They never include raw conversation
 windows or raw window findings.
 
+`analyze`'s summary, the coaching digest or `--ab`, starts with each config's
+session success and spend from one query. It groups sessions by config, depth,
+and `outcome.session_tests_passed`, keeps depth 0, and takes each
+measurement's mean and count, whose product is its sum. A session succeeds when
+its last test run passed. The success rate covers sessions that ran a test,
+with a Wilson interval; sessions with no test run, including ones Monopole
+never scored, are counted apart. Spend per success divides the tokens, turns,
+and seconds of every session that ran a test by the successes, so failed
+attempts count as the cost of the successes. A session's tokens include its
+subagents', so subagent spend is counted once. For example, 3 passing sessions
+of 1,000 tokens and 2 failing of 4,000 give 60% success and 11,000 / 3 ≈ 3,667
+tokens per success.
+
 The digest is input to reflection, not an independent score or proof of the
 cause of a regression. Reflection separately pins the exact feedback records it
 consumed, so later feedback changes cannot silently alter an active proposal
@@ -101,62 +117,69 @@ evaluation.
 ## Query insights
 
 `analyze --subagents`, `--judges`, and `--segments` each add Trajectory queries
-over every session, run on the sessions Evaluation with the same fallback and
+over every session or Trajectory, run on the sessions Evaluation with the same fallback and
 create keys as the session query ([`01-ces-io.md`](01-ces-io.md#queries)). They
 are CLI-only; `monitor` and the Analyze page don't run them.
 
 ### Subagents
 
 The query groups every Trajectory by the root Case's `i.config_version` and
-`depth`, and reports each group's Trajectory count, scored or not: depth 0 is
-the session, depth 1 and deeper its subagents. No Monopole Scorer scores a
-subagent Trajectory, because turn, session, and judge Scores all target the
-session or its Cases, so the insight shows counts only, such as "config v3: 40
-sessions, 12 subagents (0.30 per session; depth 1: 10, depth 2: 2)", not a
-main-versus-subagent score gap. A subagent's root Case is the parent's Case
-that launched it, which carries the same config version.
+`depth`, with the session outcome Scorers as metrics. It reports each group's
+Trajectory count, scored or not: depth 0 is the session, depth 1 and deeper its
+subagents, such as "config v3: 40 sessions, 12 subagents (0.30 per session;
+depth 1: 10, depth 2: 2)". A subagent's root Case is the parent's Case that
+launched it, which carries the same config version.
+
+For each session outcome it then compares subagents, every depth below 0
+pooled, with sessions: each side's rate and Newcombe's interval on subagents
+minus sessions. For example, 35 of 50 sessions against 12 of 30 subagents whose
+last test run passed is -0.30, interval -0.49 to -0.08. A session's outcomes
+include its subagents' tool calls, so both sides can share a test run; that
+correlation makes the independent-samples interval wider than the truth, not
+narrower.
 
 ### Judge agreement
 
 Each judge panel Scorer is compared with a reference Scorer on the sessions
-both rated: with `implicit.completion`, and with every other panel of the same
-rubric. Each pair is one query grouped by both Score columns, which returns
+both rated: with each session outcome Scorer, with `implicit.completion`, and
+with every other panel of the same rubric. Each pair is one query grouped by both Score columns, which returns
 exact counts of each (reference, judge) rating pair. A panel's rating is the
 mean of one to three judges' five anchors, so a column has at most 13 values and
 needs no bucketing. From the pairs the insight reports:
 
 - agreement: the share of sessions where both pass or both fail, with a Wilson
   interval. A rating passes at or above its rubric's catalog threshold, and a
-  true `implicit.completion` passes. A query sees only ratings, so a run that
+  true session outcome or `implicit.completion` passes. A query sees only ratings, so a run that
   pinned another threshold is judged by the catalog's.
 - the judge's mean where the reference passes versus where it fails, with a
   Welch difference interval computed from the exact pairs, so it needs no CES
   `stddev`.
 
-Only session Scorers are compared. Judges score sessions, and the outcome
-Scorers (`outcome.test` and the rest) score turns, which a Trajectory query
-can't read, so `implicit.completion` is the only outcome reference. It is weak:
-it says only that the last turn didn't end in an error, and every session of two
-turns or fewer counts as completed. Agreement is raw, not corrected for chance: two judges
+Only session Scorers are compared: the turn outcome Scorers (`outcome.test` and
+the rest) score turns, which a Trajectory query can't read. The session outcome
+Scorers carry the same evidence per session. `implicit.completion` is weaker: it
+says only that the last turn didn't end in an error, and every session of two
+turns or fewer counts as completed. Subagents have outcome Scores but no judge
+Score, so they pair with nothing. Agreement is raw, not corrected for chance: two judges
 that both pass 90% of sessions agree on at least 80% by construction.
 
 ### Segments
 
-The query groups session Scores by the root Case's `i.config_version` and one
-input field, `git_branch` by default or `cwd`, `model`, or `harness`. Each
+The query groups session Scores by the root Case's `i.config_version`, depth,
+and one dimension Score, `dim.repo` by default or `dim.git_branch` or `dim.day`,
+and keeps depth 0. Old sessions derive their dimensions from their Cases and new
+ones copy the adapter's root-Case fields ([`02-evaluation.md`](02-evaluation.md)),
+so both take this one path; a session without the dimension Score, such as one
+not yet backfilled, is the unknown segment. Each
 segment is compared with the rest of its config's sessions, not the whole
 config, so the two sides are independent; the difference interval is the one
 config regressions use. A segment is shown only when it and the rest each have
 at least 10 ratings from the Scorer. Continuous Scorers have no interval until
 CES has `stddev`.
 
-The adapter sets `git_branch` only on turn Cases, not on the session Case that
-roots a session Trajectory, so today every session is in one unknown branch
-segment and the insight says so. `cwd` (the working directory, close to the
-repository), `model`, and `harness` are on the session Case.
-
 A query returns at most 10,000 groups, which the subagent and judge queries stay
-far below; a segment field with thousands of values per config would reach it.
+far below. `dim.day` segments add a group per day for each config and depth,
+so a history of years across many configs could reach it.
 
 ## Monitoring
 

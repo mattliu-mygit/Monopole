@@ -17,7 +17,7 @@ from weave_agent_signals.ces_catalog import (
 )
 from weave_agent_signals.ces_client import CesSession, session_view
 from weave_agent_signals.models import Score, SessionView, TraceRole
-from weave_agent_signals.patterns import ConfigStats, Stat
+from weave_agent_signals.patterns import ConfigStats, SessionSuccess, Stat
 from weave_agent_signals.scorers import score_session, score_trajectory
 
 CATALOG = Catalog(
@@ -452,11 +452,32 @@ def test_read_analysis_reads_the_newest_scores_at_most_once(monkeypatch, feedbac
     assert client.reads == reads
 
 
+def test_read_analysis_adds_session_success_on_the_same_connection(monkeypatch):
+    client, connections = _ScoresOnly([]), []
+    stats = ConfigStats({"v1": {"efficiency": Stat(1, 1.0, False)}}, {"v1": 1})
+    success = {"v1": SessionSuccess(1, 1, 0, {})}
+
+    def connect(args):
+        connections.append(args)
+        return CesSession(client, CATALOG)
+
+    monkeypatch.setattr(ces_commands, "connect", connect)
+    monkeypatch.setattr(ces_commands.ces_queries, "config_stats", lambda *_: stats)
+    monkeypatch.setattr(ces_commands.ces_queries, "session_success_by_config", lambda *_: success)
+    args = cli.build_parser().parse_args(["analyze"])
+
+    got, _ = ces_commands.read_analysis(args, feedback=False, success=True)
+
+    assert (got.by_config, got.success) == (stats.by_config, success)
+    assert len(connections) == 1
+    assert ces_commands.read_analysis(args, feedback=False)[0].success is None
+
+
 @pytest.mark.parametrize(
     ("flags", "want"),
     [
         (["--subagents"], ["subagents"]),
-        (["--judges", "--segments", "cwd"], ["scorers", "judges", "segments cwd"]),
+        (["--judges", "--segments", "day"], ["scorers", "judges", "segments day"]),
     ],
 )
 def test_read_insights_runs_only_the_asked_queries_on_one_connection(monkeypatch, flags, want):
@@ -480,7 +501,7 @@ def test_read_insights_runs_only_the_asked_queries_on_one_connection(monkeypatch
         return {}
 
     monkeypatch.setattr(ces_commands, "connect", connect)
-    monkeypatch.setattr(queries, "subagent_counts", lambda *_: calls.append("subagents") or {})
+    monkeypatch.setattr(queries, "subagent_outcomes", lambda *_: calls.append("subagents") or {})
     monkeypatch.setattr(queries, "session_scorers", session_scorers)
     monkeypatch.setattr(queries, "judge_tables", judge_tables)
     monkeypatch.setattr(queries, "segment_stats", segment_stats)

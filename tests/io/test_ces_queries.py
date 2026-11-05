@@ -17,9 +17,10 @@ from weave_agent_signals.ces_queries import (
     judge_tables,
     run_query,
     segment_stats,
-    subagent_counts,
+    session_success_by_config,
+    subagent_outcomes,
 )
-from weave_agent_signals.patterns import Stat
+from weave_agent_signals.patterns import SessionSuccess, Stat
 
 BASE = "http://ces.test/v1/namespaces/wandb/scopes/scope-1"
 QUERIES = f"{BASE}/evaluations/ev-turns/queries"
@@ -478,24 +479,35 @@ def _row(group, targets, **metrics):
     }
 
 
+TESTS_PASSED = "outcome.session_tests_passed"
+NO_FAILED_BUILDS = "outcome.session_no_failed_builds"
+
+
 @respx.mock
-def test_subagent_counts_count_every_trajectory_by_config_and_depth():
+def test_subagent_outcomes_count_every_trajectory_and_rate_outcomes_by_depth():
     rows = [
-        _row(["cfg1", 0], 4, **{"implicit.completion:mean": 0.5, "implicit.completion:count": 3}),
-        # Subagent Trajectories have no session Score, but each group still counts them.
-        _row(["cfg1", 1], 6, **{"implicit.completion:mean": None, "implicit.completion:count": 0}),
+        _row(["cfg1", 0], 4, **{f"{TESTS_PASSED}:mean": 0.5, f"{TESTS_PASSED}:count": 2}),
+        _row(["cfg1", 1], 6, **{f"{TESTS_PASSED}:mean": 1.0, f"{TESTS_PASSED}:count": 1}),
+        # A Trajectory with no outcome Score still counts.
         _row(["cfg1", 2], 1),
         _row([None, 0], 2),
     ]
     routes = Insight(lambda _definition: rows)
 
-    counts = subagent_counts(_client(), CATALOG, QueryState())
+    found = subagent_outcomes(_client(), CATALOG, QueryState())
 
-    assert counts == {"cfg1": {0: 4, 1: 6, 2: 1}, "unknown": {0: 2}}
+    assert {c: {d: g.targets for d, g in depths.items()} for c, depths in found.items()} == {
+        "cfg1": {0: 4, 1: 6, 2: 1},
+        "unknown": {0: 2},
+    }
+    assert found["cfg1"][1].stats == {TESTS_PASSED: Stat(1, 1.0, True)}
     (definition,) = routes.definitions
     assert definition["target_kind"] == "trajectory"
     assert definition["group_by"] == [CONFIG, {"kind": "depth"}]
-    assert {m["scorer_version_id"] for m in definition["metrics"]} == {"v-implicit.completion"}
+    assert {m["scorer_version_id"] for m in definition["metrics"]} == {
+        f"v-{TESTS_PASSED}",
+        f"v-{NO_FAILED_BUILDS}",
+    }
 
 
 @respx.mock
@@ -505,13 +517,61 @@ def test_insight_queries_fall_back_to_the_turns_evaluation_like_session_queries(
     )
     state = QueryState()
 
-    counts = subagent_counts(_client(), CATALOG, state)
+    found = subagent_outcomes(_client(), CATALOG, state)
 
-    assert counts == {"cfg1": {1: 6}}
+    assert found["cfg1"][1].targets == 6
     assert state.trajectory_evaluations is False
-    assert routes.turn_selections == [
-        [{"scorer_id": "sc-implicit.completion", "version_id": "v-implicit.completion"}]
+    assert [s["version_id"] for s in routes.turn_selections[0]] == [
+        f"v-{TESTS_PASSED}",
+        f"v-{NO_FAILED_BUILDS}",
     ]
+
+
+@respx.mock
+def test_session_success_splits_each_configs_sessions_by_tests_passed_and_sums_spend():
+    def spend(tokens, turns, count):
+        return {
+            "measure.tokens:mean": tokens,
+            "measure.tokens:count": count,
+            "measure.turns:mean": turns,
+            "measure.turns:count": count,
+        }
+
+    rows = [
+        _row(["cfg1", 0, True], 3, **spend(1000.0, 4.0, 3)),
+        _row(["cfg1", 0, False], 2, **spend(4000.0, 10.0, 2)),
+        _row(["cfg1", 0, None], 5, **spend(50.0, 1.0, 5)),
+        # A subagent's spend is already in its session's tokens.
+        _row(["cfg1", 1, True], 7, **spend(9.0, 9.0, 7)),
+    ]
+    routes = Insight(lambda _definition: rows)
+
+    found = session_success_by_config(_client(), CATALOG, QueryState())
+
+    assert found == {
+        "cfg1": SessionSuccess(3, 2, 5, {"measure.tokens": 11000.0, "measure.turns": 32.0})
+    }
+    (definition,) = routes.definitions
+    assert definition["group_by"] == [
+        CONFIG,
+        {"kind": "depth"},
+        {"kind": "score", "name": TESTS_PASSED},
+    ]
+    assert {m["scorer_version_id"] for m in definition["metrics"]} == {
+        "v-measure.turns",
+        "v-measure.tokens",
+        "v-measure.duration_s",
+    }
+    assert {m["aggregation"] for m in definition["metrics"]} >= {"mean", "count"}
+
+
+@respx.mock
+def test_session_success_selects_its_score_column_when_falling_back():
+    routes = Insight(lambda _definition: [], sessions_create=CASE_EVALUATIONS_ONLY)
+
+    session_success_by_config(_client(), CATALOG, QueryState())
+
+    assert f"v-{TESTS_PASSED}" in [s["version_id"] for s in routes.turn_selections[0]]
 
 
 def test_an_unscored_session_group_adds_no_config_to_config_stats():
@@ -531,6 +591,7 @@ GOAL_NEW = "judge.goal.panel-new"
 TOOL = "judge.tool.panel-x"
 JUDGE_SCORERS = [
     QueryScorer("implicit.completion", "sc-c", "v-implicit.completion", True),
+    QueryScorer(TESTS_PASSED, "sc-p", f"v-{TESTS_PASSED}", True),
     QueryScorer(JUDGE, "sc-j", "v-j", False),
     QueryScorer(GOAL_NEW, "sc-n", "v-n", False),
     QueryScorer(TOOL, "sc-t", "v-t", False),
@@ -554,8 +615,11 @@ def test_judge_tables_pair_each_panel_with_completion_and_other_panels_of_its_ru
     tables = judge_tables(_client(), CATALOG, QueryState(), JUDGE_SCORERS)
 
     assert [(judge, reference) for judge, reference, _ in tables] == [
+        (JUDGE, TESTS_PASSED),
         (JUDGE, "implicit.completion"),
+        (GOAL_NEW, TESTS_PASSED),
         (GOAL_NEW, "implicit.completion"),
+        (TOOL, TESTS_PASSED),
         (TOOL, "implicit.completion"),
         (JUDGE, GOAL_NEW),
     ]
@@ -573,33 +637,53 @@ def test_judge_tables_pair_each_panel_with_completion_and_other_panels_of_its_ru
 def test_judge_tables_select_the_reference_too_when_falling_back():
     routes = Insight(lambda _definition: [], sessions_create=CASE_EVALUATIONS_ONLY)
 
-    judge_tables(_client(), CATALOG, QueryState(), JUDGE_SCORERS[:2])
+    judge_tables(_client(), CATALOG, QueryState(), [JUDGE_SCORERS[0], JUDGE_SCORERS[2]])
 
     assert [s["version_id"] for s in routes.turn_selections[0]] == ["v-j", "v-implicit.completion"]
 
 
 @respx.mock
-def test_segment_stats_keep_scored_sessions_by_config_and_field():
+def test_segment_stats_group_scored_sessions_by_config_and_dimension_score():
     rows = [
         _row(
-            ["cfg1", "main"],
+            ["cfg1", 0, "core"],
             5,
             **{"implicit.completion:mean": 0.8, "implicit.completion:count": 5},
         ),
-        _row([None, None], 2, **{"implicit.completion:mean": 0.5, "implicit.completion:count": 2}),
-        # A subagent's root Case is a turn Case, which has a branch, but no session Score.
-        _row(["cfg1", "dev"], 3),
+        _row(
+            [None, 0, None], 2, **{"implicit.completion:mean": 0.5, "implicit.completion:count": 2}
+        ),
+        # Subagents carry their session's dimension, but only sessions are segments.
+        _row(
+            ["cfg1", 1, "core"],
+            9,
+            **{"implicit.completion:mean": 0.1, "implicit.completion:count": 9},
+        ),
+        _row(["cfg1", 0, "weave"], 3),
     ]
     routes = Insight(lambda _definition: rows)
 
-    segments = segment_stats(_client(), CATALOG, QueryState(), JUDGE_SCORERS[:1], "git_branch")
+    segments = segment_stats(_client(), CATALOG, QueryState(), JUDGE_SCORERS[:1], "repo")
 
     assert segments == {
-        ("cfg1", "main"): {"implicit.completion": Stat(5, 0.8, True)},
+        ("cfg1", "core"): {"implicit.completion": Stat(5, 0.8, True)},
         ("unknown", None): {"implicit.completion": Stat(2, 0.5, True)},
     }
     (definition,) = routes.definitions
     assert definition["group_by"] == [
         CONFIG,
-        {"kind": "dataset_field", "source": "input", "name": "git_branch"},
+        {"kind": "depth"},
+        {"kind": "score", "name": "dim.repo"},
+    ]
+
+
+@respx.mock
+def test_segment_stats_select_the_dimension_when_falling_back():
+    routes = Insight(lambda _definition: [], sessions_create=CASE_EVALUATIONS_ONLY)
+
+    segment_stats(_client(), CATALOG, QueryState(), JUDGE_SCORERS[:1], "day")
+
+    assert [s["version_id"] for s in routes.turn_selections[0]] == [
+        "v-implicit.completion",
+        "v-dim.day",
     ]

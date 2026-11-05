@@ -14,6 +14,7 @@ import logging
 import os
 import uuid
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, NamedTuple
 
@@ -344,7 +345,7 @@ def read_scores(args: argparse.Namespace) -> list[dict]:
 class Insights(NamedTuple):
     """Query results for `analyze`'s opt-in insights; None where not asked for."""
 
-    subagents: dict[str, Counter] | None
+    subagents: dict[str, dict[int, ces_queries.Group]] | None
     judge_tables: list[tuple[str, str, dict[tuple, int]]] | None
     segments: dict[tuple[str, Any], dict[str, Stat]] | None
 
@@ -353,7 +354,9 @@ def read_insights(args: argparse.Namespace) -> Insights:
     """The insights `args` asks for, from CES queries over every Trajectory and session Score."""
     with connect(args) as ces:
         client, catalog, state = ces.client, ces.catalog, ces_queries.QueryState()
-        subagents = ces_queries.subagent_counts(client, catalog, state) if args.subagents else None
+        subagents = (
+            ces_queries.subagent_outcomes(client, catalog, state) if args.subagents else None
+        )
         scorers = (
             ces_queries.session_scorers(client, catalog) if args.judges or args.segments else []
         )
@@ -366,10 +369,17 @@ def read_insights(args: argparse.Namespace) -> Insights:
     return Insights(subagents, tables, segments)
 
 
-def read_analysis(args: argparse.Namespace, *, feedback: bool) -> tuple[ConfigStats, list[dict]]:
-    """Every config's Score stats from CES queries, and, with `feedback`, the Scores on the
-    newest `args.limit` turns and their sessions as feedback records."""
+def read_analysis(
+    args: argparse.Namespace, *, feedback: bool, success: bool = False
+) -> tuple[ConfigStats, list[dict]]:
+    """Every config's Score stats from CES queries, with each config's session success and
+    spend when `success`, and, with `feedback`, the Scores on the newest `args.limit` turns
+    and their sessions as feedback records."""
     with connect(args) as ces:
+        state = ces_queries.QueryState()
         records = functools.cache(lambda: ces.client.read_all_scores(ces.catalog, limit=args.limit))
-        stats = ces_queries.config_stats(ces.client, ces.catalog, ces_queries.QueryState(), records)
+        stats = ces_queries.config_stats(ces.client, ces.catalog, state, records)
+        if success:
+            found = ces_queries.session_success_by_config(ces.client, ces.catalog, state)
+            stats = replace(stats, success=found)
         return stats, records() if feedback else []

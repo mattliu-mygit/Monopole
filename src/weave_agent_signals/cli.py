@@ -6,7 +6,6 @@ import ipaddress
 import logging
 import os
 import sys
-from collections import Counter
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
@@ -28,6 +27,7 @@ from weave_agent_signals.models import (
 from weave_agent_signals.patterns import (
     MIN_SEGMENT_SESSIONS,
     Agreement,
+    SessionSuccess,
     agreement,
     coaching_digest,
     config_latest,
@@ -36,6 +36,7 @@ from weave_agent_signals.patterns import (
     is_evaluation_feedback_eligible,
     segment_gaps,
     stat_leaderboard,
+    subagent_gaps,
 )
 from weave_agent_signals.run_config import (
     DEFAULT_JUDGING_CONTEXT_POLICY,
@@ -46,13 +47,18 @@ from weave_agent_signals.runs.bundles import BundleSnapshot, compare_bundles
 from weave_agent_signals.runs.promotion import TargetPromoter
 from weave_agent_signals.runs.reflection import run_reflection
 from weave_agent_signals.runs.targets import load_target_registry
+from weave_agent_signals.scorers.session import DIMENSION_FIELDS
 
 log = logging.getLogger("weave_agent_signals")
 
-# Input fields `analyze --segments` can group sessions by. A Trajectory query reads its root
-# Case: the adapter's session Case sets cwd, model, and harness, but git_branch only on turn
-# Cases, so today every session falls in git_branch's unknown segment.
-SEGMENT_FIELDS = ("git_branch", "cwd", "model", "harness")
+# Dimensions `analyze --segments` can group sessions by, each a `dim.<field>` session Score.
+SEGMENT_FIELDS = DIMENSION_FIELDS
+# Measurements `analyze`'s summary divides by successes, with their units and formats.
+_PER_SUCCESS = (
+    ("measure.tokens", "tokens", ",.0f"),
+    ("measure.turns", "turns", ".1f"),
+    ("measure.duration_s", "s", ",.0f"),
+)
 
 
 def _parse_datetime(s: str) -> datetime:
@@ -268,11 +274,17 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 def _print_score_analysis(args: argparse.Namespace, digest: bool) -> None:
     # Summaries and the A/B leaderboard come from CES queries over every Score; trends and
     # coaching examples from the Scores on the newest `--limit` turns.
-    stats, feedback = ces_commands.read_analysis(args, feedback=args.trends or digest)
+    summary = args.ab or digest
+    stats, feedback = ces_commands.read_analysis(
+        args, feedback=args.trends or digest, success=summary
+    )
 
     if not stats.by_config and not feedback:
         print("No scored feedback found.")
         return
+
+    if summary and stats.success:
+        _print_success(stats.success)
 
     if args.ab:
         results = stat_leaderboard(stats)
@@ -318,23 +330,61 @@ def _print_score_analysis(args: argparse.Namespace, digest: bool) -> None:
         print(coaching_digest(feedback, stats))
 
 
-def _print_subagents(counts: dict[str, Counter]) -> None:
-    if not counts:
+def _print_success(success: dict[str, SessionSuccess]) -> None:
+    print(
+        "\nSession success by config (a session succeeds when its last test run passed; "
+        "per success is what every session that ran tests spent, over the successes):\n"
+    )
+    for config, found in sorted(success.items()):
+        if found.rate is None:
+            print(f"  Config: {config}  no session ran tests ({found.untested} sessions)")
+            continue
+        lo, hi = found.ci
+        tested = found.passed + found.failed
+        print(
+            f"  Config: {config}  success {found.rate:.0%} ({found.passed} of {tested}, "
+            f"CI {lo:.0%}–{hi:.0%})  no test run: {found.untested}"
+        )
+        spend = [
+            f"{value:{spec}} {unit}"
+            for measure, unit, spec in _PER_SUCCESS
+            if (value := found.per_success(measure)) is not None
+        ]
+        print(f"    per success: {', '.join(spend) if spend else 'no success yet'}")
+    print()
+
+
+def _print_subagents(by_config: dict[str, dict]) -> None:
+    if not by_config:
         print("No Trajectories found.")
         return
-    print("\nSessions and subagents by config (every Trajectory; no Scorer scores a subagent):\n")
-    for config, depths in sorted(counts.items()):
-        sessions = depths.get(0, 0)
-        subagents = sum(n for depth, n in depths.items() if depth > 0)
+    print(
+        "\nSessions and subagents by config (every Trajectory; outcome rates compare "
+        "subagents with sessions):\n"
+    )
+    for config, depths in sorted(by_config.items()):
+        sessions = depths[0].targets if 0 in depths else 0
+        subagents = sum(group.targets for depth, group in depths.items() if depth > 0)
         per_session = f"{subagents / sessions:.2f} per session" if sessions else "no sessions"
         by_depth = ", ".join(
-            f"depth {depth}: {n}" for depth, n in sorted(depths.items()) if depth > 0
+            f"depth {depth}: {group.targets}"
+            for depth, group in sorted(depths.items())
+            if depth > 0
         )
         detail = f"; {by_depth}" if by_depth else ""
         print(
             f"  Config: {config}  sessions={sessions}  "
             f"subagents={subagents} ({per_session}{detail})"
         )
+        for g in subagent_gaps({depth: group.stats for depth, group in depths.items()}):
+            ci = g["difference_ci"]
+            interval = "no interval" if ci is None else f"CI {ci[0]:+.2f}–{ci[1]:+.2f}"
+            mark = "  significant" if g["significant"] else ""
+            print(
+                f"    {g['scorer']:35s} sessions {g['session_mean']:.0%} "
+                f"(n={g['session_count']}) vs subagents {g['subagent_mean']:.0%} "
+                f"(n={g['subagent_count']})  {g['delta']:+.2f}, {interval}{mark}"
+            )
 
 
 def _print_agreements(agreements: list[Agreement]) -> None:
@@ -343,7 +393,7 @@ def _print_agreements(agreements: list[Agreement]) -> None:
         return
     print(
         "\nJudge agreement (sessions both Scorers rated; a rating at or above its rubric "
-        "threshold passes, as does a true implicit.completion):\n"
+        "threshold passes, as does a true session outcome or implicit.completion):\n"
     )
     for item in agreements:
         print(f"  {item.judge} vs {item.reference}")
@@ -373,7 +423,7 @@ def _print_segments(field: str, segments: dict) -> None:
         f"at least {MIN_SEGMENT_SESSIONS} rated sessions on each side):\n"
     )
     if all(value is None for _, value in segments):
-        print(f"  Every scored session's root Case lacks i.{field}, so there is one segment.")
+        print(f"  No scored session has a dim.{field} Score yet; `backfill` writes it.")
         return
     gaps = segment_gaps(segments)
     if not gaps:
@@ -656,26 +706,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_analyze.add_argument(
         "--subagents",
         action="store_true",
-        help="Count each config's sessions and subagent Trajectories (every Trajectory)",
+        help=(
+            "Count each config's sessions and subagent Trajectories, and compare their session "
+            "outcome rates (every Trajectory)"
+        ),
     )
     p_analyze.add_argument(
         "--judges",
         action="store_true",
         help=(
-            "Compare each judge panel with implicit.completion and with other panels of its "
-            "rubric: agreement and mean gap (every session Score)"
+            "Compare each judge panel with the session outcomes, implicit.completion, and other "
+            "panels of its rubric: agreement and mean gap (every session Score)"
         ),
     )
     p_analyze.add_argument(
         "--segments",
         nargs="?",
-        const="git_branch",
+        const="repo",
         choices=SEGMENT_FIELDS,
         metavar="FIELD",
         help=(
-            "Compare session Scores across values of a session root-Case input field within "
-            f"each config (every session Score). FIELD is one of {', '.join(SEGMENT_FIELDS)}; "
-            "default git_branch"
+            "Compare session Scores across values of a session's dim.FIELD Score within each "
+            f"config (every session Score). FIELD is one of {', '.join(SEGMENT_FIELDS)}; "
+            "default repo"
         ),
     )
 
