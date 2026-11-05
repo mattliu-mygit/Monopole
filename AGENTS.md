@@ -117,7 +117,8 @@ product behavior; standalone reflection does not mutate managed files.
   rating paths skip it.
 - Payloads include scorer version and score time; scorer-specific data belongs
   under `payload.details`.
-- Trend ordering uses `details.turn_started_at`, not write time.
+- Trends place a turn Score on the UTC day of `details.turn_started_at`, not its write
+  time, and a session Score on its session's `dim.day` Score.
 - `--force` writes newer Scores under a new pass; nothing is purged, and reads take
   the newest Score per Scorer.
 - Evaluation runs pin exact trace identities and configuration before work.

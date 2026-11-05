@@ -32,11 +32,11 @@ from weave_agent_signals.patterns import (
     coaching_digest,
     config_latest,
     config_regressions,
-    detect_regressions,
     is_evaluation_feedback_eligible,
     segment_gaps,
     stat_leaderboard,
     subagent_gaps,
+    trends,
 )
 from weave_agent_signals.run_config import (
     DEFAULT_JUDGING_CONTEXT_POLICY,
@@ -272,11 +272,11 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 
 def _print_score_analysis(args: argparse.Namespace, digest: bool) -> None:
-    # Summaries and the A/B leaderboard come from CES queries over every Score; trends and
-    # coaching examples from the Scores on the newest `--limit` turns.
+    # Summaries, the A/B leaderboard, and session trends come from CES queries over every
+    # Score; turn trends and coaching examples from the Scores on the newest `--limit` turns.
     summary = args.ab or digest
     stats, feedback = ces_commands.read_analysis(
-        args, feedback=args.trends or digest, success=summary
+        args, feedback=args.trends or digest, success=summary, trends=args.trends or digest
     )
 
     if not stats.by_config and not feedback:
@@ -313,7 +313,7 @@ def _print_score_analysis(args: argparse.Namespace, digest: bool) -> None:
                 print()
 
     if args.trends:
-        regressions = detect_regressions(feedback)
+        regressions = trends(feedback, stats)
         if not regressions:
             print("No significant trends detected.")
         else:
@@ -447,13 +447,13 @@ def _print_segments(field: str, segments: dict) -> None:
 
 
 def cmd_monitor(args: argparse.Namespace) -> int:
-    stats, feedback = ces_commands.read_analysis(args, feedback=True)
+    stats, feedback = ces_commands.read_analysis(args, feedback=True, trends=True)
 
     if not stats.by_config and not feedback:
         print("No scored feedback found.")
         return 0
 
-    trend = detect_regressions(feedback)
+    trend = trends(feedback, stats)
     config = config_regressions(stats, config_latest(feedback))
     # Only downward, statistically-significant moves are alerts — an improvement
     # is significant too but is not a regression. config_regressions
@@ -681,8 +681,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Analyze scored feedback patterns",
         description=(
             "Summaries and the A/B leaderboard cover every Score, by config version, from CES "
-            "queries. Trends, coaching examples, and summary tag counts cover the Scores on the "
-            "newest --limit turns and their sessions."
+            "queries, and session trends every session, by the day it started. Turn trends, "
+            "coaching examples, and summary tag counts cover the Scores on the newest --limit "
+            "turns and their sessions. A trend compares a Scorer's last 7 days with data to the "
+            "7 days before."
         ),
     )
     ces_commands.add_arguments(p_analyze)
@@ -691,8 +693,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1000,
         help=(
-            "Newest turns whose Scores feed trends, coaching examples, and summary tag counts "
-            "(default: 1000)"
+            "Newest turns whose Scores feed turn trends, coaching examples, and summary tag "
+            "counts (default: 1000)"
         ),
     )
     p_analyze.add_argument(
@@ -701,7 +703,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_analyze.add_argument(
         "--trends",
         action="store_true",
-        help="Detect score regressions/improvements over the newest --limit turns",
+        help=(
+            "Detect score regressions/improvements: sessions over every session, turns over the "
+            "newest --limit turns"
+        ),
     )
     p_analyze.add_argument("--coaching", action="store_true", help="Generate coaching digest")
     p_analyze.add_argument(
@@ -740,8 +745,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Config regressions compare the newest two config versions over every Score, from "
             "CES queries; a drop is significant when the 95% interval on the difference lies "
-            "below 0. Configs are ordered, and trends computed, from the Scores on the newest "
-            "--limit turns."
+            "below 0. Configs are ordered, and turn trends computed, from the Scores on the newest "
+            "--limit turns; session trends cover every session, by the day it started."
         ),
     )
     ces_commands.add_arguments(p_mon)
@@ -749,7 +754,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit",
         type=int,
         default=1000,
-        help="Newest turns whose Scores feed trends and config order (default: 1000)",
+        help="Newest turns whose Scores feed turn trends and config order (default: 1000)",
     )
     p_mon.add_argument(
         "--alert-webhook",

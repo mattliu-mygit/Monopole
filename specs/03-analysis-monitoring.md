@@ -43,7 +43,8 @@ movement always has one interpretation.
 | Numbers | Source | Scope |
 | --- | --- | --- |
 | Summaries, the A/B leaderboard, config regressions, session success and spend | CES EvaluationQueries (`ces_queries.py`) | every Score the Evaluations hold, by config version |
-| Trends, config order, coaching examples, summary tag counts | raw Scores (`read_all_scores`) | the newest `--limit` turns and their sessions |
+| Session trends | a CES EvaluationQuery | every session with a `dim.day` Score, by day |
+| Turn trends, config order, coaching examples, summary tag counts | raw Scores (`read_all_scores`) | the newest `--limit` turns and their sessions |
 | Reflection's digest (runs and `reflect`) | the raw Scores it pins | that cohort or the newest `--limit` turns |
 
 The queries count only the main agent: turn Scores only target main-agent
@@ -54,11 +55,17 @@ from the older newest-`--limit` summary when older turns scored differently.
 The turn query runs on the turns Evaluation and the session query on the
 sessions Evaluation ([`01-ces-io.md`](01-ces-io.md#queries)).
 
-Trends still read raw Scores, because CES queries have no time; a query
-grouped by the `dim.day` Score could replace them.
-Coaching examples are session judge Scores, and a filtered session-row search
-waits on a CES deploy. Configs are ordered by their latest turn among the newest
-`--limit` turns, so a config missing from that window is not compared.
+Session trends come from one query that groups sessions by config, depth, and
+the `dim.day` Score, the UTC day the session started, and keeps depth 0. Each
+day's configs are pooled, so a trend, like before, follows a Scorer across
+configs. A session without `dim.day`, such as one `backfill` hasn't reached,
+isn't placed in time and is left out. Turn trends still read the newest
+`--limit` turns' raw Scores, each placed on the UTC day of its turn's start: a
+query can't group turns by day, because the adapter writes a `day` field only on
+Cases it writes from now on, and Cases never change.
+Coaching examples are session judge Scores read with the newest `--limit` turns'
+sessions. Configs are ordered by their latest turn among the newest `--limit`
+turns, so a config missing from that window is not compared.
 
 Until CES ships its spread aggregation (`stddev`), the config query gives a
 continuous Scorer's mean and count but not its spread. Monopole finds out once
@@ -91,9 +98,17 @@ version. Each judge rubric and panel is its own Scorer, so incomparable judge
 contexts stay separate. A rubric threshold change within one rubric version and
 panel is not separated. It describes association, not causal attribution.
 
-Trend analysis orders scores by agent execution time stored in feedback
-details, not by the later feedback-write time. It compares older and recent
-windows only after the evidence passes the representative/comparability rules.
+Trend analysis places each rating on the UTC day the agent ran, not the later
+Score-write time, and compares older and recent windows only after the evidence
+passes the representative/comparability rules. For each Scorer, recent is the 7
+days ending on its latest day with a rating, and older is the 7 days before
+those: with the latest rating on Nov 14, Nov 8 to 14 is compared with Nov 1 to 7,
+and anything earlier is left out. When either window has fewer than 2 ratings,
+as with sparse data, all its days are split instead at the day boundary nearest
+half the ratings, each side keeping at least 2; ratings all on one day show no
+trend. A Scorer needs at least 4 ratings in all. Without CES's spread
+aggregation, a continuous session Scorer's daily stddev comes from a value
+histogram grouped the same way, as for summaries, so its interval is exact.
 
 The coaching digest combines eligible summaries, configuration context, recent
 trends, and bounded low-scoring behavioral examples. For each rubric it selects

@@ -1,9 +1,9 @@
 """Pattern analysis: summaries, A/B leaderboards, config regressions, trends, coaching digest.
 
-Summaries, the A/B leaderboard, and config regressions take `ConfigStats`, the per-config
+Summaries, the A/B leaderboard, config regressions, and session trends take `ConfigStats`, the
 count, mean, and spread that CES EvaluationQueries compute over every Score (`ces_queries`).
-Trends, coaching examples, and reflection's digest take feedback-shaped records built from raw
-CES Scores. All analysis is pure computation — no API calls.
+Turn trends, coaching examples, and reflection's digest take feedback-shaped records built from
+raw CES Scores. All analysis is pure computation — no API calls.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import json
 import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from itertools import islice
 from typing import Any, Iterable, Mapping
 
@@ -108,6 +108,9 @@ class ConfigStats:
     targets: dict[str, int]
     # Each config's session success and spend, read only for `analyze`'s summary.
     success: dict[str, SessionSuccess] | None = None
+    # Each session rating Scorer's Stat per UTC day its sessions started, every config pooled,
+    # read only for trends (`trends`).
+    days: dict[str, dict[date, Stat]] | None = None
 
 
 @dataclass(frozen=True)
@@ -158,7 +161,7 @@ def _ci(stat: Stat, z: float = _Z_95) -> tuple[float, float]:
     return (max(0.0, stat.mean - margin), min(1.0, stat.mean + margin))
 
 
-def _pool(stats: list[Stat]) -> Stat:
+def pool_stats(stats: list[Stat]) -> Stat:
     """The Stat of several groups' ratings taken together, exact for the sample variance:
     within-group squares plus each group's squared distance from the pooled mean."""
     n = sum(s.count for s in stats)
@@ -479,7 +482,7 @@ def stat_summaries(stats: ConfigStats, feedback: Iterable[dict] = ()) -> dict[st
         if is_evaluation_feedback_eligible(fb) and isinstance(name, str):
             tags[name].update(_extract_tags(fb))
     return {
-        scorer: _summary(scorer, _pool(group), dict(tags.get(scorer, {})))
+        scorer: _summary(scorer, pool_stats(group), dict(tags.get(scorer, {})))
         for scorer, group in by_scorer.items()
     }
 
@@ -523,26 +526,95 @@ def _parse_dt(val: object) -> datetime | None:
     return dt
 
 
-def _split_windows(
-    entries: list[tuple[datetime, float]],
-    window_days: int,
-    min_samples: int,
-) -> tuple[list[float], list[float]]:
-    """Split time-sorted (time, rating) entries into (older, recent) ratings.
+def _split_days(
+    days: Mapping[date, Stat], window_days: int, min_samples: int
+) -> tuple[Stat, Stat] | None:
+    """(older, recent) Stats of one Scorer from its Stat per day, or None when it can't be split.
 
-    Prefers a ``window_days`` recent window measured back from the latest entry;
-    falls back to a median split when the window leaves either side below
-    ``min_samples`` (common with sparse data).
-    """
-    latest = entries[-1][0]
-    cutoff = latest - timedelta(days=window_days)
-    recent = [r for t, r in entries if t >= cutoff]
-    older = [r for t, r in entries if t < cutoff]
-    if len(recent) >= min_samples and len(older) >= min_samples:
-        return older, recent
+    Recent is the `window_days` days ending on the Scorer's latest day with a rating, and older
+    is the `window_days` days before those. Example, with 7: latest day Nov 14 compares Nov 8
+    to 14 with Nov 1 to 7. When either side has fewer than `min_samples` ratings, as with
+    sparse data, every day is split at the day boundary nearest half the ratings instead,
+    keeping at least `min_samples` on each side; ratings all on one day don't split."""
+    ordered = sorted(days)
+    latest = ordered[-1]
+    recent = [days[d] for d in ordered if d > latest - timedelta(days=window_days)]
+    older = [
+        days[d]
+        for d in ordered
+        if latest - timedelta(days=2 * window_days) < d <= latest - timedelta(days=window_days)
+    ]
+    if sum(s.count for s in recent) >= min_samples and sum(s.count for s in older) >= min_samples:
+        return pool_stats(older), pool_stats(recent)
+    total, before, split = sum(days[d].count for d in ordered), 0, None
+    for index in range(1, len(ordered)):
+        before += days[ordered[index - 1]].count
+        if before < min_samples or total - before < min_samples:
+            continue
+        if split is None or abs(2 * before - total) < abs(2 * split[1] - total):
+            split = (index, before)
+    if split is None:
+        return None
+    return (
+        pool_stats([days[d] for d in ordered[: split[0]]]),
+        pool_stats([days[d] for d in ordered[split[0] :]]),
+    )
 
-    mid = len(entries) // 2
-    return [r for _, r in entries[:mid]], [r for _, r in entries[mid:]]
+
+def day_trends(
+    by_day: Mapping[str, Mapping[date, Stat]],
+    window_days: int = 7,
+    min_samples: int = 2,
+    threshold: float = 0.2,
+) -> list[dict[str, Any]]:
+    """Each Scorer's change from its older to its recent days (`_split_days`), given its Stat
+    per UTC day the agent ran. Changes of at least `threshold` either way are reported; one is
+    ``significant`` when the 95% interval on the difference (`difference_ci`) excludes 0."""
+    regressions = []
+    for scorer, days in by_day.items():
+        if not days or sum(s.count for s in days.values()) < min_samples * 2:
+            continue
+        split = _split_days(days, window_days, min_samples)
+        if split is None:
+            continue
+        older, recent = split
+        delta = recent.mean - older.mean
+        if abs(delta) >= threshold:
+            # Significant when the 95% interval on recent - older excludes 0, as for config
+            # regressions. Swings without that evidence are still surfaced for a human, but
+            # flagged non-significant so they aren't over-read.
+            ci = difference_ci(recent, older)
+            regressions.append(
+                {
+                    "scorer": scorer,
+                    "direction": "regression" if delta < 0 else "improvement",
+                    "older_mean": round(older.mean, 3),
+                    "recent_mean": round(recent.mean, 3),
+                    "delta": round(delta, 3),
+                    "sample_count": older.count + recent.count,
+                    "significant": ci is not None and (ci[0] > 0 or ci[1] < 0),
+                }
+            )
+    return regressions
+
+
+def day_stats(feedback: Iterable[dict]) -> dict[str, dict[date, Stat]]:
+    """Each eligible Scorer's Stat per UTC day the agent ran, from raw Score records. Records
+    are placed by agent run time (``turn_started_at``), not scoring time, so a single backfill
+    doesn't collapse the timeline."""
+    ratings: dict[str, dict[date, list[float]]] = defaultdict(lambda: defaultdict(list))
+    for fb in feedback:
+        if not is_evaluation_feedback_eligible(fb):
+            continue
+        scorer = _analytics_scorer(fb)
+        rating = _extract_rating(fb)
+        run_time = _parse_dt(_extract_run_time(fb))
+        if scorer and rating is not None and run_time is not None:
+            ratings[scorer][run_time.astimezone(timezone.utc).date()].append(rating)
+    return {
+        scorer: {day: _stat(found, scorer in _BINARY_SCORERS) for day, found in days.items()}
+        for scorer, days in ratings.items()
+    }
 
 
 def detect_regressions(
@@ -551,56 +623,21 @@ def detect_regressions(
     min_samples: int = 2,
     threshold: float = 0.2,
 ) -> list[dict[str, Any]]:
-    """Detect score regressions by comparing a recent window against older data.
+    """Trends from raw Score records alone, as reflection's digest needs: its trends must
+    describe exactly the records it pinned."""
+    return day_trends(day_stats(feedback), window_days, min_samples, threshold)
 
-    Entries are ordered by agent run time (``turn_started_at``), not scoring
-    time, so a single backfill does not collapse the timeline. Changes of at least
-    `threshold` are reported; one is ``significant`` when the 95% interval on the
-    difference (`difference_ci`) excludes 0.
-    """
-    by_scorer: dict[str, list[tuple[datetime, float]]] = defaultdict(list)
 
-    for fb in feedback:
-        if not is_evaluation_feedback_eligible(fb):
-            continue
-        scorer = _analytics_scorer(fb)
-        rating = _extract_rating(fb)
-        run_time = _parse_dt(_extract_run_time(fb))
-        if scorer and rating is not None and run_time is not None:
-            by_scorer[scorer].append((run_time, rating))
-
-    regressions = []
-    for scorer, entries in by_scorer.items():
-        entries.sort(key=lambda x: x[0])
-        if len(entries) < min_samples * 2:
-            continue
-
-        older, recent = _split_windows(entries, window_days, min_samples)
-
-        older_mean = sum(older) / len(older)
-        recent_mean = sum(recent) / len(recent)
-        delta = recent_mean - older_mean
-
-        if abs(delta) >= threshold:
-            # Significant when the 95% interval on recent - older excludes 0, as for config
-            # regressions. Swings without that evidence are still surfaced for a human, but
-            # flagged non-significant so they aren't over-read.
-            binary = scorer in _BINARY_SCORERS
-            ci = difference_ci(_stat(recent, binary), _stat(older, binary))
-            significant = ci is not None and (ci[0] > 0 or ci[1] < 0)
-            regressions.append(
-                {
-                    "scorer": scorer,
-                    "direction": "regression" if delta < 0 else "improvement",
-                    "older_mean": round(older_mean, 3),
-                    "recent_mean": round(recent_mean, 3),
-                    "delta": round(delta, 3),
-                    "sample_count": len(entries),
-                    "significant": significant,
-                }
-            )
-
-    return regressions
+def trends(feedback: list[dict], stats: ConfigStats | None = None) -> list[dict[str, Any]]:
+    """The trends `analyze`, `monitor`, and the Analyze page report. With `stats.days`, session
+    Scorers come from that day query over every session and turn Scorers from the raw turn
+    Scores in `feedback`, the newest `--limit` turns; otherwise every Scorer comes from
+    `feedback`. Turn trends stay on raw Scores because a turn's Cases have no `day` field to
+    group a query by: the adapter adds one only to Cases it writes from now on."""
+    if stats is None or stats.days is None:
+        return detect_regressions(feedback)
+    turns = [fb for fb in feedback if _payload(fb).get("granularity") == "turn"]
+    return day_trends({**day_stats(turns), **stats.days})
 
 
 def config_regressions(
@@ -724,7 +761,7 @@ def segment_gaps(
             others = [other for key, other in stats.items() if key != value]
             if stat.count < min_sessions or not others:
                 continue
-            rest = _pool(others)
+            rest = pool_stats(others)
             if rest.count < min_sessions:
                 continue
             ci = difference_ci(stat, rest)
@@ -884,9 +921,10 @@ def _behavioral_examples(feedback: list[dict]) -> dict[str, list[dict[str, objec
 def coaching_digest(feedback: list[dict], stats: ConfigStats | None = None) -> str:
     """Build a human-readable coaching digest from scored feedback.
 
-    With `stats`, the summary and A/B sections come from them, and `feedback` supplies only
-    the behavioral examples and trends. Without, every section comes from `feedback`, as
-    reflection needs: its digest must describe exactly the records it pinned."""
+    With `stats`, the summary and A/B sections come from them, and so do session trends when
+    `stats.days` is set (`trends`); `feedback` supplies the behavioral examples and the rest of
+    the trends. Without, every section comes from `feedback`, as reflection needs: its digest
+    must describe exactly the records it pinned."""
     representative = [fb for fb in feedback if is_evaluation_feedback_eligible(fb)]
     summaries = (
         aggregate_scores(representative) if stats is None else stat_summaries(stats, representative)
@@ -943,7 +981,7 @@ def coaching_digest(feedback: list[dict], stats: ConfigStats | None = None) -> s
                         for value in values:
                             lines.append(f"  - {label}: {value}")
 
-    regressions = detect_regressions(representative)
+    regressions = trends(representative, stats)
     if regressions:
         lines.extend(["", "## Trends", ""])
         for r in regressions:
@@ -996,7 +1034,7 @@ def subagent_gaps(by_depth: Mapping[int, Mapping[str, Stat]]) -> list[dict[str, 
         deeper = [stats[scorer] for depth, stats in by_depth.items() if depth and scorer in stats]
         if not deeper:
             continue
-        session, subagent = sessions[scorer], _pool(deeper)
+        session, subagent = sessions[scorer], pool_stats(deeper)
         ci = difference_ci(subagent, session)
         gaps.append(
             {

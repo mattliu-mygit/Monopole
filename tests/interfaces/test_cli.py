@@ -245,7 +245,7 @@ def _analysis(monkeypatch, records):
     )
     asked = []
 
-    def read_analysis(_args, *, feedback: bool, success: bool = False):
+    def read_analysis(_args, *, feedback: bool, success: bool = False, trends: bool = False):
         asked.append(feedback)
         return stats, records if feedback else []
 
@@ -342,7 +342,7 @@ def test_analyze_summary_shows_success_rate_and_spend_per_success(monkeypatch, c
         "v3": SessionSuccess(0, 2, 0, {"measure.tokens": 10.0}),
     }
 
-    def read_analysis(_args, *, feedback, success=False):
+    def read_analysis(_args, *, feedback, success=False, trends=False):
         stats = ConfigStats({"v1": {"outcome.test": Stat(3, 1.0, True)}}, {"v1": 3})
         return replace(stats, success=found if success else None), []
 

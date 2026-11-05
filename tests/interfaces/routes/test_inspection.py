@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -326,14 +326,19 @@ def test_session_detail_returns_children_and_splits_session_and_turn_scores():
     assert "judging_token_estimates" not in body
 
 
-def _stats(monkeypatch, stats: ConfigStats) -> list:
+def _stats(monkeypatch, stats: ConfigStats, days=None) -> list:
     calls = []
 
     def config_stats(client, catalog, state):
         calls.append(state)
         return stats
 
+    def session_day_stats(client, catalog, state):
+        calls.append(state)
+        return days or {}
+
     monkeypatch.setattr(inspection.ces_queries, "config_stats", config_stats)
+    monkeypatch.setattr(inspection.ces_queries, "session_day_stats", session_day_stats)
     return calls
 
 
@@ -352,7 +357,16 @@ def test_empty_analysis_is_stable(monkeypatch):
     }
 
 
-def test_analysis_summarizes_query_stats_and_keeps_trends_on_raw_scores(monkeypatch):
+def test_analysis_summarizes_query_stats_with_session_trends_from_days_and_turn_trends_raw(
+    monkeypatch,
+):
+    # implicit.completion passed 3 of 3 sessions on Jul 1, then 0 of 3 on Jul 9.
+    days = {
+        "implicit.completion": {
+            date(2026, 7, 1): Stat(3, 1.0, True),
+            date(2026, 7, 9): Stat(3, 0.0, True),
+        }
+    }
     calls = _stats(
         monkeypatch,
         ConfigStats(
@@ -362,18 +376,33 @@ def test_analysis_summarizes_query_stats_and_keeps_trends_on_raw_scores(monkeypa
             },
             {"v1": 3, "v2": 1},
         ),
+        days,
     )
     client, backend = _client()
-    backend.all_scores = [
+    turn_scores = [
         {
             **_record(f"t{index}", "efficiency", rating),
             "payload": {
                 "rating": rating,
+                "granularity": "turn",
                 "details": {"turn_started_at": f"2026-07-{index + 1:02d}T00:00:00Z"},
             },
         }
         for index, rating in enumerate([1.0, 1.0, 0.0, 0.0])
     ]
+    # A raw session Score is left out of trends: the day query covers session Scorers.
+    session_scores = [
+        {
+            **_record(f"s{index}", "efficiency.session", rating),
+            "payload": {
+                "rating": rating,
+                "granularity": "session",
+                "details": {"turn_started_at": f"2026-07-{index + 1:02d}T00:00:00Z"},
+            },
+        }
+        for index, rating in enumerate([1.0, 1.0, 0.0, 0.0])
+    ]
+    backend.all_scores = turn_scores + session_scores
 
     first = client.get("/api/analyze").json()
     client.get("/api/analyze")
@@ -387,10 +416,11 @@ def test_analysis_summarizes_query_stats_and_keeps_trends_on_raw_scores(monkeypa
         ("v1", 3),
         ("v2", 1),
     ]
-    assert [t["scorer"] for t in first["trends"]] == ["efficiency"]
+    assert sorted(t["scorer"] for t in first["trends"]) == ["efficiency", "implicit.completion"]
+    assert "implicit.completion**: 1.00 → 0.00" in first["coaching_markdown"]
     assert "outcome.test**: 75% pass rate (n=4" in first["coaching_markdown"]
     # One query state per router, so a process creates each query once.
-    assert calls[0] is calls[1]
+    assert len({id(state) for state in calls}) == 1
 
 
 def test_session_listing_includes_judge_token_estimates_only_when_asked():

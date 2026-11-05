@@ -381,16 +381,20 @@ def read_insights(args: argparse.Namespace) -> Insights:
 
 
 def read_analysis(
-    args: argparse.Namespace, *, feedback: bool, success: bool = False
+    args: argparse.Namespace, *, feedback: bool, success: bool = False, trends: bool = False
 ) -> tuple[ConfigStats, list[dict]]:
     """Every config's Score stats from CES queries, with each config's session success and
-    spend when `success`, and, with `feedback`, the Scores on the newest `args.limit` turns
-    and their sessions as feedback records."""
+    spend when `success`, each session Scorer's stats per day when `trends`, and, with
+    `feedback`, the Scores on the newest `args.limit` turns and their sessions as feedback
+    records."""
     with connect(args) as ces:
         state = ces_queries.QueryState()
         stats = ces_queries.config_stats(ces.client, ces.catalog, state)
         if success:
             found = ces_queries.session_success_by_config(ces.client, ces.catalog, state)
             stats = replace(stats, success=found)
+        if trends:
+            days = ces_queries.session_day_stats(ces.client, ces.catalog, state)
+            stats = replace(stats, days=days)
         records = ces.client.read_all_scores(ces.catalog, limit=args.limit) if feedback else []
         return stats, records

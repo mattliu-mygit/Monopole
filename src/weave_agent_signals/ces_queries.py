@@ -19,9 +19,10 @@ While CES lacks a spread aggregation, each continuous Scorer also gets a value-h
 its stddev is exact without reading raw Scores (`config_stats`).
 
 `analyze` adds more Trajectory queries on the sessions Evaluation: sessions by config and whether
-their last test run passed, summing measurements (success and spend), Trajectories by config and
-depth (subagents against sessions), judge Scores by a reference Score (judge agreement), and
-session Scores by config and a dimension Score (segments).
+their last test run passed, summing measurements (success and spend), session Scores by config
+and the `dim.day` Score (session trends), Trajectories by config and depth (subagents against
+sessions), judge Scores by a reference Score (judge agreement), and session Scores by config and
+a dimension Score (segments).
 
 A query definition never changes. Its create key holds the Evaluation ID and a digest of its
 body, so a rerun replays to the same query ID, and a new judge panel, which is a new Scorer,
@@ -32,6 +33,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from datetime import date
 from itertools import combinations
 from typing import Any
 
@@ -45,6 +47,7 @@ from weave_agent_signals.patterns import (
     Stat,
     conservative_stat,
     histogram_stat,
+    pool_stats,
     session_success,
 )
 from weave_agent_signals.scorers.session import (
@@ -65,6 +68,7 @@ _MAX_METRICS = 100  # CES's limit per query
 HISTOGRAM_MAX_ROWS = 5000
 _CONFIG = {"kind": "dataset_field", "source": "input", "name": "config_version"}
 _DEPTH = {"kind": "depth"}
+_DAY = {"kind": "score", "name": "dim.day"}
 COMPLETION = "implicit.completion"
 MEASURES = (MEASURE_TURNS, MEASURE_TOKENS, MEASURE_DURATION)
 
@@ -237,23 +241,26 @@ def _value_stats(
     state: QueryState,
     evaluation_id: str,
     *,
+    name: str,
     target_kind: str,
     group_by: list[dict],
     scorer: QueryScorer,
-) -> dict[str, Stat] | None:
-    """Each config's exact Stat for a continuous Scorer, without its raw Scores. One query
-    groups by `group_by` and the Scorer's own value and counts each value; with depth in
-    `group_by`, only depth 0 counts. None when the histogram passes HISTOGRAM_MAX_ROWS rows or
-    CES refuses it as too large.
+) -> dict[tuple, Stat] | None:
+    """Each group's exact Stat for a continuous Scorer, without its raw Scores, keyed by the
+    group's values with depth left out and a missing config as "unknown". One query groups by
+    `group_by`, which starts with the config, and the Scorer's own value, and counts each value;
+    with depth in `group_by`, only depth 0 counts. None when the histogram passes
+    HISTOGRAM_MAX_ROWS rows or CES refuses it as too large.
 
     Example: a config whose turns rated 0.5, 0.5, and 1.0 comes back as the groups (cfg, 0.5)
-    with count 2 and (cfg, 1.0) with count 1, so its mean is 2/3 and its stddev sqrt(1/12)."""
+    with count 2 and (cfg, 1.0) with count 1, so the key ("cfg",) gets mean 2/3 and stddev
+    sqrt(1/12)."""
     try:
         groups = run_query(
             client,
             state,
             evaluation_id,
-            name=f"monopole {scorer.name} values by config",
+            name=name,
             target_kind=target_kind,
             group_by=[*group_by, {"kind": "score", "name": scorer.name}],
             scorers=[scorer],
@@ -265,13 +272,16 @@ def _value_stats(
         return None
     if len(groups) > HISTOGRAM_MAX_ROWS:
         return None
-    counts: dict[str, dict[float, int]] = defaultdict(dict)
+    depth_at = group_by.index(_DEPTH) if _DEPTH in group_by else None
+    counts: dict[tuple, dict[float, int]] = defaultdict(dict)
     for group in groups:
-        config, *depth, value = group.values
+        *key, value = group.values
+        if depth_at is not None and key.pop(depth_at) != 0:
+            continue
         # The group of targets without a Score has no Stat.
-        if depth in ([], [0]) and scorer.name in group.stats:
-            counts[config or "unknown"][value] = group.stats[scorer.name].count
-    return {config: histogram_stat(values) for config, values in counts.items()}
+        if scorer.name in group.stats:
+            counts[(key[0] or "unknown", *key[1:])][value] = group.stats[scorer.name].count
+    return {key: histogram_stat(values) for key, values in counts.items()}
 
 
 def config_stats(client: CesClient, catalog: Catalog, state: QueryState) -> ConfigStats:
@@ -330,17 +340,79 @@ def config_stats(client: CesClient, catalog: Catalog, state: QueryState) -> Conf
                     client,
                     state,
                     evaluation_id,
+                    name=f"monopole {scorer.name} values by config",
                     target_kind=target_kind,
                     group_by=group_by,
                     scorer=scorer,
                 )
                 for config, stats in by_config.items():
                     if scorer.name in stats:
-                        found = None if exact is None else exact.get(config)
+                        found = None if exact is None else exact.get((config,))
                         stats[scorer.name] = found or conservative_stat(stats[scorer.name])
     return ConfigStats(
         {config: scorers for config, scorers in by_config.items() if scorers}, dict(targets)
     )
+
+
+def session_day_stats(
+    client: CesClient, catalog: Catalog, state: QueryState
+) -> dict[str, dict[date, Stat]]:
+    """Each session rating Scorer's Stat per UTC day its sessions started, for trends:
+    {Scorer: {day: Stat}}, every config pooled, sessions only.
+
+    One query groups sessions by config, depth, and the `dim.day` Score, which `score` and
+    `backfill` write, so a session without it isn't placed in time and is left out. Without
+    CES's spread aggregation, each continuous Scorer that has Scores takes a value histogram
+    with the same groups for an exact stddev, as in `config_stats`."""
+    scorers = session_scorers(client, catalog)
+    group_by = [_CONFIG, _DEPTH, _DAY]
+    groups = _trajectory_groups(
+        client,
+        catalog,
+        state,
+        name="monopole sessions by config and day",
+        group_by=group_by,
+        scorers=scorers,
+    )
+    by_key: dict[tuple, dict[str, Stat]] = {}
+    for group in groups:
+        config, depth, day = group.values
+        if depth == 0 and group.stats and _date(day) is not None:
+            by_key[(config or "unknown", day)] = group.stats
+    if state.stddev is False:
+        # Delete when CES stddev ships.
+        for scorer in scorers:
+            if scorer.binary or not any(scorer.name in s for s in by_key.values()):
+                continue
+            exact = _value_stats(
+                client,
+                state,
+                catalog.sessions_evaluation_id,
+                name=f"monopole {scorer.name} values by config and day",
+                target_kind="trajectory",
+                group_by=group_by,
+                scorer=scorer,
+            )
+            for key, stats in by_key.items():
+                if scorer.name in stats:
+                    found = None if exact is None else exact.get(key)
+                    stats[scorer.name] = found or conservative_stat(stats[scorer.name])
+    by_day: dict[str, dict[date, list[Stat]]] = defaultdict(lambda: defaultdict(list))
+    for (_config, day), stats in by_key.items():
+        for name, stat in stats.items():
+            by_day[name][_date(day)].append(stat)
+    return {
+        name: {day: pool_stats(found) for day, found in days.items()}
+        for name, days in by_day.items()
+    }
+
+
+def _date(value: Any) -> date | None:
+    """A `dim.day` value, YYYY-MM-DD, as a date; None for anything else."""
+    try:
+        return date.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        return None
 
 
 def subagent_outcomes(

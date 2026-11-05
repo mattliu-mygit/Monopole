@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -23,6 +23,8 @@ from weave_agent_signals.patterns import (
     config_latest,
     config_regressions,
     conservative_stat,
+    day_stats,
+    day_trends,
     detect_regressions,
     difference_ci,
     histogram_stat,
@@ -33,6 +35,7 @@ from weave_agent_signals.patterns import (
     stat_leaderboard,
     stat_summaries,
     subagent_gaps,
+    trends,
 )
 
 
@@ -570,6 +573,104 @@ def test_detect_regressions_orders_by_run_time_not_score_time():
     assert regressions[0]["direction"] == "regression"
     assert regressions[0]["older_mean"] == 1.0
     assert regressions[0]["recent_mean"] == 0.0
+
+
+def _days(**by_day):
+    """{date: Stat} from keyword arguments like d0701=Stat(...)."""
+    return {date(2026, int(k[1:3]), int(k[3:5])): stat for k, stat in by_day.items()}
+
+
+def test_a_trend_compares_the_last_7_days_with_data_to_the_7_before():
+    # Latest day Jul 20: recent is Jul 14-20, older Jul 7-13. Jul 6 and earlier are left out,
+    # so their perfect pass rate doesn't make the older side look better.
+    days = _days(
+        d0701=Stat(20, 1.0, True),
+        d0706=Stat(20, 1.0, True),
+        d0707=Stat(4, 0.5, True),
+        d0713=Stat(4, 0.5, True),
+        d0714=Stat(4, 0.0, True),
+        d0720=Stat(2, 0.5, True),
+    )
+
+    (reg,) = day_trends({"outcome.test": days})
+
+    # Recent pools 0 of 4 and 1 of 2: 1 of 6, not the mean of the two days' rates.
+    assert (reg["older_mean"], reg["recent_mean"], reg["sample_count"]) == (0.5, 0.167, 14)
+    assert reg["direction"] == "regression"
+
+
+def test_a_sparse_trend_splits_its_days_nearest_half_the_ratings():
+    # The 7 days before Jul 20 (Jul 7-13) hold 1 rating, under 2, so the windows don't hold.
+    # Of the 10 ratings, 5 fall on or before Jul 13, so the split comes after Jul 13.
+    days = _days(
+        d0701=Stat(2, 1.0, True),
+        d0702=Stat(2, 1.0, True),
+        d0713=Stat(1, 1.0, True),
+        d0719=Stat(2, 0.0, True),
+        d0720=Stat(3, 0.0, True),
+    )
+
+    (reg,) = day_trends({"outcome.test": days})
+
+    assert (reg["older_mean"], reg["recent_mean"], reg["sample_count"]) == (1.0, 0.0, 10)
+
+
+def test_a_sparse_split_keeps_min_samples_on_each_side():
+    # The only split leaves Jul 2's single rating as a side alone.
+    days = _days(d0701=Stat(5, 1.0, True), d0702=Stat(1, 0.0, True))
+
+    assert day_trends({"outcome.test": days}) == []
+
+
+def test_raw_scores_are_placed_on_the_utc_day_the_agent_ran():
+    late = _fb("outcome.test", 1.0, scored_at="2026-07-20T00:00:00")
+    late["payload"]["details"]["turn_started_at"] = "2026-07-01T23:30:00-02:00"
+
+    assert day_stats([late]) == {"outcome.test": {date(2026, 7, 2): Stat(1, 1.0, True)}}
+
+
+def test_ratings_all_on_one_day_have_no_trend():
+    assert day_trends({"outcome.test": _days(d0701=Stat(10, 0.5, True))}) == []
+
+
+def test_a_continuous_trend_pools_its_days_exactly_for_welchs_interval():
+    # Each side's two days pool to 0.8, 0.9 (x5) then 0.5, 0.7 (x5), as in the raw test.
+    steady = {
+        "efficiency": _days(
+            d0601=_stat([0.8, 0.9] * 2),
+            d0602=_stat([0.8, 0.9] * 3),
+            d0701=_stat([0.5, 0.7] * 2),
+            d0702=_stat([0.5, 0.7] * 3),
+        )
+    }
+
+    (reg,) = day_trends(steady)
+
+    assert (reg["delta"], reg["significant"]) == (-0.25, True)
+
+
+def test_trends_take_session_scorers_from_the_day_stats_and_turns_from_raw_scores():
+    turns = [
+        _fb("outcome.test", rating, scored_at=f"2026-07-0{day}T00:00:00")
+        for rating, day in ((1.0, 1), (1.0, 2), (0.0, 8), (0.0, 9))
+    ]
+    raw_session = [
+        {**fb, "payload": {**fb["payload"], "granularity": "session"}}
+        for fb in (
+            _fb("efficiency.session", r, scored_at=f"2026-07-0{d}T00:00:00")
+            for r, d in ((0.0, 1), (0.0, 2), (1.0, 8), (1.0, 9))
+        )
+    ]
+    days = {"implicit.completion": _days(d0701=Stat(3, 0.0, True), d0709=Stat(3, 1.0, True))}
+
+    found = trends(turns + raw_session, ConfigStats({}, {}, days=days))
+    raw_only = trends(turns + raw_session, ConfigStats({}, {}))
+
+    assert {r["scorer"]: r["direction"] for r in found} == {
+        "outcome.test": "regression",
+        "implicit.completion": "improvement",
+    }
+    assert {r["scorer"] for r in raw_only} == {"outcome.test", "efficiency.session"}
 
 
 # --- config_regressions (A/B safety net) ---

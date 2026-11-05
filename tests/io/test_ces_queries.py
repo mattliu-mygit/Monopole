@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 
 import httpx
 import pytest
@@ -17,6 +18,7 @@ from weave_agent_signals.ces_queries import (
     judge_tables,
     run_query,
     segment_stats,
+    session_day_stats,
     session_success_by_config,
     subagent_outcomes,
 )
@@ -636,4 +638,102 @@ def test_segment_stats_group_scored_sessions_by_config_and_dimension_score():
         CONFIG,
         {"kind": "depth"},
         {"kind": "score", "name": "dim.repo"},
+    ]
+
+
+COMPLETION = "implicit.completion"
+DAY = {"kind": "score", "name": "dim.day"}
+
+
+def _day_routes(results, *, stddev: bool) -> Insight:
+    """The sessions Evaluation's selection, judge name, and queries for session_day_stats.
+    Without `stddev`, a create naming it gets CES's rejection."""
+    selection = SESSION_SELECTION + [
+        {"scorer_id": f"sc-j{suffix}", "version_id": "v-j"} for suffix in ("", ".details")
+    ]
+    respx.patch(f"{BASE}/evaluations/ev-sessions/scorers").mock(
+        return_value=httpx.Response(200, json={"scorers": selection})
+    )
+    for suffix in ("", ".details"):
+        respx.get(f"{BASE}/scorers/sc-j{suffix}/versions/v-j").mock(
+            return_value=httpx.Response(200, json={"name": JUDGE + suffix})
+        )
+    insight = Insight(results)
+    if not stddev:
+        create = insight._create
+        respx.post(SESSION_QUERIES).mock(
+            side_effect=lambda r: STDDEV_REJECTED if b'"stddev"' in r.content else create(r)
+        )
+    return insight
+
+
+def _completion(count, mean):
+    return {f"{COMPLETION}:mean": mean, f"{COMPLETION}:count": count}
+
+
+@respx.mock
+def test_session_day_stats_pool_each_days_sessions_across_configs():
+    rows = [
+        _row(["cfg1", 0, "2026-07-01"], 2, **_completion(2, 1.0)),
+        _row(["cfg2", 0, "2026-07-01"], 2, **_completion(2, 0.0)),
+        _row([None, 0, "2026-07-09"], 3, **_completion(3, 0.0)),
+        # A subagent, a session without dim.day, and a day that isn't one are left out.
+        _row(["cfg3", 1, "2026-07-09"], 5, **_completion(5, 1.0)),
+        _row(["cfg1", 0, None], 4, **_completion(4, 1.0)),
+        _row(["cfg1", 0, "soon"], 4, **_completion(4, 1.0)),
+        _row(
+            ["cfg1", 0, "2026-07-09"],
+            2,
+            **{f"{JUDGE}:mean": 0.5, f"{JUDGE}:count": 2, f"{JUDGE}:stddev": 0.1},
+        ),
+    ]
+    routes = _day_routes(lambda _definition: rows, stddev=True)
+
+    days = session_day_stats(_client(), CATALOG, QueryState())
+
+    assert days == {
+        COMPLETION: {date(2026, 7, 1): Stat(4, 0.5, True), date(2026, 7, 9): Stat(3, 0.0, True)},
+        JUDGE: {date(2026, 7, 9): Stat(2, 0.5, False, 0.1)},
+    }
+    (definition,) = routes.definitions
+    assert definition["target_kind"] == "trajectory"
+    assert definition["group_by"] == [CONFIG, {"kind": "depth"}, DAY]
+    # Rating Scorers only: no measurement or dimension is a metric.
+    named = {m["scorer_version_id"] for m in definition["metrics"]}
+    assert f"v-{COMPLETION}" in named and "v-j" in named
+    assert not any(v.startswith(("v-measure.", "v-dim.")) for v in named)
+
+
+@respx.mock
+def test_without_ces_stddev_session_day_stats_take_each_days_spread_from_a_histogram():
+    def results(definition):
+        if definition["group_by"][-1] == {"kind": "score", "name": JUDGE}:
+            # Jul 9: cfg1 rated 0.25 and 0.75, cfg2 0.75; a subagent's 0.0 is left out.
+            return [
+                _counts(JUDGE, ["cfg1", 0, "2026-07-09"], 0.25, 1),
+                _counts(JUDGE, ["cfg1", 0, "2026-07-09"], 0.75, 1),
+                _counts(JUDGE, ["cfg2", 0, "2026-07-09"], 0.75, 1),
+                _counts(JUDGE, ["cfg1", 1, "2026-07-09"], 0.0, 4),
+            ]
+        judge = {f"{JUDGE}:mean": 0.5, f"{JUDGE}:count": 2}
+        return [
+            _row(["cfg1", 0, "2026-07-09"], 2, **judge),
+            _row(["cfg2", 0, "2026-07-09"], 1, **{f"{JUDGE}:mean": 0.75, f"{JUDGE}:count": 1}),
+        ]
+
+    routes = _day_routes(results, stddev=False)
+    state = QueryState()
+
+    days = session_day_stats(_client(), CATALOG, state)
+
+    # Pooled ratings 0.25, 0.75, 0.75: mean 7/12, sample stddev sqrt(1/12).
+    assert state.stddev is False
+    assert days[JUDGE][date(2026, 7, 9)] == Stat(
+        3, pytest.approx(7 / 12), False, pytest.approx((1 / 12) ** 0.5)
+    )
+    assert routes.definitions[-1]["group_by"] == [
+        CONFIG,
+        {"kind": "depth"},
+        DAY,
+        {"kind": "score", "name": JUDGE},
     ]

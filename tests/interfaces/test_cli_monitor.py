@@ -65,7 +65,7 @@ def _args(**over):
 
 def test_monitor_alerts_on_significant_regression_then_dedups(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        cli.ces_commands, "read_analysis", lambda _args, feedback: _regressing_feedback()
+        cli.ces_commands, "read_analysis", lambda _args, feedback, **_: _regressing_feedback()
     )
 
     sent, fake_send = _capturing_send()
@@ -95,7 +95,7 @@ def test_monitor_realerts_when_a_regression_recurs_after_recovery(
             _regressing_feedback(),
         ]
     )
-    monkeypatch.setattr(cli.ces_commands, "read_analysis", lambda _args, feedback: next(feeds))
+    monkeypatch.setattr(cli.ces_commands, "read_analysis", lambda _args, feedback, **_: next(feeds))
 
     sent, fake_send = _capturing_send()
     monkeypatch.setattr(cli.alerts, "send", fake_send)
@@ -118,7 +118,7 @@ def test_monitor_realerts_when_a_regression_recurs_after_recovery(
 
 def test_monitor_does_not_alert_on_improvement(monkeypatch):
     monkeypatch.setattr(
-        cli.ces_commands, "read_analysis", lambda _args, feedback: _improving_feedback()
+        cli.ces_commands, "read_analysis", lambda _args, feedback, **_: _improving_feedback()
     )
     sent, fake_send = _capturing_send()
     monkeypatch.setattr(cli.alerts, "send", fake_send)
