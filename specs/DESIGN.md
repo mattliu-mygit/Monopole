@@ -62,7 +62,10 @@ Evaluation is layered:
 Every persisted rating is a boolean or finite number in `[0, 1]`, and higher
 always means better. Harmful raw measures such as correction density or
 abandonment remain explanatory metadata; their persisted scores are
-correction-free rate and completion. A score describes evidence available in
+correction-free rate and completion. Two other kinds of Score are not ratings:
+measurements, such as a session's tokens, which have no better direction, and
+dimensions, such as its repository, which slice queries. Neither enters a
+summary, trend, alert, or coaching digest. A score describes evidence available in
 the retained trace. It does not prove causality, and a whole-bundle proposal
 score cannot be divided into causal per-file scores.
 

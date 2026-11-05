@@ -24,7 +24,11 @@ missing or its pinned metadata differs. Turns added after pinning are ignored.
 ## Reading sessions
 
 `read_session` lists the session Trajectory's Cases and every child Trajectory's
-Cases. Turn status maps `completed` to `OK`, `aborted` to `ERROR`, and anything
+Cases, and also builds each subagent Trajectory's own view from them, so
+whole-Trajectory Scorers can score a subagent like a session. A subagent span
+carries the tokens of its own turns. Listing a Trajectory's Cases leaves out
+its root Case, so `root_case_input` reads the Trajectory and then that Case;
+scoring uses it for the session Case's fields. Turn status maps `completed` to `OK`, `aborted` to `ERROR`, and anything
 else to `UNSET`. A turn without a user prompt starts with a reply or tool call;
 that span's ID gets a `/span` suffix so judge evidence IDs stay unique.
 
@@ -33,10 +37,13 @@ that span's ID gets a `/span` suffix so judge evidence IDs stay unique.
 
 ## Scores
 
-Each Monopole scorer is two CES Scorers: `<name>` holds the number or boolean
-value, and `<name>.details` holds tags, reason, confidence, and scorer details as
-JSON. Turn Scores target the turn's first Case; session Scores target the session
-Trajectory. The `monopole turns` (Case) and `monopole sessions` (Trajectory)
+Each Monopole scorer is two CES Scorers: `<name>` holds the number, boolean, or
+string value, and `<name>.details` holds tags, reason, confidence, and scorer
+details as JSON. Turn Scores target the turn's first Case; session Scores target
+the session Trajectory, and the whole-Trajectory ones (session outcomes,
+measurements, and dimensions) also target each subagent Trajectory. The catalog
+marks each Scorer's kind (rating, measurement, or dimension); raw Score records
+carry only ratings. The `monopole turns` (Case) and `monopole sessions` (Trajectory)
 Evaluations select them over the adapter's Dataset. Each judge rubric and panel
 has its own Scorer, `<rubric>.panel-<digest>`, and only finished reviews write.
 
@@ -65,7 +72,9 @@ ID and digest.
 `ces_queries.py` asks CES for each config's count, mean, and spread per Scorer
 with two saved EvaluationQueries. A Case query groups turn Scores by
 `i.config_version`; a Trajectory query groups session Scores by the root Case's
-`i.config_version` and `depth`. Turn Scores target only a turn's first Case, so
+`i.config_version` and `depth` and keeps depth 0, because whole-Trajectory
+Scorers also score subagents. Both name only rating Scorers. Turn Scores target
+only a turn's first Case, so
 its other Cases have no Score and drop out of a mean and count. Every scored
 Case belongs to the main agent, because turns are read from the session
 Trajectory's own Cases and the adapter writes subagent Cases to child
