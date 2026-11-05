@@ -42,6 +42,10 @@ from weave_agent_signals.models import (
 )
 
 ATTEMPTS = 3
+# An EvaluationQuery run takes one of CES's 2 query slots per instance for up to 10 s, and CES
+# answers a busy instance with 503 and Retry-After: 1, so query calls back off longer: 1, 2, 4,
+# 8, and 16 s, about 31 s in all.
+QUERY_ATTEMPTS = 6
 MAX_RETRY_AFTER_S = 30.0
 PAGE_LIMIT = 1000
 # Independent reads (one session's turn rows, one subagent's Cases) run this many at once.
@@ -95,9 +99,9 @@ def _tool_span(case: dict[str, Any], turn_id: str | None = None) -> ToolSpan:
     )
 
 
-def _digest(body: dict[str, Any]) -> str:
-    """Part of a write's Idempotency-Key, so a retry with the same Scores replays them and a
-    retry with changed content, such as a judge's new scored_at, writes newer ones."""
+def content_digest(body: dict[str, Any]) -> str:
+    """Part of a create's Idempotency-Key, so a retry with the same content replays it and a
+    retry with changed content, such as a judge's new scored_at, writes a new one."""
     canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
@@ -436,30 +440,36 @@ class CesClient:
             self._http.close()
 
     def _request(
-        self, method: str, path: str, *, params=None, body=None, key: str | None = None
+        self,
+        method: str,
+        path: str,
+        *,
+        params=None,
+        body=None,
+        key: str | None = None,
+        attempts: int = ATTEMPTS,
     ) -> dict:
-        """Retries network errors, 429, and 5xx, honoring Retry-After. Raises the last error."""
+        """Retries network errors, 429, and 5xx with doubling waits, waiting at least any
+        Retry-After. Raises the last error."""
         headers = {"Idempotency-Key": key} if key else {}
-        for attempt in range(1, ATTEMPTS + 1):
+        for attempt in range(1, attempts + 1):
+            backoff = 2 ** (attempt - 1)
             try:
                 response = self._http.request(
                     method, self.base + path, params=params, json=body, headers=headers
                 )
             except httpx.TransportError:
-                if attempt == ATTEMPTS:
+                if attempt == attempts:
                     raise
-                self._sleep(2 ** (attempt - 1))
+                self._sleep(backoff)
                 continue
-            if response.status_code != 429 and response.status_code < 500 or attempt == ATTEMPTS:
+            if response.status_code != 429 and response.status_code < 500 or attempt == attempts:
                 response.raise_for_status()
                 return response.json()
             retry_after = response.headers.get("Retry-After", "")
-            delay = (
-                float(retry_after)
-                if retry_after.replace(".", "", 1).isdigit()
-                else 2 ** (attempt - 1)
-            )
-            self._sleep(min(delay, MAX_RETRY_AFTER_S))
+            if retry_after.replace(".", "", 1).isdigit():
+                backoff = max(float(retry_after), backoff)
+            self._sleep(min(backoff, MAX_RETRY_AFTER_S))
         raise AssertionError("unreachable")
 
     def trajectory_cases(self, trajectory_id: str) -> list[dict]:
@@ -518,14 +528,16 @@ class CesClient:
             found = pool.map(lambda sid: self._rows(path, {"filter": _turns_of(sid)}), session_ids)
             return dict(zip(session_ids, found))
 
-    def _rows(self, path: str, body: dict | None, limit: int | None = None) -> list[dict]:
+    def _rows(
+        self, path: str, body: dict | None, limit: int | None = None, attempts: int = ATTEMPTS
+    ) -> list[dict]:
         rows, cursor = [], None
         while True:
             paging = {"limit": PAGE_LIMIT, **({"cursor": cursor} if cursor else {})}
             page = (
-                self._request("GET", path, params=paging)
+                self._request("GET", path, params=paging, attempts=attempts)
                 if body is None
-                else self._request("POST", path, body={**body, **paging})
+                else self._request("POST", path, body={**body, **paging}, attempts=attempts)
             )
             rows.extend(page.get("rows") or [])
             if limit is not None and len(rows) >= limit:
@@ -591,13 +603,33 @@ class CesClient:
                 ]
         for kind, scorers in selected.items():
             if scorers:
-                # Adding Scorers an Evaluation already selects returns the same selection.
-                self._request(
-                    "PATCH",
-                    f"/evaluations/{catalog.evaluation_for(kind)}/scorers",
-                    body={"scorers": scorers},
-                )
+                self.select_scorers(catalog.evaluation_for(kind), scorers)
         return Catalog(catalog.turns_evaluation_id, catalog.sessions_evaluation_id, refs)
+
+    def select_scorers(self, evaluation_id: str, scorers: list[dict]) -> list[dict]:
+        """Add Scorer versions, given as {scorer_id, version_id}, to the Evaluation, and return
+        every version it now selects. Adding versions it already selects changes nothing."""
+        return self._request(
+            "PATCH", f"/evaluations/{evaluation_id}/scorers", body={"scorers": scorers}
+        )["scorers"]
+
+    def create_query(self, evaluation_id: str, body: dict, *, key: str) -> str:
+        """Save an EvaluationQuery definition and return its ID. A replay returns the same ID."""
+        return self._request(
+            "POST",
+            f"/evaluations/{evaluation_id}/queries",
+            body=body,
+            key=key,
+            attempts=QUERY_ATTEMPTS,
+        )["evaluation_query_id"]
+
+    def query_results(self, evaluation_id: str, query_id: str) -> list[dict]:
+        """Every result row of the query on the Evaluation's latest data."""
+        return self._rows(
+            f"/evaluations/{evaluation_id}/queries/{query_id}/results",
+            None,
+            attempts=QUERY_ATTEMPTS,
+        )
 
     def create_comparison(
         self, members: list[tuple[str, str]], *, key: str, attributes: dict | None = None
@@ -694,13 +726,10 @@ class CesClient:
         return {t: scores for t, _, scores in self._session_targets(catalog, set(trajectory_ids))}
 
     def _score_records(self, targets: list[tuple[str, dict, list]]) -> list[dict]:
-        names = self._scorer_names
         for _, _, scores in targets:
             for score in scores:
-                key = (score["scorer_id"], score["scorer_version_id"])
-                # Only found names are cached: a Scorer version created later must still resolve.
-                if key not in names and (name := self._scorer_name(*key)) is not None:
-                    names[key] = name
+                self.scorer_name(score["scorer_id"], score["scorer_version_id"])
+        names = self._scorer_names
         records = [record for target in targets for record in _score_record(*target, names)]
         records.sort(
             key=lambda r: r["payload"]["details"].get("turn_started_at") or "", reverse=True
@@ -716,15 +745,21 @@ class CesClient:
                 raise
             return None
 
-    def _scorer_name(self, scorer_id: str, version_id: str) -> str | None:
+    def scorer_name(self, scorer_id: str, version_id: str) -> str | None:
         """The Scorer version's name, or None when CES has no such version, so a Score from a
         deleted or foreign Scorer is skipped instead of failing the whole read."""
+        key = (scorer_id, version_id)
+        if key in self._scorer_names:
+            return self._scorer_names[key]
         try:
-            return self._request("GET", f"/scorers/{scorer_id}/versions/{version_id}")["name"]
+            name = self._request("GET", f"/scorers/{scorer_id}/versions/{version_id}")["name"]
         except httpx.HTTPStatusError as error:
             if error.response.status_code != 404:
                 raise
+            # Not cached: a Scorer version created later must still resolve.
             return None
+        self._scorer_names[key] = name
+        return name
 
     def read_all_scores(self, catalog: Catalog, limit: int | None = None) -> list[dict]:
         """Turn and session Scores, newest turn first, as feedback-shaped records.
@@ -805,7 +840,7 @@ class CesClient:
             "POST",
             "/scores",
             body={"scores": body},
-            key=f"score-v2:{pass_id}:{target_kind}:{target_id}:{_digest({'scores': body})}",
+            key=f"score-v2:{pass_id}:{target_kind}:{target_id}:{content_digest({'scores': body})}",
         )
         if target_kind == "trajectory":
             self._index.record(

@@ -211,7 +211,7 @@ def _catalog_routes():
 
     respx.post(f"{BASE}/scorers").mock(side_effect=scorer)
     respx.patch(url__regex=rf"{BASE}/evaluations/ev-.*/scorers").mock(
-        return_value=httpx.Response(200, json={})
+        return_value=httpx.Response(200, json={"scorers": []})
     )
     return made
 
