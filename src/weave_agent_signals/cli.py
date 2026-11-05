@@ -64,7 +64,7 @@ def _positive_int(value: str) -> int:
 def _make_model_client(args: argparse.Namespace, model: ModelDescriptor):
     """Build a chat client for one catalog-resolved model role."""
 
-    if model.provider in {"claude", "codex", "agy"}:
+    if model.provider in {"claude", "codex", "agy", "devin"}:
         return CliJudgeClient(provider=model.provider)
     return InferenceClient(
         entity=args.entity,

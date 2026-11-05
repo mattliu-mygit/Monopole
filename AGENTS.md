@@ -141,6 +141,10 @@ product behavior; standalone reflection does not mutate managed files.
   confined `accept-edits` mode with permission auto-approval, a minimal child
   environment, an isolated temporary home, and a one-use FIFO carrying only
   its stored OAuth token. Persistent Gemini histories and state are not exposed.
+  Devin, which runs Claude models without the `claude` CLI, can't turn its tools
+  off, so it runs from an otherwise empty workspace whose project config denies
+  every tool (read, edit, grep, glob, exec, fetch, MCP), with the prompt in a
+  file outside that workspace.
 
 ## CES correctness checklist
 

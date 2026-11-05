@@ -86,7 +86,7 @@ def _chat_client(
     entity: str,
     project: str,
 ) -> AbstractContextManager[ChatClient]:
-    if provider in {"claude", "codex", "agy"}:
+    if provider in {"claude", "codex", "agy", "devin"}:
         return CliJudgeClient(provider=provider)
     return InferenceClient(entity=entity, project=project, backend=provider)
 

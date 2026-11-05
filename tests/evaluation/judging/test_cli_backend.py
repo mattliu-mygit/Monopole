@@ -736,6 +736,73 @@ def test_cli_judge_argv_hardens_stored_credential_execution():
     assert claude_argv[claude_argv.index("--tools") + 1] == ""
 
 
+def test_devin_judge_runs_claude_with_every_tool_denied(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_CWD", str(tmp_path / "devin"))
+    devin = CliJudgeClient(
+        provider="devin",
+        runner=lambda *_args, **_kwargs: _FakeProc(stdout='{"score":0}'),
+    )
+
+    argv, stdin_text, mode = devin._build("claude-opus-5-5-medium", "system", "user")
+
+    assert argv[:2] == ["devin", "-p"]
+    assert argv[argv.index("--model") + 1] == "claude-opus-5-5-medium"
+    assert argv[argv.index("--permission-mode") + 1] == "auto"
+    assert (stdin_text, mode) == ("system\n\nuser", "plain")
+    config = json.loads((tmp_path / "devin" / ".devin" / "config.json").read_text())
+    assert set(config["permissions"]["deny"]) >= {
+        "read",
+        "edit",
+        "grep",
+        "glob",
+        "exec",
+        "Fetch(*)",
+        "mcp__*",
+    }
+    assert os.listdir(tmp_path / "devin") == [".devin"]
+
+
+def test_devin_judge_runs_from_its_denied_workspace_with_the_prompt_in_a_file(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_CWD", str(tmp_path / "devin" / "workspace"))
+    seen = {}
+
+    def runner(argv, **kwargs):
+        prompt_path = argv[argv.index("--prompt-file") + 1]
+        seen.update(cwd=kwargs["cwd"], stdin=kwargs["input"], path=prompt_path)
+        seen["prompt"] = Path(prompt_path).read_text()
+        return _FakeProc(stdout='{"score": 1}')
+
+    devin = _CliJudgeClient(provider="devin", runner=runner)
+    parsed, _ = devin.chat_json(model="claude-opus-5-5-medium", messages=_msgs("sys", "grade this"))
+
+    assert parsed == {"score": 1}
+    assert seen["cwd"] == str(tmp_path / "devin" / "workspace")
+    assert seen["stdin"] == ""
+    assert "sys" in seen["prompt"] and "grade this" in seen["prompt"]
+    assert not seen["path"].startswith(seen["cwd"])
+    assert not os.path.exists(seen["path"])
+
+
+def test_devin_judge_process_starts_in_the_denied_workspace(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_CWD", str(tmp_path / "devin" / "workspace"))
+    started = []
+
+    def run(self, argv, stdin_text, env, *, cwd=None):
+        started.append(cwd)
+        return '{"score": 1}', "", 0
+
+    monkeypatch.setattr(_CliJudgeClient, "_run_with_cancel", run)
+
+    parsed, _ = _CliJudgeClient(provider="devin").chat_json(
+        model="claude-opus-5-5-medium", messages=_msgs()
+    )
+
+    assert parsed == {"score": 1}
+    assert started == [str(tmp_path / "devin" / "workspace")]
+
+
 # --- JSON extraction from messy CLI output ---
 
 
@@ -840,7 +907,7 @@ def test_cli_failure_emits_prompt_stripped_structured_provider_issue(tmp_path, m
     activity: list[dict[str, object]] = []
     client.set_activity(activity.append)
 
-    def fail_with_echo(_argv, stdin_text, _env):
+    def fail_with_echo(_argv, stdin_text, _env, *, cwd=None):
         error = {
             "error": {
                 "message": f"Requested model is unavailable; token={provider_secret}",

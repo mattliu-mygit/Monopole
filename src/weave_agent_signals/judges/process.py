@@ -56,7 +56,7 @@ def prepare_cli_subprocess(
     OAuth tokens, cloud-provider credentials, proxies, and unrelated parent values
     are intentionally not inherited.
     """
-    if provider not in {"claude", "codex", "agy"}:
+    if provider not in {"claude", "codex", "agy", "devin"}:
         raise ValueError(f"unsupported local CLI provider: {provider}")
 
     os.makedirs(cwd, exist_ok=True)

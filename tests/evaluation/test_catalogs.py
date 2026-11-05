@@ -265,6 +265,8 @@ def test_every_non_wandb_model_declares_exact_input_capacity_and_token_counter()
         "codex:gpt-5.4-mini": (272_000, "o200k_base"),
         "claude:claude-sonnet-5": (1_000_000, "utf8_bytes_div_3"),
         "claude:claude-haiku-4-5": (200_000, "utf8_bytes_div_3"),
+        "devin:claude-opus-5-5-medium": (1_000_000, "utf8_bytes_div_3"),
+        "devin:claude-fable-5-1-medium": (1_000_000, "utf8_bytes_div_3"),
         "agy:gemini-3.5-flash-medium": (1_048_576, "utf8_bytes_div_3"),
         "agy:gemini-3.5-flash-high": (1_048_576, "utf8_bytes_div_3"),
         "agy:gemini-3.5-flash-low": (1_048_576, "utf8_bytes_div_3"),
