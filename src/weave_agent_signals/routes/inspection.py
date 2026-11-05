@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import get_args
@@ -30,6 +32,7 @@ _SIGNAL_THRESHOLD = 0.5
 
 
 SESSION_SCAN_FACTOR = 3
+_LOG = logging.getLogger(__name__)
 
 
 def _by_target(records: list[dict]) -> dict[str, list[dict]]:
@@ -184,6 +187,35 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
     # Estimates read a whole session, subagents included. Stored turns never change, so they're
     # reused until the session's turn list does.
     estimates: dict[tuple[str, tuple[str, ...]], dict] = {}
+    # CES row search is the slowest part of a list load and can't ask for only newer turns, so
+    # the list serves each session's last-read turn rows and refreshes them in the background.
+    # A just-finished turn appears one load later. Runs never read this cache.
+    cached_rows: dict[str, list[dict]] = {}
+    refreshing: set[str] = set()
+    refresh_lock = threading.Lock()
+
+    def refresh_rows(session_ids: list[str]) -> None:
+        try:
+            with ces_factory() as ces:
+                cached_rows.update(ces.client.session_turn_rows(ces.catalog, session_ids))
+        except Exception:
+            _LOG.warning("background turn-row refresh failed", exc_info=True)
+        finally:
+            with refresh_lock:
+                refreshing.difference_update(session_ids)
+
+    def turn_rows(ces: CesSession, batch: list[str]) -> dict[str, list[dict]]:
+        found = {sid: cached_rows[sid] for sid in batch if sid in cached_rows}
+        if missing := [sid for sid in batch if sid not in found]:
+            fresh = ces.client.session_turn_rows(ces.catalog, missing)
+            cached_rows.update(fresh)
+            found.update(fresh)
+        with refresh_lock:
+            stale = [sid for sid in batch if sid not in missing and sid not in refreshing]
+            refreshing.update(stale)
+        if stale:
+            threading.Thread(target=refresh_rows, args=(stale,), daemon=True).start()
+        return {sid: found[sid] for sid in batch}
 
     @router.get("/sessions")
     def get_sessions(
@@ -219,7 +251,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             while read < len(session_ids) and len(visible) < limit:
                 batch = session_ids[read : read + limit - len(visible)]
                 read += len(batch)
-                for sid, rows in ces.client.session_turn_rows(ces.catalog, batch).items():
+                for sid, rows in turn_rows(ces, batch).items():
                     turns = turns_from_rows(sid, rows)
                     if not session_is_evaluable(turns):
                         continue

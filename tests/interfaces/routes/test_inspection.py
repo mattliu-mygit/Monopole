@@ -374,6 +374,36 @@ def test_session_listing_reuses_estimates_while_a_sessions_turns_are_unchanged()
     assert second["judging_token_estimates"] == first["judging_token_estimates"]
 
 
+def test_session_listing_serves_cached_turns_and_refreshes_them_in_the_background():
+    import dataclasses
+    import time
+    from datetime import timedelta
+
+    client, backend = _client()
+    params = {"since": "2026-07-14T00:00:00Z", "limit": 1}
+    first = client.get("/api/sessions", params=params).json()["sessions"][0]
+    newest = max(
+        (t for t in backend.turns if t.conversation_id == first["conversation_id"]),
+        key=lambda t: t.started_at,
+    )
+    backend.turns.append(
+        dataclasses.replace(
+            newest, trace_id="trace-new", started_at=newest.started_at + timedelta(minutes=1)
+        )
+    )
+
+    second = client.get("/api/sessions", params=params).json()["sessions"][0]
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        third = client.get("/api/sessions", params=params).json()["sessions"][0]
+        if third["turn_count"] > first["turn_count"]:
+            break
+        time.sleep(0.01)
+
+    assert second["turn_count"] == first["turn_count"]
+    assert third["turn_count"] == first["turn_count"] + 1
+
+
 def test_session_detail_names_subagents_without_their_counts():
     client, backend = _client()
     backend.turns[0].subagents.append(SubagentSpan(span_id="traj-sub", agent_type=None))
