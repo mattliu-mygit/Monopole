@@ -146,7 +146,7 @@ const requestedConfig: RunConfig = {
   model_catalog_version: models.catalog_version,
   rubric_catalog_version: rubrics.catalog_version,
   judge_models: [judgeOne.id, judgeTwo.id, judgeThree.id],
-  challenge_judge_models: [judgeOne.id, judgeTwo.id, judgeThree.id],
+  challenge_judge_models: [judgeOne.id],
   proposal_model: writer.id,
   proposal_evaluator_model: judgeOne.id,
   rubrics: rubrics.rubrics.map((rubric) => rubric.id),
@@ -564,6 +564,26 @@ describe('RunDetail wiring', () => {
     fireEvent.click(sessionCheckbox)
 
     expect(await screen.findByRole('region', { name: 'Run configuration' })).not.toBeNull()
+  })
+
+  it('keeps a manual configuration change when the selection changes', async () => {
+    const second = { ...session, conversation_id: 'session-2' }
+    api.getSessions.mockResolvedValue({
+      sessions: [
+        { ...session, judging_token_estimates: sessionEstimates },
+        { ...second, judging_token_estimates: sessionEstimates },
+      ],
+      total: 2,
+      truncated: false,
+    })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select session session-1' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove last judge' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select session session-2' }))
+
+    await waitFor(() => expect(screen.getByLabelText('Judge 2')).not.toBeNull())
+    expect(screen.queryByLabelText('Judge 3')).toBeNull()
   })
 
   it('retries session discovery and model catalogs in place', async () => {

@@ -91,12 +91,12 @@ function fittingIds(
 const MAX_PANEL_JUDGES = 3
 
 // Judges from one family share biases, so a panel takes one fitting model per family, in
-// preference order, up to the panel limit.
-function diversePanel(models: ModelCatalog, ids: readonly string[]): string[] {
+// preference order, up to `size`.
+function diversePanel(models: ModelCatalog, ids: readonly string[], size: number): string[] {
   const families = new Set<string>()
   return ids.filter((id) => {
     const family = model(models, id)?.family ?? 'unknown'
-    if (families.size >= MAX_PANEL_JUDGES || families.has(family)) return false
+    if (families.size >= size || families.has(family)) return false
     families.add(family)
     return true
   })
@@ -120,8 +120,19 @@ function recommendedState(
   const challengeJudgeIds = pick('challenge_judge', models.recommended_challenge_judges)
   return {
     proposalModel: { value: writerId, source: 'recommended' },
-    judgeModels: { value: diversePanel(models, judgeIds), source: 'recommended' },
-    challengeJudgeModels: { value: diversePanel(models, challengeJudgeIds), source: 'recommended' },
+    judgeModels: {
+      value: diversePanel(models, judgeIds, MAX_PANEL_JUDGES),
+      source: 'recommended',
+    },
+    // Each A/B judge reviews both sandbox runs, so this panel keeps the catalog's size for cost.
+    challengeJudgeModels: {
+      value: diversePanel(
+        models,
+        challengeJudgeIds,
+        Math.max(1, models.recommended_challenge_judges.length),
+      ),
+      source: 'recommended',
+    },
     proposalEvaluatorModel: {
       value: evaluator(models, writerId, sessions) || evaluator(models, writerId),
       source: 'automatic',

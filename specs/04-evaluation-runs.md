@@ -75,9 +75,14 @@ Runs pin four independent roles:
 4. a separately pinned A/B verification panel compares A and the provisional B
    on that task.
 
-The form uses catalog-backed selectors with recommendations preselected and
-user overrides allowed. Normal judging recommends three available reviewers;
+The form uses catalog-backed selectors with user overrides allowed. It shows
+the configuration only once sessions are selected, then preselects the
+recommendations that fit every selected session, and keeps following the
+selection until the user changes a choice. Normal judging recommends up to
+three fitting reviewers from distinct model families, recommended models first;
 A/B verification independently recommends one and permits one through three.
+When no model fits a role, its recommendation stays selected and the capacity
+error blocks starting.
 The evaluator recommendation prefers a different model family from the writer
 when available, but explicit compatible choices remain authoritative and
 produce visible bias warnings rather than silent replacement.
