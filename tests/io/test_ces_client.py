@@ -14,7 +14,9 @@ import respx
 from weave_agent_signals.ces_catalog import VERDICT, Catalog, ScorerSpec
 from weave_agent_signals.ces_client import (
     MAX_RETRY_AFTER_S,
+    PAGE_LIMIT,
     QUERY_SLOTS,
+    ROW_SEARCH_PAGE_LIMIT,
     CesClient,
     _score_record,
     _tool_span,
@@ -1136,3 +1138,24 @@ def test_a_row_read_gets_the_query_retries_on_a_busy_ces():
 
     assert client.turn_scores(Catalog("ev-turns", "ev-sessions", {}), "s1") == {}
     assert slept == [1.0, 2, 4, 8, 16]
+
+
+@respx.mock
+def test_row_searches_page_by_the_row_search_limit_and_other_rows_by_the_page_limit():
+    catalog = Catalog("ev-turns", "ev-sessions", {})
+    search = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
+        return_value=httpx.Response(200, json={"rows": []})
+    )
+    listing = respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
+        return_value=httpx.Response(200, json={"rows": []})
+    )
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+
+    client.read_all_scores(catalog)
+    client.find_sessions(catalog, since=datetime(2026, 11, 1, tzinfo=timezone.utc))
+
+    assert [json.loads(c.request.content)["limit"] for c in search.calls] == [
+        ROW_SEARCH_PAGE_LIMIT,
+        ROW_SEARCH_PAGE_LIMIT,
+    ]
+    assert listing.calls[0].request.url.params["limit"] == str(PAGE_LIMIT)

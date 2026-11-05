@@ -102,6 +102,12 @@ whole process, however many sessions it reads in parallel, and retries each one'
 a Case, a Score, a Scorer version) and creates take no slot and keep the
 ordinary three attempts.
 
+Prod CES also answers large Evaluation row searches with 503
+`storage_capacity_exceeded`, a storage limit rather than a busy slot: in
+November 2026 a search of 200 or more turn rows almost always failed and one of
+50 almost always succeeded. So row searches page 50 rows at a time, and other
+paged reads 1,000.
+
 ## External correctness constraints
 
 1. Every path sits under `/v1/namespaces/wandb/scopes/<scope>`, where the scope
