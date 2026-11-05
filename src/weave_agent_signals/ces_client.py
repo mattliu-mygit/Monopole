@@ -487,22 +487,7 @@ class CesClient:
         raise AssertionError("unreachable")
 
     def trajectory_cases(self, trajectory_id: str) -> list[dict]:
-        """A session with large Cases can exceed CES's per-query storage budget at 1,000 rows,
-        which CES rejects with 503 storage_capacity_exceeded, so the page halves until it fits."""
-        cases, cursor, limit = [], None, PAGE_LIMIT
-        while True:
-            params = {"limit": limit, **({"cursor": cursor} if cursor else {})}
-            try:
-                page = self._request("GET", f"/trajectories/{trajectory_id}/cases", params=params)
-            except httpx.HTTPStatusError as error:
-                if limit == 1 or _error_code(error.response) != "storage_capacity_exceeded":
-                    raise
-                limit //= 2
-                continue
-            cases.extend(page.get("cases") or [])
-            cursor = page.get("next_cursor")
-            if not cursor:
-                return cases
+        return self._rows(f"/trajectories/{trajectory_id}/cases", None, items="cases")
 
     def read_session(self, trajectory_id: str, *, subagents: bool = True) -> SessionView:
         """S's Cases plus every subagent Trajectory below it, as Monopole turns. Without
@@ -570,16 +555,27 @@ class CesClient:
             rows = pool.map(lambda sid: self._rows(path, {"filter": _turns_of(sid)}), session_ids)
             return dict(zip(session_ids, rows))
 
-    def _rows(self, path: str, body: dict | None, limit: int | None = None) -> list[dict]:
-        rows, cursor = [], None
+    def _rows(
+        self, path: str, body: dict | None, limit: int | None = None, *, items: str = "rows"
+    ) -> list[dict]:
+        """Every page of a list (GET) or search (POST). Large Cases can exceed CES's per-query
+        storage budget at 1,000 rows, which CES rejects with 503 storage_capacity_exceeded, so
+        the page halves until it fits and stays at that size."""
+        rows, cursor, page_limit = [], None, PAGE_LIMIT
         while True:
-            paging = {"limit": PAGE_LIMIT, **({"cursor": cursor} if cursor else {})}
-            page = (
-                self._request("GET", path, params=paging)
-                if body is None
-                else self._request("POST", path, body={**body, **paging})
-            )
-            rows.extend(page.get("rows") or [])
+            paging = {"limit": page_limit, **({"cursor": cursor} if cursor else {})}
+            try:
+                page = (
+                    self._request("GET", path, params=paging)
+                    if body is None
+                    else self._request("POST", path, body={**body, **paging})
+                )
+            except httpx.HTTPStatusError as error:
+                if page_limit == 1 or _error_code(error.response) != "storage_capacity_exceeded":
+                    raise
+                page_limit //= 2
+                continue
+            rows.extend(page.get(items) or [])
             if limit is not None and len(rows) >= limit:
                 return rows[:limit]
             cursor = page.get("next_cursor")

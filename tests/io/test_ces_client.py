@@ -783,6 +783,24 @@ def _capacity(code: str) -> httpx.Response:
 
 
 @respx.mock
+def test_a_row_search_shrinks_the_page_when_ces_storage_capacity_is_exceeded():
+    limits = []
+
+    def page(request):
+        limit = json.loads(request.content)["limit"]
+        limits.append(limit)
+        if limit > 500:
+            return _capacity("storage_capacity_exceeded")
+        return httpx.Response(200, json={"rows": [{"case_id": "c1"}], "next_cursor": None})
+
+    respx.post(f"{BASE}/evaluations/ev-1/rows/search").mock(side_effect=page)
+    client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=lambda _: None)
+
+    assert client._rows("/evaluations/ev-1/rows/search", {"filter": "x"}) == [{"case_id": "c1"}]
+    assert limits == [1000, 500]
+
+
+@respx.mock
 def test_busy_ces_query_capacity_is_retried_past_the_usual_attempts():
     slept = []
     client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=slept.append)
