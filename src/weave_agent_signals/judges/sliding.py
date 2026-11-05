@@ -48,6 +48,7 @@ from weave_agent_signals.judges.sliding_contracts import (
 from weave_agent_signals.judges.tokens import count_tokens
 from weave_agent_signals.judges.windowing import (
     _turn_evidence_ids,
+    _value,
     build_window_plan,
     render_raw_turn,
     render_raw_window,
@@ -148,7 +149,9 @@ def _alias_evidence(text: str, evidence_ids: Sequence[str]) -> tuple[str, dict[s
     rendered = text
     for alias, evidence_id in aliases.items():
         rendered = rendered.replace(f"[evidence_id={evidence_id}]", f"[evidence_id={alias}]")
-        rendered = rendered.replace(f"trace_id: {evidence_id}\n", f"trace_id: {alias}\n")
+        rendered = rendered.replace(
+            f"trace_id: {_value(evidence_id)}\n", f"trace_id: {_value(alias)}\n"
+        )
     return rendered, aliases
 
 

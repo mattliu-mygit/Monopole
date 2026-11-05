@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from weave_agent_signals.catalogs import build_rubric_catalog
-from weave_agent_signals.judges import inference, sliding
+from weave_agent_signals.judges import inference, sliding, windowing
 from weave_agent_signals.judges.inference import (
     InferenceCancelled,
     InferenceContextExceeded,
@@ -635,15 +635,27 @@ def test_evidence_id_redaction_is_longest_first() -> None:
 def test_evidence_aliasing_changes_labels_without_mutating_captured_content() -> None:
     rendered, aliases = sliding._alias_evidence(
         "## Turn 1 [evidence_id=trace-1]\n"
-        "trace_id: trace-1\n"
+        'trace_id: "trace-1"\n'
         "user_input: preserve incidental trace-1 text",
         ("trace-1",),
     )
 
     assert aliases == {"e1": "trace-1"}
     assert "[evidence_id=e1]" in rendered
-    assert "trace_id: e1\n" in rendered
+    assert 'trace_id: "e1"\n' in rendered
     assert "preserve incidental trace-1 text" in rendered
+
+
+def test_evidence_aliasing_relabels_the_trace_id_line_the_renderer_writes() -> None:
+    turn_text = (
+        "## Turn 1 [evidence_id=01a1ad65-8526-7874-b5b4-1dbb8f0958f2]\n"
+        f"trace_id: {windowing._value('01a1ad65-8526-7874-b5b4-1dbb8f0958f2')}\n"
+    )
+
+    rendered, _ = sliding._alias_evidence(turn_text, ("01a1ad65-8526-7874-b5b4-1dbb8f0958f2",))
+
+    assert "01a1ad65-8526-7874-b5b4-1dbb8f0958f2" not in rendered
+    assert 'trace_id: "e1"\n' in rendered
 
 
 def test_reviewer_prompts_distinguish_cited_findings_from_no_findings() -> None:
