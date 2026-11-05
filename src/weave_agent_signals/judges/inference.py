@@ -10,6 +10,7 @@ import re
 import socket
 import threading
 import time
+import weakref
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
@@ -323,32 +324,35 @@ def _explicit_schema_rejection_reason(text: str) -> str | None:
     return reason[:500]
 
 
+def _provider_error_detail(response: httpx.Response) -> Mapping[str, Any]:
+    """The body's `error` object, or the body itself when it has none; {} for anything else."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return {}
+    detail = payload.get("error", payload) if isinstance(payload, Mapping) else None
+    return detail if isinstance(detail, Mapping) else {}
+
+
 def _http_schema_rejection_reason(error: httpx.HTTPStatusError) -> str | None:
     """Recognize only explicit client-side schema capability rejections."""
     response = error.response
     if response.status_code not in {400, 404, 405, 415, 422}:
         return None
 
-    reason = response.text
-    message = reason
+    message = response.text
     param = ""
     code = ""
     error_type = ""
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = None
-    if isinstance(payload, Mapping):
-        detail = payload.get("error", payload)
-        if isinstance(detail, Mapping):
-            if isinstance(detail.get("message"), str):
-                message = reason = detail["message"]
-            if isinstance(detail.get("param"), str):
-                param = detail["param"]
-            if isinstance(detail.get("code"), str):
-                code = detail["code"]
-            if isinstance(detail.get("type"), str):
-                error_type = detail["type"]
+    detail = _provider_error_detail(response)
+    if isinstance(detail.get("message"), str):
+        message = detail["message"]
+    if isinstance(detail.get("param"), str):
+        param = detail["param"]
+    if isinstance(detail.get("code"), str):
+        code = detail["code"]
+    if isinstance(detail.get("type"), str):
+        error_type = detail["type"]
 
     category_text = " ".join((message, code, error_type)).lower()
     if any(term in category_text for term in _NON_FALLBACK_FAILURE_TERMS):
@@ -372,14 +376,9 @@ def _is_http_context_rejection(error: httpx.HTTPStatusError) -> bool:
     if response.status_code not in {400, 413, 422}:
         return False
     text = response.text
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = None
-    if isinstance(payload, Mapping):
-        detail = payload.get("error", payload)
-        if isinstance(detail, Mapping):
-            text = " ".join(str(detail.get(key, "")) for key in ("message", "code", "type"))
+    detail = _provider_error_detail(response)
+    if detail:
+        text = " ".join(str(detail.get(key, "")) for key in ("message", "code", "type"))
     lowered = " ".join(text.lower().split())
     return bool(re.search(r"max_tokens must be at least 1, got -\d+", lowered)) or any(
         marker in lowered
@@ -452,7 +451,7 @@ class InferenceClient:
     ):
         resolved_url, headers, self.backend = _resolve_backend(backend, entity, project)
 
-        self._sockets: set[socket.socket] = set()
+        self._sockets: weakref.WeakSet[socket.socket] = weakref.WeakSet()
         self._sockets_lock = threading.Lock()
         self._http = httpx.Client(
             base_url=resolved_url,
@@ -466,6 +465,9 @@ class InferenceClient:
         self._aborted = threading.Event()
 
     def set_cancel(self, cancel: threading.Event) -> None:
+        # Checked before each attempt and between retries, not while waiting for a reply. In
+        # judging, the first reviewer to see the cancel calls abort(), which ends waiting requests.
+        # Watch this event during requests if a run whose reviewers are all waiting is slow to stop.
         self._cancel = cancel
 
     def _trace(self, event: str, info: Mapping[str, Any]) -> None:
@@ -724,15 +726,9 @@ class InferenceClient:
                     capacity_error._transport_request_count = request_count  # type: ignore[attr-defined]
                     raise capacity_error from None
                 error._transport_request_count = request_count  # type: ignore[attr-defined]
-                try:
-                    payload = resp.json()
-                except ValueError:
-                    payload = None
-                detail = payload.get("error", payload) if isinstance(payload, Mapping) else None
-                if isinstance(detail, Mapping):
-                    for key in ("code", "message"):
-                        value = _safe_provider_text(detail.get(key))
-                        setattr(error, f"_provider_error_{key}", value)
+                detail = _provider_error_detail(resp)
+                for key in ("code", "message"):
+                    setattr(error, f"_provider_error_{key}", _safe_provider_text(detail.get(key)))
                 raise
             try:
                 data = resp.json()
