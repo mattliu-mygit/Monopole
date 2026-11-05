@@ -67,17 +67,21 @@ Trajectory's own Cases and the adapter writes subagent Cases to child
 Trajectories. The turn query does not group by `i.agent_id`: CES rejects grouping
 by a field no Case has set, which is every Dataset that never ran a subagent.
 
-CES runs queries only on an Evaluation whose primary target kind is case, and
-list-trajectory-rows only on one whose kind is trajectory. Both queries therefore
-run on the turns Evaluation, which also selects every session Scorer. Judge panel
-Scorers are found in the sessions Evaluation's selection. This relies on the
-turns Evaluation accepting new Scorers: a fixed Evaluation, whose Scorer list is
-chosen at creation, would reject the added Scorers with 409. Session queries move
-to the sessions Evaluation once CES runs queries on Trajectory Evaluations.
+The turn query runs on the turns Evaluation and the session query on the
+sessions Evaluation, which already selects every session Scorer; judge panel
+Scorers are found in its selection. A CES deployed before wandb/core#61599 runs
+queries only on an Evaluation whose primary target kind is case, and answers a
+session query on the sessions Evaluation with a 400 saying so. On that 400, and
+only that one, Monopole falls back for the rest of the process: the turns
+Evaluation also selects every session Scorer and runs the session query. The
+fallback relies on the turns Evaluation accepting new Scorers: a fixed
+Evaluation, whose Scorer list is chosen at creation, would reject them with 409.
+Delete the fallback once wandb/core#61599 is deployed.
 
 A query definition never changes. Its create is keyed
 `monopole-query-v1:<evaluation>:<body digest>`, so a rerun replays to the same
-query ID, and a new Scorer such as a new judge panel makes a new query. A query
+query ID, a query saved on the turns Evaluation is never reused for the sessions
+Evaluation, and a new Scorer such as a new judge panel makes a new query. A query
 holds at most 100 metrics, so a Scorer list that needs more is split. Query calls
 retry a busy CES's 503 with waits of 1, 2, 4, 8, and 16 seconds, because CES runs
 only two queries at a time per instance.

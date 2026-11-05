@@ -49,6 +49,10 @@ movement always has one interpretation.
 The queries count only the main agent: turn Scores only target main-agent
 Cases, and the session query keeps depth 0. A summary over every Score differs
 from the older newest-`--limit` summary when older turns scored differently.
+The turn query runs on the turns Evaluation and the session query on the
+sessions Evaluation. On a CES that runs queries only on Case Evaluations, the
+session query falls back to the turns Evaluation, as
+[`01-ces-io.md`](01-ces-io.md#queries) describes.
 
 Trends wait for a day field from the adapter, because CES queries have no time.
 Coaching examples are session judge Scores, and a filtered session-row search

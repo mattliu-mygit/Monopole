@@ -10,12 +10,14 @@ Two saved queries cover every Score the Evaluations hold, not a newest-N window:
 - sessions: a Trajectory query grouped by the root Case's `i.config_version` and `depth`.
   Session Scores target the depth-0 session Trajectory.
 
-CES runs EvaluationQueries only on an Evaluation whose primary target kind is case, so both run
-on the turns Evaluation, which therefore also selects every session Scorer: the deterministic
-ones and each judge panel's `<rubric>.panel-<digest>`.
+The turn query runs on the turns Evaluation and the session query on the sessions Evaluation,
+which selects every session Scorer: the deterministic ones and each judge panel's
+`<rubric>.panel-<digest>`. A CES that runs queries only on Case Evaluations rejects the session
+query there; then the turns Evaluation also selects the session Scorers and runs it.
 
-A query definition never changes. Its create key is a digest of its body, so a rerun replays to
-the same query ID, and a new judge panel, which is a new Scorer, makes a new query.
+A query definition never changes. Its create key holds the Evaluation ID and a digest of its
+body, so a rerun replays to the same query ID, and a new judge panel, which is a new Scorer,
+makes a new query.
 """
 
 from __future__ import annotations
@@ -37,6 +39,11 @@ STDDEV = "stddev"
 _MAX_METRICS = 100  # CES's limit per query
 _CONFIG = {"kind": "dataset_field", "source": "input", "name": "config_version"}
 _DEPTH = {"kind": "depth"}
+# CES's 400 for a query on an Evaluation whose primary target kind isn't case.
+_CASE_EVALUATIONS_ONLY = (
+    "EvaluationQueries need an Evaluation with primary_target_kind case, and each query's "
+    "target_kind picks Cases or Trajectories"
+)
 
 
 @dataclass(frozen=True)
@@ -57,11 +64,13 @@ class Group:
 
 @dataclass
 class QueryState:
-    """What one process learns from CES: query IDs by create key, and whether CES has the
-    spread aggregation (None until a create with it answers)."""
+    """What one process learns from CES: query IDs by create key, whether CES has the spread
+    aggregation, and whether it runs queries on Trajectory Evaluations (each None until a create
+    that needs it answers)."""
 
     ids: dict[str, str] = field(default_factory=dict)
     stddev: bool | None = None
+    trajectory_evaluations: bool | None = None
 
 
 def _metrics(scorers: list[QueryScorer], stddev: bool) -> list[dict]:
@@ -82,6 +91,10 @@ def _metrics(scorers: list[QueryScorer], stddev: bool) -> list[dict]:
 def _rejects_stddev(error: httpx.HTTPStatusError) -> bool:
     # CES's schema check answers an unknown enum value with 422; its own checks answer 400.
     return error.response.status_code in (400, 422) and "aggregation" in error.response.text
+
+
+def _rejects_trajectory_evaluation(error: httpx.HTTPStatusError) -> bool:
+    return error.response.status_code == 400 and _CASE_EVALUATIONS_ONLY in error.response.text
 
 
 def _create(
@@ -143,8 +156,8 @@ def run_query(
 
 
 def _session_scorers(client: CesClient, catalog: Catalog) -> list[QueryScorer]:
-    """Every session value Scorer the sessions Evaluation selects, each now also selected by
-    the turns Evaluation. Judge panel Scorers aren't in the catalog, so their names are read."""
+    """Every session value Scorer the sessions Evaluation selects. Judge panel Scorers aren't in
+    the catalog, so their names are read."""
     refs = [ref for ref in catalog.scorers.values() if ref.spec.target_kind == "trajectory"]
     scorers = [QueryScorer(r.spec.name, r.scorer_id, r.version_id, r.spec.binary) for r in refs]
     known = {r.scorer_id for r in refs} | {r.details_scorer_id for r in refs}
@@ -160,14 +173,42 @@ def _session_scorers(client: CesClient, catalog: Catalog) -> list[QueryScorer]:
         # could mix panels in one mean; details Scorers hold JSON.
         if name and ".panel-" in name and not name.endswith(DETAILS_SUFFIX):
             scorers.append(QueryScorer(name, item["scorer_id"], item["version_id"], False))
-    # CES runs queries only on Case-kind Evaluations, so session Scorers ride on the turns
-    # Evaluation. Move session queries to the sessions Evaluation once CES runs queries on
-    # Trajectory Evaluations.
+    return sorted(scorers, key=lambda s: s.name)
+
+
+def _session_groups(
+    client: CesClient, catalog: Catalog, state: QueryState, scorers: list[QueryScorer]
+) -> list[Group]:
+    """The session query's groups, from the sessions Evaluation when CES runs queries there."""
+
+    def run(evaluation_id: str) -> list[Group]:
+        return run_query(
+            client,
+            state,
+            evaluation_id,
+            name="monopole sessions by config",
+            target_kind="trajectory",
+            group_by=[_CONFIG, _DEPTH],
+            scorers=scorers,
+        )
+
+    if state.trajectory_evaluations is not False:
+        try:
+            groups = run(catalog.sessions_evaluation_id)
+        except httpx.HTTPStatusError as error:
+            if not _rejects_trajectory_evaluation(error):
+                raise
+            state.trajectory_evaluations = False
+        else:
+            state.trajectory_evaluations = True
+            return groups
+    # Fallback: delete when wandb/core#61599 is deployed. This CES runs queries only on Case
+    # Evaluations, so the turns Evaluation also selects the session Scorers and runs the query.
     client.select_scorers(
         catalog.turns_evaluation_id,
         [{"scorer_id": s.scorer_id, "version_id": s.version_id} for s in scorers],
     )
-    return sorted(scorers, key=lambda s: s.name)
+    return run(catalog.turns_evaluation_id)
 
 
 def config_stats(
@@ -189,25 +230,16 @@ def config_stats(
         key=lambda s: s.name,
     )
     session_scorers = _session_scorers(client, catalog)
-    evaluation = catalog.turns_evaluation_id
     turns = run_query(
         client,
         state,
-        evaluation,
+        catalog.turns_evaluation_id,
         name="monopole turns by config",
         target_kind="case",
         group_by=[_CONFIG],
         scorers=turn_scorers,
     )
-    sessions = run_query(
-        client,
-        state,
-        evaluation,
-        name="monopole sessions by config",
-        target_kind="trajectory",
-        group_by=[_CONFIG, _DEPTH],
-        scorers=session_scorers,
-    )
+    sessions = _session_groups(client, catalog, state, session_scorers)
     by_config: dict[str, dict[str, Stat]] = defaultdict(dict)
     targets: Counter[str] = Counter()
     main = turns + [g for g in sessions if g.values[1] == 0]
