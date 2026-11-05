@@ -19,14 +19,15 @@ TARGET_KINDS = {"turn": "case", "session": "trajectory", "comparison": "comparis
 DETAILS_SUFFIX = ".details"
 # What a Scorer's value means. A rating is a boolean or a [0, 1] number where higher is better;
 # summaries, the A/B leaderboard, trends, alerts, and coaching read only ratings. A measurement
-# is a number with no better direction, such as a token count, that queries sum and count.
-RATING, MEASUREMENT = "rating", "measurement"
+# is a number with no better direction, such as a token count, that queries sum and count. A
+# dimension is a string, such as the repository, that queries group by.
+RATING, MEASUREMENT, DIMENSION = "rating", "measurement", "dimension"
 
 
 @dataclass(frozen=True)
 class ScorerSpec:
     name: str
-    value_type: str  # "number" or "boolean"
+    value_type: str  # "number", "boolean", or "string"
     granularity: str  # "turn", "session", or "comparison"
     description: str | None = None
     # Every value is 0 or 1, so a summary is a pass rate with a Wilson interval. It isn't part of
@@ -56,6 +57,9 @@ DETERMINISTIC = (
     ScorerSpec("measure.turns", "number", "session", kind=MEASUREMENT),
     ScorerSpec("measure.tokens", "number", "session", kind=MEASUREMENT),
     ScorerSpec("measure.duration_s", "number", "session", kind=MEASUREMENT),
+    ScorerSpec("dim.repo", "string", "session", kind=DIMENSION),
+    ScorerSpec("dim.git_branch", "string", "session", kind=DIMENSION),
+    ScorerSpec("dim.day", "string", "session", kind=DIMENSION),
 )
 # Scorers whose Scores never join a rating path.
 NOT_RATINGS = frozenset(spec.name for spec in DETERMINISTIC if spec.kind != RATING)

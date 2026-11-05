@@ -7,6 +7,10 @@ that a subagent ran counts for its session too.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
+from datetime import datetime, timezone
+
 from weave_agent_signals.models import Score, SessionView, ToolSpan
 from weave_agent_signals.scorers.outcome import BuildOutcome, TestRunOutcome, extract_outcomes
 
@@ -16,6 +20,8 @@ SESSION_OUTCOMES = (SESSION_TESTS, SESSION_BUILDS)
 MEASURE_TURNS = "measure.turns"
 MEASURE_TOKENS = "measure.tokens"
 MEASURE_DURATION = "measure.duration_s"
+# Fields the adapter writes on a new session's root Case, each scored as `dim.<field>`.
+DIMENSION_FIELDS = ("repo", "git_branch", "day")
 
 
 def _tool_calls(session: SessionView) -> list[ToolSpan]:
@@ -102,3 +108,70 @@ def score_session_measures(session: SessionView) -> list[Score]:
             )
         )
     return scores
+
+
+def _text(value: object) -> str | None:
+    return (value.strip() or None) if isinstance(value, str) else None
+
+
+def repo_name(cwd: object) -> str | None:
+    """A working directory reduced to its last path segment, the adapter's rule for a
+    directory with no known git remote, so the Score holds no local path."""
+    text = _text(cwd)
+    return _text(re.split(r"[\\/]+", text.rstrip("\\/"))[-1]) if text else None
+
+
+def _day(started_at: object) -> str | None:
+    """A timestamp's UTC date as YYYY-MM-DD; a timestamp without an offset is UTC."""
+    text = _text(started_at)
+    if text is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).date().isoformat()
+
+
+def session_dimensions(session: SessionView, root: Mapping) -> dict[str, tuple[str, str]]:
+    """Each dimension's (value, source) for a session, from its root Case's input `root`.
+
+    The adapter's `repo`, `git_branch`, and `day` fields win when set. Older sessions lack
+    them, so the value is derived the way the adapter derives it: the repo from the session
+    Case's `cwd`, the branch from the first turn that names one, and the day from the session
+    Case's `started_at`, else the first timed turn's start. A value that can't be found is
+    left out. A subagent takes its session's dimensions."""
+    timed = [t.started_at for t in session.turns if t.ended_at is not None]
+    derived = {
+        "repo": repo_name(root.get("cwd")),
+        "git_branch": next((b for t in session.turns if (b := _text(t.git_branch))), None),
+        "day": _day(root.get("started_at"))
+        or (timed[0].astimezone(timezone.utc).date().isoformat() if timed else None),
+    }
+    found = {}
+    for field in DIMENSION_FIELDS:
+        if value := _text(root.get(field)):
+            found[field] = (value, "root_case")
+        elif derived[field]:
+            found[field] = (derived[field], "derived")
+    return found
+
+
+def score_dimensions(dimensions: Mapping[str, tuple[str, str]]) -> list[Score]:
+    """One string Score per dimension, `dim.<field>`. Dimensions slice queries; they are not
+    ratings or measurements."""
+    return [
+        Score(
+            f"dim.{field}",
+            value,
+            [],
+            {"source": source},
+            "session",
+            reason=f"{field} from the root Case"
+            if source == "root_case"
+            else f"{field} derived from the session's Cases",
+        )
+        for field, (value, source) in dimensions.items()
+    ]

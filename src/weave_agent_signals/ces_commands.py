@@ -29,6 +29,7 @@ from weave_agent_signals.models import Score, SessionView, session_is_evaluable
 from weave_agent_signals.patterns import ConfigStats, Stat
 from weave_agent_signals.scorers import score_session, score_trajectory, score_turn
 from weave_agent_signals.scorers.outcome import classify_command
+from weave_agent_signals.scorers.session import session_dimensions
 
 log = logging.getLogger("weave_agent_signals")
 
@@ -157,11 +158,17 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
             except Exception as error:
                 stats.errors += 1
                 log.warning("Error scoring turn %s: %s", turn.trace_id[:12], error)
+        try:
+            dimensions = session_dimensions(session, client.root_case_input(sid))
+        except Exception as error:
+            stats.errors += 1
+            log.warning("Could not read the root Case of %s: %s", sid[:12], error)
+            continue
         # The session's Scores, then each subagent's whole-Trajectory Scores, all stamped with
-        # the session's config and branch.
+        # the session's config and branch and sliced by the session's dimensions.
         for view in [session, *session.subagent_trajectories]:
             try:
-                scores = score_trajectory(view)
+                scores = score_trajectory(view, dimensions)
                 if view is session:
                     scores = score_session(view) + scores
                 run_time = view.turns[0].started_at if view.turns else None

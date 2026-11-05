@@ -13,8 +13,11 @@ from weave_agent_signals.scorers.session import (
     MEASURE_TURNS,
     SESSION_BUILDS,
     SESSION_TESTS,
+    repo_name,
+    score_dimensions,
     score_session_measures,
     score_session_outcomes,
+    session_dimensions,
 )
 
 START = datetime(2026, 11, 3, 23, 50, tzinfo=timezone.utc)
@@ -108,13 +111,13 @@ def test_no_test_or_build_writes_no_outcome():
 
 
 def test_an_empty_trajectory_gets_no_whole_trajectory_score():
-    assert score_trajectory(_session()) == []
+    assert score_trajectory(_session(), {"repo": ("core", "derived")}) == []
 
 
 def test_a_subagent_trajectory_is_scored_from_its_own_turns():
     subagent = _session(_turn(0, [_bash("pytest", 0, 1)]), trajectory_id="traj-a")
 
-    [score] = [s for s in score_trajectory(subagent) if s.scorer == SESSION_TESTS]
+    [score] = [s for s in score_trajectory(subagent, {}) if s.scorer == SESSION_TESTS]
     assert (score.value, score.granularity) == (True, "session")
 
 
@@ -140,3 +143,57 @@ def test_no_timed_turn_means_no_duration():
     measures = _by_name(score_session_measures(_session(_turn(0, ended_at=None))))
 
     assert MEASURE_DURATION not in measures and measures[MEASURE_TURNS].value == 1.0
+
+
+def test_the_adapters_root_case_fields_win_over_derived_dimensions():
+    root = {
+        "repo": "wandb/core",
+        "git_branch": "release",
+        "day": "2026-11-04",
+        "cwd": "/Users/x/repos/core-worktrees/evals",
+        "started_at": "2026-11-03T23:50:00Z",
+    }
+
+    assert session_dimensions(_session(_turn(0)), root) == {
+        "repo": ("wandb/core", "root_case"),
+        "git_branch": ("release", "root_case"),
+        "day": ("2026-11-04", "root_case"),
+    }
+
+
+def test_an_older_session_derives_its_dimensions_from_its_cases():
+    # 23:50 at UTC-5 is 04:50 the next day in UTC.
+    root = {"cwd": "/Users/x/repos/core-worktrees/evals/", "started_at": "2026-11-03T23:50-05:00"}
+    session = _session(_turn(0, git_branch=None), _turn(1, git_branch="feat/x"))
+
+    assert session_dimensions(session, root) == {
+        "repo": ("evals", "derived"),
+        "git_branch": ("feat/x", "derived"),
+        "day": ("2026-11-04", "derived"),
+    }
+
+
+def test_without_a_root_case_the_day_comes_from_the_first_timed_turn():
+    session = _session(_turn(0, ended_at=None), _turn(1))
+
+    # The untimed turn's start is the read time, so it's skipped; turn 1 starts 00:00 on the 4th.
+    assert session_dimensions(session, {}) == {
+        "git_branch": ("main", "derived"),
+        "day": ("2026-11-04", "derived"),
+    }
+
+
+def test_repo_name_keeps_only_the_last_path_segment():
+    assert repo_name("/Users/x/repos/core") == "core"
+    assert repo_name("C:\\work\\core\\") == "core"
+    assert repo_name("  ") is None and repo_name(None) is None
+
+
+def test_dimension_scores_are_strings_named_by_field():
+    [score] = score_dimensions({"repo": ("core", "derived")})
+
+    assert (score.scorer, score.value, score.metadata) == (
+        "dim.repo",
+        "core",
+        {"source": "derived"},
+    )

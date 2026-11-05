@@ -62,6 +62,7 @@ SESSION = session_view(
 class FakeCes:
     def __init__(self, turn_rows=None, session_rows=None):
         self.turn_rows, self.session_rows = turn_rows or {}, session_rows or {}
+        self.root = {"cwd": "/Users/x/repos/core", "started_at": "2026-11-03T23:30:00Z"}
         self.writes: list[tuple] = []
         self.session_score_reads: list[list[str]] = []
         self.closed = False
@@ -71,6 +72,9 @@ class FakeCes:
 
     def read_session(self, trajectory_id, *, subagents=True):
         return SESSION
+
+    def root_case_input(self, trajectory_id):
+        return self.root
 
     def turn_scores(self, catalog, trajectory_id):
         return self.turn_rows
@@ -103,7 +107,7 @@ def fake(monkeypatch):
         "score_session",
         lambda session: [Score("implicit.completion", True, [], {}, "session")],
     )
-    monkeypatch.setattr(ces_commands, "score_trajectory", lambda trajectory: [])
+    monkeypatch.setattr(ces_commands, "score_trajectory", lambda trajectory, dimensions: [])
     return client
 
 
@@ -187,7 +191,7 @@ def test_score_writes_whole_trajectory_scores_on_the_session_and_each_subagent(
     _run("score", "--since", "2026-11-02", "--force")
 
     sessions = [
-        (target, [n for n in names if not n.startswith("measure.")])
+        (target, [n for n in names if not n.startswith(("measure.", "dim."))])
         for _, kind, target, names in fake.writes
         if kind == "trajectory"
     ]
@@ -198,6 +202,43 @@ def test_score_writes_whole_trajectory_scores_on_the_session_and_each_subagent(
         ("traj-a", ["outcome.session_tests_passed"]),
     ]
     assert "1 sessions, 1 subagents" in capsys.readouterr().out
+
+
+def test_a_subagent_takes_its_sessions_dimensions(fake, monkeypatch):
+    written = []
+    monkeypatch.setattr(ces_commands, "score_trajectory", score_trajectory)
+    monkeypatch.setattr(
+        fake, "read_session", lambda sid, **_: replace(SESSION, subagent_trajectories=[SUBAGENT])
+    )
+    monkeypatch.setattr(
+        fake,
+        "write_scores",
+        lambda catalog, pass_id, kind, target, scores: written.append((target, scores)),
+    )
+    fake.root = {**fake.root, "repo": "wandb/core"}
+
+    _run("score", "--since", "2026-11-02")
+
+    dims = {
+        target: {s.scorer: s.value for s in scores if s.scorer.startswith("dim.")}
+        for target, scores in written
+        if target in ("s1", "traj-a")
+    }
+    # The branch is derived: SESSION's turns name none, so there is no dim.git_branch.
+    assert dims == {
+        "s1": {"dim.repo": "wandb/core", "dim.day": "2026-11-03"},
+        "traj-a": {"dim.repo": "wandb/core", "dim.day": "2026-11-03"},
+    }
+
+
+def test_a_session_whose_root_case_cant_be_read_writes_no_session_scores(fake, monkeypatch):
+    def fail(trajectory_id):
+        raise RuntimeError("CES is down")
+
+    monkeypatch.setattr(fake, "root_case_input", fail)
+
+    assert _run("score", "--since", "2026-11-02") == 1
+    assert [kind for _, kind, *_ in fake.writes] == ["case"]
 
 
 def test_backfill_reports_bash_coverage(fake, capsys):

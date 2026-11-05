@@ -306,6 +306,29 @@ def test_a_score_outside_the_catalog_or_of_the_wrong_type_is_refused():
         client.write_scores(
             catalog, "p", "trajectory", "s1", [Score("implicit.completion", 0.5, [], {}, "session")]
         )
+    with pytest.raises(ValueError, match="is string"):
+        client.write_scores(catalog, "p", "trajectory", "s1", [Score("dim.day", 3.0, [], {}, "x")])
+    with pytest.raises(ValueError, match="is number"):
+        client.write_scores(
+            catalog, "p", "trajectory", "s1", [Score("measure.turns", "3", [], {}, "session")]
+        )
+
+
+@respx.mock
+def test_a_dimension_score_is_written_as_a_string():
+    made = _catalog_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = client.ensure_catalog("ds-1")
+    route = respx.post(f"{BASE}/scores").mock(
+        return_value=httpx.Response(200, json={"score_ids": ["s1", "s2"]})
+    )
+
+    client.write_scores(
+        catalog, "p", "trajectory", "s1", [Score("dim.repo", "core", [], {}, "session")]
+    )
+
+    assert "monopole-scorer-v1:dim.repo:string:trajectory" in made
+    assert json.loads(route.calls.last.request.content)["scores"][0]["value"] == "core"
 
 
 @respx.mock
@@ -1047,3 +1070,17 @@ def test_a_measurement_score_never_becomes_a_rating_record():
     records = _score_record("s1", {}, scores, names)
 
     assert [r["feedback_type"] for r in records] == ["weave_agent_signals.implicit.completion"]
+
+
+@respx.mock
+def test_root_case_input_reads_the_trajectory_then_its_root_case():
+    respx.get(f"{BASE}/trajectories/traj-s").mock(
+        return_value=httpx.Response(200, json={"root_case_id": "c-session"})
+    )
+    respx.get(f"{BASE}/cases/c-session").mock(
+        return_value=httpx.Response(200, json={"input": {"kind": "session", "cwd": "/r/core"}})
+    )
+
+    root = CesClient("http://ces.test", "scope-1", api_key="k").root_case_input("traj-s")
+
+    assert root == {"kind": "session", "cwd": "/r/core"}

@@ -50,6 +50,15 @@ trends, alerts, or coaching. A session's tokens include the subagents below it;
 its turns and duration are its own, and duration counts only time inside turns.
 No cost in currency is recorded, because the session data has no prices.
 
+Dimensions are string Scores that let queries slice sessions the same way
+whether or not the adapter recorded the slice: the repository, the git branch,
+and the UTC day the session started. A session's root Case holds the adapter's
+values when it is new enough; otherwise each is derived from the session's
+Cases with the adapter's rules, the repository being the working directory's
+last path segment so no local path is stored. A subagent takes its session's
+dimensions. Dimensions are not ratings or measurements and never enter a
+summary, leaderboard, alert, or coaching digest.
+
 Whole-session Scorers are written by `score` and `backfill`, which read the
 whole session. Evaluation runs pin a subset of a session's turns, so they don't
 write them.

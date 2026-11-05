@@ -504,6 +504,13 @@ class CesClient:
             if not cursor:
                 return cases
 
+    def root_case_input(self, trajectory_id: str) -> dict:
+        """The input of the Case the Trajectory starts from: for a session, the session Case.
+        Listing a Trajectory's Cases leaves its root out, so this reads the Trajectory, then
+        the Case."""
+        root = self._request("GET", f"/trajectories/{trajectory_id}")["root_case_id"]
+        return self._request("GET", f"/cases/{root}").get("input") or {}
+
     def read_session(self, trajectory_id: str, *, subagents: bool = True) -> SessionView:
         """S's Cases plus every subagent Trajectory below it, as Monopole turns. Without
         `subagents`, the subagents S launched are named but not read, so they have no type or
@@ -858,8 +865,14 @@ class CesClient:
                 raise ValueError(
                     f"scorer {score.scorer!r} is not in the CES catalog for {target_kind} targets"
                 )
-            boolean = isinstance(score.value, bool)
-            if boolean != (ref.spec.value_type == "boolean"):
+            value_type = (
+                "boolean"
+                if isinstance(score.value, bool)
+                else "string"
+                if isinstance(score.value, str)
+                else "number"
+            )
+            if value_type != ref.spec.value_type:
                 raise ValueError(
                     f"scorer {score.scorer!r} is {ref.spec.value_type}, got {score.value!r}"
                 )
@@ -877,7 +890,7 @@ class CesClient:
                     "scorer_id": ref.scorer_id,
                     "scorer_version_id": ref.version_id,
                     "target": target,
-                    "value": score.value if boolean else float(score.value),
+                    "value": float(score.value) if value_type == "number" else score.value,
                 },
                 {
                     "scorer_id": ref.details_scorer_id,

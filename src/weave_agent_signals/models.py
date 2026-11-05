@@ -129,7 +129,7 @@ class SessionView:
 @dataclass
 class Score:
     scorer: str
-    value: Union[float, bool]
+    value: Union[float, bool, str]
     tags: list[str]
     metadata: dict[str, Any]
     granularity: str
