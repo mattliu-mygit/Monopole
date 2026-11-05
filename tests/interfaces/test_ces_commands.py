@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -19,6 +20,7 @@ from weave_agent_signals.ces_client import CesSession, session_view
 from weave_agent_signals.models import Score, SessionView, TraceRole
 from weave_agent_signals.patterns import ConfigStats, SessionSuccess, Stat
 from weave_agent_signals.scorers import score_session, score_trajectory
+from weave_agent_signals.scorers.session import scored_turns
 
 CATALOG = Catalog(
     "ev-turns",
@@ -184,8 +186,9 @@ def test_score_writes_whole_trajectory_scores_on_the_session_and_each_subagent(
     monkeypatch.setattr(
         fake, "read_session", lambda sid, **_: replace(SESSION, subagent_trajectories=[SUBAGENT])
     )
-    # The subagent already has its test outcome, so only a forced pass writes it again.
-    fake.session_rows = {"traj-a": [{"scorer_id": "sc-outcome.session_tests_passed"}]}
+    # The subagent already has its test outcome from its current turns, so only a forced pass
+    # writes it again.
+    fake.session_rows = {"traj-a": _recorded(SUBAGENT, "outcome.session_tests_passed")}
 
     _run("score", "--since", "2026-11-02")
     _run("score", "--since", "2026-11-02", "--force")
@@ -231,31 +234,88 @@ def test_a_subagent_takes_its_sessions_dimensions(fake, monkeypatch):
     }
 
 
-def test_a_running_session_waits_for_its_whole_trajectory_scores(fake, monkeypatch):
+def _recorded(view: SessionView, *names: str, turns: dict | None = None) -> list[dict]:
+    """Score rows on a Trajectory: each named Scorer's value and its details, which record the
+    turns it was computed from, `view`'s current turns unless `turns` says otherwise."""
+    details = {"details": {"scored_turns": turns or scored_turns(view)}}
+    return [
+        row
+        for name in names
+        for row in (
+            {"scorer_id": f"sc-{name}", "value": True},
+            # Read back from JSON, as CES returns it.
+            {"scorer_id": f"sc-{name}{DETAILS_SUFFIX}", "value": json.loads(json.dumps(details))},
+        )
+    ]
+
+
+WHOLE = ["outcome.session_tests_passed", "measure.turns", "dim.day"]
+
+
+def _trajectory_writes(fake, *argv):
+    _run("score", "--since", "2026-11-02", *argv)
+    writes = [(target, names) for _, kind, target, names in fake.writes if kind == "trajectory"]
+    fake.writes.clear()
+    return writes
+
+
+@pytest.fixture
+def whole(fake, monkeypatch):
+    """The fake with the real whole-Trajectory Scorers and SESSION with SUBAGENT."""
     monkeypatch.setattr(ces_commands, "score_trajectory", score_trajectory)
     monkeypatch.setattr(
         fake, "read_session", lambda sid, **_: replace(SESSION, subagent_trajectories=[SUBAGENT])
     )
-    monkeypatch.setattr(fake, "root_case_input", lambda sid: pytest.fail("no root read"))
-    # SESSION's last turn ended at 10:00:01 UTC on Nov 3; 59 minutes later it may still go on.
-    now = datetime(2026, 11, 3, 10, 59, 1, tzinfo=timezone.utc)
+    return fake
 
-    stats, _ = ces_commands._score_sessions(
-        fake,
-        CATALOG,
-        ["s1"],
-        since=datetime(2026, 11, 2, tzinfo=timezone.utc),
-        until=None,
-        force=False,
-        now=now,
+
+def test_a_session_that_gained_turns_since_its_scores_is_rescored(whole):
+    # s1's Scores were computed when it had one turn; it has two now. traj-a hasn't changed.
+    earlier = {"count": 1, "last_turn_id": "old", "last_turn_ended_at": None}
+    whole.session_rows = {
+        "s1": _recorded(SESSION, "implicit.completion", *WHOLE, turns=earlier),
+        "traj-a": _recorded(SUBAGENT, *WHOLE),
+    }
+
+    writes = dict(_trajectory_writes(whole))
+
+    # implicit.completion isn't whole-Trajectory, so its existing Score still stands.
+    assert set(WHOLE) <= set(writes["s1"]) and "implicit.completion" not in writes["s1"]
+    assert not set(WHOLE) & set(writes["traj-a"])
+
+
+def test_an_unchanged_session_is_skipped_unless_forced(whole):
+    whole.session_rows = {
+        "s1": _recorded(SESSION, "implicit.completion", *WHOLE),
+        "traj-a": _recorded(SUBAGENT, *WHOLE),
+    }
+
+    skipped = dict(_trajectory_writes(whole))
+    forced = dict(_trajectory_writes(whole, "--force"))
+
+    assert not set(WHOLE) & {name for names in skipped.values() for name in names}
+    assert set(WHOLE) <= set(forced["s1"]) and set(WHOLE) <= set(forced["traj-a"])
+
+
+def test_a_whole_trajectory_score_records_the_turns_it_came_from(whole, monkeypatch):
+    written = {}
+    monkeypatch.setattr(
+        whole,
+        "write_scores",
+        lambda catalog, pass_id, kind, target, scores: written.update(
+            {(target, s.scorer): s.metadata for s in scores}
+        ),
     )
 
-    assert [(kind, target, names) for _, kind, target, names in fake.writes] == [
-        ("case", "c1", ["outcome.test"]),
-        ("trajectory", "s1", ["implicit.completion"]),
-        ("trajectory", "traj-a", []),
-    ]
-    assert (stats.sessions, stats.subagents, stats.running) == (1, 0, 1)
+    _run("score", "--since", "2026-11-02")
+
+    assert written[("s1", "measure.turns")]["scored_turns"] == {
+        "count": 2,
+        "last_turn_id": "c1",
+        "last_turn_ended_at": "2026-11-03T10:00:01+00:00",
+    }
+    assert written[("traj-a", "measure.turns")]["scored_turns"] == scored_turns(SUBAGENT)
+    assert "scored_turns" not in written[("s1", "implicit.completion")]
 
 
 def test_a_session_whose_root_case_cant_be_read_writes_no_session_scores(fake, monkeypatch):

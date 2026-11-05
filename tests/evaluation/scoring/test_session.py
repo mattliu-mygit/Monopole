@@ -21,8 +21,8 @@ from weave_agent_signals.scorers.session import (
     score_dimensions,
     score_session_measures,
     score_session_outcomes,
+    scored_turns,
     session_dimensions,
-    session_finished,
 )
 
 START = datetime(2026, 11, 3, 23, 50, tzinfo=timezone.utc)
@@ -188,14 +188,21 @@ def test_without_a_root_case_the_day_comes_from_the_first_timed_turn():
     }
 
 
-def test_a_session_is_finished_an_hour_after_its_last_turn_ended():
-    # Turn 1 ends at START + 14 min; turn 2 has no timestamps, so its start is the read time.
+def test_scored_turns_counts_the_turns_and_names_the_last_one_and_the_latest_end():
+    # Turn 1 ends at START + 14 min; turn 2 has no timestamps, so its start is the read time
+    # and it adds no end.
     session = _session(_turn(0), _turn(1), _turn(2, ended_at=None))
-    last_end = START + timedelta(minutes=14)
 
-    assert not session_finished(session, last_end + timedelta(minutes=59))
-    assert session_finished(session, last_end + timedelta(hours=1))
-    assert session_finished(_session(_turn(0, ended_at=None)), START)
+    assert scored_turns(session) == {
+        "count": 3,
+        "last_turn_id": session.turns[-1].trace_id,
+        "last_turn_ended_at": (START + timedelta(minutes=14)).isoformat(),
+    }
+    assert scored_turns(_session()) == {
+        "count": 0,
+        "last_turn_id": None,
+        "last_turn_ended_at": None,
+    }
 
 
 @pytest.fixture

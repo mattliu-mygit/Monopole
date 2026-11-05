@@ -29,7 +29,7 @@ from weave_agent_signals.models import Score, SessionView, session_is_evaluable
 from weave_agent_signals.patterns import ConfigStats, Stat
 from weave_agent_signals.scorers import score_session, score_trajectory, score_turn
 from weave_agent_signals.scorers.outcome import classify_command
-from weave_agent_signals.scorers.session import session_dimensions, session_finished
+from weave_agent_signals.scorers.session import scored_turns, session_dimensions
 
 log = logging.getLogger("weave_agent_signals")
 
@@ -98,7 +98,7 @@ def connect(args: argparse.Namespace) -> CesSession:
 
 class _Stats:
     def __init__(self) -> None:
-        self.turns = self.sessions = self.subagents = self.running = 0
+        self.turns = self.sessions = self.subagents = 0
         self.scored = self.written = self.skipped = self.errors = 0
         self.tags: list[str] = []
 
@@ -114,12 +114,14 @@ def _write(
     stats.tags += [tag for s in todo for tag in s.tags]
 
 
-def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=None, now=None):
-    """Score each session's turns in the window, then the session, and once it's finished
-    (`session_finished`), its whole-Trajectory Scores and each subagent Trajectory below it.
-    Returns (stats, sessions)."""
+def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=None):
+    """Score each session's turns in the window, then the session, its whole-Trajectory Scores,
+    and each subagent Trajectory below it. Returns (stats, sessions).
+
+    Without `force`, a Scorer that already has a Score on its target is skipped, except a
+    whole-Trajectory Scorer whose Score recorded other turns than the Trajectory has now
+    (`scored_turns`): a conversation can stay live, so its Scores follow its new turns."""
     pass_id, stats, sessions = str(uuid.uuid4()), _Stats(), []
-    now = now or datetime.now(timezone.utc)
     session_ids = list(session_ids)
     # One read for every session: the session-row read pages all session rows each time.
     have_sessions = {} if force else client.session_scores(catalog, session_ids, subagents=True)
@@ -160,24 +162,20 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
             except Exception as error:
                 stats.errors += 1
                 log.warning("Error scoring turn %s: %s", turn.trace_id[:12], error)
-        finished, dimensions = session_finished(session, now), {}
-        if finished:
-            try:
-                dimensions = session_dimensions(session, client.root_case_input(sid))
-            except Exception as error:
-                stats.errors += 1
-                log.warning("Could not read the root Case of %s: %s", sid[:12], error)
-                continue
-        else:
-            stats.running += 1
-        # The session's Scores, then, once it's finished, the whole-Trajectory Scores of it and
-        # each subagent, all stamped with the session's config and branch and sliced by the
-        # session's dimensions.
+        try:
+            dimensions = session_dimensions(session, client.root_case_input(sid))
+        except Exception as error:
+            stats.errors += 1
+            log.warning("Could not read the root Case of %s: %s", sid[:12], error)
+            continue
+        # The session's Scores, then the whole-Trajectory Scores of it and each subagent, all
+        # stamped with the session's config and branch and sliced by the session's dimensions.
         for view in [session, *session.subagent_trajectories]:
             try:
-                scores = score_trajectory(view, dimensions) if finished else []
-                if view is session:
-                    scores = score_session(view) + scores
+                whole, turns = score_trajectory(view, dimensions), scored_turns(view)
+                for s in whole:
+                    s.metadata["scored_turns"] = turns
+                scores = score_session(view) + whole if view is session else whole
                 run_time = view.turns[0].started_at if view.turns else None
                 for s in scores:
                     s.stamp(
@@ -186,7 +184,14 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
                         run_time=run_time,
                     )
                 tid = view.conversation_id
-                have = catalog.scored(have_sessions.get(tid, []))
+                rows = have_sessions.get(tid, [])
+                recorded = catalog.recorded(rows)
+                changed = {
+                    s.scorer
+                    for s in whole
+                    if recorded.get(s.scorer, {}).get("scored_turns") != turns
+                }
+                have = catalog.scored(rows) - changed
                 _write(client, catalog, pass_id, "trajectory", tid, scores, have, force, stats)
                 if view is session:
                     stats.sessions += 1
@@ -219,11 +224,6 @@ def score(args: argparse.Namespace) -> int:
         f"Scored {stats.turns} turns, {stats.sessions} sessions, {stats.subagents} subagents"
         f" ({stats.scored} scores). Wrote {stats.written}."
     )
-    if stats.running:
-        print(
-            f"  Running: {stats.running} sessions get their outcome, measurement, and dimension"
-            " Scores once idle for an hour"
-        )
     if stats.errors:
         print(f"  Errors: {stats.errors} (use -v for details)")
     if stats.tags:
@@ -259,11 +259,6 @@ def backfill(args: argparse.Namespace) -> int:
         f"Backfilled {stats.written} scores across {stats.turns} turns, {stats.sessions} sessions,"
         f" {stats.subagents} subagents."
     )
-    if stats.running:
-        print(
-            f"  Running: {stats.running} sessions get their outcome, measurement, and dimension"
-            " Scores once idle for an hour"
-        )
     if stats.skipped:
         print(f"  Skipped: {stats.skipped} (existing, use --force to write newer scores)")
     print(f"  Bash coverage: {classified}/{len(commands)} classified ({pct:.0f}%)")

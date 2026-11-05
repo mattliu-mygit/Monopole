@@ -69,14 +69,17 @@ summary, leaderboard, alert, or coaching digest.
 
 Whole-session Scorers are written by `score` and `backfill`, which read the
 whole session. Evaluation runs pin a subset of a session's turns, so they don't
-write them. They are written only for a finished session: CES records no end
-for a session, so a session counts as finished when no turn of it ended in the
-last hour, the idle time after which the adapter, by default, sends a session's
-remaining turns. A session scored while it runs would otherwise keep partial
-outcomes and measurements, because later passes skip a Scorer that already has
-a Score unless forced. Its turn Scores and older session Scores are still
-written. A session that resumes after an hour keeps its first whole-session
-Scores until a forced pass.
+write them. A conversation can stay live indefinitely, and CES records no end
+for a session, so every pass scores every session it reads, finished or not.
+Each whole-session Score records in its details, as `scored_turns`, the turns it
+was computed from: how many, the last turn's ID, and the latest turn end. A
+later pass without force rewrites a Trajectory's whole-session Scores when its
+turns differ from what its Scores recorded, and skips them otherwise. Example: a
+session scored with 4 turns that has 6 now gets newer outcome, measurement, and
+dimension Scores; the same 4 turns write nothing. The same holds for each
+subagent Trajectory. Reads take the newest Score, so a live session's Scores
+follow its turns. Other session Scorers, such as `implicit.*` and
+`efficiency.session`, keep the skip-if-present rule.
 
 Deterministic parsers favor precision over coverage. They inspect only retained
 tool evidence and do not claim intent, semantic code quality, test quality, or

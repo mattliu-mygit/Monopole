@@ -53,7 +53,9 @@ command's pass is a new UUID. Reads return the newest Score per Scorer, so a
 forced rescore writes newer Scores and never purges. Without force, a Scorer that
 already has a Score on the target is skipped, so `backfill` over an old range adds
 only the Scorers each turn, session, and subagent lacks, such as Scorers added
-since it was scored. The existing-Score read for `score` and `backfill` finds a
+since it was scored. The exception is a whole-session Scorer whose Score recorded
+other turns than the Trajectory has now; it is rewritten
+([`02-evaluation.md`](02-evaluation.md)). The existing-Score read for `score` and `backfill` finds a
 session's subagent Trajectories by their parent IDs in the Trajectory rows; the
 index fallback below can't, so there a rerun writes subagent Scores again, and
 reads still take the newest.

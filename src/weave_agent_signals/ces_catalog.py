@@ -118,6 +118,16 @@ class Catalog:
             if r["scorer_id"] in names and not names[r["scorer_id"]][1]
         }
 
+    def recorded(self, rows: list[dict]) -> dict[str, dict]:
+        """Each scorer's scorer-specific details (`payload.details`), from its details Score
+        among a target's Score rows."""
+        names = self.by_scorer_id()
+        return {
+            names[r["scorer_id"]][0]: r["value"].get("details") or {}
+            for r in rows
+            if names.get(r["scorer_id"], ("", False))[1] and isinstance(r.get("value"), dict)
+        }
+
     def by_scorer_id(self) -> dict[str, tuple[str, bool]]:
         """CES scorer ID → (Monopole scorer name, whether it is the details Scorer)."""
         found = {}

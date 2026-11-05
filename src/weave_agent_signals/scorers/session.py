@@ -13,7 +13,7 @@ import re
 import subprocess
 import urllib.parse
 from collections.abc import Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from weave_agent_signals.models import Score, SessionView, ToolSpan
 from weave_agent_signals.scorers.outcome import BuildOutcome, TestRunOutcome, extract_outcomes
@@ -26,22 +26,23 @@ MEASURE_TOKENS = "measure.tokens"
 MEASURE_DURATION = "measure.duration_s"
 # Fields the adapter writes on a new session's root Case, each scored as `dim.<field>`.
 DIMENSION_FIELDS = ("repo", "git_branch", "day")
-# CES records no end for a session. The adapter sends a session's unwritten turns once it has
-# been idle this long (its default `session_ttl_s`), so a session idle longer is taken as over.
-FINISHED_AFTER_IDLE = timedelta(hours=1)
 GIT_TIMEOUT_S = 2.0
 # Git reads `host:path` as SSH when no slash comes before the colon: `git@github.com:o/r.git`.
 _SCP_LIKE = re.compile(r"^(?:[^@/:]+@)?[^/:]+:(?P<path>.+)$")
 
 
-def session_finished(session: SessionView, now: datetime) -> bool:
-    """Whether no turn of the session ended within the last FINISHED_AFTER_IDLE before `now`.
-    The whole-Trajectory Scores wait for it, because a Scorer that already has a Score isn't
-    rewritten without `--force`, so a running session would keep a partial count. A session
-    that resumes later keeps its first Scores. Turns without timestamps are skipped; a session
-    with none timed counts as finished, since nothing shows it running."""
-    ends = [t.ended_at for t in session.turns if t.ended_at is not None]
-    return not ends or now - max(ends) >= FINISHED_AFTER_IDLE
+def scored_turns(trajectory: SessionView) -> dict:
+    """The turns a whole-Trajectory Score was computed from, recorded in its details as
+    `scored_turns`: how many, the last one's ID, and the latest turn end. A later pass rewrites
+    the Score when this differs, so a live conversation's Scores follow its new turns. Untimed
+    turns are left out of the end, because their start is the read time."""
+    turns = trajectory.turns
+    ends = [t.ended_at for t in turns if t.ended_at is not None]
+    return {
+        "count": len(turns),
+        "last_turn_id": turns[-1].trace_id if turns else None,
+        "last_turn_ended_at": max(ends).isoformat() if ends else None,
+    }
 
 
 def _tool_calls(session: SessionView) -> list[ToolSpan]:
