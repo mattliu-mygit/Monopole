@@ -454,10 +454,10 @@ def test_reviewer_digests_once_then_reads_every_window_and_merges() -> None:
     ]
 
 
-def test_large_reviewer_uses_10k_generation_budget_for_every_phase() -> None:
+def test_large_reviewer_uses_32k_generation_budget_for_every_phase() -> None:
     reviewer, client, _, _ = _reviewer(
         judge=_judge(
-            max_input_tokens=262_000,
+            max_input_tokens=1_049_000,
             window_budget_tokens=20_000,
             whole_budget_tokens=20_000,
         ),
@@ -468,7 +468,7 @@ def test_large_reviewer_uses_10k_generation_budget_for_every_phase() -> None:
 
     assert result.status == "succeeded"
     assert {call["phase"] for call in client.calls} == {"digest", "window", "merge"}
-    assert all(call["max_tokens"] == 10_000 for call in client.calls)
+    assert all(call["max_tokens"] == 32_000 for call in client.calls)
 
 
 def test_wandb_reviewer_disables_reasoning_for_digest_and_merge() -> None:

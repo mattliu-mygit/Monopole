@@ -80,7 +80,7 @@ class JudgingContextPolicy(StrictFrozenModel):
         """Return the structured-generation allowance for a model capacity."""
 
         _require_model_limit(model_limit)
-        cap = 10_000 if model_limit > self.large_model_threshold_tokens else 4_000
+        cap = 32_000 if model_limit > self.large_model_threshold_tokens else 4_000
         return _clamp(round(0.10 * model_limit), 1_000, cap)
 
     def safety_reserve(self, model_limit: int) -> int:

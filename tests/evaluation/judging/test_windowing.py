@@ -167,8 +167,8 @@ def test_window_plan_uses_large_capacity_tier_above_threshold():
         window_budget_tokens=128_000,
     )
 
-    assert plan["capacity_reserve_tokens"] == 24_000
-    assert plan["raw_budget_tokens"] == 176_001
+    assert plan["capacity_reserve_tokens"] == 34_000
+    assert plan["raw_budget_tokens"] == 166_001
     assert plan["target_raw_tokens"] == 128_000
 
 
@@ -246,7 +246,7 @@ def test_large_model_uses_its_window_budget_instead_of_filling_context():
         window_budget_tokens=128_000,
     )
 
-    assert plan["raw_budget_tokens"] == 375_000
+    assert plan["raw_budget_tokens"] == 353_000
     assert plan["target_raw_tokens"] == 128_000
     assert [window["core_trace_ids"] for window in plan["windows"]] == [
         ["t1", "t2"],

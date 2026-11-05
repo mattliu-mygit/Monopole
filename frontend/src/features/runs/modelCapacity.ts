@@ -22,7 +22,7 @@ function clamp(value: number, low: number, high: number): number {
 
 export function capacityReserve(modelLimit: number): number {
   const prompt = clamp(roundHalfToEven(0.15 * modelLimit), 2_000, 6_000)
-  const generationCap = modelLimit > 200_000 ? 10_000 : 4_000
+  const generationCap = modelLimit > 200_000 ? 32_000 : 4_000
   const generation = clamp(roundHalfToEven(0.10 * modelLimit), 1_000, generationCap)
   const safety = clamp(roundHalfToEven(0.05 * modelLimit), 1_000, 8_000)
   return prompt + generation + safety
