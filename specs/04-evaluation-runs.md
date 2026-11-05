@@ -218,8 +218,9 @@ does not supply revisions. Model-authored host shell commands, credentials,
 private sources, and moving branches are rejected. A repository that cannot be
 resolved anonymously is rejected and returned to the planner for a different
 public-only analogous material choice, for at most three complete planning
-attempts. The service fetches each pinned revision once into a temporary checkout
-and excludes Git metadata before task authoring. In `prepared_workspace` mode,
+attempts. The service fetches each pinned revision once into a temporary checkout,
+checks symlinks out as plain files holding their targets, and excludes Git
+metadata before task authoring. In `prepared_workspace` mode,
 it overlays the fetched files on the common execution workspace before forking
 A and B. In `agent_bootstrap` mode, fetched files are authoring context only;
 both agents receive the same pinned material specification and must perform the

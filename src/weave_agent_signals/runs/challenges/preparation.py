@@ -87,7 +87,20 @@ def _fetch_repository(material: TaskMaterial) -> WorkspaceSnapshot:
                     material.revision,
                 ],
             ),
-            ("checkout", ["git", "checkout", "--quiet", "--detach", "FETCH_HEAD"]),
+            # Sandbox workspaces refuse symlinks, so each one arrives as a text file holding
+            # its target.
+            (
+                "checkout",
+                [
+                    "git",
+                    "-c",
+                    "core.symlinks=false",
+                    "checkout",
+                    "--quiet",
+                    "--detach",
+                    "FETCH_HEAD",
+                ],
+            ),
         )
         for stage, command in commands:
             result = subprocess.run(

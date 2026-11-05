@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -170,10 +171,43 @@ def test_default_git_fetcher_uses_detached_pinned_revision_and_excludes_git_meta
             "origin",
             "a" * 40,
         ],
-        ["git", "checkout", "--quiet", "--detach", "FETCH_HEAD"],
+        ["git", "-c", "core.symlinks=false", "checkout", "--quiet", "--detach", "FETCH_HEAD"],
     ]
     assert all(kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0" for kwargs in run_kwargs)
     assert result.paths == ("task/app.py",)
+
+
+def test_default_git_fetcher_checks_out_a_symlink_as_a_plain_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    origin = tmp_path / "origin"
+    (origin / "certs").mkdir(parents=True)
+    (origin / "certs" / "ca.pem").write_text("certificate\n", encoding="utf-8")
+    (origin / "certs" / "ca").symlink_to("ca.pem")
+    git = ["git", "-C", str(origin), "-c", "user.name=Test", "-c", "user.email=test@example.com"]
+    subprocess.run([*git, "init", "--quiet"], check=True)
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "--quiet", "-m", "seed"], check=True)
+    revision = subprocess.run(
+        [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    material = TaskMaterial(
+        url="https://github.com/example/parser.git", revision=revision, destination="task"
+    )
+    real_run = subprocess.run
+
+    def run(command, **kwargs):
+        return real_run(
+            [origin.as_uri() if part == material.url else part for part in command], **kwargs
+        )
+
+    monkeypatch.setattr("weave_agent_signals.runs.challenges.preparation.subprocess.run", run)
+
+    result = prepare_task_workspace(WorkspaceSnapshot(()), _task("prepared_workspace", material))
+
+    contents = {item.path: item.content for item in result.files}
+    assert contents == {"task/certs/ca": b"ca.pem", "task/certs/ca.pem": b"certificate\n"}
 
 
 def test_repository_head_resolver_returns_the_advertised_commit(monkeypatch) -> None:
