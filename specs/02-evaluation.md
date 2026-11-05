@@ -65,7 +65,14 @@ summary, leaderboard, alert, or coaching digest.
 
 Whole-session Scorers are written by `score` and `backfill`, which read the
 whole session. Evaluation runs pin a subset of a session's turns, so they don't
-write them.
+write them. They are written only for a finished session: CES records no end
+for a session, so a session counts as finished when no turn of it ended in the
+last hour, the idle time after which the adapter, by default, sends a session's
+remaining turns. A session scored while it runs would otherwise keep partial
+outcomes and measurements, because later passes skip a Scorer that already has
+a Score unless forced. Its turn Scores and older session Scores are still
+written. A session that resumes after an hour keeps its first whole-session
+Scores until a forced pass.
 
 Deterministic parsers favor precision over coverage. They inspect only retained
 tool evidence and do not claim intent, semantic code quality, test quality, or

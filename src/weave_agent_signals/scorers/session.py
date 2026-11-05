@@ -13,7 +13,7 @@ import re
 import subprocess
 import urllib.parse
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from weave_agent_signals.models import Score, SessionView, ToolSpan
 from weave_agent_signals.scorers.outcome import BuildOutcome, TestRunOutcome, extract_outcomes
@@ -26,9 +26,22 @@ MEASURE_TOKENS = "measure.tokens"
 MEASURE_DURATION = "measure.duration_s"
 # Fields the adapter writes on a new session's root Case, each scored as `dim.<field>`.
 DIMENSION_FIELDS = ("repo", "git_branch", "day")
+# CES records no end for a session. The adapter sends a session's unwritten turns once it has
+# been idle this long (its default `session_ttl_s`), so a session idle longer is taken as over.
+FINISHED_AFTER_IDLE = timedelta(hours=1)
 GIT_TIMEOUT_S = 2.0
 # Git reads `host:path` as SSH when no slash comes before the colon: `git@github.com:o/r.git`.
 _SCP_LIKE = re.compile(r"^(?:[^@/:]+@)?[^/:]+:(?P<path>.+)$")
+
+
+def session_finished(session: SessionView, now: datetime) -> bool:
+    """Whether no turn of the session ended within the last FINISHED_AFTER_IDLE before `now`.
+    The whole-Trajectory Scores wait for it, because a Scorer that already has a Score isn't
+    rewritten without `--force`, so a running session would keep a partial count. A session
+    that resumes later keeps its first Scores. Turns without timestamps are skipped; a session
+    with none timed counts as finished, since nothing shows it running."""
+    ends = [t.ended_at for t in session.turns if t.ended_at is not None]
+    return not ends or now - max(ends) >= FINISHED_AFTER_IDLE
 
 
 def _tool_calls(session: SessionView) -> list[ToolSpan]:

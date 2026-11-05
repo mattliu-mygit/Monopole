@@ -231,6 +231,33 @@ def test_a_subagent_takes_its_sessions_dimensions(fake, monkeypatch):
     }
 
 
+def test_a_running_session_waits_for_its_whole_trajectory_scores(fake, monkeypatch):
+    monkeypatch.setattr(ces_commands, "score_trajectory", score_trajectory)
+    monkeypatch.setattr(
+        fake, "read_session", lambda sid, **_: replace(SESSION, subagent_trajectories=[SUBAGENT])
+    )
+    monkeypatch.setattr(fake, "root_case_input", lambda sid: pytest.fail("no root read"))
+    # SESSION's last turn ended at 10:00:01 UTC on Nov 3; 59 minutes later it may still go on.
+    now = datetime(2026, 11, 3, 10, 59, 1, tzinfo=timezone.utc)
+
+    stats, _ = ces_commands._score_sessions(
+        fake,
+        CATALOG,
+        ["s1"],
+        since=datetime(2026, 11, 2, tzinfo=timezone.utc),
+        until=None,
+        force=False,
+        now=now,
+    )
+
+    assert [(kind, target, names) for _, kind, target, names in fake.writes] == [
+        ("case", "c1", ["outcome.test"]),
+        ("trajectory", "s1", ["implicit.completion"]),
+        ("trajectory", "traj-a", []),
+    ]
+    assert (stats.sessions, stats.subagents, stats.running) == (1, 0, 1)
+
+
 def test_a_session_whose_root_case_cant_be_read_writes_no_session_scores(fake, monkeypatch):
     def fail(trajectory_id):
         raise RuntimeError("CES is down")

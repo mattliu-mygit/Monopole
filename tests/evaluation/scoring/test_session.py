@@ -22,6 +22,7 @@ from weave_agent_signals.scorers.session import (
     score_session_measures,
     score_session_outcomes,
     session_dimensions,
+    session_finished,
 )
 
 START = datetime(2026, 11, 3, 23, 50, tzinfo=timezone.utc)
@@ -185,6 +186,16 @@ def test_without_a_root_case_the_day_comes_from_the_first_timed_turn():
         "git_branch": ("main", "derived"),
         "day": ("2026-11-04", "derived"),
     }
+
+
+def test_a_session_is_finished_an_hour_after_its_last_turn_ended():
+    # Turn 1 ends at START + 14 min; turn 2 has no timestamps, so its start is the read time.
+    session = _session(_turn(0), _turn(1), _turn(2, ended_at=None))
+    last_end = START + timedelta(minutes=14)
+
+    assert not session_finished(session, last_end + timedelta(minutes=59))
+    assert session_finished(session, last_end + timedelta(hours=1))
+    assert session_finished(_session(_turn(0, ended_at=None)), START)
 
 
 @pytest.fixture
