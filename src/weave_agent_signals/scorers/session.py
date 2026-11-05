@@ -7,7 +7,11 @@ that a subagent ran counts for its session too.
 
 from __future__ import annotations
 
+import functools
+import os
 import re
+import subprocess
+import urllib.parse
 from collections.abc import Mapping
 from datetime import datetime, timezone
 
@@ -22,6 +26,9 @@ MEASURE_TOKENS = "measure.tokens"
 MEASURE_DURATION = "measure.duration_s"
 # Fields the adapter writes on a new session's root Case, each scored as `dim.<field>`.
 DIMENSION_FIELDS = ("repo", "git_branch", "day")
+GIT_TIMEOUT_S = 2.0
+# Git reads `host:path` as SSH when no slash comes before the colon: `git@github.com:o/r.git`.
+_SCP_LIKE = re.compile(r"^(?:[^@/:]+@)?[^/:]+:(?P<path>.+)$")
 
 
 def _tool_calls(session: SessionView) -> list[ToolSpan]:
@@ -114,11 +121,62 @@ def _text(value: object) -> str | None:
     return (value.strip() or None) if isinstance(value, str) else None
 
 
-def repo_name(cwd: object) -> str | None:
-    """A working directory reduced to its last path segment, the adapter's rule for a
-    directory with no known git remote, so the Score holds no local path."""
+# Asked once per directory per process, as the adapter does: a scoring pass reads many
+# sessions from the same few directories.
+@functools.lru_cache(maxsize=256)
+def repo_identity(cwd: str | None) -> str | None:
+    """The adapter's `repo` for a session whose root Case predates it, lowercased, so old and
+    new sessions of one repository share one `dim.repo` value and no local path is stored.
+
+    It follows `weave_agent_adapter/repo.py`, run on this machine, so it sees the working
+    directory as it is now:
+
+    1. In a git checkout, the `origin` URL's path after the host, without credentials or a
+       trailing `.git`: `git@github.com:wandb/core.git` gives `wandb/core`. With no `origin`, or
+       one that is a local path, the checkout's top-level folder name.
+    2. Else, such as a directory deleted since or from another machine, the directory's own
+       folder name: `/Users/me/src/Core` gives `core`."""
     text = _text(cwd)
-    return _text(re.split(r"[\\/]+", text.rstrip("\\/"))[-1]) if text else None
+    if text is None:
+        return None
+    if top := _git(text, "rev-parse", "--show-toplevel"):
+        remote = _git(text, "remote", "get-url", "origin")
+        name = (remote and remote_path(remote)) or os.path.basename(top)
+    else:
+        name = re.split(r"[\\/]+", text.rstrip("\\/"))[-1]
+    return name.lower() or None
+
+
+def remote_path(url: str) -> str | None:
+    """The repository path in a hosted remote URL, or None for a local path. The adapter's
+    parsing: `https://token@github.com/wandb/core.git/` gives `wandb/core`."""
+    if "://" in url:
+        parts = urllib.parse.urlsplit(url)
+        if not parts.hostname:  # file:///srv/git/core.git
+            return None
+        path = parts.path
+    else:
+        match = _SCP_LIKE.match(url)
+        if match is None:  # /srv/git/core.git or ../core
+            return None
+        path = match.group("path")
+    return path.strip("/").removesuffix(".git").rstrip("/") or None
+
+
+def _git(cwd: str, *args: str) -> str | None:
+    """Git's output in `cwd`, or None when it fails, times out, or isn't installed."""
+    try:
+        done = subprocess.run(
+            ["git", "-C", cwd, *args],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = done.stdout.strip()
+    return out if done.returncode == 0 and out else None
 
 
 def _day(started_at: object) -> str | None:
@@ -140,12 +198,13 @@ def session_dimensions(session: SessionView, root: Mapping) -> dict[str, tuple[s
 
     The adapter's `repo`, `git_branch`, and `day` fields win when set. Older sessions lack
     them, so the value is derived the way the adapter derives it: the repo from the session
-    Case's `cwd`, the branch from the first turn that names one, and the day from the session
-    Case's `started_at`, else the first timed turn's start. A value that can't be found is
-    left out. A subagent takes its session's dimensions."""
+    Case's `cwd` (`repo_identity`), the branch from the first turn that names one, and the day
+    from the session Case's `started_at`, else the first timed turn's start. A value that can't
+    be found is left out. A subagent takes its session's dimensions."""
     timed = [t.started_at for t in session.turns if t.ended_at is not None]
+    cwd = root.get("cwd")
     derived = {
-        "repo": repo_name(root.get("cwd")),
+        "repo": repo_identity(cwd if isinstance(cwd, str) else None),
         "git_branch": next((b for t in session.turns if (b := _text(t.git_branch))), None),
         "day": _day(root.get("started_at"))
         or (timed[0].astimezone(timezone.utc).date().isoformat() if timed else None),

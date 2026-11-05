@@ -54,9 +54,13 @@ Dimensions are string Scores that let queries slice sessions the same way
 whether or not the adapter recorded the slice: the repository, the git branch,
 and the UTC day the session started. A session's root Case holds the adapter's
 values when it is new enough; otherwise each is derived from the session's
-Cases with the adapter's rules, the repository being the working directory's
-last path segment so no local path is stored. A subagent takes its session's
-dimensions. Dimensions are not ratings or measurements and never enter a
+Cases with the adapter's rules. The repository follows the adapter's `repo`
+rule, lowercased, so old and new sessions of one repository share one value:
+when the session's working directory is still a git checkout on the scoring
+machine, the `origin` URL's path after the host (`wandb/core`), else the
+checkout's or the directory's folder name (`core`). No local path is stored. A
+directory that changed since the session, such as a new `origin`, gives today's
+answer. A subagent takes its session's dimensions. Dimensions are not ratings or measurements and never enter a
 summary, leaderboard, alert, or coaching digest.
 
 Whole-session Scorers are written by `score` and `backfill`, which read the

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from weave_agent_signals.models import SessionView, SubagentSpan, ToolSpan, TurnSpan
 from weave_agent_signals.scorers import score_trajectory
@@ -13,7 +17,7 @@ from weave_agent_signals.scorers.session import (
     MEASURE_TURNS,
     SESSION_BUILDS,
     SESSION_TESTS,
-    repo_name,
+    repo_identity,
     score_dimensions,
     score_session_measures,
     score_session_outcomes,
@@ -183,10 +187,60 @@ def test_without_a_root_case_the_day_comes_from_the_first_timed_turn():
     }
 
 
-def test_repo_name_keeps_only_the_last_path_segment():
-    assert repo_name("/Users/x/repos/core") == "core"
-    assert repo_name("C:\\work\\core\\") == "core"
-    assert repo_name("  ") is None and repo_name(None) is None
+@pytest.fixture
+def git_repo(tmp_path, monkeypatch):
+    """A function making a real git checkout under tmp_path, isolated from the user's git
+    config, with `origin` set to the given URL when there is one."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+    def make(name, origin=None):
+        path = tmp_path / name
+        path.mkdir()
+        subprocess.run(["git", "init", "-q", str(path)], check=True)
+        if origin:
+            subprocess.run(["git", "-C", str(path), "remote", "add", "origin", origin], check=True)
+        return path
+
+    return make
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "git@github.com:Wandb/Core.git",
+        "ssh://git@github.com:2222/wandb/core.git",
+        "https://x-access-token:secret@github.com/wandb/core.git/",
+    ],
+)
+def test_a_checkout_with_a_hosted_origin_is_named_owner_slash_name(git_repo, origin):
+    checkout = git_repo("core-worktree", origin)
+    (checkout / "src").mkdir()
+
+    assert repo_identity(str(checkout / "src")) == "wandb/core"
+
+
+def test_a_checkout_without_a_hosted_origin_is_named_by_its_top_level_folder(git_repo):
+    bare = git_repo("Core")
+    local = git_repo("weave", "/srv/git/weave.git")
+    (bare / "src").mkdir()
+
+    assert repo_identity(str(bare / "src")) == "core"
+    assert repo_identity(str(local)) == "weave"
+
+
+def test_a_missing_directory_is_named_by_its_own_folder(tmp_path):
+    assert repo_identity(str(tmp_path / "gone" / "Core")) == "core"
+    assert repo_identity("C:\\work\\core\\") == "core"
+    assert repo_identity("  ") is None and repo_identity(None) is None
+
+
+def test_an_older_session_in_a_checkout_takes_the_adapters_repo(git_repo):
+    checkout = git_repo("core", "git@github.com:wandb/core.git")
+
+    found = session_dimensions(_session(_turn(0)), {"cwd": str(checkout)})
+
+    assert found["repo"] == ("wandb/core", "derived")
 
 
 def test_dimension_scores_are_strings_named_by_field():
