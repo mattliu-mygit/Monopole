@@ -410,6 +410,28 @@ def test_a_turn_without_a_prompt_keeps_its_span_ids_distinct_from_its_turn_id():
 
 
 @respx.mock
+def test_trajectory_cases_shrink_the_page_when_ces_storage_capacity_is_exceeded():
+    limits = []
+
+    def page(request):
+        limit = int(request.url.params["limit"])
+        limits.append(limit)
+        if limit > 250:
+            return httpx.Response(
+                503,
+                json={"error": {"code": "storage_capacity_exceeded"}},
+                headers={"Retry-After": "1"},
+            )
+        return httpx.Response(200, json={"cases": [{"case_id": "c1"}], "next_cursor": None})
+
+    respx.get(f"{BASE}/trajectories/traj-s/cases").mock(side_effect=page)
+    client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=lambda _: None)
+
+    assert client.trajectory_cases("traj-s") == [{"case_id": "c1"}]
+    assert limits == [1000, 500, 250]
+
+
+@respx.mock
 @pytest.mark.parametrize("status", [400, 404, 405])
 def test_a_trajectory_row_route_error_is_raised(status):
     _catalog_routes()
@@ -754,6 +776,33 @@ def test_a_5xx_is_retried_and_a_transport_error_raises_after_the_last_attempt():
     with pytest.raises(httpx.ConnectError):
         client.get_score("s2")
     assert slept == [1, 1, 2]
+
+
+def _capacity(code: str) -> httpx.Response:
+    return httpx.Response(503, json={"error": {"code": code}}, headers={"Retry-After": "1"})
+
+
+@respx.mock
+def test_busy_ces_query_capacity_is_retried_past_the_usual_attempts():
+    slept = []
+    client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=slept.append)
+    respx.get(f"{BASE}/scores/s1").mock(
+        side_effect=[*[_capacity("capacity_unavailable")] * 5, httpx.Response(200, json={})]
+    )
+
+    client.get_score("s1")
+
+    assert slept == [1, 1, 1, 1, 1]
+
+
+@respx.mock
+def test_a_query_over_ces_storage_capacity_is_not_resent_unchanged():
+    client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=lambda _: None)
+    route = respx.get(f"{BASE}/scores/s1").mock(return_value=_capacity("storage_capacity_exceeded"))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        client.get_score("s1")
+    assert route.call_count == 1
 
 
 @respx.mock

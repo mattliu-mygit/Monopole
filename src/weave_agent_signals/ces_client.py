@@ -41,6 +41,8 @@ from weave_agent_signals.models import (
 )
 
 ATTEMPTS = 3
+# Up to 16 concurrent reads share CES's few query slots, so a busy rejection gets more tries.
+CAPACITY_ATTEMPTS = 8
 MAX_RETRY_AFTER_S = 30.0
 PAGE_LIMIT = 1000
 # Independent reads (one session's turn rows, one subagent's Cases) run this many at once.
@@ -64,6 +66,13 @@ def _ts(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _error_code(response: httpx.Response) -> str | None:
+    try:
+        return (response.json().get("error") or {}).get("code")
+    except (ValueError, AttributeError):
+        return None
 
 
 def _int(value: Any) -> int:
@@ -439,19 +448,33 @@ class CesClient:
     def _request(
         self, method: str, path: str, *, params=None, body=None, key: str | None = None
     ) -> dict:
-        """Retries network errors, 429, and 5xx, honoring Retry-After. Raises the last error."""
+        """Retries network errors, 429, and 5xx, honoring Retry-After. Raises the last error.
+
+        CES answers 503 `capacity_unavailable` when it is already running its few concurrent
+        queries; that clears in a second or two, so it gets more attempts. 503
+        `storage_capacity_exceeded` means this query reads too much, so resending it unchanged
+        can't help and it raises at once."""
         headers = {"Idempotency-Key": key} if key else {}
-        for attempt in range(1, ATTEMPTS + 1):
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 response = self._http.request(
                     method, self.base + path, params=params, json=body, headers=headers
                 )
             except httpx.TransportError:
-                if attempt == ATTEMPTS:
+                if attempt >= ATTEMPTS:
                     raise
                 self._sleep(2 ** (attempt - 1))
                 continue
-            if response.status_code != 429 and response.status_code < 500 or attempt == ATTEMPTS:
+            code = _error_code(response) if response.status_code == 503 else None
+            limit = CAPACITY_ATTEMPTS if code == "capacity_unavailable" else ATTEMPTS
+            if (
+                response.status_code != 429
+                and response.status_code < 500
+                or code == "storage_capacity_exceeded"
+                or attempt >= limit
+            ):
                 response.raise_for_status()
                 return response.json()
             retry_after = response.headers.get("Retry-After", "")
@@ -464,10 +487,18 @@ class CesClient:
         raise AssertionError("unreachable")
 
     def trajectory_cases(self, trajectory_id: str) -> list[dict]:
-        cases, cursor = [], None
+        """A session with large Cases can exceed CES's per-query storage budget at 1,000 rows,
+        which CES rejects with 503 storage_capacity_exceeded, so the page halves until it fits."""
+        cases, cursor, limit = [], None, PAGE_LIMIT
         while True:
-            params = {"limit": PAGE_LIMIT, **({"cursor": cursor} if cursor else {})}
-            page = self._request("GET", f"/trajectories/{trajectory_id}/cases", params=params)
+            params = {"limit": limit, **({"cursor": cursor} if cursor else {})}
+            try:
+                page = self._request("GET", f"/trajectories/{trajectory_id}/cases", params=params)
+            except httpx.HTTPStatusError as error:
+                if limit == 1 or _error_code(error.response) != "storage_capacity_exceeded":
+                    raise
+                limit //= 2
+                continue
             cases.extend(page.get("cases") or [])
             cursor = page.get("next_cursor")
             if not cursor:
