@@ -39,7 +39,7 @@ _INFERENCE_SAFETY_TOKENS = 1_024
 _JUDGE_MAX_TRANSCRIPT_CHARACTERS = 100_000
 _JUDGE_MAX_ARTIFACT_DIFF_CHARACTERS = 50_000
 _JUDGE_MAX_ARTIFACT_CHANGES = 200
-_TASK_WORKSPACE_MANIFEST_PATHS = 64
+_TASK_WORKSPACE_MANIFEST_MIN_PATHS = 64
 _MATERIAL_PLAN_ATTEMPTS = 3
 _REDACTED_INSTRUCTION_EVIDENCE = "managed instruction evidence withheld from blinded judge"
 
@@ -250,9 +250,22 @@ def _workspace_summary(workspace: WorkspaceSnapshot) -> dict[str, object]:
     }
 
 
-def _workspace_manifest(workspace: WorkspaceSnapshot) -> tuple[list[str], bool]:
+def _workspace_manifest(
+    workspace: WorkspaceSnapshot, author: ModelDescriptor
+) -> tuple[list[str], bool]:
+    """List paths in order, using up to an eighth of the author's input limit per manifest, so a
+    large-context author sees a real repository's source tree. Small authors still get 64."""
+
     paths = list(workspace.paths)
-    return paths[:_TASK_WORKSPACE_MANIFEST_PATHS], len(paths) > _TASK_WORKSPACE_MANIFEST_PATHS
+    budget = _input_limit(author, max_output_tokens=1_024) // 8
+    count = used = 0
+    for path in paths:
+        used += count_tokens(json.dumps(path), author.token_counter) + 1
+        if used > budget:
+            break
+        count += 1
+    count = max(count, _TASK_WORKSPACE_MANIFEST_MIN_PATHS)
+    return paths[:count], len(paths) > count
 
 
 def plan_task_materials(
@@ -384,9 +397,9 @@ def author_task(
         raise ValueError("task author must support proposal evaluation")
     if not isinstance(coaching_digest, str) or not coaching_digest.strip():
         raise ValueError("task author requires a nonblank coaching digest")
-    manifest, manifest_truncated = _workspace_manifest(workspace)
+    manifest, manifest_truncated = _workspace_manifest(workspace, author)
     initial_manifest, initial_manifest_truncated = _workspace_manifest(
-        workspace if initial_workspace is None else initial_workspace
+        workspace if initial_workspace is None else initial_workspace, author
     )
     task_messages = [
         {"role": "system", "content": _TASK_SYSTEM},

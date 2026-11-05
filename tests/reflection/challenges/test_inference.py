@@ -389,6 +389,45 @@ def test_pairwise_judge_uses_exact_configured_rubrics_and_blinded_order() -> Non
     assert "arm" not in payload["arm-2"]
 
 
+def test_task_author_with_a_large_context_sees_source_files_past_the_first_64_paths() -> None:
+    client = _Client(
+        [
+            (
+                {
+                    "prompt": "Run Black's entry point.",
+                    "goal": "Black prints its version.",
+                    "judging_criteria": ["Black prints its version."],
+                    "start_checks": ["The workspace is writable."],
+                    "required_files": ["src/black/__main__.py"],
+                    "required_executables": ["python"],
+                    "requires_git_metadata": False,
+                },
+                "nemotron",
+            ),
+        ]
+    )
+    workspace = WorkspaceSnapshot(
+        (
+            *(WorkspaceFile(f"docs/page_{index:03d}.md", b"# Page\n") for index in range(100)),
+            WorkspaceFile("src/black/__init__.py", b""),
+            WorkspaceFile("src/black/__main__.py", b"print('black')\n"),
+        )
+    )
+
+    author_task(
+        client,
+        author=_author(max_input_tokens=262_144),
+        coaching_digest="verification was weak",
+        material_plan=TaskMaterialPlan(setup_mode="agent_bootstrap", materials=()),
+        workspace_digest="sha256:workspace",
+        workspace=workspace,
+    )
+
+    payload = json.loads(client.calls[0]["messages"][1]["content"])
+    assert payload["workspace_manifest"] == list(workspace.paths)
+    assert payload["workspace_manifest_truncated"] is False
+
+
 def test_task_author_uses_compact_workspace_summary_for_large_workspaces() -> None:
     client = _Client(
         [
