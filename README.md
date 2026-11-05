@@ -63,7 +63,8 @@ works. Monopole finds the CES scope and Dataset in the adapter's
 `~/.weave-agent-adapter/evaluations.json`; override them with `--ces-scope-ref`,
 `--ces-dataset-id`, and `--ces-url`, or the matching `WEAVE_AGENT_SIGNALS_CES_*`
 env vars. The global `--entity` and `--project` arguments only choose the
-CoreWeave Serverless Inference project for judges.
+CoreWeave Serverless Inference project for judges; by default it is the
+adapter's `project` from the same file.
 
 ### 4. Create your local instruction-target registry
 

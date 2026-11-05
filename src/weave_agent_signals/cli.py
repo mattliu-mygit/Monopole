@@ -467,8 +467,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="weave-agent-signals",
         description="Score coding-agent sessions in CES",
     )
-    parser.add_argument("--entity", default="weave-team")
-    parser.add_argument("--project", default="agent-sessions")
+    parser.add_argument("--entity", help="W&B entity for judge inference; default: the adapter's")
+    parser.add_argument("--project", help="W&B project for judge inference; default: the adapter's")
     parser.add_argument("-v", "--verbose", action="store_true")
 
     subs = parser.add_subparsers(dest="command")
@@ -655,6 +655,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
+    args.entity, args.project = ces_commands.inference_project(args.entity, args.project)
 
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG)

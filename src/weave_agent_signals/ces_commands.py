@@ -22,6 +22,7 @@ from weave_agent_signals.ces_client import (
     plan_judge_writes,
     session_or_none,
 )
+from weave_agent_signals.judges.inference import DEFAULT_ENTITY, DEFAULT_PROJECT
 from weave_agent_signals.models import Score, SessionView, session_is_evaluable
 from weave_agent_signals.scorers import score_session, score_turn
 from weave_agent_signals.scorers.outcome import classify_command
@@ -46,19 +47,32 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def ces_settings(
-    url: str | None = None, scope: str | None = None, dataset: str | None = None
-) -> tuple[str, str, str]:
-    """The CES URL, scope, and Dataset: explicit values, then env vars, then the adapter's state."""
-    state: dict = {}
+def _adapter_state() -> dict:
     path = os.path.expanduser(
         os.environ.get("WEAVE_AGENT_ADAPTER_EVALUATIONS_STATE", ADAPTER_STATE)
     )
     try:
         with open(path, encoding="utf-8") as fh:
-            state = json.load(fh)
+            return json.load(fh)
     except (OSError, ValueError):
-        pass
+        return {}
+
+
+def inference_project(entity: str | None, project: str | None) -> tuple[str, str]:
+    """The W&B entity and project judge inference runs under: explicit values, then the
+    adapter's project, which the key can always use, then weave-team/agent-sessions."""
+    adapter_entity, _, adapter_project = str(_adapter_state().get("project") or "").partition("/")
+    return (
+        entity or adapter_entity or DEFAULT_ENTITY,
+        project or adapter_project or DEFAULT_PROJECT,
+    )
+
+
+def ces_settings(
+    url: str | None = None, scope: str | None = None, dataset: str | None = None
+) -> tuple[str, str, str]:
+    """The CES URL, scope, and Dataset: explicit values, then env vars, then the adapter's state."""
+    state = _adapter_state()
     url = url or os.environ.get("WEAVE_AGENT_SIGNALS_CES_URL") or DEFAULT_CES_URL
     scope = scope or os.environ.get("WEAVE_AGENT_SIGNALS_CES_SCOPE_REF") or state.get("scope_ref")
     dataset = (

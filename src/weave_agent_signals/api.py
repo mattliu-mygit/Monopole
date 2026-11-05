@@ -271,8 +271,9 @@ def create_app(
 ) -> FastAPI:
     """Create an app with injected services or lazily built production services."""
 
-    resolved_entity = entity or os.environ.get("WANDB_ENTITY", "weave-team")
-    resolved_project = project or os.environ.get("WANDB_PROJECT", "agent-sessions")
+    resolved_entity, resolved_project = ces_commands.inference_project(
+        entity or os.environ.get("WANDB_ENTITY"), project or os.environ.get("WANDB_PROJECT")
+    )
     registry_value = target_registry or os.environ.get("TARGET_REGISTRY")
     resolved_registry = Path(registry_value).expanduser() if registry_value else None
     runtime_value = sandbox_runtime or os.environ.get("SMOLMACHINES_RUNTIME")

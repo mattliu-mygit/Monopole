@@ -204,6 +204,21 @@ def test_connect_without_a_scope_or_dataset_explains_how_to_set_them(tmp_path, m
         ces_commands.connect(args)
 
 
+def test_judges_use_the_adapter_project_unless_flags_choose_one(tmp_path, monkeypatch):
+    state = tmp_path / "evaluations.json"
+    state.write_text('{"project": "demo-team/agent-evals", "scope_ref": "s", "dataset_id": "d"}')
+    monkeypatch.setenv("WEAVE_AGENT_ADAPTER_EVALUATIONS_STATE", str(state))
+
+    assert ces_commands.inference_project(None, None) == ("demo-team", "agent-evals")
+    assert ces_commands.inference_project("other-team", "judges") == ("other-team", "judges")
+
+
+def test_judges_fall_back_to_the_old_project_without_adapter_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("WEAVE_AGENT_ADAPTER_EVALUATIONS_STATE", str(tmp_path / "missing.json"))
+
+    assert ces_commands.inference_project(None, None) == ("weave-team", "agent-sessions")
+
+
 def _judge_score(rubric="judge.task_completion", status="complete", models=("claude:a", "codex:b")):
     metadata = {
         "review_status": status,
