@@ -285,8 +285,11 @@ def plan_task_materials(
     workspace: WorkspaceSnapshot,
     resolve_revision: Callable[[str], str] = resolve_repository_head,
     sandbox_executables: tuple[str, ...] = (),
+    check_plan: Callable[[TaskMaterialPlan], None] | None = None,
 ) -> TaskMaterialPlan:
-    """Select immutable public material before the final task is authored."""
+    """Select immutable public material before the final task is authored. A plan whose
+    repository can't be resolved anonymously, or that `check_plan` rejects, goes back to the
+    planner for a replacement."""
 
     if "proposal_evaluator" not in author.supported_roles:
         raise ValueError("task author must support proposal evaluation")
@@ -338,7 +341,7 @@ def plan_task_materials(
                 "task material",
             )
             url = validate_public_git_url(selected["url"])
-            revision = resolved_revisions.get(url)
+            revision = None if url in rejected_urls else resolved_revisions.get(url)
             if revision is None:
                 try:
                     if url in rejected_urls:
@@ -357,16 +360,26 @@ def plan_task_materials(
                     destination=selected["destination"],
                 )
             )
+        failure = "could not be accessed anonymously."
         if resolution_error is None:
-            return TaskMaterialPlan(
-                setup_mode=value["setup_mode"],
-                materials=tuple(materials),
-            )
-        if failed_url is not None and failed_url not in rejected_urls:
+            plan = TaskMaterialPlan(setup_mode=value["setup_mode"], materials=tuple(materials))
+            if check_plan is None:
+                return plan
+            try:
+                check_plan(plan)
+            except Exception as exc:
+                resolution_error = exc
+                failure = f"could not be prepared: {exc}."
+                for material in plan.materials:
+                    if material.url not in rejected_urls:
+                        rejected_urls.append(material.url)
+            else:
+                return plan
+        elif failed_url is not None and failed_url not in rejected_urls:
             rejected_urls.append(failed_url)
         if attempt == _MATERIAL_PLAN_ATTEMPTS:
             raise RuntimeError(
-                f"could not select anonymously accessible public material after "
+                f"could not select usable public material after "
                 f"{attempt} attempts; rejected: {', '.join(rejected_urls)}; "
                 f"last error: {resolution_error}"
             ) from resolution_error
@@ -379,7 +392,7 @@ def plan_task_materials(
                 {
                     "role": "user",
                     "content": (
-                        "The selected repository could not be accessed anonymously. "
+                        f"The selected repository {failure} "
                         f"Rejected URLs: {', '.join(rejected_urls)}. "
                         "Return a complete replacement plan using different public-only "
                         "resources for a fresh analogous task. Do not repeat a rejected URL."

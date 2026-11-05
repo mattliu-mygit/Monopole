@@ -285,6 +285,38 @@ def test_material_planner_replaces_an_inaccessible_repository() -> None:
     assert "accessed anonymously" in str(correction_messages)
 
 
+def test_material_planner_replaces_a_repository_that_cannot_be_prepared() -> None:
+    def plan_for(url: str):
+        material = {"kind": "git_repository", "url": url, "destination": "task"}
+        return ({"setup_mode": "prepared_workspace", "materials": [material]}, "planner")
+
+    client = _Client(
+        [
+            plan_for("https://github.com/nodejs/node.git"),
+            plan_for("https://github.com/psf/requests.git"),
+        ]
+    )
+
+    def check_plan(plan) -> None:
+        if "nodejs" in plan.materials[0].url:
+            raise ValueError("workspace snapshot exceeds the maximum file count")
+
+    plan = plan_task_materials(
+        client,
+        author=_author(),
+        coaching_digest="Agents need a fresh analogous verification task.",
+        workspace_digest="sha256:seed",
+        workspace=WorkspaceSnapshot((WorkspaceFile("README.md", b"seed\n"),)),
+        resolve_revision=lambda _url: "b" * 40,
+        check_plan=check_plan,
+    )
+
+    assert plan.materials[0].url == "https://github.com/psf/requests.git"
+    correction = str(client.calls[1]["messages"])
+    assert "https://github.com/nodejs/node.git" in correction
+    assert "workspace snapshot exceeds the maximum file count" in correction
+
+
 def test_material_planner_reports_rejected_urls_after_three_attempts() -> None:
     urls = [
         "https://github.com/wandb/private-one.git",
@@ -304,7 +336,7 @@ def test_material_planner_reports_rejected_urls_after_three_attempts() -> None:
         ]
     )
 
-    with pytest.raises(RuntimeError, match="anonymously accessible public material") as error:
+    with pytest.raises(RuntimeError, match="usable public material") as error:
         plan_task_materials(
             client,
             author=_author(),

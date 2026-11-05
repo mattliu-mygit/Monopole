@@ -217,9 +217,10 @@ destination. Trusted service code resolves the repository's advertised `HEAD`
 to a full commit SHA before constructing the pinned material plan; the model
 does not supply revisions. Model-authored host shell commands, credentials,
 private sources, and moving branches are rejected. A repository that cannot be
-resolved anonymously is rejected and returned to the planner for a different
-public-only analogous material choice, for at most three complete planning
-attempts. The service fetches each pinned revision once into a temporary checkout,
+resolved anonymously, or whose fetched files cannot be prepared, such as one over
+the workspace's file limits, is rejected and returned to the planner for a
+different public-only analogous material choice, for at most three complete
+planning attempts. The service fetches each pinned revision once into a temporary checkout,
 checks symlinks out as plain files holding their targets, and excludes Git
 metadata before task authoring. In `prepared_workspace` mode,
 it overlays the fetched files on the common execution workspace before forking

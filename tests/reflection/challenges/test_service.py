@@ -380,6 +380,42 @@ def test_challenge_prepares_one_common_workspace_after_authoring() -> None:
     assert runner.calls[0]["candidate"] is prepared
 
 
+def test_challenge_replans_when_the_chosen_material_cannot_be_prepared() -> None:
+    author_client = _Client([_material_response(), _material_response(), _author_response()])
+    runner = _Runner((_arm("baseline"), _arm("candidate")))
+    seed = WorkspaceSnapshot((WorkspaceFile("README.md", b"seed"),))
+    calls: list[TaskMaterialPlan] = []
+
+    def prepare(plan: TaskMaterialPlan) -> PreparedPair:
+        calls.append(plan)
+        if len(calls) == 1:
+            raise ValueError("workspace snapshot exceeds the maximum file count")
+        return PreparedPair(
+            authoring=seed, arms=ArmSnapshots(seed, seed, seed), environment=_environment()
+        )
+
+    result = run_challenge(
+        candidate_id="candidate-1",
+        coaching_digest="verification was weak",
+        authoring_snapshot=seed,
+        baseline_snapshot=seed,
+        candidate_snapshot=seed,
+        environment=_environment(),
+        author=_descriptor("claude-sonnet-5"),
+        judges=(_descriptor("gpt-5.6-sol", position=1),),
+        rubrics=(VERIFICATION_DISCIPLINE,),
+        author_client=author_client,
+        judge_clients={"gpt-5.6-sol": _Client([_judge_response("tie", "gpt-5.6-sol")])},
+        runner=runner,
+        prepare_pair=prepare,
+    )
+
+    assert len(calls) == 2
+    assert result.task is not None
+    assert "maximum file count" in str(author_client.calls[1]["messages"])
+    assert len(runner.preflight_calls) == 1
+
+
 def test_challenge_capability_preflight_failure_stops_before_both_arms() -> None:
     snapshot = WorkspaceSnapshot((WorkspaceFile("README.md", b"same"),))
     runner = _Runner(
