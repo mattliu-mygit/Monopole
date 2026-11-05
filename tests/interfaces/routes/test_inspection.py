@@ -404,6 +404,17 @@ def test_session_listing_serves_cached_turns_and_refreshes_them_in_the_backgroun
     assert third["turn_count"] == first["turn_count"] + 1
 
 
+def test_session_detail_includes_each_turns_final_reply():
+    client, backend = _client()
+    turn = backend.turns[0]
+    turn.assistant_output = "Done: the parser handles empty input now."
+
+    detail = client.get(f"/api/sessions/{turn.conversation_id}").json()
+
+    replies = {t["trace_id"]: t["assistant_output"] for t in detail["turns"]}
+    assert replies[turn.trace_id] == "Done: the parser handles empty input now."
+
+
 def test_session_detail_names_subagents_without_their_counts():
     client, backend = _client()
     backend.turns[0].subagents.append(SubagentSpan(span_id="traj-sub", agent_type=None))

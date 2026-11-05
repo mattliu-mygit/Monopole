@@ -55,6 +55,7 @@ beforeEach(() => {
       chat_span_count: 0,
       subagent_count: 0,
       user_input: 'Inspect the run',
+      assistant_output: 'The run finished and every check passed.',
       tool_calls: [],
       chat_spans: [],
       subagents: [],
@@ -162,6 +163,14 @@ describe('SessionDetail disclosures', () => {
     fireEvent.click(turnButton)
     expect(turnButton.getAttribute('aria-expanded')).toBe('true')
     expect(document.getElementById(turnButton.getAttribute('aria-controls')!)).not.toBeNull()
+  })
+
+  it("shows a turn's final reply when the turn is expanded", async () => {
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Turn 1/ }))
+
+    expect(screen.getByText('The run finished and every check passed.')).not.toBeNull()
   })
 
   it('marks a denied tool call and shows its exit code', async () => {

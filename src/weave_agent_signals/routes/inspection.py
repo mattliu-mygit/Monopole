@@ -108,6 +108,7 @@ def _turn_json(turn: TurnSpan, *, include_children: bool = False) -> dict:
     if include_children:
         value.update(
             {
+                "assistant_output": turn.assistant_output,
                 "tool_calls": [
                     {
                         "span_id": item.span_id,

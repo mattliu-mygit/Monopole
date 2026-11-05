@@ -5311,6 +5311,17 @@
       "TurnDetailResponse": {
         "additionalProperties": false,
         "properties": {
+          "assistant_output": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assistant Output"
+          },
           "cache_read_tokens": {
             "title": "Cache Read Tokens",
             "type": "integer"
@@ -5483,6 +5494,7 @@
           "chat_span_count",
           "subagent_count",
           "user_input",
+          "assistant_output",
           "tool_calls",
           "chat_spans",
           "subagents"
