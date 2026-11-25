@@ -74,6 +74,19 @@ VERDICT = ScorerSpec(
 )
 
 
+_PANEL = ".panel-"
+
+
+def is_panel(name: str) -> bool:
+    """Whether a Scorer name is a judge panel's, `<rubric>.panel-<digest>` (`judge_spec`)."""
+    return _PANEL in name
+
+
+def rubric_of(name: str) -> str:
+    """The rubric a judge panel Scorer rates, or the name itself for any other Scorer."""
+    return name.split(_PANEL)[0]
+
+
 def judge_spec(scorer: str, metadata: dict[str, Any]) -> ScorerSpec:
     """The Scorer for one rubric judged by one panel, so a saved query's average covers one panel.
 
@@ -82,7 +95,7 @@ def judge_spec(scorer: str, metadata: dict[str, Any]) -> ScorerSpec:
     panel = [metadata.get("panel_contract_version"), metadata.get("rubric_version"), models]
     digest = hashlib.sha256(json.dumps(panel).encode()).hexdigest()[:10]
     return ScorerSpec(
-        f"{scorer}.panel-{digest}",
+        f"{scorer}{_PANEL}{digest}",
         "number",
         "session",
         description=f"{scorer} v{panel[1]} judged by {', '.join(models) or 'no models'}",

@@ -28,6 +28,7 @@ from weave_agent_signals.ces_catalog import (
     ScorerRef,
     ScorerSpec,
     judge_spec,
+    rubric_of,
 )
 from weave_agent_signals.ces_sessions import child_ids, session_tree, session_view
 from weave_agent_signals.models import Score, SessionView, SubagentSpan, parse_utc
@@ -147,7 +148,7 @@ def _score_record(target_id: str, case_input: dict, scores: list[dict], names: d
             payload["confidence"] = extra["confidence"]
         if detail.get("scored_at"):
             payload["scored_at"] = detail["scored_at"]
-        rubric = name.split(".panel-")[0]
+        rubric = rubric_of(name)
         records.append(
             {
                 "id": ids[name],

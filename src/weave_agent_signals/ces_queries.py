@@ -41,7 +41,14 @@ from typing import Any
 
 import httpx
 
-from weave_agent_signals.ces_catalog import DETAILS_SUFFIX, RATING, Catalog, ScorerRef
+from weave_agent_signals.ces_catalog import (
+    DETAILS_SUFFIX,
+    RATING,
+    Catalog,
+    ScorerRef,
+    is_panel,
+    rubric_of,
+)
 from weave_agent_signals.ces_client import CesClient, content_digest
 from weave_agent_signals.models import ConfigurationError
 from weave_agent_signals.patterns import ConfigStats, SessionSuccess, session_success
@@ -182,6 +189,11 @@ def run_query(
     return [Group(values, targets[values], stats) for values, stats in groups.items()]
 
 
+def _config_key(config: str | None) -> str:
+    """A group's config version, "unknown" when the adapter didn't record one."""
+    return config or "unknown"
+
+
 def _scorer(ref: ScorerRef) -> QueryScorer:
     return QueryScorer(ref.spec.name, ref.scorer_id, ref.version_id, ref.spec.binary)
 
@@ -211,7 +223,7 @@ def session_scorers(client: CesClient, catalog: Catalog) -> list[QueryScorer]:
         name = client.scorer_name(item["scorer_id"], item["version_id"])
         # Judge ratings are continuous. An unpaneled judge Scorer predates panel identity, so it
         # could mix panels in one mean; details Scorers hold JSON.
-        if name and ".panel-" in name and not name.endswith(DETAILS_SUFFIX):
+        if name and is_panel(name) and not name.endswith(DETAILS_SUFFIX):
             scorers.append(QueryScorer(name, item["scorer_id"], item["version_id"], False))
     return sorted(scorers, key=lambda s: s.name)
 
@@ -287,7 +299,7 @@ def _value_stats(
             continue
         # The group of targets without a Score has no Stat.
         if scorer.name in group.stats:
-            counts[(key[0] or "unknown", *key[1:])][value] = group.stats[scorer.name].count
+            counts[(_config_key(key[0]), *key[1:])][value] = group.stats[scorer.name].count
     return {key: histogram_stat(values) for key, values in counts.items()}
 
 
@@ -354,7 +366,7 @@ def config_stats(
     targets: Counter[str] = Counter()
     main = turns + [g for g in sessions if g.values[1] == 0]
     for group in (g for g in main if g.stats):
-        config = group.values[0] or "unknown"
+        config = _config_key(group.values[0])
         by_config[config].update(group.stats)
         # Every scored turn has an efficiency Score and every scored session its session
         # Scores, so the most-counted Scorer counts the group's scored targets.
@@ -411,7 +423,7 @@ def _day_stats(
     for group in groups:
         config, *rest, day = group.values
         if (not depth or rest[0] == 0) and group.stats and _date(day) is not None:
-            by_key[(config or "unknown", day)] = group.stats
+            by_key[(_config_key(config), day)] = group.stats
     if state.stddev is False:
         _fill_exact_stddevs(
             client,
@@ -519,7 +531,7 @@ def subagent_outcomes(
     by_config: dict[str, dict[int, Group]] = defaultdict(dict)
     for group in groups:
         config, depth = group.values
-        by_config[config or "unknown"][depth] = group
+        by_config[_config_key(config)][depth] = group
     return dict(by_config)
 
 
@@ -543,7 +555,7 @@ def session_success_by_config(
     for group in groups:
         config, depth, passed = group.values
         if depth == 0:
-            by_config[config or "unknown"][passed] = (group.targets, group.stats)
+            by_config[_config_key(config)][passed] = (group.targets, group.stats)
     return {config: session_success(found) for config, found in by_config.items()}
 
 
@@ -560,10 +572,10 @@ def judge_tables(
     rating is the mean of one to three judges' five anchors, so a column has at most 13 values
     and a table at most 169."""
     by_name = {s.name: s for s in scorers}
-    judges = sorted(name for name in by_name if ".panel-" in name)
+    judges = sorted(name for name in by_name if is_panel(name))
     references = [name for name in (*SESSION_OUTCOMES, COMPLETION) if name in by_name]
     pairs = [(judge, reference) for judge in judges for reference in references] + [
-        (a, b) for a, b in combinations(judges, 2) if a.split(".panel-")[0] == b.split(".panel-")[0]
+        (a, b) for a, b in combinations(judges, 2) if rubric_of(a) == rubric_of(b)
     ]
     tables = []
     for judge, reference in pairs:
@@ -589,19 +601,19 @@ def segment_stats(
     catalog: Catalog,
     state: QueryState,
     scorers: list[QueryScorer],
-    field: str,
+    dimension_field: str,
 ) -> dict[tuple[str, Any], dict[str, Stat]]:
-    """Session Stats by config and the session's `dim.<field>` Score: {(config, value): {Scorer:
-    Stat}}. A session without that Score has the value None. The dimension Score covers old
-    sessions, derived from their Cases, and new ones, from their root Case, so both take this
-    one path. Subagents carry their session's dimensions and outcome Scores, so the query
-    groups by depth and keeps only sessions."""
-    dimension = _scorer(catalog.scorers[f"dim.{field}"])
+    """Session Stats by config and the session's `dim.<dimension_field>` Score: {(config,
+    value): {Scorer: Stat}}. A session without that Score has the value None. The dimension
+    Score covers old sessions, derived from their Cases, and new ones, from their root Case, so
+    both take this one path. Subagents carry their session's dimensions and outcome Scores, so
+    the query groups by depth and keeps only sessions."""
+    dimension = _scorer(catalog.scorers[f"dim.{dimension_field}"])
     groups = _trajectory_groups(
         client,
         catalog,
         state,
-        name=f"monopole sessions by config and dim.{field}",
+        name=f"monopole sessions by config and dim.{dimension_field}",
         group_by=[_CONFIG, _DEPTH, {"kind": "score", "name": dimension.name}],
         scorers=scorers,
     )
@@ -609,5 +621,5 @@ def segment_stats(
     for group in groups:
         config, depth, value = group.values
         if depth == 0 and group.stats:
-            segments[(config or "unknown", value)] = group.stats
+            segments[(_config_key(config), value)] = group.stats
     return segments

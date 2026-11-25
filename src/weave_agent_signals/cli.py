@@ -52,6 +52,7 @@ from weave_agent_signals.runs.promotion import TargetPromoter
 from weave_agent_signals.runs.reflection import run_reflection
 from weave_agent_signals.runs.targets import load_target_registry
 from weave_agent_signals.scorers.session import DIMENSION_FIELDS
+from weave_agent_signals.stats import excludes_zero
 
 log = logging.getLogger("weave_agent_signals")
 
@@ -416,7 +417,7 @@ def _print_agreements(agreements: list[Agreement]) -> None:
             gap = item.passing.mean - item.failing.mean
             ci = item.gap_ci
             interval = "no interval" if ci is None else f"CI {ci[0]:+.2f}–{ci[1]:+.2f}"
-            mark = "  significant" if ci is not None and (ci[0] > 0 or ci[1] < 0) else ""
+            mark = "  significant" if excludes_zero(ci) else ""
             line += (
                 f"  judge mean {item.passing.mean:.2f} when the reference passes vs "
                 f"{item.failing.mean:.2f} when it fails ({gap:+.2f}, {interval}){mark}"

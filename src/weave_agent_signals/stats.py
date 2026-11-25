@@ -100,6 +100,11 @@ def pool_stats(stats: list[Stat]) -> Stat:
     return Stat(n, mean, False, math.sqrt(squares / (n - 1)), conservative)
 
 
+def excludes_zero(ci: tuple[float, float] | None) -> bool:
+    """Whether a difference interval lies wholly above or below 0: a significant change."""
+    return ci is not None and (ci[0] > 0 or ci[1] < 0)
+
+
 def difference_ci(new: Stat, prev: Stat, z: float = _Z_95) -> tuple[float, float] | None:
     """A 95% interval for `new.mean - prev.mean`, or None when a continuous side has no stddev
     or fewer than two ratings.

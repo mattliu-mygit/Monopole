@@ -17,13 +17,14 @@ from datetime import date, datetime, timezone
 from itertools import islice
 from typing import Any, Iterable, Mapping
 
-from weave_agent_signals.ces_catalog import DETERMINISTIC
+from weave_agent_signals.ces_catalog import DETERMINISTIC, rubric_of
 from weave_agent_signals.judges.review import PANEL_CONTRACT_VERSION
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.models import FEEDBACK_PREFIX, parse_utc
 from weave_agent_signals.stats import (
     Stat,
     difference_ci,
+    excludes_zero,
     mean_ci,
     pool_stats,
     ratings_stat,
@@ -513,7 +514,7 @@ def day_trends(
                     "recent_mean": round(recent.mean, 3),
                     "delta": round(delta, 3),
                     "sample_count": older.count + recent.count,
-                    "significant": ci is not None and (ci[0] > 0 or ci[1] < 0),
+                    "significant": excludes_zero(ci),
                 }
             )
     return regressions
@@ -617,7 +618,7 @@ def pass_threshold(scorer: str) -> float:
     """The rating at or above which a Scorer passes: a judge panel's rubric threshold from the
     rubric catalog, else 0.5, which a binary Scorer's 1 or true passes. A query sees only the
     rating, so a run that pinned another threshold for the same panel isn't separated."""
-    rubric = SESSION_RUBRICS.get(scorer.split(".panel-")[0])
+    rubric = SESSION_RUBRICS.get(rubric_of(scorer))
     return 0.5 if rubric is None else rubric.threshold
 
 
@@ -701,7 +702,7 @@ def segment_gaps(
                     "difference_ci": None if ci is None else (round(ci[0], 3), round(ci[1], 3)),
                     "sample_count": stat.count,
                     "rest_sample_count": rest.count,
-                    "significant": ci is not None and (ci[0] > 0 or ci[1] < 0),
+                    "significant": excludes_zero(ci),
                 }
             )
     return gaps
@@ -973,7 +974,7 @@ def subagent_gaps(by_depth: Mapping[int, Mapping[str, Stat]]) -> list[dict[str, 
                 "difference_ci": None if ci is None else (round(ci[0], 3), round(ci[1], 3)),
                 "session_count": session.count,
                 "subagent_count": subagent.count,
-                "significant": ci is not None and (ci[0] > 0 or ci[1] < 0),
+                "significant": excludes_zero(ci),
             }
         )
     return gaps
