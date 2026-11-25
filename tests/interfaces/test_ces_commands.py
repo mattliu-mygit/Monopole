@@ -16,7 +16,8 @@ from weave_agent_signals.ces_catalog import (
     ScorerRef,
     judge_spec,
 )
-from weave_agent_signals.ces_client import CesSession, session_view
+from weave_agent_signals.ces_client import CesSession
+from weave_agent_signals.ces_sessions import session_view
 from weave_agent_signals.models import Score, SessionView, TraceRole
 from weave_agent_signals.patterns import ConfigStats, SessionSuccess, Stat
 from weave_agent_signals.scorers import score_session, score_trajectory

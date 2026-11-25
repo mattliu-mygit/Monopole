@@ -12,7 +12,8 @@ from typing import get_args
 from fastapi import APIRouter, HTTPException, Query
 
 from weave_agent_signals import ces_queries
-from weave_agent_signals.ces_client import CesSession, session_or_none, turns_from_rows
+from weave_agent_signals.ces_client import CesSession, session_or_none
+from weave_agent_signals.ces_sessions import turns_from_rows
 from weave_agent_signals.judges.tokens import TokenCounterName, count_tokens
 from weave_agent_signals.judges.windowing import render_raw_turn
 from weave_agent_signals.models import FEEDBACK_PREFIX, TurnSpan, session_is_evaluable

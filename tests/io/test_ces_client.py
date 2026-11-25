@@ -20,10 +20,8 @@ from weave_agent_signals.ces_client import (
     SESSIONS_PER_SEARCH,
     CesClient,
     _score_record,
-    _tool_span,
-    session_view,
-    turns_from_rows,
 )
+from weave_agent_signals.ces_sessions import _tool_span, session_view, turns_from_rows
 from weave_agent_signals.models import Score
 from weave_agent_signals.scorers.outcome import _extract_exit_code
 
