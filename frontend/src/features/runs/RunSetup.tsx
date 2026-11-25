@@ -127,28 +127,40 @@ export default function RunSetup({
   )
   const sinceInstant = dayBoundary(since, false, timezone) ?? undefined
   const untilInstant = dayBoundary(until, true, timezone) ?? undefined
+  const sessionParams = { since: sinceInstant, until: untilInstant, timezone, limit: 100 }
   const sessionsQuery = useQuery({
     queryKey: ['sessions-for-run', sinceInstant, untilInstant, timezone],
-    queryFn: () =>
-      getSessions({
-        since: sinceInstant,
-        until: untilInstant,
-        timezone,
-        limit: 100,
-        include_estimates: true,
-      }),
+    queryFn: () => getSessions(sessionParams),
+  })
+  // Estimates read every session in full, so they load beside the list instead of holding it up.
+  const estimatesQuery = useQuery({
+    queryKey: ['session-estimates-for-run', sinceInstant, untilInstant, timezone],
+    queryFn: () => getSessions({ ...sessionParams, include_estimates: true }),
   })
   const sessions = sessionsQuery.data?.sessions ?? []
   const selectedSessions = sessions.filter((session) =>
     selectedIds.includes(session.conversation_id))
-  // The session list carries each session's judge token estimates, so capacity needs no
-  // further requests.
-  const capacitySessions = selectedSessions.flatMap((session) =>
-    session.judging_token_estimates
-      ? [{ judging_token_estimates: session.judging_token_estimates }]
-      : [])
-  const capacityLoading = sessionsQuery.isLoading
-  const capacityError = sessionsQuery.error
+  const estimates = new Map(
+    (estimatesQuery.data?.sessions ?? []).map((session) =>
+      [session.conversation_id, session.judging_token_estimates]),
+  )
+  const capacitySessions = selectedSessions.flatMap((session) => {
+    const estimate = estimates.get(session.conversation_id)
+    return estimate ? [{ judging_token_estimates: estimate }] : []
+  })
+  const capacityLoading = estimatesQuery.isLoading
+  const capacityError = estimatesQuery.error
+  // Until the user adjusts it, the configuration follows the selection: each time every
+  // selected session has its estimates, it becomes the most diverse panel that fits them.
+  const [configTouched, setConfigTouched] = useState(Boolean(initialConfig))
+  const [populatedFor, setPopulatedFor] = useState('')
+  const estimatesKey = selectedIds.length > 0 && capacitySessions.length === selectedIds.length
+    ? selectedIds.join('\n')
+    : ''
+  if (!configTouched && estimatesKey && estimatesKey !== populatedFor) {
+    setPopulatedFor(estimatesKey)
+    setConfig(transitionRunConfig(config, { type: 'use-recommended' }, models, capacitySessions))
+  }
   const assessment = assessRunConfig(config, models, rubrics, capacitySessions)
   const selectionError =
     selectedIds.length === 0
@@ -168,6 +180,7 @@ export default function RunSetup({
   }
 
   function dispatch(action: RunConfigAction) {
+    setConfigTouched(action.type !== 'use-recommended')
     setConfig((current) => transitionRunConfig(current, action, models, capacitySessions))
   }
 
@@ -201,14 +214,18 @@ export default function RunSetup({
         onSessionIdsChange={setSelectedIds}
         onRetry={() => void sessionsQuery.refetch()}
       />
-      <RunConfiguration
-        state={config}
-        models={models}
-        rubrics={rubrics}
-        sessions={capacitySessions}
-        disabled={pending}
-        onAction={dispatch}
-      />
+      {selectedIds.length > 0 && (capacityLoading
+        ? <p className="text-sm text-gray-500">Sizing the selected sessions…</p>
+        : (
+          <RunConfiguration
+            state={config}
+            models={models}
+            rubrics={rubrics}
+            sessions={capacitySessions}
+            disabled={pending}
+            onAction={dispatch}
+          />
+        ))}
       {selectionError && <ErrorNotice message={selectionError} />}
       <div className="flex flex-wrap items-center gap-4 border-t border-gray-200 pt-4">
         <label className="flex items-center gap-2 text-sm text-gray-700">

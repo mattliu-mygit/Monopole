@@ -157,8 +157,12 @@ For each reviewer, the pipeline first creates one rubric-neutral factual digest
 per core chunk. A rubric evaluation then slides across every window: the active
 chunk is supplied as raw captured evidence while the rest of the session is
 represented by that reviewer's ordered digests. The host replaces the active
-raw evidence IDs with short, window-local aliases before inference and resolves
-valid citations back to canonical trace identities. Surrounding digest
+raw evidence IDs with short labels before inference and resolves valid citations
+back to canonical trace identities. A turn's label is its session position, the
+number in its heading (`t12` for turn 12), and the replies, tool calls, and
+subagents inside it are `t12.1`, `t12.2`, and so on. Labels that counted items
+across the window put two numbers in each heading, and judges cited the heading's
+number instead of the label. Surrounding digest
 provenance remains host-owned and is represented by the chunk ID rather than
 model-authored citations. Every window returns a bounded set of
 positive or negative findings, not a score. Findings are deduplicated in session
@@ -168,7 +172,9 @@ feedback. The merge cites finding IDs; the host derives the final canonical
 trace citations from those immutable findings.
 
 CoreWeave Serverless Inference digest and verdict-merge requests disable
-optional model reasoning through the provider's documented request setting.
+optional model reasoning through the provider's documented request setting, or,
+for a model that ignores or rejects that setting, request the lowest reasoning
+effort the model honors.
 Those phases compress or consolidate the substantive rubric analysis already
 performed in the raw-evidence window reviews, so spending their output budget on
 hidden reasoning reduces reliability. Window review retains each model's default
@@ -248,9 +254,10 @@ Invalid model content does not weaken canonical runtime validation. CoreWeave
 Serverless Inference retries preserve evidence constraints while using
 JSON-object mode with optional thinking disabled;
 other backends retry the same strict request. Invalid JSON that consumes the
-exact generation allowance retries once under the same budget. A second
-exhaustion fails closed as explicit
-output-limit exhaustion while retaining both attempts' usage and request counts.
+exact generation allowance retries once under the same budget, or twice for a
+model that cannot turn reasoning off. Exhausting the last retry fails closed as
+explicit output-limit exhaustion while retaining every attempt's usage and request
+counts.
 After a CoreWeave Serverless Inference model and schema pair requires recovery,
 later calls for that pair within the same run start in concise JSON recovery
 mode instead of repeating the known-expensive failing path. Exact schema
@@ -343,8 +350,8 @@ evaluable and writes no feedback.
 A failed invocation or invalid attempt by an applicable reviewer still fails
 coverage even when another reviewer returned a valid score. After the bounded
 transport retries for that attempt are exhausted, the runtime cancels pending
-work across the session. Active local CLI processes are terminated; an active
-HTTP request may settle, but cannot start another digest, window, or merge.
+work across the session. Active local CLI processes are terminated and active
+HTTP requests are disconnected; no reviewer starts another digest, window, or merge.
 Concurrent outcomes that settled before cancellation remain ordered by pinned
 rubric and reviewer identity. Any coverage failure then fails the session and
 stops remaining sessions.

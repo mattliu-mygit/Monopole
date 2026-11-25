@@ -127,7 +127,10 @@ list and Evaluation row searches page 20 at a time, and other paged reads
 3. Creates are idempotent by `Idempotency-Key`; reusing a key with a different
    body is a conflict.
 4. `429` and `503` are retried with doubling waits, never shorter than
-   `Retry-After`.
+   `Retry-After`. CES answers `503 storage_capacity_exceeded` when one page
+   reads too much, which a session with large Cases hits at 1,000 Cases, so lists
+   and searches halve their page size on that error until CES accepts it, down to
+   20 rows, instead of resending the same page.
 5. CoreWeave Serverless Inference uses bearer W&B authentication plus the
    entity/project header; HTTP 402 means inference credits are unavailable.
 

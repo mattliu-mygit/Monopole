@@ -288,6 +288,26 @@ _MODEL_DESCRIPTORS = (
         **_budget_fields("frontier"),
     ),
     ModelDescriptor(
+        id="devin:claude-opus-5-5-medium",
+        label="Claude Opus 5.5 (via Devin)",
+        provider="devin",
+        provider_model="claude-opus-5-5-medium",
+        family="anthropic",
+        supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=1_000_000,
+        **_budget_fields("frontier"),
+    ),
+    ModelDescriptor(
+        id="devin:claude-fable-5-1-medium",
+        label="Claude Fable 5.1 (via Devin)",
+        provider="devin",
+        provider_model="claude-fable-5-1-medium",
+        family="anthropic",
+        supported_roles=(_JUDGE_ROLE, _PROPOSAL_EVALUATOR_ROLE),
+        max_input_tokens=1_000_000,
+        **_budget_fields("frontier"),
+    ),
+    ModelDescriptor(
         id="codex:gpt-5.6-sol",
         label="GPT-5.6 Sol",
         provider="codex",
@@ -431,7 +451,7 @@ _LOCAL_MODEL_EXECUTABLES = MappingProxyType(
     {
         descriptor.id: descriptor.provider
         for descriptor in _MODEL_DESCRIPTORS
-        if descriptor.provider in {"claude", "codex", "agy"}
+        if descriptor.provider in {"claude", "codex", "agy", "devin"}
     }
 )
 _JUDGE_PREFERENCES = (

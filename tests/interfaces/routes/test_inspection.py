@@ -473,6 +473,66 @@ def test_session_listing_includes_judge_token_estimates_only_when_asked():
     }
 
 
+def test_session_listing_reuses_estimates_while_a_sessions_turns_are_unchanged():
+    client, backend = _client()
+    reads: list[str] = []
+    read_session = backend.read_session
+
+    def counting_read(trajectory_id, **kwargs):
+        reads.append(trajectory_id)
+        return read_session(trajectory_id, **kwargs)
+
+    backend.read_session = counting_read
+    params = {"since": "2026-07-14T00:00:00Z", "limit": 1, "include_estimates": "true"}
+
+    first = client.get("/api/sessions", params=params).json()["sessions"][0]
+    second = client.get("/api/sessions", params=params).json()["sessions"][0]
+
+    assert len(reads) == 1
+    assert second["judging_token_estimates"] == first["judging_token_estimates"]
+
+
+def test_session_listing_serves_cached_turns_and_refreshes_them_in_the_background():
+    import dataclasses
+    import time
+    from datetime import timedelta
+
+    client, backend = _client()
+    params = {"since": "2026-07-14T00:00:00Z", "limit": 1}
+    first = client.get("/api/sessions", params=params).json()["sessions"][0]
+    newest = max(
+        (t for t in backend.turns if t.conversation_id == first["conversation_id"]),
+        key=lambda t: t.started_at,
+    )
+    backend.turns.append(
+        dataclasses.replace(
+            newest, trace_id="trace-new", started_at=newest.started_at + timedelta(minutes=1)
+        )
+    )
+
+    second = client.get("/api/sessions", params=params).json()["sessions"][0]
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        third = client.get("/api/sessions", params=params).json()["sessions"][0]
+        if third["turn_count"] > first["turn_count"]:
+            break
+        time.sleep(0.01)
+
+    assert second["turn_count"] == first["turn_count"]
+    assert third["turn_count"] == first["turn_count"] + 1
+
+
+def test_session_detail_includes_each_turns_final_reply():
+    client, backend = _client()
+    turn = backend.turns[0]
+    turn.assistant_output = "Done: the parser handles empty input now."
+
+    detail = client.get(f"/api/sessions/{turn.conversation_id}").json()
+
+    replies = {t["trace_id"]: t["assistant_output"] for t in detail["turns"]}
+    assert replies[turn.trace_id] == "Done: the parser handles empty input now."
+
+
 def test_session_detail_names_subagents_without_their_counts():
     client, backend = _client()
     backend.turns[0].subagents.append(SubagentSpan(span_id="traj-sub", agent_type=None))

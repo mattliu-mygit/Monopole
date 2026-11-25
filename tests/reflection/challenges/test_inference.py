@@ -285,6 +285,38 @@ def test_material_planner_replaces_an_inaccessible_repository() -> None:
     assert "accessed anonymously" in str(correction_messages)
 
 
+def test_material_planner_replaces_a_repository_that_cannot_be_prepared() -> None:
+    def plan_for(url: str):
+        material = {"kind": "git_repository", "url": url, "destination": "task"}
+        return ({"setup_mode": "prepared_workspace", "materials": [material]}, "planner")
+
+    client = _Client(
+        [
+            plan_for("https://github.com/nodejs/node.git"),
+            plan_for("https://github.com/psf/requests.git"),
+        ]
+    )
+
+    def check_plan(plan) -> None:
+        if "nodejs" in plan.materials[0].url:
+            raise ValueError("workspace snapshot exceeds the maximum file count")
+
+    plan = plan_task_materials(
+        client,
+        author=_author(),
+        coaching_digest="Agents need a fresh analogous verification task.",
+        workspace_digest="sha256:seed",
+        workspace=WorkspaceSnapshot((WorkspaceFile("README.md", b"seed\n"),)),
+        resolve_revision=lambda _url: "b" * 40,
+        check_plan=check_plan,
+    )
+
+    assert plan.materials[0].url == "https://github.com/psf/requests.git"
+    correction = str(client.calls[1]["messages"])
+    assert "https://github.com/nodejs/node.git" in correction
+    assert "workspace snapshot exceeds the maximum file count" in correction
+
+
 def test_material_planner_reports_rejected_urls_after_three_attempts() -> None:
     urls = [
         "https://github.com/wandb/private-one.git",
@@ -304,7 +336,7 @@ def test_material_planner_reports_rejected_urls_after_three_attempts() -> None:
         ]
     )
 
-    with pytest.raises(RuntimeError, match="anonymously accessible public material") as error:
+    with pytest.raises(RuntimeError, match="usable public material") as error:
         plan_task_materials(
             client,
             author=_author(),
@@ -387,6 +419,45 @@ def test_pairwise_judge_uses_exact_configured_rubrics_and_blinded_order() -> Non
     assert payload["arm-2"]["transcript"] == "Baseline output"
     assert "arm" not in payload["arm-1"]
     assert "arm" not in payload["arm-2"]
+
+
+def test_task_author_with_a_large_context_sees_source_files_past_the_first_64_paths() -> None:
+    client = _Client(
+        [
+            (
+                {
+                    "prompt": "Run Black's entry point.",
+                    "goal": "Black prints its version.",
+                    "judging_criteria": ["Black prints its version."],
+                    "start_checks": ["The workspace is writable."],
+                    "required_files": ["src/black/__main__.py"],
+                    "required_executables": ["python"],
+                    "requires_git_metadata": False,
+                },
+                "nemotron",
+            ),
+        ]
+    )
+    workspace = WorkspaceSnapshot(
+        (
+            *(WorkspaceFile(f"docs/page_{index:03d}.md", b"# Page\n") for index in range(100)),
+            WorkspaceFile("src/black/__init__.py", b""),
+            WorkspaceFile("src/black/__main__.py", b"print('black')\n"),
+        )
+    )
+
+    author_task(
+        client,
+        author=_author(max_input_tokens=262_144),
+        coaching_digest="verification was weak",
+        material_plan=TaskMaterialPlan(setup_mode="agent_bootstrap", materials=()),
+        workspace_digest="sha256:workspace",
+        workspace=workspace,
+    )
+
+    payload = json.loads(client.calls[0]["messages"][1]["content"])
+    assert payload["workspace_manifest"] == list(workspace.paths)
+    assert payload["workspace_manifest_truncated"] is False
 
 
 def test_task_author_uses_compact_workspace_summary_for_large_workspaces() -> None:
@@ -642,6 +713,63 @@ def test_task_author_corrects_one_task_that_names_a_missing_file() -> None:
     assert len(client.calls) == 2
     retry = str(client.calls[1]["messages"])
     assert "prepared workspace is missing required files: missing.py" in retry
+
+
+def test_task_author_corrects_one_task_that_needs_an_executable_the_sandbox_lacks() -> None:
+    cargo = _authored("README.md")
+    cargo[0]["required_executables"] = ["cargo"]
+    client = _Client([cargo, _authored("README.md")])
+    workspace = WorkspaceSnapshot((WorkspaceFile("README.md", b"same\n"),))
+
+    task = author_task(
+        client,
+        author=_author(),
+        coaching_digest="Agents often assumed tools existed without checking.",
+        material_plan=TaskMaterialPlan(setup_mode="prepared_workspace"),
+        workspace_digest=workspace.digest,
+        workspace=workspace,
+        initial_workspace=workspace,
+        sandbox_executables=("git", "python"),
+    )
+
+    assert task.required_executables == ("python",)
+    assert json.loads(client.calls[0]["messages"][1]["content"])["sandbox_executables"] == [
+        "git",
+        "python",
+    ]
+    retry = str(client.calls[1]["messages"])
+    assert "sandbox image does not provide required executables: cargo" in retry
+
+
+def test_material_planner_is_told_which_executables_the_sandbox_has() -> None:
+    client = _Client([({"setup_mode": "agent_bootstrap", "materials": []}, "planner")])
+
+    plan_task_materials(
+        client,
+        author=_author(),
+        coaching_digest="verification was weak",
+        workspace_digest="sha256:seed",
+        workspace=WorkspaceSnapshot((WorkspaceFile("README.md", b"same\n"),)),
+        sandbox_executables=("git", "python"),
+    )
+
+    payload = json.loads(client.calls[0]["messages"][1]["content"])
+    assert payload["sandbox_executables"] == ["git", "python"]
+
+
+def test_material_planner_is_told_the_workspace_limits() -> None:
+    client = _Client([({"setup_mode": "agent_bootstrap", "materials": []}, "planner")])
+
+    plan_task_materials(
+        client,
+        author=_author(),
+        coaching_digest="verification was weak",
+        workspace_digest="sha256:seed",
+        workspace=WorkspaceSnapshot((WorkspaceFile("README.md", b"same\n"),)),
+    )
+
+    payload = json.loads(client.calls[0]["messages"][1]["content"])
+    assert payload["workspace_limits"] == {"max_files": 10_000, "max_file_bytes": 16 * 1024 * 1024}
 
 
 def test_task_author_returns_a_second_invalid_task_for_preflight_to_reject() -> None:

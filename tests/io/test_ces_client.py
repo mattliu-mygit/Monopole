@@ -14,10 +14,10 @@ import respx
 
 from weave_agent_signals.ces_catalog import VERDICT, Catalog, ScorerSpec
 from weave_agent_signals.ces_client import (
-    CASE_PAGE_LIMIT,
     MAX_RETRY_AFTER_S,
     PAGE_LIMIT,
     QUERY_SLOTS,
+    SESSIONS_PER_SEARCH,
     CesClient,
     _score_record,
     _tool_span,
@@ -468,6 +468,49 @@ def test_a_turn_without_a_prompt_keeps_its_span_ids_distinct_from_its_turn_id():
 
 
 @respx.mock
+def test_trajectory_cases_shrink_the_page_when_ces_storage_capacity_is_exceeded():
+    limits = []
+
+    def page(request):
+        limit = int(request.url.params["limit"])
+        limits.append(limit)
+        if limit > 250:
+            return httpx.Response(
+                503,
+                json={"error": {"code": "storage_capacity_exceeded"}},
+                headers={"Retry-After": "1"},
+            )
+        return httpx.Response(200, json={"cases": [{"case_id": "c1"}], "next_cursor": None})
+
+    respx.get(f"{BASE}/trajectories/traj-s/cases").mock(side_effect=page)
+    client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=lambda _: None)
+
+    assert client.trajectory_cases("traj-s") == [{"case_id": "c1"}]
+    assert limits == [1000, 500, 250]
+
+
+@respx.mock
+def test_a_page_at_the_smallest_size_retries_ces_storage_errors_instead_of_shrinking():
+    limits = []
+    refusals_at_smallest = iter([True, True, False])
+
+    def page(request):
+        limit = int(request.url.params["limit"])
+        limits.append(limit)
+        if limit > 20 or next(refusals_at_smallest):
+            return httpx.Response(503, json={"error": {"code": "storage_capacity_exceeded"}})
+        return httpx.Response(200, json={"cases": [{"case_id": "c1"}], "next_cursor": None})
+
+    respx.get(f"{BASE}/trajectories/traj-s/cases").mock(side_effect=page)
+    slept = []
+    client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=slept.append)
+
+    assert client.trajectory_cases("traj-s") == [{"case_id": "c1"}]
+    assert limits == [1000, 500, 250, 125, 62, 31, 20, 20, 20]
+    assert slept == [1, 2]
+
+
+@respx.mock
 def test_read_all_scores_turns_ces_rows_into_feedback_records():
     _catalog_routes()
     client = CesClient("http://ces.test", "scope-1", api_key="k")
@@ -598,20 +641,50 @@ def test_a_limit_reads_the_newest_turns_and_only_their_sessions_scores():
     assert names.call_count == 1
 
 
+def _turn_row(session_id: str, case_id: str) -> dict:
+    return {"case_id": case_id, "input": {"session_trajectory_id": session_id}}
+
+
 @respx.mock
-def test_cohort_scores_searches_each_sessions_turns_with_an_and_only_filter():
+def test_session_turn_rows_reads_every_session_in_one_search():
     client = CesClient("http://ces.test", "scope-1", api_key="k")
+    rows = [_turn_row("s2", "c3"), _turn_row("s1", "c1"), _turn_row("s1", "c2")]
     turns = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
-        return_value=httpx.Response(200, json={"rows": []})
+        return_value=httpx.Response(200, json={"rows": rows})
     )
-    _session_row_routes({})
 
-    client.cohort_scores(Catalog("ev-turns", "ev-sessions", {}), ["s1", "s2"])
+    found = client.session_turn_rows(Catalog("ev-turns", "ev-sessions", {}), ["s1", "s2", "s3"])
 
-    assert sorted(json.loads(call.request.content)["filter"] for call in turns.calls) == [
-        'i.step_index = 0 AND i.agent_id = null AND i.session_trajectory_id = "s1"',
-        'i.step_index = 0 AND i.agent_id = null AND i.session_trajectory_id = "s2"',
-    ]
+    assert json.loads(turns.calls.last.request.content)["filter"] == (
+        'i.step_index = 0 AND i.agent_id = null AND (i.session_trajectory_id = "s1"'
+        ' OR i.session_trajectory_id = "s2" OR i.session_trajectory_id = "s3")'
+    )
+    assert {sid: [r["case_id"] for r in found[sid]] for sid in found} == {
+        "s1": ["c1", "c2"],
+        "s2": ["c3"],
+        "s3": [],
+    }
+
+
+@respx.mock
+def test_session_turn_rows_searches_each_session_when_ces_rejects_or():
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+
+    def search(request):
+        query = json.loads(request.content)["filter"]
+        if " OR " in query:
+            return httpx.Response(400, json={"error": {"code": "invalid_request"}})
+        sid = query.rsplit('"', 2)[1]
+        return httpx.Response(200, json={"rows": [_turn_row(sid, f"c-{sid}")]})
+
+    respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(side_effect=search)
+
+    found = client.session_turn_rows(Catalog("ev-turns", "ev-sessions", {}), ["s1", "s2"])
+
+    assert {sid: [r["case_id"] for r in rows] for sid, rows in found.items()} == {
+        "s1": ["c-s1"],
+        "s2": ["c-s2"],
+    }
 
 
 def test_a_score_that_is_not_a_rating_is_skipped():
@@ -730,6 +803,65 @@ def test_a_5xx_is_retried_and_a_transport_error_raises_after_the_last_attempt():
     with pytest.raises(httpx.ConnectError):
         client._request("GET", "/scores/s2")
     assert slept == [1, 1, 2, 4, 8, 16]
+
+
+def _capacity(code: str) -> httpx.Response:
+    return httpx.Response(503, json={"error": {"code": code}}, headers={"Retry-After": "1"})
+
+
+@respx.mock
+def test_a_row_search_shrinks_the_page_when_ces_storage_capacity_is_exceeded():
+    limits = []
+
+    def page(request):
+        limit = json.loads(request.content)["limit"]
+        limits.append(limit)
+        if limit > 500:
+            return _capacity("storage_capacity_exceeded")
+        return httpx.Response(200, json={"rows": [{"case_id": "c1"}], "next_cursor": None})
+
+    respx.post(f"{BASE}/evaluations/ev-1/rows/search").mock(side_effect=page)
+    client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=lambda _: None)
+
+    assert client._rows("/evaluations/ev-1/rows/search", {"filter": "x"}) == [{"case_id": "c1"}]
+    assert limits == [1000, 500]
+
+
+@respx.mock
+def test_finding_sessions_shrinks_the_page_when_ces_storage_capacity_is_exceeded():
+    _catalog_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=lambda _: None)
+    catalog = client.ensure_catalog("ds-1")
+    limits = []
+
+    def page(request):
+        limits.append(json.loads(request.content)["limit"])
+        if limits[-1] > 500:
+            return _capacity("storage_capacity_exceeded")
+        row = {"input": {"started_at": "2026-11-05T10:00:00.000Z", "session_trajectory_id": "s1"}}
+        return httpx.Response(200, json={"rows": [row], "next_cursor": None})
+
+    respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(side_effect=page)
+
+    since = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    assert client.find_sessions(catalog, since=since) == ["s1"]
+    assert limits == [1000, 500]
+
+
+@respx.mock
+def test_a_single_request_over_ces_storage_capacity_gets_the_usual_retries():
+    client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=lambda _: None)
+    trajectory = respx.get(f"{BASE}/trajectories/t1").mock(
+        side_effect=[
+            *[httpx.Response(503, json={"error": {"code": "storage_capacity_exceeded"}})] * 2,
+            httpx.Response(200, json={"root_case_id": "c1"}),
+        ]
+    )
+    respx.get(f"{BASE}/cases/c1").mock(return_value=httpx.Response(200, json={"input": {}}))
+
+    client.root_case_input("t1")
+
+    assert trajectory.call_count == 3
 
 
 @respx.mock
@@ -1083,7 +1215,8 @@ def test_reads_that_take_a_ces_query_slot_run_at_most_query_slots_at_once():
     respx.get(url__regex=rf"{BASE}/trajectories/traj-\d/cases").mock(side_effect=cases)
     client = CesClient("http://ces.test", "scope-1", api_key="k")
 
-    client.session_turn_rows(Catalog("ev-turns", "ev-sessions", {}), [f"s{i}" for i in range(8)])
+    sessions = [f"s{i}" for i in range(4 * SESSIONS_PER_SEARCH)]
+    client.session_turn_rows(Catalog("ev-turns", "ev-sessions", {}), sessions)
     client.read_session("traj-s")
 
     assert rows.most == QUERY_SLOTS
@@ -1135,7 +1268,7 @@ def test_every_read_that_takes_a_ces_query_slot_waits_for_one(method, path, read
 
 
 @respx.mock
-def test_reads_of_whole_cases_page_by_the_case_page_limit_and_other_rows_by_the_page_limit():
+def test_every_paged_read_starts_at_the_page_limit():
     catalog = Catalog("ev-turns", "ev-sessions", {})
     search = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
         return_value=httpx.Response(200, json={"rows": []})
@@ -1153,8 +1286,8 @@ def test_reads_of_whole_cases_page_by_the_case_page_limit_and_other_rows_by_the_
     client.trajectory_cases("traj-s")
 
     assert [json.loads(c.request.content)["limit"] for c in search.calls] == [
-        CASE_PAGE_LIMIT,
-        CASE_PAGE_LIMIT,
+        PAGE_LIMIT,
+        PAGE_LIMIT,
     ]
-    assert cases.calls[0].request.url.params["limit"] == str(CASE_PAGE_LIMIT)
+    assert cases.calls[0].request.url.params["limit"] == str(PAGE_LIMIT)
     assert listing.calls[0].request.url.params["limit"] == str(PAGE_LIMIT)

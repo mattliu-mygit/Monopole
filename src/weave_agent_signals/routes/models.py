@@ -643,6 +643,7 @@ class TurnDetailResponse(ResponseModel):
     chat_span_count: int
     subagent_count: int
     user_input: str | None
+    assistant_output: str | None
     tool_calls: list[ToolCallResponse]
     chat_spans: list[ChatSpanResponse]
     subagents: list[SubagentResponse]

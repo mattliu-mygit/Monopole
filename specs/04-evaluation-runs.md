@@ -26,7 +26,9 @@ cancelled before deletion so workers cannot write to a removed run.
 Start atomically pins:
 
 - the ordered turn cohort and its session identities;
-- the evaluated model family, model ID, and effort level for every pinned turn;
+- the evaluated model family, model ID, and effort level for every pinned turn. A
+  turn that records no model, such as a `/compact`, takes the model and effort of
+  the closest earlier pinned turn in its session, else the first later one;
 - the resolved model and rubric catalogs, including each model's context
   capacity, reading budgets, and token-counter identity;
 - the proposal writer, one through three ordered run judges, and proposal evaluator;
@@ -73,9 +75,14 @@ Runs pin four independent roles:
 4. a separately pinned A/B verification panel compares A and the provisional B
    on that task.
 
-The form uses catalog-backed selectors with recommendations preselected and
-user overrides allowed. Normal judging recommends three available reviewers;
+The form uses catalog-backed selectors with user overrides allowed. It shows
+the configuration only once sessions are selected, then preselects the
+recommendations that fit every selected session, and keeps following the
+selection until the user changes a choice. Normal judging recommends up to
+three fitting reviewers from distinct model families, recommended models first;
 A/B verification independently recommends one and permits one through three.
+When no model fits a role, its recommendation stays selected and the capacity
+error blocks starting.
 The evaluator recommendation prefers a different model family from the writer
 when available, but explicit compatible choices remain authoritative and
 produce visible bias warnings rather than silent replacement.
@@ -197,8 +204,9 @@ regardless of the paired-verification outcome.
 
 After a provisional B is selected, the proposal evaluator acts as a
 blinded material planner and task author. A first structured call receives the
-pinned bounded evaluation digest and a compact deterministic summary of the
-seed workspace, with managed instruction contents removed, and selects a setup
+pinned bounded evaluation digest, a compact deterministic summary of the
+seed workspace with managed instruction contents removed, and the workspace's
+file-count and file-size limits, and selects a setup
 mode plus pinned public materials for a fresh analogous task. After those
 materials are fetched, a second structured call receives their bounded path
 manifest and authors the prompt, measurable goal, task-specific judging
@@ -214,10 +222,12 @@ destination. Trusted service code resolves the repository's advertised `HEAD`
 to a full commit SHA before constructing the pinned material plan; the model
 does not supply revisions. Model-authored host shell commands, credentials,
 private sources, and moving branches are rejected. A repository that cannot be
-resolved anonymously is rejected and returned to the planner for a different
-public-only analogous material choice, for at most three complete planning
-attempts. The service fetches each pinned revision once into a temporary checkout
-and excludes Git metadata before task authoring. In `prepared_workspace` mode,
+resolved anonymously, or whose fetched files cannot be prepared, such as one over
+the workspace's file limits, is rejected and returned to the planner for a
+different public-only analogous material choice, for at most three complete
+planning attempts. The service fetches each pinned revision once into a temporary checkout,
+checks symlinks out as plain files holding their targets, and excludes Git
+metadata before task authoring. In `prepared_workspace` mode,
 it overlays the fetched files on the common execution workspace before forking
 A and B. In `agent_bootstrap` mode, fetched files are authoring context only;
 both agents receive the same pinned material specification and must perform the
@@ -226,7 +236,9 @@ require Git metadata. Exact required files are checked against the common
 initial snapshot. The task author checks its own task against that snapshot
 first and gets one corrective attempt when the task names a missing file; a
 second invalid task remains visible in the run and fails closed before sandbox
-preflight. One disposable sandbox verifies the pinned harness and
+preflight. When the sandbox runtime declares the executables its image provides,
+both calls receive that list, and a required executable outside it fails the
+same check, with the same one correction, before any sandbox boots. One disposable sandbox verifies the pinned harness and
 required executable names before either arm starts. Fetch, file-preflight, or
 capability-preflight failure invalidates the task without running A or B. The
 product does not choose a different harness by task category; coding and
@@ -238,7 +250,9 @@ The service creates two concurrent local Smol Machines microVMs from one
 content-addressed OCI image or digest-authenticated local `.smolmachine`
 artifact. Each receives a private copy of the same prepared or bootstrap
 workspace snapshot, allowlisted environment, declared config and credential files,
-network policy, timeout, and command. The image digest pins the remaining
+network policy, memory, timeout, and command. Memory defaults to 4 GiB per
+machine, because Smol's own default is too small for an agent. The image digest
+pins the remaining
 toolchain and filesystem. A gets
 the captured managed Markdown; B gets exactly the provisional bundle changes.
 The Smol CLI owns machine lifecycle and agent execution, because the SDK cannot

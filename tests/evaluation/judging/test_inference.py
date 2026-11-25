@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import socket
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -483,6 +484,53 @@ def test_wandb_transport_retry_uses_concise_json_mode(client, monkeypatch):
     assert events[6]["output_mode"] == "json_object_fallback"
 
 
+@pytest.mark.parametrize(
+    ("model", "reasoning_fields"),
+    [
+        (
+            "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+            {"chat_template_kwargs": {"enable_thinking": False}},
+        ),
+        ("reflection/Beam-1.0-501B-A23B", {"reasoning_effort": "minimal"}),
+        ("zai-org/GLM-5.3-Flash", {"reasoning_effort": "low"}),
+    ],
+)
+def test_wandb_turns_reasoning_down_the_way_each_model_honors(
+    client, monkeypatch, model, reasoning_fields
+):
+    request = httpx.Request("POST", "https://api.inference.wandb.ai/v1/chat/completions")
+    responses = iter(
+        [
+            httpx.ReadTimeout("provider stalled", request=request),
+            httpx.Response(200, request=request, json=_completion()),
+        ]
+    )
+    calls: list[dict] = []
+    client.backend = "wandb"
+
+    def fake_post(_path, *, json):
+        calls.append(json)
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(client._http, "post", fake_post)
+    monkeypatch.setattr(inference.time, "sleep", lambda _delay: None)
+
+    client.chat_json(
+        model=model,
+        messages=_messages(),
+        response_schema=_schema(),
+        reasoning="disabled",
+    )
+
+    assert [call["response_format"]["type"] for call in calls] == ["json_schema", "json_object"]
+    reasoning_keys = ("chat_template_kwargs", "reasoning_effort")
+    for call in calls:
+        assert {key: call[key] for key in reasoning_keys if key in call} == reasoning_fields
+
+
 def test_wandb_reuses_recovery_mode_for_same_model_and_schema(client, monkeypatch):
     calls: list[dict] = []
     events: list[dict[str, object]] = []
@@ -553,6 +601,53 @@ def test_http_transport_stops_after_three_read_timeout_attempts(client, monkeypa
     assert events[-1]["request_attempt"] == 3
 
 
+def test_abort_ends_a_request_waiting_for_its_reply(client):
+    server = socket.create_server(("127.0.0.1", 0))
+    received = threading.Event()
+    connections: list[socket.socket] = []
+
+    def accept_and_never_reply():
+        connection, _ = server.accept()
+        connections.append(connection)
+        connection.recv(65536)
+        received.set()
+
+    threading.Thread(target=accept_and_never_reply, daemon=True).start()
+    client._http.base_url = f"http://127.0.0.1:{server.getsockname()[1]}"
+    client._http.timeout = httpx.Timeout(30.0)
+    raised: list[BaseException] = []
+    events: list[dict[str, object]] = []
+
+    def request():
+        client.set_activity(events.append)
+        try:
+            client.chat_json(model="gpt-pinned", messages=_messages(), response_schema=_schema())
+        except BaseException as error:
+            raised.append(error)
+
+    worker = threading.Thread(target=request, daemon=True)
+    worker.start()
+    try:
+        assert received.wait(5)
+        client.abort()
+        worker.join(5)
+
+        assert not worker.is_alive()
+        assert isinstance(raised[0], inference.InferenceCancelled)
+        assert "transport_retry" not in [event["phase"] for event in events]
+    finally:
+        server.close()
+        for connection in connections:
+            connection.close()
+
+
+def test_aborted_client_cancels_instead_of_sending(client):
+    client.abort()
+
+    with pytest.raises(inference.InferenceCancelled):
+        client.chat_json(model="gpt-pinned", messages=_messages(), response_schema=_schema())
+
+
 def test_http_explicit_context_rejection_has_typed_capacity_error(client, monkeypatch):
     request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
     response = httpx.Response(
@@ -577,6 +672,43 @@ def test_http_explicit_context_rejection_has_typed_capacity_error(client, monkey
 
     assert str(raised.value) == "provider context capacity exceeded"
     assert raised.value._transport_request_count == 1
+
+
+def test_http_error_keeps_provider_error_code_and_message(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.inference.wandb.ai/v1/chat/completions")
+    response = httpx.Response(
+        401,
+        request=request,
+        json={
+            "error": {
+                "code": "invalid_api_key",
+                "message": "Invalid Authentication",
+                "type": "invalid_request_error",
+            }
+        },
+    )
+    monkeypatch.setattr(client._http, "post", lambda _path, **_kwargs: response)
+
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        client.chat_json(model="gpt-pinned", messages=_messages(), response_schema=_schema())
+
+    assert raised.value._provider_error_code == "invalid_api_key"
+    assert raised.value._provider_error_message == "Invalid Authentication"
+
+
+def test_http_error_redacts_secrets_in_provider_message(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.inference.wandb.ai/v1/chat/completions")
+    response = httpx.Response(
+        403,
+        request=request,
+        json={"error": {"code": "forbidden", "message": "Project denied; token=SECRET123"}},
+    )
+    monkeypatch.setattr(client._http, "post", lambda _path, **_kwargs: response)
+
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        client.chat_json(model="gpt-pinned", messages=_messages(), response_schema=_schema())
+
+    assert raised.value._provider_error_message == "Project denied; token=[REDACTED]"
 
 
 def test_http_wandb_negative_available_max_tokens_is_context_rejection(client, monkeypatch):
@@ -914,6 +1046,32 @@ def test_http_output_exhaustion_retries_once_and_combines_audit(client, monkeypa
     assert calls[2]["response_format"] == {"type": "json_object"}
     assert calls[2]["chat_template_kwargs"] == {"enable_thinking": False}
     assert learned_response.output_mode == "json_object_fallback"
+
+
+def test_wandb_model_that_cannot_turn_reasoning_off_gets_a_third_attempt(client, monkeypatch):
+    bodies: list[dict] = []
+    client.backend = "wandb"
+
+    def fake_post(_path, body):
+        bodies.append(body)
+        if len(bodies) < 3:
+            payload = _completion("unfinished reasoning", finish_reason="length")
+            payload["usage"] = {"prompt_tokens": 100, "completion_tokens": 4, "total_tokens": 104}
+            return payload, 1
+        return _completion(), 1
+
+    monkeypatch.setattr(client, "_post_with_retry", fake_post)
+
+    parsed, response = client.chat_json(
+        model="reflection/Beam-1.0-501B-A23B",
+        messages=_messages(),
+        max_tokens=4,
+        response_schema=_schema(),
+    )
+
+    assert parsed == {"score": 0.75}
+    assert response.transport_request_count == 3
+    assert [body.get("reasoning_effort") for body in bodies] == [None, "minimal", "minimal"]
 
 
 def test_http_repeated_output_exhaustion_raises_with_combined_audit(client, monkeypatch):

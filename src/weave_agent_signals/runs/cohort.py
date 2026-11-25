@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -97,6 +98,26 @@ def _session_views(turns: list[TurnSpan]) -> dict[str, SessionView]:
     return sessions
 
 
+def _with_inferred_agent(turns: list[TurnSpan]) -> list[TurnSpan]:
+    """Give each pinned turn with no model, such as a /compact, the model and effort of the closest
+    earlier pinned turn in its session, else the first later one. Turns must be in time order. The
+    adapter records the same values for turns it writes now; older Cases keep them empty."""
+
+    first: dict[str, TurnSpan] = {}
+    for turn in turns:
+        if turn.model:
+            first.setdefault(turn.conversation_id, turn)
+    last: dict[str, TurnSpan] = {}
+    filled: list[TurnSpan] = []
+    for turn in turns:
+        if turn.model:
+            last[turn.conversation_id] = turn
+        elif source := last.get(turn.conversation_id) or first.get(turn.conversation_id):
+            turn = replace(turn, model=source.model, effort_level=source.effort_level)
+        filled.append(turn)
+    return filled
+
+
 def _turn_entry(turn: TurnSpan) -> dict[str, Any]:
     return {
         "trace_id": turn.trace_id,
@@ -134,7 +155,7 @@ def _build_cohort(turns: list[TurnSpan]) -> dict[str, Any]:
         trace_ids.add(turn.trace_id)
         case_ids.update(turn.case_ids)
 
-    turn_entries = [_turn_entry(turn) for turn in ordered]
+    turn_entries = [_turn_entry(turn) for turn in _with_inferred_agent(ordered)]
     session_entries = _session_entries(_session_views(ordered))
     identity = {
         "schema_version": _COHORT_SCHEMA_VERSION,
@@ -322,7 +343,7 @@ def hydrate_turn_cohort(
         raise RuntimeError(
             "Pinned turn cohort is incomplete; missing trace IDs: " + ", ".join(missing)
         )
-    ordered = [by_trace_id[entry["trace_id"]] for entry in turn_entries]
+    ordered = _with_inferred_agent([by_trace_id[entry["trace_id"]] for entry in turn_entries])
     sessions = _session_views(ordered)
     ineligible = sorted(
         conversation_id

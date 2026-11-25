@@ -7,9 +7,12 @@ import json
 import logging
 import os
 import re
+import socket
 import threading
 import time
+import weakref
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -167,6 +170,21 @@ _SCHEMA_VALIDATION_FAILURE_TERMS = (
     "schema mismatch",
     "does not conform",
 )
+_PROVIDER_TEXT_CHARACTERS = 500
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)(\b(?:api[_-]?key|token|secret|password|authorization|credential)\b\s*[:=]\s*)"
+    r"[^\s,;}]+"
+)
+_BEARER_SECRET = re.compile(r"(?i)\bbearer\s+[^\s,;}]+")
+# Most W&B models turn reasoning off with enable_thinking=false. These models turn it down with
+# reasoning_effort instead (measured 2026-11-04): Beam rejects enable_thinking=false with HTTP
+# 400 and reasons least at minimal; GLM 5.3 and GLM 5.3 Flash accept it but keep reasoning, and
+# reason about 100 tokens at low.
+_WANDB_REASONING_EFFORT = {
+    "reflection/Beam-1.0-501B-A23B": "minimal",
+    "zai-org/GLM-5.3": "low",
+    "zai-org/GLM-5.3-Flash": "low",
+}
 
 
 def _raw_output_digest(raw_output: str) -> str:
@@ -240,9 +258,16 @@ def _json_object_recovery_messages(
     return _output_contract_messages(messages, json_schema["schema"])
 
 
+def _wandb_reasoning_off(model: str) -> dict[str, Any]:
+    """The request fields that turn a W&B model's reasoning off, or as far down as it goes."""
+    effort = _WANDB_REASONING_EFFORT.get(model)
+    if effort:
+        return {"reasoning_effort": effort}
+    return {"chat_template_kwargs": {"enable_thinking": False}}
+
+
 def _wandb_retry_body(body: dict[str, Any]) -> dict[str, Any]:
-    recovered = dict(body)
-    recovered["chat_template_kwargs"] = {"enable_thinking": False}
+    recovered = {**body, **_wandb_reasoning_off(body["model"])}
     response_format = recovered.get("response_format")
     if isinstance(response_format, Mapping) and response_format.get("type") == "json_schema":
         recovered["response_format"] = {"type": "json_object"}
@@ -283,6 +308,15 @@ def _combined_usage(*values: Mapping[str, Any]) -> dict[str, int]:
     return combined
 
 
+def _safe_provider_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    text = _SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", text)
+    text = _BEARER_SECRET.sub("Bearer [REDACTED]", text)
+    return text[:_PROVIDER_TEXT_CHARACTERS] or None
+
+
 def _explicit_schema_rejection_reason(text: str) -> str | None:
     """Return a bounded explicit schema-unsupported diagnostic, if present."""
     reason = " ".join(text.split())
@@ -302,32 +336,35 @@ def _explicit_schema_rejection_reason(text: str) -> str | None:
     return reason[:500]
 
 
+def _provider_error_detail(response: httpx.Response) -> Mapping[str, Any]:
+    """The body's `error` object, or the body itself when it has none; {} for anything else."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return {}
+    detail = payload.get("error", payload) if isinstance(payload, Mapping) else None
+    return detail if isinstance(detail, Mapping) else {}
+
+
 def _http_schema_rejection_reason(error: httpx.HTTPStatusError) -> str | None:
     """Recognize only explicit client-side schema capability rejections."""
     response = error.response
     if response.status_code not in {400, 404, 405, 415, 422}:
         return None
 
-    reason = response.text
-    message = reason
+    message = response.text
     param = ""
     code = ""
     error_type = ""
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = None
-    if isinstance(payload, Mapping):
-        detail = payload.get("error", payload)
-        if isinstance(detail, Mapping):
-            if isinstance(detail.get("message"), str):
-                message = reason = detail["message"]
-            if isinstance(detail.get("param"), str):
-                param = detail["param"]
-            if isinstance(detail.get("code"), str):
-                code = detail["code"]
-            if isinstance(detail.get("type"), str):
-                error_type = detail["type"]
+    detail = _provider_error_detail(response)
+    if isinstance(detail.get("message"), str):
+        message = detail["message"]
+    if isinstance(detail.get("param"), str):
+        param = detail["param"]
+    if isinstance(detail.get("code"), str):
+        code = detail["code"]
+    if isinstance(detail.get("type"), str):
+        error_type = detail["type"]
 
     category_text = " ".join((message, code, error_type)).lower()
     if any(term in category_text for term in _NON_FALLBACK_FAILURE_TERMS):
@@ -351,14 +388,9 @@ def _is_http_context_rejection(error: httpx.HTTPStatusError) -> bool:
     if response.status_code not in {400, 413, 422}:
         return False
     text = response.text
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = None
-    if isinstance(payload, Mapping):
-        detail = payload.get("error", payload)
-        if isinstance(detail, Mapping):
-            text = " ".join(str(detail.get(key, "")) for key in ("message", "code", "type"))
+    detail = _provider_error_detail(response)
+    if detail:
+        text = " ".join(str(detail.get(key, "")) for key in ("message", "code", "type"))
     lowered = " ".join(text.lower().split())
     return bool(re.search(r"max_tokens must be at least 1, got -\d+", lowered)) or any(
         marker in lowered
@@ -431,10 +463,13 @@ class InferenceClient:
     ):
         resolved_url, headers, self.backend = _resolve_backend(backend, entity, project)
 
+        self._sockets: weakref.WeakSet[socket.socket] = weakref.WeakSet()
+        self._sockets_lock = threading.Lock()
         self._http = httpx.Client(
             base_url=resolved_url,
             headers=headers,
             timeout=httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=10.0),
+            event_hooks={"request": [lambda request: request.extensions.update(trace=self._trace)]},
         )
         self._activity = threading.local()
         self._schema_recovery: set[tuple[str, str]] = set()
@@ -442,11 +477,30 @@ class InferenceClient:
         self._aborted = threading.Event()
 
     def set_cancel(self, cancel: threading.Event) -> None:
+        # Checked before each attempt and between retries, not while waiting for a reply. In
+        # judging, the first reviewer to see the cancel calls abort(), which ends waiting requests.
+        # Watch this event during requests if a run whose reviewers are all waiting is slow to stop.
         self._cancel = cancel
 
+    def _trace(self, event: str, info: Mapping[str, Any]) -> None:
+        """Keep each connection's socket, so abort() can wake a request waiting for its reply."""
+        if event in {"connection.connect_tcp.complete", "connection.start_tls.complete"}:
+            with self._sockets_lock:
+                self._sockets.add(info["return_value"].get_extra_info("socket"))
+
     def abort(self) -> None:
-        """Stop waiting between retries and close the connection, which ends a request in flight."""
+        """Stop retries and shut down this client's sockets, which ends a request in flight.
+
+        Closing the HTTP client alone does not: a thread waiting for a reply misses it and waits
+        out the read timeout.
+        """
         self._aborted.set()
+        with self._sockets_lock:
+            sockets = list(self._sockets)
+        for sock in sockets:
+            # A closed connection's socket, or the plain socket TLS replaced, is already unusable.
+            with suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
         self._http.close()
 
     def _wait(self, delay: float) -> None:
@@ -493,6 +547,7 @@ class InferenceClient:
         retry_note = " in concise JSON recovery mode" if wandb_retry else ""
         retry_fields = {"output_mode": "json_object_fallback"} if schema_retry else {}
         while True:
+            self._raise_if_cancelled()
             request_count += 1
             retry_mode = wandb_retry and request_count > 1
             request_body = _wandb_retry_body(body) if retry_mode else body
@@ -515,6 +570,7 @@ class InferenceClient:
             try:
                 resp = self._http.post(path, json=request_body)
             except httpx.TransportError as error:
+                self._raise_if_cancelled()
                 attempt_elapsed = time.monotonic() - attempt_started
                 self._emit_activity(
                     {
@@ -682,6 +738,9 @@ class InferenceClient:
                     capacity_error._transport_request_count = request_count  # type: ignore[attr-defined]
                     raise capacity_error from None
                 error._transport_request_count = request_count  # type: ignore[attr-defined]
+                detail = _provider_error_detail(resp)
+                for key in ("code", "message"):
+                    setattr(error, f"_provider_error_{key}", _safe_provider_text(detail.get(key)))
                 raise
             try:
                 data = resp.json()
@@ -737,7 +796,7 @@ class InferenceClient:
         if response_format:
             body["response_format"] = response_format
         if self.backend == "wandb" and reasoning == "disabled":
-            body["chat_template_kwargs"] = {"enable_thinking": False}
+            body.update(_wandb_reasoning_off(model))
 
         data, request_count = self._post_with_retry("/chat/completions", body)
 
@@ -874,8 +933,6 @@ class InferenceClient:
 
         parsed = _parse_exact_json_object(resp.content)
         if not parsed and _completion_limit_reached(resp, max_tokens):
-            first = resp
-            first_diagnostic = first.response_diagnostics[-1]
             retry_reasoning: Literal["default", "disabled"] = (
                 "disabled" if self.backend == "wandb" else reasoning
             )
@@ -883,78 +940,100 @@ class InferenceClient:
             retry_mode_note = (
                 " in concise JSON recovery mode" if self.backend == "wandb" else retry_note
             )
-            self._emit_activity(
-                {
-                    "phase": "transport_retry",
-                    "message": (
-                        f"{model} exhausted {max_tokens} output tokens without valid JSON; "
-                        f"retrying structured output attempt 2 of 2{retry_mode_note}"
-                    ),
-                    "model": model,
-                    "request_attempt": 2,
-                    "max_attempts": 2,
-                    "elapsed_seconds": round(time.monotonic() - started, 3),
-                    "error_category": "output_limit",
-                    "retry_reason": "structured_output",
-                    "finish_reason": first_diagnostic.finish_reason,
-                    "completion_tokens": first_diagnostic.usage.get("completion_tokens"),
-                    "reasoning_tokens": first_diagnostic.completion_details.get("reasoning_tokens"),
-                    "output_sha256": first.raw_output_digest,
-                    "output_mode": (
-                        "json_object_fallback" if self.backend == "wandb" else first.output_mode
-                    ),
-                }
-            )
             retry_format = (
                 {"type": "json_object"}
                 if self.backend == "wandb" or fallback_reason is not None
                 else response_format
             )
-            try:
-                retry_messages = (
-                    _json_object_recovery_messages(messages, response_format)
-                    if retry_format["type"] == "json_object"
-                    else messages
+            # A model that can't turn reasoning off can run out again at its lowest effort. On
+            # 2026-11-04, Beam's lowest-effort retry finished 3 times out of 4.
+            max_attempts = 3 if self.backend == "wandb" and model in _WANDB_REASONING_EFFORT else 2
+            for attempt in range(2, max_attempts + 1):
+                previous = resp
+                previous_diagnostic = previous.response_diagnostics[-1]
+                self._emit_activity(
+                    {
+                        "phase": "transport_retry",
+                        "message": (
+                            f"{model} exhausted {max_tokens} output tokens without valid JSON; "
+                            f"retrying structured output attempt {attempt} of {max_attempts}"
+                            f"{retry_mode_note}"
+                        ),
+                        "model": model,
+                        "request_attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "elapsed_seconds": round(time.monotonic() - started, 3),
+                        "error_category": "output_limit",
+                        "retry_reason": "structured_output",
+                        "finish_reason": previous_diagnostic.finish_reason,
+                        "completion_tokens": previous_diagnostic.usage.get("completion_tokens"),
+                        "reasoning_tokens": previous_diagnostic.completion_details.get(
+                            "reasoning_tokens"
+                        ),
+                        "output_sha256": previous.raw_output_digest,
+                        "output_mode": (
+                            "json_object_fallback"
+                            if self.backend == "wandb"
+                            else previous.output_mode
+                        ),
+                    }
                 )
-                retry = self.chat(
-                    model=model,
-                    messages=retry_messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    response_format=retry_format,
-                    reasoning=retry_reasoning,
+                try:
+                    retry_messages = (
+                        _json_object_recovery_messages(messages, response_format)
+                        if retry_format["type"] == "json_object"
+                        else messages
+                    )
+                    retry = self.chat(
+                        model=model,
+                        messages=retry_messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        response_format=retry_format,
+                        reasoning=retry_reasoning,
+                    )
+                except Exception as error:
+                    error._inference_response = previous  # type: ignore[attr-defined]
+                    _add_transport_request_count(error, previous.transport_request_count)
+                    raise
+                retry_exhausted = _completion_limit_reached(retry, max_tokens)
+                retry.output_mode = (
+                    "json_object_fallback" if self.backend == "wandb" else previous.output_mode
                 )
-            except Exception as error:
-                error._inference_response = first  # type: ignore[attr-defined]
-                _add_transport_request_count(error, first.transport_request_count)
-                raise
-            retry_exhausted = _completion_limit_reached(retry, max_tokens)
-            retry.output_mode = (
-                "json_object_fallback" if self.backend == "wandb" else first.output_mode
-            )
-            retry.schema_name = first.schema_name
-            retry.schema_fallback_reason = (
-                SCHEMA_FALLBACK_RETRY if self.backend == "wandb" else first.schema_fallback_reason
-            )
-            retry.transport_request_count += first.transport_request_count
-            retry.usage = _combined_usage(first.usage, retry.usage)
-            retry.response_diagnostics = first.response_diagnostics + retry.response_diagnostics
-            resp = retry
-            parsed = _parse_exact_json_object(resp.content)
-            if parsed and recovery_key is not None and resp.output_mode == "json_object_fallback":
-                self._schema_recovery.add(recovery_key)
+                retry.schema_name = previous.schema_name
+                retry.schema_fallback_reason = (
+                    SCHEMA_FALLBACK_RETRY
+                    if self.backend == "wandb"
+                    else previous.schema_fallback_reason
+                )
+                retry.transport_request_count += previous.transport_request_count
+                retry.usage = _combined_usage(previous.usage, retry.usage)
+                retry.response_diagnostics = (
+                    previous.response_diagnostics + retry.response_diagnostics
+                )
+                resp = retry
+                parsed = _parse_exact_json_object(resp.content)
+                if (
+                    parsed
+                    and recovery_key is not None
+                    and resp.output_mode == "json_object_fallback"
+                ):
+                    self._schema_recovery.add(recovery_key)
+                if parsed or not retry_exhausted:
+                    break
             if not parsed and retry_exhausted:
                 final_diagnostic = resp.response_diagnostics[-1]
+                attempts = "both" if max_attempts == 2 else f"all {max_attempts}"
                 self._emit_activity(
                     {
                         "phase": "transport_failed",
                         "message": (
-                            f"{model} exhausted {max_tokens} output tokens on both "
+                            f"{model} exhausted {max_tokens} output tokens on {attempts} "
                             "structured output attempts"
                         ),
                         "model": model,
-                        "request_attempt": 2,
-                        "max_attempts": 2,
+                        "request_attempt": attempt,
+                        "max_attempts": max_attempts,
                         "elapsed_seconds": round(time.monotonic() - started, 3),
                         "error_category": "output_limit",
                         "retry_reason": "structured_output",
@@ -972,10 +1051,12 @@ class InferenceClient:
                 self._emit_activity(
                     {
                         "phase": "transport_recovered",
-                        "message": f"{model} returned valid JSON on structured output attempt 2",
+                        "message": (
+                            f"{model} returned valid JSON on structured output attempt {attempt}"
+                        ),
                         "model": model,
-                        "request_attempt": 2,
-                        "max_attempts": 2,
+                        "request_attempt": attempt,
+                        "max_attempts": max_attempts,
                         "elapsed_seconds": round(time.monotonic() - started, 3),
                         "output_sha256": resp.raw_output_digest,
                         "output_mode": resp.output_mode,

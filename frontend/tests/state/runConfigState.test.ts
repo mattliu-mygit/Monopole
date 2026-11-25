@@ -174,6 +174,16 @@ describe('judge panel configuration state', () => {
     )
   })
 
+  it('recommends up to three judges from distinct families, recommended models first', () => {
+    const state = initializeRunConfigState(
+      { ...models, recommended_judges: [meta.id, metaAlt.id, anthropic.id] },
+      rubrics,
+    )
+
+    expect(state.judgeModels.value).toEqual([meta.id, anthropic.id, openai.id])
+    expect(state.challengeJudgeModels.value).toEqual([openai.id])
+  })
+
   it('uses fitting alternatives when recommendations exceed selected-session capacity', () => {
     const roomyWriter = { ...writer, id: 'agy:roomy-writer', max_input_tokens: 1_048_576 }
     const roomyJudge: ModelDescriptor = {

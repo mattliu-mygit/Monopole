@@ -1978,6 +1978,8 @@ export interface components {
         };
         /** TurnDetailResponse */
         TurnDetailResponse: {
+            /** Assistant Output */
+            assistant_output: string | null;
             /** Cache Read Tokens */
             cache_read_tokens: number;
             /** Chat Span Count */

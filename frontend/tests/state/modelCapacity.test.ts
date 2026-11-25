@@ -3,7 +3,7 @@ import type { JudgingTokenEstimates, ModelDescriptor } from '../../src/types'
 import { capacityReserve, estimateModelCapacity } from '../../src/features/runs/modelCapacity'
 
 describe('capacityReserve', () => {
-  it.each([[8_192, 4_000], [32_800, 9_840], [131_072, 16_554], [1_000_000, 24_000]])(
+  it.each([[8_192, 4_000], [32_800, 9_840], [131_072, 16_554], [1_000_000, 46_000]])(
     'reserve for %i tokens is %i', (limit, reserve) => {
       expect(capacityReserve(limit)).toBe(reserve)
     })
@@ -203,7 +203,7 @@ describe('estimateModelCapacity', () => {
       'judge',
     )).toEqual({
       fits: true,
-      estimatedRequestTokens: 152_000,
+      estimatedRequestTokens: 168_200,
       estimatedChunks: 1,
     })
   })
@@ -213,12 +213,12 @@ describe('estimateModelCapacity', () => {
 
     expect(estimateModelCapacity(large, [session(4_000_000, 100_000)], policy, 'judge')).toEqual({
       fits: true,
-      estimatedRequestTokens: 224_000,
+      estimatedRequestTokens: 246_000,
       estimatedChunks: 40,
     })
     expect(estimateModelCapacity(large, [session(4_100_000, 100_000)], policy, 'judge')).toEqual({
       fits: false,
-      estimatedRequestTokens: 229_000,
+      estimatedRequestTokens: 251_000,
       estimatedChunks: 41,
     })
   })

@@ -88,39 +88,53 @@ function fittingIds(
     })
 }
 
+const MAX_PANEL_JUDGES = 3
+
+// Judges from one family share biases, so a panel takes one fitting model per family, in
+// preference order, up to `size`.
+function diversePanel(models: ModelCatalog, ids: readonly string[], size: number): string[] {
+  const families = new Set<string>()
+  return ids.filter((id) => {
+    const family = model(models, id)?.family ?? 'unknown'
+    if (families.size >= size || families.has(family)) return false
+    families.add(family)
+    return true
+  })
+}
+
 function recommendedState(
   models: ModelCatalog,
   rubricIds: readonly string[],
   sessions: readonly SessionTokens[] = [],
 ): RunConfigState {
-  const writerId = fittingIds(
-    models,
+  // When nothing fits a role, its recommendation stays, so the capacity error says why.
+  const pick = (role: CapacityRole, preferred: readonly string[]) => {
+    const fitting = fittingIds(models, role, preferred, sessions)
+    return fitting.length ? fitting : fittingIds(models, role, preferred, [])
+  }
+  const writerId = pick(
     'proposal_writer',
     models.recommended_proposal_model ? [models.recommended_proposal_model] : [],
-    sessions,
   )[0] ?? ''
-  const judgeIds = fittingIds(models, 'judge', models.recommended_judges, sessions)
-  const challengeJudgeIds = fittingIds(
-    models,
-    'challenge_judge',
-    models.recommended_challenge_judges,
-    sessions,
-  )
+  const judgeIds = pick('judge', models.recommended_judges)
+  const challengeJudgeIds = pick('challenge_judge', models.recommended_challenge_judges)
   return {
     proposalModel: { value: writerId, source: 'recommended' },
     judgeModels: {
-      value: judgeIds.slice(0, Math.max(1, models.recommended_judges.length)),
+      value: diversePanel(models, judgeIds, MAX_PANEL_JUDGES),
       source: 'recommended',
     },
+    // Each A/B judge reviews both sandbox runs, so this panel keeps the catalog's size for cost.
     challengeJudgeModels: {
-      value: challengeJudgeIds.slice(
-        0,
+      value: diversePanel(
+        models,
+        challengeJudgeIds,
         Math.max(1, models.recommended_challenge_judges.length),
       ),
       source: 'recommended',
     },
     proposalEvaluatorModel: {
-      value: evaluator(models, writerId, sessions),
+      value: evaluator(models, writerId, sessions) || evaluator(models, writerId),
       source: 'automatic',
     },
     rubricIds: [...rubricIds],

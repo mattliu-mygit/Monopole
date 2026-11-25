@@ -122,12 +122,21 @@ def run_challenge(
     candidate_runtime_files: tuple[RuntimeFile, ...] = (),
     prepare_pair: Callable[[TaskMaterialPlan], PreparedPair] | None = None,
     cancel_requested: Callable[[], bool] = lambda: False,
+    sandbox_executables: tuple[str, ...] = (),
 ) -> ChallengeResult:
     """Run one full comparison; every non-clear-B outcome conservatively keeps A."""
 
     positions = tuple(judge.position for judge in judges)
     if positions != tuple(range(1, len(judges) + 1)) or not 1 <= len(judges) <= 3:
         raise ValueError("paired challenge judges must be ordered one through three")
+    # Preparing each plan inside planning sends a repository that can't be prepared, such as one
+    # over the workspace file limit, back to the planner; the accepted plan's pair is reused.
+    prepared_pairs: dict[str, PreparedPair] = {}
+
+    def prepare_plan(plan: TaskMaterialPlan) -> None:
+        if prepare_pair is not None:
+            prepared_pairs[plan.plan_id] = prepare_pair(plan)
+
     _require_active(cancel_requested)
     try:
         material_plan = plan_task_materials(
@@ -136,6 +145,8 @@ def run_challenge(
             coaching_digest=coaching_digest,
             workspace_digest=environment.identity.workspace_digest,
             workspace=authoring_snapshot,
+            sandbox_executables=sandbox_executables,
+            check_plan=None if prepare_pair is None else prepare_plan,
         )
     except InferenceCancelled:
         raise
@@ -155,22 +166,7 @@ def run_challenge(
     prepared_authoring_snapshot = authoring_snapshot
     initial_workspace = authoring_snapshot
     if prepare_pair is not None:
-        try:
-            prepared = prepare_pair(material_plan)
-        except InferenceCancelled:
-            raise
-        except Exception as exc:
-            return ChallengeResult(
-                candidate_id=candidate_id,
-                status="invalid_task",
-                winner="tie",
-                reason=f"Task preparation failed: {_safe_error(exc)}",
-                task=None,
-                execution=environment.identity,
-                baseline=None,
-                candidate=None,
-                judges=(),
-            )
+        prepared = prepared_pairs[material_plan.plan_id]
         prepared_authoring_snapshot = prepared.authoring
         initial_workspace = prepared.arms.authoring
         baseline_snapshot = prepared.arms.baseline
@@ -202,8 +198,9 @@ def run_challenge(
             workspace_digest=environment.identity.workspace_digest,
             workspace=prepared_authoring_snapshot,
             initial_workspace=initial_workspace,
+            sandbox_executables=sandbox_executables,
         )
-        validate_task_workspace(initial_workspace, task)
+        validate_task_workspace(initial_workspace, task, executables=sandbox_executables)
     except InferenceCancelled:
         raise
     except TaskPreflightError as exc:

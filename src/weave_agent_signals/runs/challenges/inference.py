@@ -33,13 +33,17 @@ from weave_agent_signals.runs.challenges.preparation import (
     resolve_repository_head,
     validate_task_workspace,
 )
-from weave_agent_signals.runs.challenges.workspace import WorkspaceSnapshot
+from weave_agent_signals.runs.challenges.workspace import (
+    MAX_WORKSPACE_FILE_BYTES,
+    MAX_WORKSPACE_FILES,
+    WorkspaceSnapshot,
+)
 
 _INFERENCE_SAFETY_TOKENS = 1_024
 _JUDGE_MAX_TRANSCRIPT_CHARACTERS = 100_000
 _JUDGE_MAX_ARTIFACT_DIFF_CHARACTERS = 50_000
 _JUDGE_MAX_ARTIFACT_CHANGES = 200
-_TASK_WORKSPACE_MANIFEST_PATHS = 64
+_TASK_WORKSPACE_MANIFEST_MIN_PATHS = 64
 _MATERIAL_PLAN_ATTEMPTS = 3
 _REDACTED_INSTRUCTION_EVIDENCE = "managed instruction evidence withheld from blinded judge"
 
@@ -179,7 +183,10 @@ pins the repository's current HEAD; do not supply a commit, tag, or branch. Do n
 credentials, private sources, or host shell commands. Supported repository hosts are github.com,
 gitlab.com, bitbucket.org, and codeberg.org. Choose a maintained repository with real source and
 tests that can support a realistic task analogous to the measured weakness. Do not choose toy,
-demo, example, or placeholder repositories.
+demo, example, or placeholder repositories. When sandbox_executables is present, the sandbox image
+provides only those executables; choose material whose task can be built, run, and tested with
+them alone. The seed workspace plus every fetched repository must fit workspace_limits, so choose a
+repository well under its file count.
 """
 
 _TASK_SYSTEM = """\
@@ -191,11 +198,12 @@ starting-state checks, and declarative preflight requirements.
 
 required_files are safe relative file paths that must exist before either agent starts.
 required_executables are bare executable names that must be available in the sandbox image.
-requires_git_metadata declares whether the task needs repository history or status. A
-prepared_workspace excludes Git metadata, so such a task must set requires_git_metadata to false
-and must not ask agents to inspect commits, branches, status, or logs. Starting-state checks are
-judge context and are not host commands. Do not request credentials, private sources, commits,
-tags, pushes, dependency-version changes, or unrelated generated artifacts.
+When sandbox_executables is present, name only executables from it, and do not write a task that
+needs any other tool. requires_git_metadata declares whether the task needs repository history or
+status. A prepared_workspace excludes Git metadata, so such a task must set requires_git_metadata
+to false and must not ask agents to inspect commits, branches, status, or logs. Starting-state
+checks are judge context and are not host commands. Do not request credentials, private sources,
+commits, tags, pushes, dependency-version changes, or unrelated generated artifacts.
 
 The workspace_manifest is the material-aware authoring context. The initial_workspace_manifest is
 what agents actually receive before work begins. In agent_bootstrap mode, required_files may name
@@ -250,9 +258,22 @@ def _workspace_summary(workspace: WorkspaceSnapshot) -> dict[str, object]:
     }
 
 
-def _workspace_manifest(workspace: WorkspaceSnapshot) -> tuple[list[str], bool]:
+def _workspace_manifest(
+    workspace: WorkspaceSnapshot, author: ModelDescriptor
+) -> tuple[list[str], bool]:
+    """List paths in order, using up to an eighth of the author's input limit per manifest, so a
+    large-context author sees a real repository's source tree. Small authors still get 64."""
+
     paths = list(workspace.paths)
-    return paths[:_TASK_WORKSPACE_MANIFEST_PATHS], len(paths) > _TASK_WORKSPACE_MANIFEST_PATHS
+    budget = _input_limit(author, max_output_tokens=1_024) // 8
+    count = used = 0
+    for path in paths:
+        used += count_tokens(json.dumps(path), author.token_counter) + 1
+        if used > budget:
+            break
+        count += 1
+    count = max(count, _TASK_WORKSPACE_MANIFEST_MIN_PATHS)
+    return paths[:count], len(paths) > count
 
 
 def plan_task_materials(
@@ -263,27 +284,31 @@ def plan_task_materials(
     workspace_digest: str,
     workspace: WorkspaceSnapshot,
     resolve_revision: Callable[[str], str] = resolve_repository_head,
+    sandbox_executables: tuple[str, ...] = (),
+    check_plan: Callable[[TaskMaterialPlan], None] | None = None,
 ) -> TaskMaterialPlan:
-    """Select immutable public material before the final task is authored."""
+    """Select immutable public material before the final task is authored. A plan whose
+    repository can't be resolved anonymously, or that `check_plan` rejects, goes back to the
+    planner for a replacement."""
 
     if "proposal_evaluator" not in author.supported_roles:
         raise ValueError("task author must support proposal evaluation")
     if not isinstance(coaching_digest, str) or not coaching_digest.strip():
         raise ValueError("task author requires a nonblank coaching digest")
+    payload: dict[str, object] = {
+        "evaluation_digest": coaching_digest,
+        "seed_workspace_digest": workspace_digest,
+        "workspace_summary": _workspace_summary(workspace),
+        "workspace_limits": {
+            "max_files": MAX_WORKSPACE_FILES,
+            "max_file_bytes": MAX_WORKSPACE_FILE_BYTES,
+        },
+    }
+    if sandbox_executables:
+        payload["sandbox_executables"] = list(sandbox_executables)
     messages = [
         {"role": "system", "content": _MATERIAL_SYSTEM},
-        {
-            "role": "user",
-            "content": json.dumps(
-                {
-                    "evaluation_digest": coaching_digest,
-                    "seed_workspace_digest": workspace_digest,
-                    "workspace_summary": _workspace_summary(workspace),
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-        },
+        {"role": "user", "content": json.dumps(payload, sort_keys=True, separators=(",", ":"))},
     ]
     rejected_urls: list[str] = []
     resolved_revisions: dict[str, str] = {}
@@ -316,7 +341,7 @@ def plan_task_materials(
                 "task material",
             )
             url = validate_public_git_url(selected["url"])
-            revision = resolved_revisions.get(url)
+            revision = None if url in rejected_urls else resolved_revisions.get(url)
             if revision is None:
                 try:
                     if url in rejected_urls:
@@ -335,16 +360,26 @@ def plan_task_materials(
                     destination=selected["destination"],
                 )
             )
+        failure = "could not be accessed anonymously."
         if resolution_error is None:
-            return TaskMaterialPlan(
-                setup_mode=value["setup_mode"],
-                materials=tuple(materials),
-            )
-        if failed_url is not None and failed_url not in rejected_urls:
+            plan = TaskMaterialPlan(setup_mode=value["setup_mode"], materials=tuple(materials))
+            if check_plan is None:
+                return plan
+            try:
+                check_plan(plan)
+            except Exception as exc:
+                resolution_error = exc
+                failure = f"could not be prepared: {exc}."
+                for material in plan.materials:
+                    if material.url not in rejected_urls:
+                        rejected_urls.append(material.url)
+            else:
+                return plan
+        elif failed_url is not None and failed_url not in rejected_urls:
             rejected_urls.append(failed_url)
         if attempt == _MATERIAL_PLAN_ATTEMPTS:
             raise RuntimeError(
-                f"could not select anonymously accessible public material after "
+                f"could not select usable public material after "
                 f"{attempt} attempts; rejected: {', '.join(rejected_urls)}; "
                 f"last error: {resolution_error}"
             ) from resolution_error
@@ -357,7 +392,7 @@ def plan_task_materials(
                 {
                     "role": "user",
                     "content": (
-                        "The selected repository could not be accessed anonymously. "
+                        f"The selected repository {failure} "
                         f"Rejected URLs: {', '.join(rejected_urls)}. "
                         "Return a complete replacement plan using different public-only "
                         "resources for a fresh analogous task. Do not repeat a rejected URL."
@@ -377,6 +412,7 @@ def author_task(
     workspace_digest: str,
     workspace: WorkspaceSnapshot,
     initial_workspace: WorkspaceSnapshot | None = None,
+    sandbox_executables: tuple[str, ...] = (),
 ) -> AuthoredTask:
     """Author one complete task package without exposing either instruction arm."""
 
@@ -384,29 +420,25 @@ def author_task(
         raise ValueError("task author must support proposal evaluation")
     if not isinstance(coaching_digest, str) or not coaching_digest.strip():
         raise ValueError("task author requires a nonblank coaching digest")
-    manifest, manifest_truncated = _workspace_manifest(workspace)
+    manifest, manifest_truncated = _workspace_manifest(workspace, author)
     initial_manifest, initial_manifest_truncated = _workspace_manifest(
-        workspace if initial_workspace is None else initial_workspace
+        workspace if initial_workspace is None else initial_workspace, author
     )
+    payload: dict[str, object] = {
+        "evaluation_digest": coaching_digest,
+        "material_plan": material_plan.to_dict(),
+        "prepared_workspace_digest": workspace_digest,
+        "workspace_summary": _workspace_summary(workspace),
+        "workspace_manifest": manifest,
+        "workspace_manifest_truncated": manifest_truncated,
+        "initial_workspace_manifest": initial_manifest,
+        "initial_workspace_manifest_truncated": initial_manifest_truncated,
+    }
+    if sandbox_executables:
+        payload["sandbox_executables"] = list(sandbox_executables)
     task_messages = [
         {"role": "system", "content": _TASK_SYSTEM},
-        {
-            "role": "user",
-            "content": json.dumps(
-                {
-                    "evaluation_digest": coaching_digest,
-                    "material_plan": material_plan.to_dict(),
-                    "prepared_workspace_digest": workspace_digest,
-                    "workspace_summary": _workspace_summary(workspace),
-                    "workspace_manifest": manifest,
-                    "workspace_manifest_truncated": manifest_truncated,
-                    "initial_workspace_manifest": initial_manifest,
-                    "initial_workspace_manifest_truncated": initial_manifest_truncated,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-        },
+        {"role": "user", "content": json.dumps(payload, sort_keys=True, separators=(",", ":"))},
     ]
     expected = {
         "prompt",
@@ -446,7 +478,9 @@ def author_task(
         )
         try:
             validate_task_workspace(
-                workspace if initial_workspace is None else initial_workspace, task
+                workspace if initial_workspace is None else initial_workspace,
+                task,
+                executables=sandbox_executables,
             )
         except TaskPreflightError as error:
             if attempt == 0:
@@ -461,7 +495,8 @@ def author_task(
                         "role": "user",
                         "content": "The previous task failed deterministic workspace validation: "
                         f"{error}. Return one corrected task that references only paths in "
-                        "initial_workspace_manifest.",
+                        "initial_workspace_manifest and, when sandbox_executables is present, "
+                        "only executables it lists.",
                     },
                 ]
                 continue

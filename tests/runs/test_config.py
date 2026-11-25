@@ -23,9 +23,10 @@ def test_judging_context_policy_uses_capacity_tiers_at_exact_threshold():
 
     assert policy.contract_version == "4"
     assert policy.capacity_reserve(200_000) == 18_000
-    assert policy.capacity_reserve(200_001) == 24_000
+    assert policy.capacity_reserve(200_001) == 34_000
     assert policy.generation_budget(200_000) == 4_000
-    assert policy.generation_budget(200_001) == 10_000
+    assert policy.generation_budget(200_001) == 20_000
+    assert policy.generation_budget(1_049_000) == 32_000
     assert policy.finding_max_tokens == 10_000
     assert "target_input_tokens" not in policy.model_dump()
     assert "token_estimator" not in policy.model_dump()

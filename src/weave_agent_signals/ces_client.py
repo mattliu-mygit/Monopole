@@ -56,16 +56,19 @@ _query_slots = threading.BoundedSemaphore(QUERY_SLOTS)
 ATTEMPTS = 6
 MAX_RETRY_AFTER_S = 30.0
 PAGE_LIMIT = 1000
-# Pages that carry whole Cases: a Trajectory's Cases and Evaluation row searches. Prod CES answers
-# a large page of them with 503 storage_capacity_exceeded, a storage limit rather than a busy
-# query slot, and it keeps failing on retry. Measured 2026-11-05: Trajectory Case lists of 1000
-# and 100 Cases (about 450 KB) failed 3 tries in a row on 4 of 6 Trajectories, 20 Cases on none;
-# turn row searches of 200 to 1000 rows failed 17 of 18 single tries, 100 rows 4 of 5. Raise
-# this once CES serves full pages again.
+# The smallest page the pager shrinks to. Prod CES answers a page of large Cases that reads too
+# much with 503 storage_capacity_exceeded, and resending it unchanged keeps failing. Measured
+# 2026-11-05: Trajectory Case lists of 1000 and 100 Cases (about 450 KB) failed 3 tries in a row
+# on 4 of 6 Trajectories, 20 Cases on none; turn row searches of 200 to 1000 rows failed 17 of 18
+# single tries, 100 rows 4 of 5. Starting at PAGE_LIMIT and halving still read sessions ae268659
+# and 8138dbc5 in 40 s and 60 s, against 75 s and 89 s at a fixed 20, because CES accepted about
+# 31 Cases per page there.
 CASE_PAGE_LIMIT = 20
 # Independent reads (one session's turn rows, one subagent's Cases) run this many at once. Reads
 # that take a CES query slot still wait for one of QUERY_SLOTS.
 CONCURRENT_READS = 16
+# Bounds one search filter's length: about 70 bytes per session.
+SESSIONS_PER_SEARCH = 50
 # A turn's row is its first Case; the adapter numbers each turn's Cases from 0. Subagent turns
 # carry an agent ID and belong to the session turn that launched them, so they're left out.
 FIRST_STEP = "i.step_index = 0 AND i.agent_id = null"
@@ -81,6 +84,13 @@ def _ts(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _error_code(response: httpx.Response) -> str | None:
+    try:
+        return (response.json().get("error") or {}).get("code")
+    except (ValueError, AttributeError):
+        return None
 
 
 def _int(value: Any) -> int:
@@ -416,9 +426,14 @@ def turns_from_rows(trajectory_id: str, rows: list[dict]) -> list[TurnSpan]:
 
 
 def _turns_of(session_id: str) -> str:
-    """A rows/search filter for one session's turns. Deployed CES filters join predicates with
-    AND only, without OR or parentheses, so each session takes its own search."""
+    """A rows/search filter for one session's turns."""
     return f"{FIRST_STEP} AND i.session_trajectory_id = {json.dumps(session_id)}"
+
+
+def _turns_of_any(session_ids: list[str]) -> str:
+    """A rows/search filter for several sessions' turns. CES has no IN operator."""
+    either = " OR ".join(f"i.session_trajectory_id = {json.dumps(sid)}" for sid in session_ids)
+    return f"{FIRST_STEP} AND ({either})"
 
 
 @dataclass
@@ -467,10 +482,13 @@ class CesClient:
         body=None,
         key: str | None = None,
         slot: bool = False,
+        shrinkable: bool = False,
     ) -> dict:
         """Retries network errors, 429, and 5xx with doubling waits, waiting at least any
         Retry-After. Raises the last error. A `slot` request takes a CES query slot: it waits
-        for one of QUERY_SLOTS, holding it only while the request is in flight."""
+        for one of QUERY_SLOTS, holding it only while the request is in flight. A `shrinkable`
+        page raises 503 `storage_capacity_exceeded` at once, because the pager answers it with a
+        smaller page instead."""
         headers = {"Idempotency-Key": key} if key else {}
         for attempt in range(1, ATTEMPTS + 1):
             backoff = 2 ** (attempt - 1)
@@ -484,7 +502,13 @@ class CesClient:
                     raise
                 self._sleep(backoff)
                 continue
-            if response.status_code != 429 and response.status_code < 500 or attempt == ATTEMPTS:
+            code = _error_code(response) if response.status_code == 503 else None
+            if (
+                response.status_code != 429
+                and response.status_code < 500
+                or (shrinkable and code == "storage_capacity_exceeded")
+                or attempt == ATTEMPTS
+            ):
                 response.raise_for_status()
                 return response.json()
             retry_after = response.headers.get("Retry-After", "")
@@ -494,14 +518,7 @@ class CesClient:
         raise AssertionError("unreachable")
 
     def trajectory_cases(self, trajectory_id: str) -> list[dict]:
-        cases, cursor = [], None
-        while True:
-            params = {"limit": CASE_PAGE_LIMIT, **({"cursor": cursor} if cursor else {})}
-            page = self._request("GET", f"/trajectories/{trajectory_id}/cases", params=params)
-            cases.extend(page.get("cases") or [])
-            cursor = page.get("next_cursor")
-            if not cursor:
-                return cases
+        return self._rows(f"/trajectories/{trajectory_id}/cases", None, items="cases", slot=False)
 
     def root_case_input(self, trajectory_id: str) -> dict:
         """The input of the Case the Trajectory starts from: for a session, the session Case.
@@ -555,34 +572,88 @@ class CesClient:
         return turn.subagents if turn is not None and turn.trace_id == turn_case_id else None
 
     def session_turn_rows(self, catalog: Catalog, session_ids: list[str]) -> dict[str, list]:
-        """Each session's turn rows with their Scores, subagent turns included, read
-        concurrently."""
+        """Each session's turn rows with their Scores, subagent turns included.
+
+        CES runs only a few searches at a time and rejects the rest with 503 and a 1 s
+        Retry-After, so sessions are read in batches with one search each. A deployment whose
+        filters lack OR gets one search per session, a few at a time."""
         path = f"/evaluations/{catalog.turns_evaluation_id}/rows/search"
-        with ThreadPoolExecutor(max_workers=CONCURRENT_READS) as pool:
-            found = pool.map(lambda sid: self._rows(path, {"filter": _turns_of(sid)}), session_ids)
-            return dict(zip(session_ids, found))
+        batches = [
+            session_ids[i : i + SESSIONS_PER_SEARCH]
+            for i in range(0, len(session_ids), SESSIONS_PER_SEARCH)
+        ]
+        found: dict[str, list] = {sid: [] for sid in session_ids}
+        try:
+            with ThreadPoolExecutor(max_workers=QUERY_SLOTS) as pool:
+                for rows in pool.map(
+                    lambda batch: self._rows(path, {"filter": _turns_of_any(batch)}), batches
+                ):
+                    for row in rows:
+                        if (sid := row["input"].get("session_trajectory_id")) in found:
+                            found[sid].append(row)
+            return found
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 400:
+                raise
+        with ThreadPoolExecutor(max_workers=QUERY_SLOTS) as pool:
+            rows = pool.map(lambda sid: self._rows(path, {"filter": _turns_of(sid)}), session_ids)
+            return dict(zip(session_ids, rows))
 
     def _rows(
-        self, path: str, body: dict | None, limit: int | None = None, *, params: dict | None = None
+        self,
+        path: str,
+        body: dict | None,
+        limit: int | None = None,
+        *,
+        params: dict | None = None,
+        items: str = "rows",
+        slot: bool = True,
     ) -> list[dict]:
-        """Every row of a paged route that takes a CES query slot: an Evaluation row search
-        (`body`, paged by CASE_PAGE_LIMIT), or Trajectory rows or EvaluationQuery results, read
-        with GET and its `params`, such as a filter."""
-        rows, cursor = [], None
-        page_limit = PAGE_LIMIT if body is None else CASE_PAGE_LIMIT
-        while True:
-            paging = {"limit": page_limit, **({"cursor": cursor} if cursor else {})}
-            page = (
-                self._request("GET", path, params={**(params or {}), **paging}, slot=True)
-                if body is None
-                else self._request("POST", path, body={**body, **paging}, slot=True)
-            )
-            rows.extend(page.get("rows") or [])
+        """Every row of a list (GET, with `params` such as a filter) or search (POST), or the
+        first `limit`. A `slot` read takes a CES query slot, as row searches, Trajectory rows,
+        and EvaluationQuery results do; a Trajectory's Case list doesn't."""
+        rows = []
+        for page in self._pages(path, body, params=params, slot=slot):
+            rows.extend(page.get(items) or [])
             if limit is not None and len(rows) >= limit:
                 return rows[:limit]
+        return rows
+
+    def _pages(
+        self, path: str, body: dict | None, *, params: dict | None = None, slot: bool = True
+    ):
+        """Each page of a list (GET) or search (POST), so a caller can stop early. A page of
+        large Cases can exceed CES's per-query storage budget, which CES rejects with 503
+        storage_capacity_exceeded, so the page starts at PAGE_LIMIT and halves on that error
+        until CES accepts it, then stays at that size. At CASE_PAGE_LIMIT it stops shrinking
+        and gets the usual retries, since CES also refuses small pages now and then."""
+        cursor, page_limit = None, PAGE_LIMIT
+        while True:
+            paging = {"limit": page_limit, **({"cursor": cursor} if cursor else {})}
+            shrinkable = page_limit > CASE_PAGE_LIMIT
+            try:
+                page = (
+                    self._request(
+                        "GET",
+                        path,
+                        params={**(params or {}), **paging},
+                        slot=slot,
+                        shrinkable=shrinkable,
+                    )
+                    if body is None
+                    else self._request(
+                        "POST", path, body={**body, **paging}, slot=slot, shrinkable=shrinkable
+                    )
+                )
+            except httpx.HTTPStatusError as error:
+                if not shrinkable or _error_code(error.response) != "storage_capacity_exceeded":
+                    raise
+                page_limit = max(page_limit // 2, CASE_PAGE_LIMIT)
+                continue
+            yield page
             cursor = page.get("next_cursor")
             if not cursor:
-                return rows
+                return
 
     def ensure_catalog(
         self, dataset_id: str, specs: tuple[ScorerSpec, ...] = DETERMINISTIC
@@ -692,20 +763,9 @@ class CesClient:
 
         CES filters can't range-compare string fields, so this reads turns newest first and
         stops at the first one before `since`. The adapter's timestamps sort in time order."""
-        found, cursor = {}, None
-        while True:
-            body = {
-                "filter": FIRST_STEP,
-                "order_by": "i.started_at desc",
-                "limit": CASE_PAGE_LIMIT,
-                **({"cursor": cursor} if cursor else {}),
-            }
-            page = self._request(
-                "POST",
-                f"/evaluations/{catalog.turns_evaluation_id}/rows/search",
-                body=body,
-                slot=True,
-            )
+        found = {}
+        path = f"/evaluations/{catalog.turns_evaluation_id}/rows/search"
+        for page in self._pages(path, {"filter": FIRST_STEP, "order_by": "i.started_at desc"}):
             for row in page.get("rows") or []:
                 started, session = (
                     _ts(row["input"].get("started_at")),
@@ -719,9 +779,7 @@ class CesClient:
                     found.setdefault(session, None)
                     if limit is not None and len(found) >= limit:
                         return list(found)
-            cursor = page.get("next_cursor")
-            if not cursor:
-                return list(found)
+        return list(found)
 
     def turn_scores(self, catalog: Catalog, trajectory_id: str) -> dict[str, list[dict]]:
         """Scores on each turn of one session, keyed by the turn's first Case ID."""

@@ -29,6 +29,7 @@ from weave_agent_signals.judges.inference import (
     _explicit_schema_rejection_reason,
     _parse_exact_json_object,
     _raw_output_digest,
+    _safe_provider_text,
     json_output_contract_messages,
 )
 from weave_agent_signals.judges.process import CODEX_CONFINED_ARGS, prepare_cli_subprocess
@@ -81,6 +82,12 @@ def _unwrap_whole_json_fence(text: str) -> str:
 _HOME = os.path.expanduser("~")
 _JUDGE_CODEX_HOME = os.path.join(_HOME, ".codex-judge")
 _JUDGE_CWD = os.path.join(_HOME, ".codex-judge", "sandbox")
+# Devin's CLI can't turn its tools off, so its judge runs from this otherwise empty folder, whose
+# project config denies every tool. A deny rule wins in every permission mode.
+_JUDGE_DEVIN_CWD = os.path.join(_HOME, ".devin-judge", "workspace")
+_DEVIN_DENY_ALL = {
+    "permissions": {"deny": ["read", "edit", "grep", "glob", "exec", "Fetch(*)", "mcp__*"]}
+}
 
 _RETRYABLE_PATTERNS = [
     "error_max_structured_output_retries",
@@ -105,12 +112,6 @@ _RETRYABLE_PATTERNS = [
 MAX_CLI_RETRIES = 2
 RETRY_BASE_DELAY = 5.0
 _PROCESS_DIAGNOSTIC_TAIL_CHARACTERS = 16_000
-_PROVIDER_TEXT_CHARACTERS = 500
-_SECRET_ASSIGNMENT = re.compile(
-    r"(?i)(\b(?:api[_-]?key|token|secret|password|authorization|credential)\b\s*[:=]\s*)"
-    r"[^\s,;}]+"
-)
-_BEARER_SECRET = re.compile(r"(?i)\bbearer\s+[^\s,;}]+")
 _PROVIDER_CODE = re.compile(r"[A-Za-z0-9_.-]{1,100}\Z")
 
 
@@ -122,15 +123,6 @@ def _failure_diagnostic(stdout: str, stderr: str, prompt: str) -> str:
     """Remove Codex's exact prompt echo before retaining failure metadata."""
     combined = (stderr or "") + (stdout or "")
     return combined.replace(prompt, "") if prompt else combined
-
-
-def _safe_provider_text(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    text = " ".join(value.split())
-    text = _SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", text)
-    text = _BEARER_SECRET.sub("Bearer [REDACTED]", text)
-    return text[:_PROVIDER_TEXT_CHARACTERS] or None
 
 
 def _safe_provider_code(value: object) -> str | None:
@@ -314,7 +306,7 @@ class CliJudgeClient:
         timeout: float = 360.0,
         runner: Callable[..., Any] | None = None,
     ):
-        if provider not in {"claude", "codex", "agy"}:
+        if provider not in {"claude", "codex", "agy", "devin"}:
             raise ValueError(f"unsupported local CLI provider: {provider}")
         self.backend = provider
         self._provider = provider
@@ -499,6 +491,19 @@ class CliJudgeClient:
                 return
             if base_argv is None:  # pragma: no cover - guarded by provider branch above
                 raise RuntimeError("local CLI argv was not built")
+            if self._provider == "devin":
+                # `devin -p` ignores stdin, and a judge prompt can exceed the argv limit. The file
+                # sits outside the workspace so the workspace holds only the deny-all config.
+                prompts = os.path.join(os.path.dirname(_JUDGE_DEVIN_CWD), "prompts")
+                os.makedirs(prompts, mode=0o700, exist_ok=True)
+                fd, path = tempfile.mkstemp(prefix="prompt-", suffix=".txt", dir=prompts)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                        stream.write(base_stdin)
+                    yield [*base_argv, "--prompt-file", path], "", _JUDGE_DEVIN_CWD, env
+                finally:
+                    os.remove(path)
+                return
             yield base_argv, base_stdin, _JUDGE_CWD, env
 
         log.info(
@@ -564,19 +569,12 @@ class CliJudgeClient:
         for attempt in range(MAX_CLI_RETRIES + 1):
             t0 = time.monotonic()
             with attempt_invocation() as (argv, stdin_text, cwd, attempt_env):
-                if self._provider == "agy":
-                    stdout, stderr, returncode = self._run_with_cancel(
-                        argv,
-                        stdin_text,
-                        attempt_env,
-                        cwd=cwd,
-                    )
-                else:
-                    stdout, stderr, returncode = self._run_with_cancel(
-                        argv,
-                        stdin_text,
-                        attempt_env,
-                    )
+                stdout, stderr, returncode = self._run_with_cancel(
+                    argv,
+                    stdin_text,
+                    attempt_env,
+                    cwd=cwd,
+                )
             elapsed = time.monotonic() - t0
 
             if returncode == 0:
@@ -859,7 +857,8 @@ class CliJudgeClient:
 
         content = self._extract_text(stdout, mode)
         if strict:
-            if self._provider == "agy":
+            # Neither CLI can enforce a schema, and both often fence the whole JSON reply.
+            if self._provider in {"agy", "devin"}:
                 content = _unwrap_whole_json_fence(content)
             return _parse_exact_json_object(content), content
         return _extract_json(content), content
@@ -1001,6 +1000,22 @@ class CliJudgeClient:
             return argv, user, "claude"
 
         prompt = f"{system}\n\n{user}" if system else user
+        if self._provider == "devin":
+            config_dir = os.path.join(_JUDGE_DEVIN_CWD, ".devin")
+            os.makedirs(config_dir, exist_ok=True)
+            with open(os.path.join(config_dir, "config.json"), "w", encoding="utf-8") as stream:
+                json.dump(_DEVIN_DENY_ALL, stream)
+            argv = [
+                "devin",
+                "-p",
+                "--model",
+                model,
+                "--permission-mode",
+                "auto",
+                "--respect-workspace-trust",
+                "false",
+            ]
+            return argv, prompt, "plain"
         argv = [
             "codex",
             "exec",

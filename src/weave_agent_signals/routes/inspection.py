@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -32,6 +34,7 @@ _SIGNAL_THRESHOLD = 0.5
 
 
 SESSION_SCAN_FACTOR = 3
+_LOG = logging.getLogger(__name__)
 
 
 def _by_target(records: list[dict]) -> dict[str, list[dict]]:
@@ -107,6 +110,7 @@ def _turn_json(turn: TurnSpan, *, include_children: bool = False) -> dict:
     if include_children:
         value.update(
             {
+                "assistant_output": turn.assistant_output,
                 "tool_calls": [
                     {
                         "span_id": item.span_id,
@@ -185,6 +189,38 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
     router = APIRouter(prefix="/api", tags=["inspection"])
     # Query IDs and whether CES has a stddev aggregation, learned once per process.
     query_state = ces_queries.QueryState()
+    # Estimates read a whole session, subagents included. Stored turns never change, so they're
+    # reused until the session's turn list does.
+    estimates: dict[tuple[str, tuple[str, ...]], dict] = {}
+    # CES row search is the slowest part of a list load and can't ask for only newer turns, so
+    # the list serves each session's last-read turn rows and refreshes them in the background.
+    # A just-finished turn appears one load later. Runs never read this cache.
+    cached_rows: dict[str, list[dict]] = {}
+    refreshing: set[str] = set()
+    refresh_lock = threading.Lock()
+
+    def refresh_rows(session_ids: list[str]) -> None:
+        try:
+            with ces_factory() as ces:
+                cached_rows.update(ces.client.session_turn_rows(ces.catalog, session_ids))
+        except Exception:
+            _LOG.warning("background turn-row refresh failed", exc_info=True)
+        finally:
+            with refresh_lock:
+                refreshing.difference_update(session_ids)
+
+    def turn_rows(ces: CesSession, batch: list[str]) -> dict[str, list[dict]]:
+        found = {sid: cached_rows[sid] for sid in batch if sid in cached_rows}
+        if missing := [sid for sid in batch if sid not in found]:
+            fresh = ces.client.session_turn_rows(ces.catalog, missing)
+            cached_rows.update(fresh)
+            found.update(fresh)
+        with refresh_lock:
+            stale = [sid for sid in batch if sid not in missing and sid not in refreshing]
+            refreshing.update(stale)
+        if stale:
+            threading.Thread(target=refresh_rows, args=(stale,), daemon=True).start()
+        return {sid: found[sid] for sid in batch}
 
     @router.get("/sessions")
     def get_sessions(
@@ -213,13 +249,14 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             )
             visible: list[tuple[dict, list[TurnSpan]]] = []
             visible_rows: dict[str, list[dict]] = {}
+            turn_ids: dict[str, tuple[str, ...]] = {}
             read = 0
             # Turn rows only: a session's steps and subagents can take hundreds of reads. The
             # rows also carry the turn Scores, so they're read once.
             while read < len(session_ids) and len(visible) < limit:
                 batch = session_ids[read : read + limit - len(visible)]
                 read += len(batch)
-                for sid, rows in ces.client.session_turn_rows(ces.catalog, batch).items():
+                for sid, rows in turn_rows(ces, batch).items():
                     turns = turns_from_rows(sid, rows)
                     if not session_is_evaluable(turns):
                         continue
@@ -232,11 +269,17 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                     if in_window:
                         visible.append((_session_summary(sid, in_window), in_window))
                         visible_rows[sid] = rows
+                        turn_ids[sid] = tuple(sorted(turn.trace_id for turn in turns))
             if include_estimates:
                 for summary, _turns in visible:
-                    session = session_or_none(ces.client, summary["conversation_id"])
-                    if session is not None:
-                        summary["judging_token_estimates"] = _judging_token_estimates(session.turns)
+                    sid = summary["conversation_id"]
+                    key = (sid, turn_ids[sid])
+                    if key not in estimates:
+                        session = session_or_none(ces.client, sid)
+                        if session is None:
+                            continue
+                        estimates[key] = _judging_token_estimates(session.turns)
+                    summary["judging_token_estimates"] = estimates[key]
             feedback = _by_target(
                 ces.client.cohort_scores(ces.catalog, list(visible_rows), turn_rows=visible_rows)
                 if visible

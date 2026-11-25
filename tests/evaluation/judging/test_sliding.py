@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from weave_agent_signals.catalogs import build_rubric_catalog
-from weave_agent_signals.judges import inference, sliding
+from weave_agent_signals.judges import inference, sliding, windowing
 from weave_agent_signals.judges.inference import (
     InferenceCancelled,
     InferenceContextExceeded,
@@ -34,7 +34,7 @@ from weave_agent_signals.judges.windowing import (
     render_raw_turn,
     render_raw_window,
 )
-from weave_agent_signals.models import SessionView, TurnSpan
+from weave_agent_signals.models import SessionView, ToolSpan, TurnSpan
 from weave_agent_signals.run_config import JudgingContextPolicy, PositionedJudge, RubricDescriptor
 from weave_agent_signals.runs.events import normalize_judging_details
 
@@ -269,10 +269,11 @@ def _reviewer(
     activity=None,
     call_gate: threading.Semaphore | None = None,
     expected_windows: int = 2,
+    turns: list[TurnSpan] | None = None,
 ) -> tuple[SlidingReviewer, _ScriptedClient, dict[str, JudgeCallRecord], dict[str, object]]:
     session = SessionView(
         "session-1",
-        [_turn(f"trace-{index}", index) for index in range(1, 5)],
+        turns or [_turn(f"trace-{index}", index) for index in range(1, 5)],
         "config-1",
         "main",
     )
@@ -454,10 +455,10 @@ def test_reviewer_digests_once_then_reads_every_window_and_merges() -> None:
     ]
 
 
-def test_large_reviewer_uses_10k_generation_budget_for_every_phase() -> None:
+def test_large_reviewer_uses_32k_generation_budget_for_every_phase() -> None:
     reviewer, client, _, _ = _reviewer(
         judge=_judge(
-            max_input_tokens=262_000,
+            max_input_tokens=1_049_000,
             window_budget_tokens=20_000,
             whole_budget_tokens=20_000,
         ),
@@ -468,7 +469,7 @@ def test_large_reviewer_uses_10k_generation_budget_for_every_phase() -> None:
 
     assert result.status == "succeeded"
     assert {call["phase"] for call in client.calls} == {"digest", "window", "merge"}
-    assert all(call["max_tokens"] == 10_000 for call in client.calls)
+    assert all(call["max_tokens"] == 32_000 for call in client.calls)
 
 
 def test_wandb_reviewer_disables_reasoning_for_digest_and_merge() -> None:
@@ -635,15 +636,45 @@ def test_evidence_id_redaction_is_longest_first() -> None:
 def test_evidence_aliasing_changes_labels_without_mutating_captured_content() -> None:
     rendered, aliases = sliding._alias_evidence(
         "## Turn 1 [evidence_id=trace-1]\n"
-        "trace_id: trace-1\n"
+        'trace_id: "trace-1"\n'
         "user_input: preserve incidental trace-1 text",
-        ("trace-1",),
+        {"trace-1": "t1"},
     )
 
-    assert aliases == {"e1": "trace-1"}
-    assert "[evidence_id=e1]" in rendered
-    assert "trace_id: e1\n" in rendered
+    assert aliases == {"t1": "trace-1"}
+    assert "[evidence_id=t1]" in rendered
+    assert 'trace_id: "t1"\n' in rendered
     assert "preserve incidental trace-1 text" in rendered
+
+
+def test_evidence_aliasing_relabels_the_trace_id_line_the_renderer_writes() -> None:
+    turn_text = (
+        "## Turn 1 [evidence_id=01a1ad65-8526-7874-b5b4-1dbb8f0958f2]\n"
+        f"trace_id: {windowing._value('01a1ad65-8526-7874-b5b4-1dbb8f0958f2')}\n"
+    )
+
+    rendered, _ = sliding._alias_evidence(turn_text, {"01a1ad65-8526-7874-b5b4-1dbb8f0958f2": "t1"})
+
+    assert "01a1ad65-8526-7874-b5b4-1dbb8f0958f2" not in rendered
+    assert 'trace_id: "t1"\n' in rendered
+
+
+def test_window_prompts_label_each_turn_with_its_heading_number() -> None:
+    turns = [_turn(f"trace-{index}", index) for index in range(1, 5)]
+    tool = ToolSpan("tool-3", "Read", "{}", "ok", "OK", turns[2].started_at, turns[2].ended_at)
+    turns[2] = replace(turns[2], tool_calls=[tool])
+    reviewer, client, _, _ = _reviewer(turns=turns)
+
+    reviewer.review(_rubric("judge.session_outcome"))
+
+    raw_windows = "\n".join(
+        call["messages"][1]["content"].split("CONTEXT_KIND: raw_window", 1)[1]
+        for call in client.calls
+        if call["phase"] == "window"
+    )
+    assert "## Turn 3 [evidence_id=t3]" in raw_windows
+    assert "Tool [evidence_id=t3.1]" in raw_windows
+    assert "evidence_id=e" not in raw_windows
 
 
 def test_reviewer_prompts_distinguish_cited_findings_from_no_findings() -> None:

@@ -249,6 +249,15 @@ function TurnCard({ turn, index, feedback, rubrics }: { turn: TurnDetail; index:
             </div>
           )}
 
+          {turn.assistant_output && (
+            <div>
+              <h4 className="text-sm font-medium text-gray-700 mb-1">Final Reply</h4>
+              <p className="text-sm text-gray-600 whitespace-pre-wrap bg-gray-50 rounded p-3">
+                {turn.assistant_output}
+              </p>
+            </div>
+          )}
+
           <div>
             <h4 className="text-sm font-medium text-gray-700 mb-1">Turn Details</h4>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">

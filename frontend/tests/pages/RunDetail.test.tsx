@@ -553,6 +553,39 @@ describe('RunDetail wiring', () => {
     )
   })
 
+  it('shows pipeline configuration only once a session is selected', async () => {
+    renderPage()
+
+    const sessionCheckbox = await screen.findByRole('checkbox', {
+      name: 'Select session session-1',
+    })
+    expect(screen.queryByRole('region', { name: 'Run configuration' })).toBeNull()
+
+    fireEvent.click(sessionCheckbox)
+
+    expect(await screen.findByRole('region', { name: 'Run configuration' })).not.toBeNull()
+  })
+
+  it('keeps a manual configuration change when the selection changes', async () => {
+    const second = { ...session, conversation_id: 'session-2' }
+    api.getSessions.mockResolvedValue({
+      sessions: [
+        { ...session, judging_token_estimates: sessionEstimates },
+        { ...second, judging_token_estimates: sessionEstimates },
+      ],
+      total: 2,
+      truncated: false,
+    })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select session session-1' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove last judge' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select session session-2' }))
+
+    await waitFor(() => expect(screen.getByLabelText('Judge 2')).not.toBeNull())
+    expect(screen.queryByLabelText('Judge 3')).toBeNull()
+  })
+
   it('retries session discovery and model catalogs in place', async () => {
     api.getModels
       .mockRejectedValueOnce(new Error('Model catalog unavailable'))
@@ -565,7 +598,9 @@ describe('RunDetail wiring', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Retry configuration catalogs' }))
     await waitFor(() => expect(api.getModels).toHaveBeenCalledTimes(2))
     fireEvent.click(await screen.findByRole('button', { name: 'Retry session discovery' }))
-    await waitFor(() => expect(api.getSessions).toHaveBeenCalledTimes(2))
+    const listCalls = () =>
+      api.getSessions.mock.calls.filter(([params]) => !params?.include_estimates).length
+    await waitFor(() => expect(listCalls()).toBe(2))
     expect(await screen.findByRole('checkbox', { name: 'Select session session-1' })).not.toBeNull()
   })
 
