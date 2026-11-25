@@ -26,7 +26,7 @@ from weave_agent_signals.ces_client import (
     session_or_none,
 )
 from weave_agent_signals.judges.inference import DEFAULT_ENTITY, DEFAULT_PROJECT
-from weave_agent_signals.models import Score, SessionView, session_is_evaluable
+from weave_agent_signals.models import Score, SessionView, TurnSpan, session_is_evaluable
 from weave_agent_signals.patterns import ConfigStats, Stat
 from weave_agent_signals.scorers import score_session, score_trajectory, score_turn
 from weave_agent_signals.scorers.outcome import classify_command
@@ -114,7 +114,21 @@ class _Stats:
     def __init__(self) -> None:
         self.turns = self.sessions = self.subagents = 0
         self.scored = self.written = self.skipped = self.errors = 0
+        self.bash_commands = self.bash_classified = 0
         self.tags: list[str] = []
+
+    def count_bash(self, turn: TurnSpan) -> None:
+        """Count the turn's Bash commands, and those the outcome scorers classify."""
+        for call in turn.tool_calls:
+            if call.tool_name != "Bash":
+                continue
+            self.bash_commands += 1
+            try:
+                command = json.loads(call.arguments).get("command", "")
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                continue
+            if command and classify_command(command) is not None:
+                self.bash_classified += 1
 
 
 def _write(
@@ -130,12 +144,12 @@ def _write(
 
 def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=None):
     """Score each session's turns in the window, then the session, its whole-Trajectory Scores,
-    and each subagent Trajectory below it. Returns (stats, sessions).
+    and each subagent Trajectory below it.
 
     Without `force`, a Scorer that already has a Score on its target is skipped, except a
     whole-Trajectory Scorer whose Score recorded other turns than the Trajectory has now
     (`scored_turns`): a conversation can stay live, so its Scores follow its new turns."""
-    pass_id, stats, sessions = str(uuid.uuid4()), _Stats(), []
+    pass_id, stats = str(uuid.uuid4()), _Stats()
     session_ids = list(session_ids)
     # Two reads per session: its own row, and one filtered read for every subagent below it.
     have_sessions = {} if force else client.session_scores(catalog, session_ids, subagents=True)
@@ -150,7 +164,6 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
             continue
         if not session_is_evaluable(session.turns):
             continue
-        sessions.append(session)
         try:
             have_turns = {} if force else client.turn_scores(catalog, sid)
         except Exception as error:
@@ -163,6 +176,7 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
             if limit is not None and stats.turns >= limit:
                 break
             stats.turns += 1
+            stats.count_bash(turn)
             try:
                 scores = score_turn(turn)
                 for s in scores:
@@ -214,7 +228,7 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
             except Exception as error:
                 stats.errors += 1
                 log.warning("Error scoring Trajectory %s: %s", view.conversation_id[:12], error)
-    return stats, sessions
+    return stats
 
 
 def score(args: argparse.Namespace) -> int:
@@ -225,7 +239,7 @@ def score(args: argparse.Namespace) -> int:
         if not session_ids:
             print("No turns found.")
             return 0
-        stats, _ = _score_sessions(
+        stats = _score_sessions(
             client,
             catalog,
             session_ids,
@@ -252,30 +266,18 @@ def backfill(args: argparse.Namespace) -> int:
         if not session_ids:
             print("No turns found in date range.")
             return 0
-        stats, sessions = _score_sessions(
+        stats = _score_sessions(
             client, catalog, session_ids, since=args.start, until=args.end, force=args.force
         )
-    commands = []
-    for session in sessions:
-        for turn in session.turns:
-            in_range = turn.started_at >= args.start and (
-                args.end is None or turn.started_at <= args.end
-            )
-            for call in turn.tool_calls if in_range else ():
-                if call.tool_name == "Bash":
-                    try:
-                        commands.append(json.loads(call.arguments).get("command", ""))
-                    except (json.JSONDecodeError, TypeError, AttributeError):
-                        commands.append("")
-    classified = sum(1 for command in commands if command and classify_command(command) is not None)
-    pct = classified / len(commands) * 100 if commands else 0
+    commands, classified = stats.bash_commands, stats.bash_classified
+    pct = classified / commands * 100 if commands else 0
     print(
         f"Backfilled {stats.written} scores across {stats.turns} turns, {stats.sessions} sessions,"
         f" {stats.subagents} subagents."
     )
     if stats.skipped:
         print(f"  Skipped: {stats.skipped} (existing, use --force to write newer scores)")
-    print(f"  Bash coverage: {classified}/{len(commands)} classified ({pct:.0f}%)")
+    print(f"  Bash coverage: {classified}/{commands} classified ({pct:.0f}%)")
     if stats.errors:
         print(f"  Errors: {stats.errors} (use -v for details)")
     return 1 if stats.errors else 0
