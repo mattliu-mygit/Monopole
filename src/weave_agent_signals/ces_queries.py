@@ -22,7 +22,8 @@ its stddev is exact without reading raw Scores (`config_stats`).
 their last test run passed, summing measurements (success and spend), session Scores by config
 and the `dim.day` Score (session trends), Trajectories by config and depth (subagents against
 sessions), judge Scores by a reference Score (judge agreement), and session Scores by config and
-a dimension Score (segments).
+a dimension Score (segments). Turn trends add a Case query on the turns Evaluation, turn Scores
+by config and the Case's `day` field.
 
 A query definition never changes. Its create key holds the Evaluation ID and a digest of its
 body, so a rerun replays to the same query ID, and a new judge panel, which is a new Scorer,
@@ -31,6 +32,7 @@ makes a new query.
 
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date
@@ -46,6 +48,7 @@ from weave_agent_signals.patterns import (
     SessionSuccess,
     Stat,
     conservative_stat,
+    covers_trend_windows,
     histogram_stat,
     pool_stats,
     session_success,
@@ -69,6 +72,8 @@ HISTOGRAM_MAX_ROWS = 5000
 _CONFIG = {"kind": "dataset_field", "source": "input", "name": "config_version"}
 _DEPTH = {"kind": "depth"}
 _DAY = {"kind": "score", "name": "dim.day"}
+# The UTC day a Case started, which the adapter writes on every turn Case.
+_CASE_DAY = {"kind": "dataset_field", "source": "input", "name": "day"}
 COMPLETION = "implicit.completion"
 MEASURES = (MEASURE_TURNS, MEASURE_TOKENS, MEASURE_DURATION)
 
@@ -188,6 +193,15 @@ def _scorer(ref: ScorerRef) -> QueryScorer:
     return QueryScorer(ref.spec.name, ref.scorer_id, ref.version_id, ref.spec.binary)
 
 
+def _turn_scorers(catalog: Catalog) -> list[QueryScorer]:
+    """Every turn rating Scorer in the catalog: no measurement or dimension."""
+    refs = catalog.scorers.values()
+    return sorted(
+        (_scorer(r) for r in refs if r.spec.target_kind == "case" and r.spec.kind == RATING),
+        key=lambda s: s.name,
+    )
+
+
 def session_scorers(client: CesClient, catalog: Catalog) -> list[QueryScorer]:
     """Every session rating Scorer the sessions Evaluation selects: no measurement. Judge panel
     Scorers aren't in the catalog, so their names are read."""
@@ -290,14 +304,7 @@ def config_stats(client: CesClient, catalog: Catalog, state: QueryState) -> Conf
     Without CES's spread aggregation, each continuous Scorer that has Scores takes one more
     query, its value histogram (`_value_stats`), for an exact stddev. When that histogram is too
     large, the Scorer keeps the query's mean with a conservative stddev (`conservative_stat`)."""
-    turn_scorers = sorted(
-        (
-            QueryScorer(ref.spec.name, ref.scorer_id, ref.version_id, ref.spec.binary)
-            for ref in catalog.scorers.values()
-            if ref.spec.target_kind == "case" and ref.spec.kind == RATING
-        ),
-        key=lambda s: s.name,
-    )
+    turn_scorers = _turn_scorers(catalog)
     trajectory_scorers = session_scorers(client, catalog)
     turns = run_query(
         client,
@@ -354,30 +361,35 @@ def config_stats(client: CesClient, catalog: Catalog, state: QueryState) -> Conf
     )
 
 
-def session_day_stats(
-    client: CesClient, catalog: Catalog, state: QueryState
+def _day_stats(
+    client: CesClient,
+    state: QueryState,
+    evaluation_id: str,
+    *,
+    name: str,
+    target_kind: str,
+    group_by: list[dict],
+    scorers: list[QueryScorer],
 ) -> dict[str, dict[date, Stat]]:
-    """Each session rating Scorer's Stat per UTC day its sessions started, for trends:
-    {Scorer: {day: Stat}}, every config pooled, sessions only.
-
-    One query groups sessions by config, depth, and the `dim.day` Score, which `score` and
-    `backfill` write, so a session without it isn't placed in time and is left out. Without
-    CES's spread aggregation, each continuous Scorer that has Scores takes a value histogram
-    with the same groups for an exact stddev, as in `config_stats`."""
-    scorers = session_scorers(client, catalog)
-    group_by = [_CONFIG, _DEPTH, _DAY]
-    groups = _trajectory_groups(
+    """Each Scorer's Stat per day, {Scorer: {day: Stat}}, every config pooled, from one query
+    grouped by `group_by`: the config, optionally depth, and a day column last. With depth,
+    only depth 0 counts. A target without a valid day isn't placed in time and is left out.
+    Without CES's spread aggregation, each continuous Scorer that has Scores takes a value
+    histogram with the same groups for an exact stddev, as in `config_stats`."""
+    depth = _DEPTH in group_by
+    groups = run_query(
         client,
-        catalog,
         state,
-        name="monopole sessions by config and day",
+        evaluation_id,
+        name=name,
+        target_kind=target_kind,
         group_by=group_by,
         scorers=scorers,
     )
     by_key: dict[tuple, dict[str, Stat]] = {}
     for group in groups:
-        config, depth, day = group.values
-        if depth == 0 and group.stats and _date(day) is not None:
+        config, *rest, day = group.values
+        if (not depth or rest[0] == 0) and group.stats and _date(day) is not None:
             by_key[(config or "unknown", day)] = group.stats
     if state.stddev is False:
         # Delete when CES stddev ships.
@@ -387,9 +399,9 @@ def session_day_stats(
             exact = _value_stats(
                 client,
                 state,
-                catalog.sessions_evaluation_id,
+                evaluation_id,
                 name=f"monopole {scorer.name} values by config and day",
-                target_kind="trajectory",
+                target_kind=target_kind,
                 group_by=group_by,
                 scorer=scorer,
             )
@@ -399,12 +411,74 @@ def session_day_stats(
                     stats[scorer.name] = found or conservative_stat(stats[scorer.name])
     by_day: dict[str, dict[date, list[Stat]]] = defaultdict(lambda: defaultdict(list))
     for (_config, day), stats in by_key.items():
-        for name, stat in stats.items():
-            by_day[name][_date(day)].append(stat)
+        for scorer_name, stat in stats.items():
+            by_day[scorer_name][_date(day)].append(stat)
     return {
-        name: {day: pool_stats(found) for day, found in days.items()}
-        for name, days in by_day.items()
+        scorer_name: {day: pool_stats(found) for day, found in days.items()}
+        for scorer_name, days in by_day.items()
     }
+
+
+def session_day_stats(
+    client: CesClient, catalog: Catalog, state: QueryState
+) -> dict[str, dict[date, Stat]]:
+    """Each session rating Scorer's Stat per UTC day its sessions started, for trends:
+    {Scorer: {day: Stat}}, every config pooled, sessions only.
+
+    One query groups sessions by config, depth, and the `dim.day` Score, which `score` and
+    `backfill` write, so a session without it isn't placed in time and is left out."""
+    return _day_stats(
+        client,
+        state,
+        catalog.sessions_evaluation_id,
+        name="monopole sessions by config and day",
+        target_kind="trajectory",
+        group_by=[_CONFIG, _DEPTH, _DAY],
+        scorers=session_scorers(client, catalog),
+    )
+
+
+# CES answers a group-by field missing from the Dataset's catalog with 400 naming it, such as
+# `column input."day" is not in the queried EvaluationVersion`, its quotes escaped in the JSON
+# body, or `column input.day is not catalogued`.
+_NO_DAY = re.compile(r'input\.\\?"?day\b')
+
+
+def _rejects_day(error: httpx.HTTPStatusError) -> bool:
+    return error.response.status_code == 400 and bool(_NO_DAY.search(error.response.text))
+
+
+def turn_day_stats(
+    client: CesClient, catalog: Catalog, state: QueryState
+) -> dict[str, dict[date, Stat]] | None:
+    """Each turn rating Scorer's Stat per UTC day its turns started, for trends: {Scorer: {day:
+    Stat}}, every config pooled, main agent only. None when turn trends must read raw Scores
+    instead: the Dataset has no `day` field, or its turns with one don't yet cover both trend
+    windows (`covers_trend_windows`).
+
+    One Case query on the turns Evaluation groups by config and the `day` field the adapter
+    writes on every turn Case. Turn Scores target each main-agent turn's first Case, so the
+    turn's other Cases and subagent Cases have no turn Score and drop out of each mean and
+    count, as in `config_stats`."""
+    # Fallback while turns with a `day` field accumulate. Cases never change, so turns the
+    # adapter wrote before it added `day` sit on no day, and a Dataset never set up again
+    # since has no `day` field, which CES rejects with 400. Delete once every Dataset has two
+    # weeks of turns with a day field.
+    try:
+        days = _day_stats(
+            client,
+            state,
+            catalog.turns_evaluation_id,
+            name="monopole turns by config and day",
+            target_kind="case",
+            group_by=[_CONFIG, _CASE_DAY],
+            scorers=_turn_scorers(catalog),
+        )
+    except httpx.HTTPStatusError as error:
+        if not _rejects_day(error):
+            raise
+        return None
+    return days if covers_trend_windows(days) else None
 
 
 def _date(value: Any) -> date | None:

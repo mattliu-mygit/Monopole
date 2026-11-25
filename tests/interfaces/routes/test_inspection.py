@@ -326,7 +326,8 @@ def test_session_detail_returns_children_and_splits_session_and_turn_scores():
     assert "judging_token_estimates" not in body
 
 
-def _stats(monkeypatch, stats: ConfigStats, days=None) -> list:
+def _stats(monkeypatch, stats: ConfigStats, days=None, turn_days=None) -> list:
+    """Stub the route's queries; `turn_days` None is the turn day query falling back."""
     calls = []
 
     def config_stats(client, catalog, state):
@@ -337,8 +338,13 @@ def _stats(monkeypatch, stats: ConfigStats, days=None) -> list:
         calls.append(state)
         return days or {}
 
+    def turn_day_stats(client, catalog, state):
+        calls.append(state)
+        return turn_days
+
     monkeypatch.setattr(inspection.ces_queries, "config_stats", config_stats)
     monkeypatch.setattr(inspection.ces_queries, "session_day_stats", session_day_stats)
+    monkeypatch.setattr(inspection.ces_queries, "turn_day_stats", turn_day_stats)
     return calls
 
 

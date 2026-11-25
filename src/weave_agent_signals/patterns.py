@@ -12,7 +12,7 @@ import json
 import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from itertools import islice
 from typing import Any, Iterable, Mapping
 
@@ -111,6 +111,9 @@ class ConfigStats:
     # Each session rating Scorer's Stat per UTC day its sessions started, every config pooled,
     # read only for trends (`trends`).
     days: dict[str, dict[date, Stat]] | None = None
+    # Each turn rating Scorer's Stat per UTC day its turns started, from the turn day query, or
+    # None while turn trends read raw Scores instead (`ces_queries.turn_day_stats`).
+    turn_days: dict[str, dict[date, Stat]] | None = None
 
 
 @dataclass(frozen=True)
@@ -526,6 +529,37 @@ def _parse_dt(val: object) -> datetime | None:
     return dt
 
 
+TREND_WINDOW_DAYS = 7
+# How a trend's `source` reads in the CLI and the coaching digest.
+TREND_SOURCES = {"query": "a CES query", "raw": "raw Scores"}
+
+
+def _window(day: date, latest: date, window_days: int) -> str | None:
+    """Which trend window `day` falls in, given the latest day with a rating: "recent" for the
+    `window_days` days ending on `latest`, "older" for the `window_days` days before those, and
+    None for anything earlier. Example, with 7 and latest Nov 14: Nov 8 is recent, Nov 7 and
+    Nov 1 older, Oct 31 neither."""
+    back = (latest - day).days
+    if back < window_days:
+        return "recent"
+    if back < 2 * window_days:
+        return "older"
+    return None
+
+
+def covers_trend_windows(
+    by_day: Mapping[str, Mapping[date, Stat]], window_days: int = TREND_WINDOW_DAYS
+) -> bool:
+    """Whether these days hold ratings in both trend windows, measured back from the latest day
+    any Scorer has a rating. Example, with 7: ratings on Nov 1 and Nov 14 cover both windows,
+    ratings on Nov 8 and Nov 14 only the recent one."""
+    found = {day for days in by_day.values() for day in days}
+    if not found:
+        return False
+    latest = max(found)
+    return {"recent", "older"} <= {_window(day, latest, window_days) for day in found}
+
+
 def _split_days(
     days: Mapping[date, Stat], window_days: int, min_samples: int
 ) -> tuple[Stat, Stat] | None:
@@ -538,12 +572,8 @@ def _split_days(
     keeping at least `min_samples` on each side; ratings all on one day don't split."""
     ordered = sorted(days)
     latest = ordered[-1]
-    recent = [days[d] for d in ordered if d > latest - timedelta(days=window_days)]
-    older = [
-        days[d]
-        for d in ordered
-        if latest - timedelta(days=2 * window_days) < d <= latest - timedelta(days=window_days)
-    ]
+    recent = [days[d] for d in ordered if _window(d, latest, window_days) == "recent"]
+    older = [days[d] for d in ordered if _window(d, latest, window_days) == "older"]
     if sum(s.count for s in recent) >= min_samples and sum(s.count for s in older) >= min_samples:
         return pool_stats(older), pool_stats(recent)
     total, before, split = sum(days[d].count for d in ordered), 0, None
@@ -563,7 +593,7 @@ def _split_days(
 
 def day_trends(
     by_day: Mapping[str, Mapping[date, Stat]],
-    window_days: int = 7,
+    window_days: int = TREND_WINDOW_DAYS,
     min_samples: int = 2,
     threshold: float = 0.2,
 ) -> list[dict[str, Any]]:
@@ -619,7 +649,7 @@ def day_stats(feedback: Iterable[dict]) -> dict[str, dict[date, Stat]]:
 
 def detect_regressions(
     feedback: list[dict],
-    window_days: int = 7,
+    window_days: int = TREND_WINDOW_DAYS,
     min_samples: int = 2,
     threshold: float = 0.2,
 ) -> list[dict[str, Any]]:
@@ -629,15 +659,22 @@ def detect_regressions(
 
 
 def trends(feedback: list[dict], stats: ConfigStats | None = None) -> list[dict[str, Any]]:
-    """The trends `analyze`, `monitor`, and the Analyze page report. With `stats.days`, session
-    Scorers come from that day query over every session and turn Scorers from the raw turn
-    Scores in `feedback`, the newest `--limit` turns; otherwise every Scorer comes from
-    `feedback`. Turn trends stay on raw Scores because a turn's Cases have no `day` field to
-    group a query by: the adapter adds one only to Cases it writes from now on."""
+    """The trends `analyze`, `monitor`, and the Analyze page report, each with the `source` it
+    came from: "query" for a CES day query over every Score, "raw" for raw Score records.
+
+    With `stats.days`, session Scorers come from that day query, and turn Scorers from
+    `stats.turn_days` when the turn day query covers both windows, else from the raw turn
+    Scores in `feedback`, the newest `--limit` turns. Without `stats.days`, every Scorer comes
+    from `feedback`."""
     if stats is None or stats.days is None:
-        return detect_regressions(feedback)
-    turns = [fb for fb in feedback if _payload(fb).get("granularity") == "turn"]
-    return day_trends({**day_stats(turns), **stats.days})
+        return [{**r, "source": "raw"} for r in detect_regressions(feedback)]
+    if stats.turn_days is None:
+        turns = day_stats(fb for fb in feedback if _payload(fb).get("granularity") == "turn")
+        turn_source = "raw"
+    else:
+        turns, turn_source = stats.turn_days, "query"
+    source = {**dict.fromkeys(turns, turn_source), **dict.fromkeys(stats.days, "query")}
+    return [{**r, "source": source[r["scorer"]]} for r in day_trends({**turns, **stats.days})]
 
 
 def config_regressions(
@@ -989,7 +1026,8 @@ def coaching_digest(feedback: list[dict], stats: ConfigStats | None = None) -> s
             mark = "" if r["significant"] else "  (tentative — interval includes 0)"
             lines.append(
                 f"- {arrow} **{r['scorer']}**: {r['older_mean']:.2f} → {r['recent_mean']:.2f} "
-                f"({r['delta']:+.2f}, n={r['sample_count']}){mark}"
+                f"({r['delta']:+.2f}, n={r['sample_count']}, from {TREND_SOURCES[r['source']]})"
+                f"{mark}"
             )
 
     ab = ab_leaderboard(representative) if stats is None else stat_leaderboard(stats)

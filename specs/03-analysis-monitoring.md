@@ -44,7 +44,8 @@ movement always has one interpretation.
 | --- | --- | --- |
 | Summaries, the A/B leaderboard, config regressions, session success and spend | CES EvaluationQueries (`ces_queries.py`) | every Score the Evaluations hold, by config version |
 | Session trends | a CES EvaluationQuery | every session with a `dim.day` Score, by day |
-| Turn trends, config order, coaching examples, summary tag counts | raw Scores (`read_all_scores`) | the newest `--limit` turns and their sessions |
+| Turn trends | a CES EvaluationQuery, or raw Scores until its days cover both trend windows | every turn with a `day` field, by day; or the newest `--limit` turns |
+| Config order, coaching examples, summary tag counts | raw Scores (`read_all_scores`) | the newest `--limit` turns and their sessions |
 | Reflection's digest (runs and `reflect`) | the raw Scores it pins | that cohort or the newest `--limit` turns |
 
 The queries count only the main agent: turn Scores only target main-agent
@@ -59,10 +60,29 @@ Session trends come from one query that groups sessions by config, depth, and
 the `dim.day` Score, the UTC day the session started, and keeps depth 0. Each
 day's configs are pooled, so a trend, like before, follows a Scorer across
 configs. A session without `dim.day`, such as one `backfill` hasn't reached,
-isn't placed in time and is left out. Turn trends still read the newest
-`--limit` turns' raw Scores, each placed on the UTC day of its turn's start: a
-query can't group turns by day, because the adapter writes a `day` field only on
-Cases it writes from now on, and Cases never change.
+isn't placed in time and is left out.
+
+Turn trends come from one Case query on the turns Evaluation that groups by
+config and the `day` field, the UTC day the Case started, which the adapter
+writes on every turn Case. Only a main-agent turn's first Case carries turn
+Scores, so the turn's other Cases and every subagent Case drop out of each mean
+and count. Each day's configs are pooled, as for sessions.
+
+Turns the adapter wrote before it added `day` have none, because Cases never
+change, so while turns with `day` accumulate the query can see only part of the
+history. Turn trends use the query only when its days hold ratings in both trend
+windows, the 7 days ending on the latest day any turn Scorer has a rating and
+the 7 days before (see Trend analysis). Example: with the latest rated turn on
+Nov 14 and the first turn with `day` on Nov 10, the older window, Nov 1 to 7,
+has none, so turn trends fall back. They also fall back when the Dataset has no
+`day` field at all, which CES rejects with 400, as on a Dataset not set up again
+since the adapter added the field. The fallback reads the newest `--limit`
+turns' raw Scores, each placed on the UTC day of its turn's start. The CLI
+trend lines and the coaching digest say which source each trend used; the
+Analyze page doesn't show it yet. `analyze --trends` reads no raw Scores when
+the query holds; the coaching digest and `monitor` still read them for examples,
+tag counts, and config order. Turn `dim.day` Scores aren't backfilled: the
+fallback ends as data with `day` accumulates.
 Coaching examples are session judge Scores read with the newest `--limit` turns'
 sessions. Configs are ordered by their latest turn among the newest `--limit`
 turns, so a config missing from that window is not compared.
@@ -107,8 +127,8 @@ and anything earlier is left out. When either window has fewer than 2 ratings,
 as with sparse data, all its days are split instead at the day boundary nearest
 half the ratings, each side keeping at least 2; ratings all on one day show no
 trend. A Scorer needs at least 4 ratings in all. Without CES's spread
-aggregation, a continuous session Scorer's daily stddev comes from a value
-histogram grouped the same way, as for summaries, so its interval is exact.
+aggregation, a continuous Scorer's daily stddev from a day query comes from a
+value histogram grouped the same way, as for summaries, so its interval is exact.
 
 The coaching digest combines eligible summaries, configuration context, recent
 trends, and bounded low-scoring behavioral examples. For each rubric it selects

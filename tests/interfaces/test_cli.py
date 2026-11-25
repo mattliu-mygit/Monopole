@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from contextlib import nullcontext
 from dataclasses import replace
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -262,6 +263,36 @@ def test_analyze_ab_reads_only_query_stats(monkeypatch, capsys):
     assert asked == [False]
     assert "Config: v1  (3 evaluated targets)" in out
     assert "outcome.test" in out and "100% pass  (n=3" in out
+
+
+def test_analyze_trends_say_which_source_each_trend_used(monkeypatch, capsys):
+    rise = {date(2026, 7, 1): Stat(3, 0.0, True), date(2026, 7, 9): Stat(3, 1.0, True)}
+    turns = [
+        {
+            "feedback_type": "weave_agent_signals.outcome.test",
+            "payload": {
+                "rating": rating,
+                "granularity": "turn",
+                "details": {"turn_started_at": f"2026-07-0{day}T00:00:00Z"},
+            },
+        }
+        for rating, day in ((1.0, 1), (1.0, 2), (0.0, 8), (0.0, 9))
+    ]
+    asked = []
+
+    def read_analysis(_args, *, feedback, success=False, trends=False):
+        asked.append((feedback, trends))
+        stats = ConfigStats({}, {}, days={"implicit.completion": rise})
+        return stats, turns
+
+    monkeypatch.setattr(cli.ces_commands, "read_analysis", read_analysis)
+
+    assert cli.main(["analyze", "--trends"]) == 0
+
+    out = capsys.readouterr().out
+    assert asked == [(False, True)]
+    assert "outcome.test" in out and "n=4, from raw Scores)" in out
+    assert "implicit.completion" in out and "n=6, from a CES query)" in out
 
 
 def test_analyze_digest_summarizes_query_stats_with_raw_examples(monkeypatch, capsys):

@@ -301,13 +301,15 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
 
     @router.get("/analyze")
     def get_analysis(limit: int = Query(default=1000, ge=1, le=5000)) -> AnalysisResponse:
-        # Summaries, the A/B leaderboard, and session trends cover every Score, from CES queries.
-        # Turn trends, coaching examples, and tag counts cover the Scores on the newest `limit`
-        # turns and their sessions.
+        # Summaries, the A/B leaderboard, and session trends cover every Score, from CES queries,
+        # and so do turn trends once the turn day query covers both windows. Coaching examples,
+        # tag counts, and turn trends until then cover the Scores on the newest `limit` turns
+        # and their sessions.
         with ces_factory() as ces:
             stats = ces_queries.config_stats(ces.client, ces.catalog, query_state)
             days = ces_queries.session_day_stats(ces.client, ces.catalog, query_state)
-            stats = replace(stats, days=days)
+            turn_days = ces_queries.turn_day_stats(ces.client, ces.catalog, query_state)
+            stats = replace(stats, days=days, turn_days=turn_days)
             feedback = ces.client.read_all_scores(ces.catalog, limit=limit)
         if not stats.by_config and not feedback:
             return AnalysisResponse.model_validate(
@@ -343,9 +345,10 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             }
             for item in stat_leaderboard(stats)
         ]
+        # The Analyze page doesn't show a trend's source yet.
         trend = [
             {
-                **item,
+                **{key: value for key, value in item.items() if key != "source"},
                 "older_mean": round(item["older_mean"], 4),
                 "recent_mean": round(item["recent_mean"], 4),
                 "delta": round(item["delta"], 4),

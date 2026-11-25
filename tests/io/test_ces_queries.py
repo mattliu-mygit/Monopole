@@ -21,6 +21,7 @@ from weave_agent_signals.ces_queries import (
     session_day_stats,
     session_success_by_config,
     subagent_outcomes,
+    turn_day_stats,
 )
 from weave_agent_signals.patterns import SessionSuccess, Stat
 
@@ -737,3 +738,91 @@ def test_without_ces_stddev_session_day_stats_take_each_days_spread_from_a_histo
         DAY,
         {"kind": "score", "name": JUDGE},
     ]
+
+
+CASE_DAY = {"kind": "dataset_field", "source": "input", "name": "day"}
+TEST = "outcome.test"
+
+
+class TurnDays:
+    """The turns Evaluation's queries for turn_day_stats: each create answered by `create`, or
+    an ID whose results are `rows`. Nothing on the sessions Evaluation is mocked."""
+
+    def __init__(self, rows, create=None):
+        self.definitions: list[dict] = []
+        self.create = create
+        respx.post(QUERIES).mock(side_effect=self._create)
+        respx.get(f"{QUERIES}/q-turns/results").mock(
+            return_value=httpx.Response(200, json={"rows": rows})
+        )
+
+    def _create(self, request):
+        self.definitions.append(json.loads(request.content)["definition"])
+        if self.create is not None:
+            return self.create
+        return httpx.Response(200, json={"evaluation_query_id": "q-turns"})
+
+
+def _tests(count, mean):
+    return {f"{TEST}:mean": mean, f"{TEST}:count": count}
+
+
+@respx.mock
+def test_turn_day_stats_pool_each_days_turns_when_both_windows_have_turns():
+    # Latest day Jul 20: Jul 14-20 is recent and Jul 7-13 older, and both have turns.
+    rows = [
+        _row(["cfg1", "2026-07-08"], 9, **_tests(2, 1.0)),
+        _row(["cfg2", "2026-07-08"], 6, **_tests(2, 0.0)),
+        _row([None, "2026-07-20"], 4, **_tests(1, 0.0)),
+        # Turns written before the adapter added `day`, and a group with no turn Score.
+        _row(["cfg1", None], 40, **_tests(10, 1.0)),
+        _row(["cfg1", "2026-07-19"], 3),
+    ]
+    routes = TurnDays(rows)
+
+    days = turn_day_stats(_client(), CATALOG, QueryState())
+
+    assert days == {
+        TEST: {date(2026, 7, 8): Stat(4, 0.5, True), date(2026, 7, 20): Stat(1, 0.0, True)}
+    }
+    (definition,) = routes.definitions
+    assert definition["target_kind"] == "case"
+    assert definition["group_by"] == [CONFIG, CASE_DAY]
+    # Turn rating Scorers only: no session Scorer, measurement, or dimension.
+    named = {m["scorer_version_id"] for m in definition["metrics"]}
+    assert f"v-{TEST}" in named and "v-efficiency" in named
+    assert not any(v.startswith(("v-measure.", "v-dim.", "v-implicit.completion")) for v in named)
+
+
+@respx.mock
+def test_turn_day_stats_fall_back_when_the_previous_window_has_no_turns():
+    # Latest day Jul 20: every dated turn falls in Jul 14-20, none in Jul 7-13. The Jul 6
+    # turns are older than both windows, so they don't count for the older one.
+    rows = [
+        _row(["cfg1", "2026-07-06"], 9, **_tests(5, 1.0)),
+        _row(["cfg1", "2026-07-14"], 9, **_tests(5, 1.0)),
+        _row(["cfg1", "2026-07-20"], 4, **_tests(5, 0.0)),
+    ]
+    TurnDays(rows)
+
+    assert turn_day_stats(_client(), CATALOG, QueryState()) is None
+
+
+NO_DAY = httpx.Response(
+    400, json={"detail": 'column input."day" is not in the queried EvaluationVersion'}
+)
+
+
+@respx.mock
+def test_turn_day_stats_fall_back_when_the_dataset_has_no_day_field():
+    TurnDays([], create=NO_DAY)
+
+    assert turn_day_stats(_client(), CATALOG, QueryState()) is None
+
+
+@respx.mock
+def test_turn_day_stats_raise_a_rejection_unrelated_to_day():
+    TurnDays([], create=httpx.Response(400, json={"detail": "column input.repo is unknown"}))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        turn_day_stats(_client(), CATALOG, QueryState())

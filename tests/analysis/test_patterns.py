@@ -23,6 +23,7 @@ from weave_agent_signals.patterns import (
     config_latest,
     config_regressions,
     conservative_stat,
+    covers_trend_windows,
     day_stats,
     day_trends,
     detect_regressions,
@@ -666,11 +667,64 @@ def test_trends_take_session_scorers_from_the_day_stats_and_turns_from_raw_score
     found = trends(turns + raw_session, ConfigStats({}, {}, days=days))
     raw_only = trends(turns + raw_session, ConfigStats({}, {}))
 
-    assert {r["scorer"]: r["direction"] for r in found} == {
-        "outcome.test": "regression",
-        "implicit.completion": "improvement",
+    assert {r["scorer"]: (r["direction"], r["source"]) for r in found} == {
+        "outcome.test": ("regression", "raw"),
+        "implicit.completion": ("improvement", "query"),
     }
-    assert {r["scorer"] for r in raw_only} == {"outcome.test", "efficiency.session"}
+    assert {r["scorer"]: r["source"] for r in raw_only} == {
+        "outcome.test": "raw",
+        "efficiency.session": "raw",
+    }
+
+
+def test_trends_take_turn_scorers_from_the_turn_day_query_when_it_covers_both_windows():
+    # The raw turn Scores fall from 1.0 to 0.0; the query's turns rise from 0 of 3 to 3 of 3.
+    turns = [
+        _fb("outcome.test", rating, scored_at=f"2026-07-0{day}T00:00:00")
+        for rating, day in ((1.0, 1), (1.0, 2), (0.0, 8), (0.0, 9))
+    ]
+    turn_days = {"outcome.test": _days(d0701=Stat(3, 0.0, True), d0709=Stat(3, 1.0, True))}
+    days = {"implicit.completion": _days(d0701=Stat(3, 0.0, True), d0709=Stat(3, 1.0, True))}
+
+    found = trends(turns, ConfigStats({}, {}, days=days, turn_days=turn_days))
+
+    assert {r["scorer"]: (r["direction"], r["source"]) for r in found} == {
+        "outcome.test": ("improvement", "query"),
+        "implicit.completion": ("improvement", "query"),
+    }
+
+
+def test_the_turn_query_covers_both_windows_exactly_where_a_trend_splits_them():
+    # Latest day Jul 20: recent is Jul 14-20 and older Jul 7-13. A trend's older side is the
+    # candidate day alone (1.0) only when that day is in the older window; otherwise the
+    # windows fail and the sparse split compares Jul 1 (0.0) with the rest.
+    def days(candidate):
+        return {
+            "outcome.test": {
+                date(2026, 7, 1): Stat(10, 0.0, True),
+                candidate: Stat(4, 1.0, True),
+                date(2026, 7, 20): Stat(4, 0.0, True),
+            }
+        }
+
+    candidates = [date(2026, 7, d) for d in (6, 7, 13, 14)]
+    covered = [covers_trend_windows(days(c)) for c in candidates]
+    older_alone = [day_trends(days(c))[0]["older_mean"] == 1.0 for c in candidates]
+
+    assert covered == [False, True, True, False]
+    assert covered == older_alone
+
+
+def test_the_trend_windows_are_measured_from_the_latest_day_of_any_scorer():
+    # outcome.build's Jul 10 is in Jul 7-13 only when outcome.test's Jul 20 sets the latest day.
+    assert covers_trend_windows(
+        {
+            "outcome.test": _days(d0720=Stat(1, 1.0, True)),
+            "outcome.build": _days(d0710=Stat(1, 1.0, True)),
+        }
+    )
+    assert not covers_trend_windows({"outcome.build": _days(d0710=Stat(1, 1.0, True))})
+    assert not covers_trend_windows({})
 
 
 # --- config_regressions (A/B safety net) ---

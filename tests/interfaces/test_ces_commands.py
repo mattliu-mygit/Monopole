@@ -533,6 +533,26 @@ def test_read_analysis_reads_the_newest_scores_only_for_feedback(monkeypatch, fe
     assert client.reads == reads
 
 
+@pytest.mark.parametrize(
+    ("turn_days", "reads"), [({"outcome.test": {}}, []), (None, [7])], ids=["query", "fallback"]
+)
+def test_read_analysis_reads_raw_scores_for_trends_only_while_turn_trends_fall_back(
+    monkeypatch, turn_days, reads
+):
+    client = _ScoresOnly([])
+    stats = ConfigStats({"v1": {"efficiency": Stat(1, 1.0, False)}}, {"v1": 1})
+    monkeypatch.setattr(ces_commands, "connect", lambda args: CesSession(client, CATALOG))
+    monkeypatch.setattr(ces_commands.ces_queries, "config_stats", lambda *_: stats)
+    monkeypatch.setattr(ces_commands.ces_queries, "session_day_stats", lambda *_: {})
+    monkeypatch.setattr(ces_commands.ces_queries, "turn_day_stats", lambda *_: turn_days)
+    args = cli.build_parser().parse_args(["analyze", "--limit", "7"])
+
+    got, _ = ces_commands.read_analysis(args, feedback=False, trends=True)
+
+    assert (got.days, got.turn_days) == ({}, turn_days)
+    assert client.reads == reads
+
+
 def test_read_analysis_adds_session_success_on_the_same_connection(monkeypatch):
     client, connections = _ScoresOnly([]), []
     stats = ConfigStats({"v1": {"efficiency": Stat(1, 1.0, False)}}, {"v1": 1})
