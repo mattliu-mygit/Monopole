@@ -18,6 +18,7 @@ from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catal
 from weave_agent_signals.judges.cli_backend import CliJudgeClient
 from weave_agent_signals.judges.inference import InferenceClient
 from weave_agent_signals.judges.plan import build_canonical_judging_plan, judging_plan_totals
+from weave_agent_signals.judges.process import LOCAL_CLI_PROVIDERS
 from weave_agent_signals.judges.records import JudgeCallRecord
 from weave_agent_signals.judges.runner import JudgeExecutionError, judge_session
 from weave_agent_signals.models import (
@@ -83,7 +84,7 @@ def _positive_int(value: str) -> int:
 def _make_model_client(args: argparse.Namespace, model: ModelDescriptor):
     """Build a chat client for one catalog-resolved model role."""
 
-    if model.provider in {"claude", "codex", "agy", "devin"}:
+    if model.provider in LOCAL_CLI_PROVIDERS:
         return CliJudgeClient(provider=model.provider)
     return InferenceClient(
         entity=args.entity,

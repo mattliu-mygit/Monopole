@@ -15,6 +15,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from types import MappingProxyType
 
 from weave_agent_signals.judges.families import model_family
+from weave_agent_signals.judges.process import LOCAL_CLI_PROVIDERS
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS, Rubric
 from weave_agent_signals.judges.tokens import TokenCounterName
 from weave_agent_signals.run_config import (
@@ -451,7 +452,7 @@ _LOCAL_MODEL_EXECUTABLES = MappingProxyType(
     {
         descriptor.id: descriptor.provider
         for descriptor in _MODEL_DESCRIPTORS
-        if descriptor.provider in {"claude", "codex", "agy", "devin"}
+        if descriptor.provider in LOCAL_CLI_PROVIDERS
     }
 )
 _JUDGE_PREFERENCES = (

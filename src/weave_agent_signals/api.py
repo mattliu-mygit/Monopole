@@ -24,6 +24,7 @@ from weave_agent_signals.ces_catalog import Catalog
 from weave_agent_signals.ces_client import CesClient, CesSession, ces_http
 from weave_agent_signals.judges.cli_backend import CliJudgeClient
 from weave_agent_signals.judges.inference import ChatClient, InferenceClient
+from weave_agent_signals.judges.process import LOCAL_CLI_PROVIDERS
 from weave_agent_signals.patterns import coaching_digest
 from weave_agent_signals.routes.catalogs import create_catalogs_router
 from weave_agent_signals.routes.inspection import create_inspection_router
@@ -86,7 +87,7 @@ def _chat_client(
     entity: str,
     project: str,
 ) -> AbstractContextManager[ChatClient]:
-    if provider in {"claude", "codex", "agy", "devin"}:
+    if provider in LOCAL_CLI_PROVIDERS:
         return CliJudgeClient(provider=provider)
     return InferenceClient(entity=entity, project=project, backend=provider)
 

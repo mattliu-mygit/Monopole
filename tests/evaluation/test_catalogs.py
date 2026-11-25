@@ -12,6 +12,7 @@ from weave_agent_signals.catalogs import (
     build_model_catalog,
     build_rubric_catalog,
 )
+from weave_agent_signals.judges.process import LOCAL_CLI_PROVIDERS
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.run_config import ModelDescriptor
 
@@ -103,6 +104,15 @@ def test_model_catalog_is_stable_role_oriented_and_immutable():
 
     with pytest.raises(ValidationError):
         first.catalog_version = "changed"  # type: ignore[misc]
+
+
+def test_every_model_runs_through_a_local_cli_or_an_inference_backend():
+    catalog = build_model_catalog(which=_all_executables)
+
+    providers = {model.provider for model in catalog.available_models}
+
+    assert providers - LOCAL_CLI_PROVIDERS <= {"wandb", "openai"}
+    assert LOCAL_CLI_PROVIDERS <= providers
 
 
 def test_model_catalog_is_one_provider_qualified_source_for_every_role():

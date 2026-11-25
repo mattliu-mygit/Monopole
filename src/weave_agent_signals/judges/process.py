@@ -7,6 +7,9 @@ import os
 import tempfile
 from collections.abc import Mapping
 
+# The model providers that run as a local coding-agent CLI rather than through an inference API.
+LOCAL_CLI_PROVIDERS = frozenset({"claude", "codex", "agy", "devin"})
+
 _PASSTHROUGH_ENV_KEYS = (
     # Executable discovery and OS account/config-store lookup.
     "PATH",
@@ -106,7 +109,7 @@ def prepare_cli_subprocess(
     are intentionally not inherited. Codex and Devin get an isolated `HOME` that links
     only their stored login, so the user's own config, rules, and plugins never load.
     """
-    if provider not in {"claude", "codex", "agy", "devin"}:
+    if provider not in LOCAL_CLI_PROVIDERS:
         raise ValueError(f"unsupported local CLI provider: {provider}")
 
     os.makedirs(cwd, exist_ok=True)

@@ -34,6 +34,7 @@ from weave_agent_signals.judges.inference import (
 )
 from weave_agent_signals.judges.process import (
     CODEX_CONFINED_ARGS,
+    LOCAL_CLI_PROVIDERS,
     devin_config_path,
     prepare_cli_subprocess,
 )
@@ -332,7 +333,7 @@ class CliJudgeClient:
         timeout: float = 360.0,
         runner: Callable[..., Any] | None = None,
     ):
-        if provider not in {"claude", "codex", "agy", "devin"}:
+        if provider not in LOCAL_CLI_PROVIDERS:
             raise ValueError(f"unsupported local CLI provider: {provider}")
         self.backend = provider
         self._provider = provider
