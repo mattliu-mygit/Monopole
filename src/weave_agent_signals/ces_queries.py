@@ -297,6 +297,38 @@ def _value_stats(
     return {key: histogram_stat(values) for key, values in counts.items()}
 
 
+def _fill_exact_stddevs(
+    client: CesClient,
+    state: QueryState,
+    evaluation_id: str,
+    *,
+    label: str,
+    target_kind: str,
+    group_by: list[dict],
+    scorers: list[QueryScorer],
+    by_key: dict[tuple, dict[str, Stat]],
+) -> None:
+    """Replace each continuous Scorer's Stat in `by_key`, in place, with the exact one from its
+    value histogram (`_value_stats`), or a conservative stddev when the histogram is too large.
+    `by_key` is keyed as `_value_stats` keys its groups. Delete when CES stddev ships."""
+    for scorer in scorers:
+        if scorer.binary or not any(scorer.name in s for s in by_key.values()):
+            continue
+        exact = _value_stats(
+            client,
+            state,
+            evaluation_id,
+            name=f"monopole {scorer.name} values by {label}",
+            target_kind=target_kind,
+            group_by=group_by,
+            scorer=scorer,
+        )
+        for key, stats in by_key.items():
+            if scorer.name in stats:
+                found = None if exact is None else exact.get(key)
+                stats[scorer.name] = found or conservative_stat(stats[scorer.name])
+
+
 def config_stats(
     client: CesClient, catalog: Catalog, state: QueryState, trajectory_scorers: list[QueryScorer]
 ) -> ConfigStats:
@@ -335,28 +367,22 @@ def config_stats(
         targets[config] += max((stat.count for stat in group.stats.values()), default=0)
 
     if state.stddev is False:
-        # Delete when CES stddev ships.
+        by_key = {(config,): stats for config, stats in by_config.items()}
         histograms = [
             (catalog.turns_evaluation_id, "case", [_CONFIG], turn_scorers),
             (catalog.sessions_evaluation_id, "trajectory", [_CONFIG, _DEPTH], trajectory_scorers),
         ]
         for evaluation_id, target_kind, group_by, scorers in histograms:
-            for scorer in scorers:
-                if scorer.binary or not any(scorer.name in s for s in by_config.values()):
-                    continue
-                exact = _value_stats(
-                    client,
-                    state,
-                    evaluation_id,
-                    name=f"monopole {scorer.name} values by config",
-                    target_kind=target_kind,
-                    group_by=group_by,
-                    scorer=scorer,
-                )
-                for config, stats in by_config.items():
-                    if scorer.name in stats:
-                        found = None if exact is None else exact.get((config,))
-                        stats[scorer.name] = found or conservative_stat(stats[scorer.name])
+            _fill_exact_stddevs(
+                client,
+                state,
+                evaluation_id,
+                label="config",
+                target_kind=target_kind,
+                group_by=group_by,
+                scorers=scorers,
+                by_key=by_key,
+            )
     return ConfigStats(
         {config: scorers for config, scorers in by_config.items() if scorers}, dict(targets)
     )
@@ -393,23 +419,16 @@ def _day_stats(
         if (not depth or rest[0] == 0) and group.stats and _date(day) is not None:
             by_key[(config or "unknown", day)] = group.stats
     if state.stddev is False:
-        # Delete when CES stddev ships.
-        for scorer in scorers:
-            if scorer.binary or not any(scorer.name in s for s in by_key.values()):
-                continue
-            exact = _value_stats(
-                client,
-                state,
-                evaluation_id,
-                name=f"monopole {scorer.name} values by config and day",
-                target_kind=target_kind,
-                group_by=group_by,
-                scorer=scorer,
-            )
-            for key, stats in by_key.items():
-                if scorer.name in stats:
-                    found = None if exact is None else exact.get(key)
-                    stats[scorer.name] = found or conservative_stat(stats[scorer.name])
+        _fill_exact_stddevs(
+            client,
+            state,
+            evaluation_id,
+            label="config and day",
+            target_kind=target_kind,
+            group_by=group_by,
+            scorers=scorers,
+            by_key=by_key,
+        )
     by_day: dict[str, dict[date, list[Stat]]] = defaultdict(lambda: defaultdict(list))
     for (_config, day), stats in by_key.items():
         for scorer_name, stat in stats.items():
