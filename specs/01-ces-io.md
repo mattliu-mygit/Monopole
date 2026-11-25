@@ -110,12 +110,16 @@ Every request retries a 429, 5xx, or network error with waits of 1, 2, 4, 8, and
 kind, entity reads and Score writes included, with 503
 `storage_capacity_exceeded`, whether Monopole sent 2 requests at once or 16.
 
-Prod CES also answers a large page of whole Cases with 503
-`storage_capacity_exceeded`, a storage limit rather than a busy slot, and keeps
-failing it on retry: in November 2026 a page of 100 Cases (about 450 KB) or 200
-turn rows usually failed and a page of 20 Cases did not. So a Trajectory's Case
-list and Evaluation row searches page 20 at a time, and other paged reads
-(Trajectory rows, query results) 1,000.
+Prod CES also answers a page that reads too much, such as 100 whole Cases
+(about 450 KB) or 200 turn rows, with the same 503 `storage_capacity_exceeded`,
+and keeps failing it on retry. So every paged read (a Trajectory's Case list,
+row searches, Trajectory rows, query results) asks for 1,000 rows a page, and on
+that error halves the page instead of resending it, keeping the smaller size for
+the rest of the read. At 20 rows it stops shrinking, and the page gets the usual
+retries, since CES also refuses small pages now and then. A transient refusal of
+a large page therefore also halves it. In November 2026 this read two large
+sessions in 40 s and 60 s, against 75 s and 89 s at a fixed 20 rows, because CES
+accepted about 31 of their Cases a page.
 
 ## External correctness constraints
 
