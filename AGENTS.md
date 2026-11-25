@@ -153,7 +153,8 @@ product behavior; standalone reflection does not mutate managed files.
   Devin, which runs Claude models without the `claude` CLI, can't turn its tools
   off, so it runs from an otherwise empty workspace whose project config denies
   every tool (read, edit, grep, glob, exec, fetch, MCP), with the prompt in a
-  file outside that workspace.
+  file outside that workspace. Each call's Devin session is deleted when the
+  call ends, so judge calls don't fill Devin Desktop's session list.
 
 ## CES correctness checklist
 

@@ -785,6 +785,43 @@ def test_devin_judge_runs_from_its_denied_workspace_with_the_prompt_in_a_file(
     assert not os.path.exists(seen["path"])
 
 
+def test_devin_judge_deletes_its_session_after_the_call(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_CWD", str(tmp_path / "devin" / "workspace"))
+    exports = []
+    removed = []
+
+    def runner(argv, **_kwargs):
+        export = argv[argv.index("--export") + 1]
+        Path(export).write_text('{"session_id": "judge-session"}')
+        exports.append(export)
+        return _FakeProc(stdout='{"score": 1}')
+
+    def run(argv, **kwargs):
+        removed.append((argv, kwargs["env"]["HOME"]))
+
+    monkeypatch.setattr(cli_backend.subprocess, "run", run)
+    devin = _CliJudgeClient(provider="devin", runner=runner)
+    parsed, _ = devin.chat_json(model="claude-opus-5-5-medium", messages=_msgs())
+
+    assert parsed == {"score": 1}
+    assert removed == [(["devin", "rm", "judge-session", "--force"], os.path.expanduser("~"))]
+    assert not os.path.exists(exports[0])
+
+
+def test_devin_judge_returns_its_answer_when_session_cleanup_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_CWD", str(tmp_path / "devin" / "workspace"))
+
+    def runner(argv, **_kwargs):
+        Path(argv[argv.index("--export") + 1]).write_text("not json")
+        return _FakeProc(stdout='{"score": 1}')
+
+    devin = _CliJudgeClient(provider="devin", runner=runner)
+    parsed, _ = devin.chat_json(model="claude-opus-5-5-medium", messages=_msgs())
+
+    assert parsed == {"score": 1}
+    assert os.listdir(tmp_path / "devin" / "prompts") == []
+
+
 def test_devin_judge_process_starts_in_the_denied_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_CWD", str(tmp_path / "devin" / "workspace"))
     started = []

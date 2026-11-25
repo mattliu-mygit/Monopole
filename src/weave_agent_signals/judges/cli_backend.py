@@ -89,6 +89,29 @@ _DEVIN_DENY_ALL = {
     "permissions": {"deny": ["read", "edit", "grep", "glob", "exec", "Fetch(*)", "mcp__*"]}
 }
 
+
+def _delete_devin_session(export: str, env: Mapping[str, str]) -> None:
+    """Delete a judge call's Devin session, named by its export, so judge calls don't fill Devin
+    Desktop's session list. Devin writes the export when the turn ends, so a call killed mid-turn
+    leaves its session behind. A failed cleanup only logs: it never fails the judge call."""
+    if not os.path.exists(export):
+        return
+    try:
+        with open(export, encoding="utf-8") as stream:
+            session_id = json.load(stream)["session_id"]
+        subprocess.run(
+            ["devin", "rm", session_id, "--force"],
+            env=env,
+            capture_output=True,
+            timeout=30,
+            check=True,
+        )
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        log.warning("Could not delete the Devin judge session from %s: %s", export, exc)
+    finally:
+        os.remove(export)
+
+
 _RETRYABLE_PATTERNS = [
     "error_max_structured_output_retries",
     "at capacity",
@@ -497,12 +520,15 @@ class CliJudgeClient:
                 prompts = os.path.join(os.path.dirname(_JUDGE_DEVIN_CWD), "prompts")
                 os.makedirs(prompts, mode=0o700, exist_ok=True)
                 fd, path = tempfile.mkstemp(prefix="prompt-", suffix=".txt", dir=prompts)
+                export = path.removesuffix(".txt") + ".export.json"
                 try:
                     with os.fdopen(fd, "w", encoding="utf-8") as stream:
                         stream.write(base_stdin)
-                    yield [*base_argv, "--prompt-file", path], "", _JUDGE_DEVIN_CWD, env
+                    argv = [*base_argv, "--prompt-file", path, "--export", export]
+                    yield argv, "", _JUDGE_DEVIN_CWD, env
                 finally:
                     os.remove(path)
+                    _delete_devin_session(export, env)
                 return
             yield base_argv, base_stdin, _JUDGE_CWD, env
 
