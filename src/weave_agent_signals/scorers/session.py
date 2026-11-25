@@ -13,9 +13,9 @@ import re
 import subprocess
 import urllib.parse
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import timezone
 
-from weave_agent_signals.models import Score, SessionView, ToolSpan, TurnSpan
+from weave_agent_signals.models import Score, SessionView, ToolSpan, TurnSpan, parse_utc
 from weave_agent_signals.scorers.outcome import BuildOutcome, TestRunOutcome, extract_outcomes
 
 SESSION_TESTS = "outcome.session_tests_passed"
@@ -213,16 +213,8 @@ def _git(cwd: str, *args: str) -> str | None:
 
 def _day(started_at: object) -> str | None:
     """A timestamp's UTC date as YYYY-MM-DD; a timestamp without an offset is UTC."""
-    text = _text(started_at)
-    if text is None:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc).date().isoformat()
+    parsed = parse_utc(_text(started_at))
+    return None if parsed is None else parsed.astimezone(timezone.utc).date().isoformat()
 
 
 def session_dimensions(session: SessionView, root: Mapping) -> dict[str, tuple[str, str]]:

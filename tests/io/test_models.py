@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from weave_agent_signals.models import (
     SessionView,
     ToolSpan,
     TraceRole,
     TurnSpan,
+    parse_utc,
     session_is_evaluable,
 )
 
@@ -70,3 +73,25 @@ def test_session_is_evaluable_requires_every_turn_to_be_an_agent_session():
         is False
     )
     assert session_is_evaluable([]) is False
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ("2026-11-05T20:00:00Z", datetime(2026, 11, 5, 20, tzinfo=timezone.utc)),
+        ("2026-11-05T20:00:00", datetime(2026, 11, 5, 20, tzinfo=timezone.utc)),
+        (
+            "2026-11-05T15:00:00-05:00",
+            datetime(2026, 11, 5, 15, tzinfo=timezone(timedelta(hours=-5))),
+        ),
+        ("not a time", None),
+        ("", None),
+        (None, None),
+        (1700000000, None),
+    ],
+)
+def test_parse_utc_reads_z_and_offsetless_times_as_utc(text, want):
+    got = parse_utc(text)
+
+    assert got == want
+    assert got is None or got.tzinfo is not None

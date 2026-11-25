@@ -30,7 +30,7 @@ def parse_selection_bounds(
         if value is None or not value.strip():
             return None
         try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(value)
         except ValueError as error:
             raise DateFilterError(
                 "invalid_datetime",

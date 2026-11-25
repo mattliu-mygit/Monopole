@@ -43,7 +43,7 @@ def _selection_boundary(value: str | None) -> datetime | None:
     if value is None or not value.strip():
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ValueError(f"Cannot parse selection datetime: {value}") from exc
     if parsed.tzinfo is None:
@@ -211,7 +211,7 @@ def _parse_aware_timestamp(value: object, label: str) -> datetime:
     if not isinstance(value, str) or not value:
         raise RuntimeError("invalid pinned turn cohort: " + label)
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise RuntimeError("invalid pinned turn cohort: " + label) from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:

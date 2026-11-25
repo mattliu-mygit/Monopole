@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Union
 
 # Prefix for every feedback type this system writes: weave_agent_signals.<scorer>
 FEEDBACK_PREFIX = "weave_agent_signals."
+
+
+def parse_utc(value: object) -> datetime | None:
+    """An ISO 8601 timestamp as an aware datetime, UTC when it has no offset; None when it
+    isn't one. Python 3.11's `fromisoformat` reads a trailing `Z` as UTC."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 class TraceRole(StrEnum):

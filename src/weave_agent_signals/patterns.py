@@ -19,7 +19,7 @@ from typing import Any, Iterable, Mapping
 from weave_agent_signals.ces_catalog import DETERMINISTIC
 from weave_agent_signals.judges.review import PANEL_CONTRACT_VERSION
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
-from weave_agent_signals.models import FEEDBACK_PREFIX
+from weave_agent_signals.models import FEEDBACK_PREFIX, parse_utc
 
 # Below this many samples a scorer's mean/pass-rate is not trustworthy on its own.
 MIN_CONFIDENT_SAMPLES = 5
@@ -509,24 +509,10 @@ def config_latest(feedback: list[dict]) -> dict[str, datetime]:
     for fb in feedback:
         if not is_evaluation_feedback_eligible(fb):
             continue
-        config, run_time = _extract_config(fb), _parse_dt(_extract_run_time(fb))
+        config, run_time = _extract_config(fb), parse_utc(_extract_run_time(fb))
         if run_time is not None and (config not in latest or run_time > latest[config]):
             latest[config] = run_time
     return latest
-
-
-def _parse_dt(val: object) -> datetime | None:
-    try:
-        if not isinstance(val, str):
-            return None
-        if val.endswith("Z"):
-            val = val[:-1] + "+00:00"
-        dt = datetime.fromisoformat(val)
-    except (ValueError, TypeError, AttributeError):
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
 
 
 TREND_WINDOW_DAYS = 7
@@ -647,7 +633,7 @@ def day_stats(feedback: Iterable[dict]) -> dict[str, dict[date, Stat]]:
             continue
         scorer = _analytics_scorer(fb)
         rating = _extract_rating(fb)
-        run_time = _parse_dt(_extract_run_time(fb))
+        run_time = parse_utc(_extract_run_time(fb))
         if scorer and rating is not None and run_time is not None:
             ratings[scorer][run_time.astimezone(timezone.utc).date()].append(rating)
     return {
@@ -878,7 +864,7 @@ def _behavior_values(
 
 def _execution_sort_key(feedback: dict) -> tuple[int, datetime, str, str]:
     raw = _extract_run_time(feedback)
-    parsed = _parse_dt(raw)
+    parsed = parse_utc(raw)
     if parsed is not None:
         return (0, parsed, "", "")
     try:

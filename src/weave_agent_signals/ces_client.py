@@ -40,6 +40,7 @@ from weave_agent_signals.models import (
     SubagentSpan,
     ToolSpan,
     TurnSpan,
+    parse_utc,
     resolve_trace_role,
 )
 
@@ -75,17 +76,6 @@ FIRST_STEP = "i.step_index = 0 AND i.agent_id = null"
 _STATUS = {"completed": "OK", "aborted": "ERROR"}
 
 
-def _ts(value: Any) -> datetime | None:
-    """A Case timestamp as an aware datetime: UTC when it has no offset, None when unreadable."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-
 def _error_code(response: httpx.Response) -> str | None:
     try:
         return (response.json().get("error") or {}).get("code")
@@ -116,8 +106,8 @@ def _tool_span(case: dict[str, Any], turn_id: str | None = None) -> ToolSpan:
         else "OK"
         if out.get("status") == "completed"
         else "UNSET",
-        started_at=_ts(case_in.get("started_at")) or datetime.now(timezone.utc),
-        ended_at=_ts(case_in.get("ended_at")),
+        started_at=parse_utc(case_in.get("started_at")) or datetime.now(timezone.utc),
+        ended_at=parse_utc(case_in.get("ended_at")),
         exit_code=exit_code if type(exit_code := out.get("exit_code")) is int else None,
         permission_decision=decision
         if isinstance(decision := out.get("permission_decision"), str)
@@ -314,7 +304,10 @@ def _view(trajectory_id: str, cases: list[dict], tree: _SubagentTree) -> Session
         stamps = [
             s
             for c in steps
-            for s in (_ts(c["input"].get("started_at")), _ts(c["input"].get("ended_at")))
+            for s in (
+                parse_utc(c["input"].get("started_at")),
+                parse_utc(c["input"].get("ended_at")),
+            )
             if s
         ]
         launched = sorted(
@@ -342,7 +335,7 @@ def _view(trajectory_id: str, cases: list[dict], tree: _SubagentTree) -> Session
                 denial_count=_int(totals.get("turn_denial_count")),
                 tool_error_count=_int(totals.get("turn_tool_error_count")),
                 events=[
-                    SpanEvent("compaction", _ts(c["input"].get("started_at")))
+                    SpanEvent("compaction", parse_utc(c["input"].get("started_at")))
                     for c in steps
                     if c["input"]["kind"] == "compaction"
                 ],
@@ -424,7 +417,7 @@ def turn_from_row(trajectory_id: str, row: dict) -> TurnSpan:
     other steps aren't read, so it has no tool calls, model calls, or subagents, and it ends
     its recorded duration after it starts."""
     first, totals = row["input"], row.get("output") or {}
-    started = _ts(first.get("started_at")) or datetime.now(timezone.utc)
+    started = parse_utc(first.get("started_at")) or datetime.now(timezone.utc)
     duration = totals.get("turn_duration_ms")
     user_input = first.get("text") if first.get("kind") == "user_message" else None
     return TurnSpan(
@@ -805,7 +798,7 @@ class CesClient:
         for page in self._pages(path, {"filter": FIRST_STEP, "order_by": "i.started_at desc"}):
             for row in page.get("rows") or []:
                 started, session = (
-                    _ts(row["input"].get("started_at")),
+                    parse_utc(row["input"].get("started_at")),
                     row["input"].get("session_trajectory_id"),
                 )
                 if started is None:
