@@ -20,6 +20,7 @@ from weave_agent_signals.ces_queries import (
     run_query,
     segment_stats,
     session_day_stats,
+    session_scorers,
     session_success_by_config,
     subagent_outcomes,
     turn_day_stats,
@@ -132,12 +133,21 @@ def _client(**kwargs) -> CesClient:
     return CesClient("http://ces.test", "scope-1", api_key="k", **kwargs)
 
 
+def _config_stats(client: CesClient, state: QueryState):
+    """config_stats with the session Scorers read first, as its callers do."""
+    return config_stats(client, CATALOG, state, session_scorers(client, CATALOG))
+
+
+def _session_day_stats(client: CesClient, state: QueryState):
+    return session_day_stats(client, CATALOG, state, session_scorers(client, CATALOG))
+
+
 @respx.mock
 def test_config_stats_group_turns_by_config_and_keep_depth_0_sessions():
     Routes()
     state = QueryState()
 
-    stats = config_stats(_client(), CATALOG, state)
+    stats = _config_stats(_client(), state)
 
     assert stats.by_config == {
         "cfg1": {
@@ -157,7 +167,7 @@ def test_config_stats_group_turns_by_config_and_keep_depth_0_sessions():
 def test_session_queries_run_on_the_sessions_evaluation():
     routes = Routes()
 
-    config_stats(_client(), CATALOG, QueryState())
+    _config_stats(_client(), QueryState())
 
     (turns_key, turns), (sessions_key, sessions) = routes.creates
     assert turns_key.startswith("monopole-query-v1:ev-turns:")
@@ -185,10 +195,10 @@ def test_a_query_is_created_once_per_process_and_replayed_by_content():
     routes = Routes()
     state = QueryState()
 
-    config_stats(_client(), CATALOG, state)
-    config_stats(_client(), CATALOG, state)
+    _config_stats(_client(), state)
+    _config_stats(_client(), state)
     first = routes.keys()
-    config_stats(_client(), CATALOG, QueryState())
+    _config_stats(_client(), QueryState())
 
     assert len(first) == 2
     # A new process replays the same keys, so CES returns the same query IDs.
@@ -228,10 +238,10 @@ def test_the_same_query_on_another_evaluation_gets_its_own_create_key():
 @respx.mock
 def test_a_new_judge_panel_makes_a_new_session_query():
     before = Routes()
-    config_stats(_client(), CATALOG, QueryState())
+    _config_stats(_client(), QueryState())
     respx.reset()
     after = Routes(judges=((JUDGE, "sc-j", "v-j"), ("judge.goal.panel-new", "sc-n", "v-n")))
-    config_stats(_client(), CATALOG, QueryState())
+    _config_stats(_client(), QueryState())
 
     assert after.keys()[0] == before.keys()[0]
     assert after.keys()[1] != before.keys()[1]
@@ -247,7 +257,7 @@ def test_results_are_read_page_by_page():
         ]
     )
 
-    stats = config_stats(_client(), CATALOG, QueryState())
+    stats = _config_stats(_client(), QueryState())
 
     assert routes.keys()
     assert [call.request.url.params.get("cursor") for call in pages.calls] == [None, "p2"]
@@ -263,14 +273,14 @@ def test_a_busy_ces_is_retried_with_growing_waits_then_raises():
     )
     slept: list[float] = []
 
-    config_stats(_client(sleep=slept.append), CATALOG, QueryState())
+    _config_stats(_client(sleep=slept.append), QueryState())
 
     assert slept == [1.0, 2]
 
     respx.get(f"{QUERIES}/q-case/results").mock(return_value=busy)
     slept.clear()
     with pytest.raises(httpx.HTTPStatusError):
-        config_stats(_client(sleep=slept.append), CATALOG, QueryState())
+        _config_stats(_client(sleep=slept.append), QueryState())
     assert slept == [1.0, 2, 4, 8, 16]
 
 
@@ -346,7 +356,7 @@ def test_without_ces_stddev_a_continuous_scorer_gets_its_exact_stddev_from_a_val
     )
     state = QueryState()
 
-    stats = config_stats(_client(), CATALOG, state)
+    stats = _config_stats(_client(), state)
 
     assert state.stddev is False
     (first, _), (retried, _), _sessions = routes.creates
@@ -392,7 +402,7 @@ def test_a_histogram_too_large_falls_back_to_a_conservative_stddev(monkeypatch):
         },
     )
 
-    stats = config_stats(_client(), CATALOG, QueryState())
+    stats = _config_stats(_client(), QueryState())
 
     # The config query's 4 efficiency ratings with mean 0.6: sqrt(4/3 * 0.6 * 0.4).
     assert stats.by_config["cfg1"]["efficiency"] == Stat(
@@ -415,7 +425,7 @@ def test_a_histogram_error_other_than_too_large_is_raised():
     )
 
     with pytest.raises(httpx.HTTPStatusError):
-        config_stats(_client(), CATALOG, QueryState())
+        _config_stats(_client(), QueryState())
 
 
 @respx.mock
@@ -424,7 +434,7 @@ def test_a_rejection_unrelated_to_stddev_is_raised():
     routes.create.side_effect = [httpx.Response(400, json={"error": {"message": "no field"}})]
 
     with pytest.raises(httpx.HTTPStatusError):
-        config_stats(_client(), CATALOG, QueryState())
+        _config_stats(_client(), QueryState())
 
 
 @respx.mock
@@ -444,7 +454,7 @@ def test_a_dataset_without_subagents_gets_turn_stats():
 
     routes.create.side_effect = create
 
-    stats = config_stats(_client(), CATALOG, QueryState())
+    stats = _config_stats(_client(), QueryState())
 
     assert stats.by_config["cfg1"]["efficiency"] == Stat(4, 0.6, False, 0.1)
 
@@ -555,7 +565,7 @@ def test_an_unscored_session_group_adds_no_config_to_config_stats():
             return_value=httpx.Response(200, json={"rows": SESSION_ROWS + [_row(["cfg2", 0], 3)]})
         )
 
-        stats = config_stats(_client(), CATALOG, QueryState())
+        stats = _config_stats(_client(), QueryState())
 
     assert stats.targets == {"cfg1": 6, "unknown": 1}
     assert "cfg2" not in stats.by_config
@@ -691,7 +701,7 @@ def test_session_day_stats_pool_each_days_sessions_across_configs():
     ]
     routes = _day_routes(lambda _definition: rows, stddev=True)
 
-    days = session_day_stats(_client(), CATALOG, QueryState())
+    days = _session_day_stats(_client(), QueryState())
 
     assert days == {
         COMPLETION: {date(2026, 7, 1): Stat(4, 0.5, True), date(2026, 7, 9): Stat(3, 0.0, True)},
@@ -726,7 +736,7 @@ def test_without_ces_stddev_session_day_stats_take_each_days_spread_from_a_histo
     routes = _day_routes(results, stddev=False)
     state = QueryState()
 
-    days = session_day_stats(_client(), CATALOG, state)
+    days = _session_day_stats(_client(), state)
 
     # Pooled ratings 0.25, 0.75, 0.75: mean 7/12, sample stddev sqrt(1/12).
     assert state.stddev is False

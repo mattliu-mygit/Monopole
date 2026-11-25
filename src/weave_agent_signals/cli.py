@@ -260,26 +260,29 @@ def _report_judging(judging_plan, pending: list, written: int, errors: int) -> i
 def cmd_analyze(args: argparse.Namespace) -> int:
     insights = args.subagents or args.judges or args.segments
     digest = args.coaching or not (args.ab or args.trends or insights)
-    if args.ab or args.trends or digest:
-        _print_score_analysis(args, digest)
-    if insights:
-        found = ces_commands.read_insights(args)
-        if found.subagents is not None:
-            _print_subagents(found.subagents)
-        if found.judge_tables is not None:
-            _print_agreements([agreement(*table) for table in found.judge_tables])
-        if found.segments is not None:
-            _print_segments(args.segments, found.segments)
+    with ces_commands.analysis_reads(args) as reads:
+        if args.ab or args.trends or digest:
+            _print_score_analysis(args, reads, digest)
+        if insights:
+            found = reads.insights(
+                subagents=args.subagents, judges=args.judges, segments=args.segments
+            )
+            if found.subagents is not None:
+                _print_subagents(found.subagents)
+            if found.judge_tables is not None:
+                _print_agreements([agreement(*table) for table in found.judge_tables])
+            if found.segments is not None:
+                _print_segments(args.segments, found.segments)
     return 0
 
 
-def _print_score_analysis(args: argparse.Namespace, digest: bool) -> None:
+def _print_score_analysis(
+    args: argparse.Namespace, reads: ces_commands.AnalysisReads, digest: bool
+) -> None:
     # Summaries, the A/B leaderboard, and session and turn trends come from CES queries over
     # every Score; coaching examples from the Scores on the newest `--limit` turns.
     summary = args.ab or digest
-    stats, feedback = ces_commands.read_analysis(
-        args, feedback=digest, success=summary, trends=args.trends or digest
-    )
+    stats, feedback = reads.stats(feedback=digest, success=summary, trends=args.trends or digest)
 
     if not stats.by_config and not feedback:
         print("No scored feedback found.")
@@ -451,7 +454,8 @@ def _print_segments(field: str, segments: dict) -> None:
 
 
 def cmd_monitor(args: argparse.Namespace) -> int:
-    stats, feedback = ces_commands.read_analysis(args, feedback=True, trends=True)
+    with ces_commands.analysis_reads(args) as reads:
+        stats, feedback = reads.stats(feedback=True, trends=True)
 
     if not stats.by_config and not feedback:
         print("No scored feedback found.")

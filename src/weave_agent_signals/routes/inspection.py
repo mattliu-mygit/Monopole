@@ -348,8 +348,10 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
         # CES queries. Coaching examples and tag counts cover the Scores on the newest `limit`
         # turns and their sessions.
         with ces_factory() as ces:
-            stats = ces_queries.config_stats(ces.client, ces.catalog, query_state)
-            days = ces_queries.session_day_stats(ces.client, ces.catalog, query_state)
+            # Read per request: a judge run can add a panel Scorer at any time.
+            scorers = ces_queries.session_scorers(ces.client, ces.catalog)
+            stats = ces_queries.config_stats(ces.client, ces.catalog, query_state, scorers)
+            days = ces_queries.session_day_stats(ces.client, ces.catalog, query_state, scorers)
             try:
                 turn_days = ces_queries.turn_day_stats(ces.client, ces.catalog, query_state)
             except ces_queries.DatasetWithoutDay as error:

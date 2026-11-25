@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
+from types import SimpleNamespace
 
 from weave_agent_signals import cli
 from weave_agent_signals.patterns import ConfigStats, Stat
@@ -51,6 +53,12 @@ def _capturing_send():
     return sent, fake_send
 
 
+def _fake_stats(monkeypatch, stats):
+    """Stand in for the run's CES reads, answering AnalysisReads.stats with `stats`."""
+    reads = SimpleNamespace(stats=stats)
+    monkeypatch.setattr(cli.ces_commands, "analysis_reads", lambda _args: nullcontext(reads))
+
+
 def _args(**over):
     base = dict(
         entity="e",
@@ -64,9 +72,7 @@ def _args(**over):
 
 
 def test_monitor_alerts_on_significant_regression_then_dedups(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        cli.ces_commands, "read_analysis", lambda _args, feedback, **_: _regressing_feedback()
-    )
+    _fake_stats(monkeypatch, lambda **_: _regressing_feedback())
 
     sent, fake_send = _capturing_send()
     monkeypatch.setattr(cli.alerts, "send", fake_send)
@@ -95,7 +101,7 @@ def test_monitor_realerts_when_a_regression_recurs_after_recovery(
             _regressing_feedback(),
         ]
     )
-    monkeypatch.setattr(cli.ces_commands, "read_analysis", lambda _args, feedback, **_: next(feeds))
+    _fake_stats(monkeypatch, lambda **_: next(feeds))
 
     sent, fake_send = _capturing_send()
     monkeypatch.setattr(cli.alerts, "send", fake_send)
@@ -117,9 +123,7 @@ def test_monitor_realerts_when_a_regression_recurs_after_recovery(
 
 
 def test_monitor_does_not_alert_on_improvement(monkeypatch):
-    monkeypatch.setattr(
-        cli.ces_commands, "read_analysis", lambda _args, feedback, **_: _improving_feedback()
-    )
+    _fake_stats(monkeypatch, lambda **_: _improving_feedback())
     sent, fake_send = _capturing_send()
     monkeypatch.setattr(cli.alerts, "send", fake_send)
 
@@ -142,7 +146,7 @@ def test_monitor_alerts_on_a_drop_whose_config_intervals_overlap(monkeypatch):
         },
         {"v_old": 50, "v_new": 50},
     )
-    monkeypatch.setattr(cli.ces_commands, "read_analysis", lambda _args, **_: (stats, feedback))
+    _fake_stats(monkeypatch, lambda **_: (stats, feedback))
     sent, fake_send = _capturing_send()
     monkeypatch.setattr(cli.alerts, "send", fake_send)
 

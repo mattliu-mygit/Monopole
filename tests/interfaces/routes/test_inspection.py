@@ -330,11 +330,11 @@ def _stats(monkeypatch, stats: ConfigStats, days=None, turn_days=None) -> list:
     """Stub the route's queries."""
     calls = []
 
-    def config_stats(client, catalog, state):
+    def config_stats(client, catalog, state, scorers):
         calls.append(state)
         return stats
 
-    def session_day_stats(client, catalog, state):
+    def session_day_stats(client, catalog, state, scorers):
         calls.append(state)
         return days or {}
 
@@ -342,6 +342,7 @@ def _stats(monkeypatch, stats: ConfigStats, days=None, turn_days=None) -> list:
         calls.append(state)
         return turn_days or {}
 
+    monkeypatch.setattr(inspection.ces_queries, "session_scorers", lambda *_: [])
     monkeypatch.setattr(inspection.ces_queries, "config_stats", config_stats)
     monkeypatch.setattr(inspection.ces_queries, "session_day_stats", session_day_stats)
     monkeypatch.setattr(inspection.ces_queries, "turn_day_stats", turn_day_stats)

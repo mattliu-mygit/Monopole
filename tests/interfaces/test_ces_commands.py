@@ -540,76 +540,62 @@ class _ScoresOnly:
         pass
 
 
+def _reads(client, monkeypatch, limit=7) -> ces_commands.AnalysisReads:
+    """An AnalysisReads on `client` whose session Scorer read is stubbed."""
+    monkeypatch.setattr(ces_commands.ces_queries, "session_scorers", lambda *_: ["s"])
+    return ces_commands.AnalysisReads(CesSession(client, CATALOG), limit)
+
+
 @pytest.mark.parametrize(("feedback", "reads"), [(True, [7]), (False, [])])
-def test_read_analysis_reads_the_newest_scores_only_for_feedback(monkeypatch, feedback, reads):
+def test_analysis_stats_read_the_newest_scores_only_for_feedback(monkeypatch, feedback, reads):
     records = [{"feedback_type": "weave_agent_signals.efficiency", "payload": {"rating": 1.0}}]
     client = _ScoresOnly(records)
     stats = ConfigStats({"v1": {"efficiency": Stat(1, 1.0, False)}}, {"v1": 1})
-    monkeypatch.setattr(ces_commands, "connect", lambda args: CesSession(client, CATALOG))
     monkeypatch.setattr(ces_commands.ces_queries, "config_stats", lambda *_: stats)
-    args = cli.build_parser().parse_args(["analyze", "--limit", "7"])
 
-    got = ces_commands.read_analysis(args, feedback=feedback)
+    got = _reads(client, monkeypatch).stats(feedback=feedback)
 
     assert got == (stats, records if feedback else [])
     assert client.reads == reads
 
 
-def test_read_analysis_reads_trends_from_the_day_queries_without_raw_scores(monkeypatch):
+def test_analysis_stats_read_trends_from_the_day_queries_without_raw_scores(monkeypatch):
     client = _ScoresOnly([])
     stats = ConfigStats({"v1": {"efficiency": Stat(1, 1.0, False)}}, {"v1": 1})
     turn_days = {"outcome.test": {date(2026, 7, 1): Stat(1, 1.0, True)}}
-    monkeypatch.setattr(ces_commands, "connect", lambda args: CesSession(client, CATALOG))
     monkeypatch.setattr(ces_commands.ces_queries, "config_stats", lambda *_: stats)
     monkeypatch.setattr(ces_commands.ces_queries, "session_day_stats", lambda *_: {})
     monkeypatch.setattr(ces_commands.ces_queries, "turn_day_stats", lambda *_: turn_days)
-    args = cli.build_parser().parse_args(["analyze", "--limit", "7"])
 
-    got, _ = ces_commands.read_analysis(args, feedback=False, trends=True)
+    got, _ = _reads(client, monkeypatch).stats(feedback=False, trends=True)
 
     assert (got.days, got.turn_days) == ({}, turn_days)
     assert client.reads == []
 
 
-def test_read_analysis_adds_session_success_on_the_same_connection(monkeypatch):
-    client, connections = _ScoresOnly([]), []
+def test_analysis_stats_add_session_success_only_when_asked(monkeypatch):
     stats = ConfigStats({"v1": {"efficiency": Stat(1, 1.0, False)}}, {"v1": 1})
     success = {"v1": SessionSuccess(1, 1, 0, {})}
-
-    def connect(args):
-        connections.append(args)
-        return CesSession(client, CATALOG)
-
-    monkeypatch.setattr(ces_commands, "connect", connect)
     monkeypatch.setattr(ces_commands.ces_queries, "config_stats", lambda *_: stats)
     monkeypatch.setattr(ces_commands.ces_queries, "session_success_by_config", lambda *_: success)
-    args = cli.build_parser().parse_args(["analyze"])
+    reads = _reads(_ScoresOnly([]), monkeypatch)
 
-    got, _ = ces_commands.read_analysis(args, feedback=False, success=True)
+    got, _ = reads.stats(feedback=False, success=True)
 
     assert (got.by_config, got.success) == (stats.by_config, success)
-    assert len(connections) == 1
-    assert ces_commands.read_analysis(args, feedback=False)[0].success is None
+    assert reads.stats(feedback=False)[0].success is None
 
 
 @pytest.mark.parametrize(
     ("flags", "want"),
     [
-        (["--subagents"], ["subagents"]),
-        (["--judges", "--segments", "day"], ["scorers", "judges", "segments day"]),
+        ({"subagents": True}, ["subagents"]),
+        ({"judges": True, "segments": "day"}, ["judges", "segments day"]),
     ],
 )
-def test_read_insights_runs_only_the_asked_queries_on_one_connection(monkeypatch, flags, want):
-    client, calls, connections = _ScoresOnly([]), [], []
+def test_analysis_insights_run_only_the_asked_queries(monkeypatch, flags, want):
+    calls = []
     queries = ces_commands.ces_queries
-
-    def connect(args):
-        connections.append(args)
-        return CesSession(client, CATALOG)
-
-    def session_scorers(_client, _catalog):
-        calls.append("scorers")
-        return ["s"]
 
     def judge_tables(_client, _catalog, _state, scorers):
         calls.append("judges")
@@ -619,17 +605,43 @@ def test_read_insights_runs_only_the_asked_queries_on_one_connection(monkeypatch
         calls.append(f"segments {field}")
         return {}
 
-    monkeypatch.setattr(ces_commands, "connect", connect)
+    reads = _reads(_ScoresOnly([]), monkeypatch)
     monkeypatch.setattr(queries, "subagent_outcomes", lambda *_: calls.append("subagents") or {})
-    monkeypatch.setattr(queries, "session_scorers", session_scorers)
     monkeypatch.setattr(queries, "judge_tables", judge_tables)
     monkeypatch.setattr(queries, "segment_stats", segment_stats)
 
-    got = ces_commands.read_insights(cli.build_parser().parse_args(["analyze", *flags]))
+    got = reads.insights(**{"subagents": False, "judges": False, "segments": None, **flags})
 
-    assert calls == want and len(connections) == 1
+    assert calls == want
     assert (got.subagents is None) == ("subagents" not in want)
     assert got.judge_tables == ([("j", "r", {})] if "judges" in want else None)
+
+
+def test_analyze_connects_and_reads_the_session_scorers_once_per_run(monkeypatch, capsys):
+    client, connections, selections = _ScoresOnly([]), [], []
+    queries = ces_commands.ces_queries
+    stats = ConfigStats({"v1": {"implicit.completion": Stat(9, 0.5, True)}}, {"v1": 9})
+
+    def connect(args):
+        connections.append(args)
+        return CesSession(client, CATALOG)
+
+    def session_scorers(_client, _catalog):
+        selections.append(1)
+        return []
+
+    monkeypatch.setattr(ces_commands, "connect", connect)
+    monkeypatch.setattr(queries, "session_scorers", session_scorers)
+    monkeypatch.setattr(queries, "config_stats", lambda *_: stats)
+    monkeypatch.setattr(queries, "session_success_by_config", lambda *_: {})
+    monkeypatch.setattr(queries, "session_day_stats", lambda *_: {})
+    monkeypatch.setattr(queries, "turn_day_stats", lambda *_: {})
+    monkeypatch.setattr(queries, "judge_tables", lambda *_: [])
+    monkeypatch.setattr(queries, "segment_stats", lambda *_: {})
+
+    assert _run("analyze", "--ab", "--trends", "--judges", "--segments", "repo") == 0
+
+    assert (len(connections), len(selections)) == (1, 1)
 
 
 def test_score_and_backfill_return_cleanly_when_no_sessions_match(fake, monkeypatch, capsys):

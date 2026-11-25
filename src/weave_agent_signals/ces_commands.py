@@ -13,8 +13,11 @@ import logging
 import os
 import uuid
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from functools import cached_property
 from typing import Any, NamedTuple
 
 from weave_agent_signals import ces_queries
@@ -377,41 +380,53 @@ class Insights(NamedTuple):
     segments: dict[tuple[str, Any], dict[str, Stat]] | None
 
 
-def read_insights(args: argparse.Namespace) -> Insights:
-    """The insights `args` asks for, from CES queries over every Trajectory and session Score."""
-    with connect(args) as ces:
-        client, catalog, state = ces.client, ces.catalog, ces_queries.QueryState()
-        subagents = (
-            ces_queries.subagent_outcomes(client, catalog, state) if args.subagents else None
-        )
-        scorers = (
-            ces_queries.session_scorers(client, catalog) if args.judges or args.segments else []
-        )
-        tables = ces_queries.judge_tables(client, catalog, state, scorers) if args.judges else None
-        segments = (
-            ces_queries.segment_stats(client, catalog, state, scorers, args.segments)
-            if args.segments
-            else None
-        )
-    return Insights(subagents, tables, segments)
+class AnalysisReads:
+    """One `analyze` or `monitor` run's CES reads. They share one connection, so the catalog is
+    ensured once, one QueryState, and one read of the Scorers the sessions Evaluation selects,
+    which is a PATCH."""
 
+    def __init__(self, ces: CesSession, limit: int | None) -> None:
+        self.client, self.catalog, self.limit = ces.client, ces.catalog, limit
+        self.state = ces_queries.QueryState()
 
-def read_analysis(
-    args: argparse.Namespace, *, feedback: bool, success: bool = False, trends: bool = False
-) -> tuple[ConfigStats, list[dict]]:
-    """Every config's Score stats from CES queries, with each config's session success and
-    spend when `success`, each session and turn Scorer's stats per day when `trends`, and, with
-    `feedback`, the Scores on the newest `args.limit` turns and their sessions as feedback
-    records."""
-    with connect(args) as ces:
-        state = ces_queries.QueryState()
-        stats = ces_queries.config_stats(ces.client, ces.catalog, state)
+    @cached_property
+    def session_scorers(self) -> list[ces_queries.QueryScorer]:
+        return ces_queries.session_scorers(self.client, self.catalog)
+
+    def stats(
+        self, *, feedback: bool, success: bool = False, trends: bool = False
+    ) -> tuple[ConfigStats, list[dict]]:
+        """Every config's Score stats from CES queries, with each config's session success and
+        spend when `success`, each session and turn Scorer's stats per day when `trends`, and,
+        with `feedback`, the Scores on the newest `limit` turns and their sessions as feedback
+        records."""
+        client, catalog, state = self.client, self.catalog, self.state
+        stats = ces_queries.config_stats(client, catalog, state, self.session_scorers)
         if success:
-            found = ces_queries.session_success_by_config(ces.client, ces.catalog, state)
+            found = ces_queries.session_success_by_config(client, catalog, state)
             stats = replace(stats, success=found)
         if trends:
-            days = ces_queries.session_day_stats(ces.client, ces.catalog, state)
-            turn_days = ces_queries.turn_day_stats(ces.client, ces.catalog, state)
+            days = ces_queries.session_day_stats(client, catalog, state, self.session_scorers)
+            turn_days = ces_queries.turn_day_stats(client, catalog, state)
             stats = replace(stats, days=days, turn_days=turn_days)
-        records = ces.client.read_all_scores(ces.catalog, limit=args.limit) if feedback else []
+        records = client.read_all_scores(catalog, limit=self.limit) if feedback else []
         return stats, records
+
+    def insights(self, *, subagents: bool, judges: bool, segments: str | None) -> Insights:
+        """The asked-for insights, from CES queries over every Trajectory and session Score."""
+        client, catalog, state = self.client, self.catalog, self.state
+        return Insights(
+            ces_queries.subagent_outcomes(client, catalog, state) if subagents else None,
+            ces_queries.judge_tables(client, catalog, state, self.session_scorers)
+            if judges
+            else None,
+            ces_queries.segment_stats(client, catalog, state, self.session_scorers, segments)
+            if segments
+            else None,
+        )
+
+
+@contextmanager
+def analysis_reads(args: argparse.Namespace) -> Iterator[AnalysisReads]:
+    with connect(args) as ces:
+        yield AnalysisReads(ces, args.limit)

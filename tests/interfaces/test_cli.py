@@ -239,18 +239,32 @@ def test_model_help_describes_catalog_selection(command, capsys):
     assert "custom URL" not in output
 
 
-def _analysis(monkeypatch, records):
+def _no_stats(**_kwargs):
+    pytest.fail("an insight flag alone reads no Score analysis")
+
+
+def _no_insights(**_kwargs):
+    pytest.fail("no insight was asked for")
+
+
+def _fake_reads(monkeypatch, stats=_no_stats, insights=_no_insights):
+    """Stand in for the run's CES reads: `stats` and `insights` answer AnalysisReads' methods."""
+    reads = SimpleNamespace(stats=stats, insights=insights)
+    monkeypatch.setattr(cli.ces_commands, "analysis_reads", lambda _args: nullcontext(reads))
+
+
+def _analysis(monkeypatch, records, insights=_no_insights):
     stats = ConfigStats(
         {"v1": {"outcome.test": Stat(3, 1.0, True)}, "v2": {"outcome.test": Stat(1, 0.0, True)}},
         {"v1": 3, "v2": 1},
     )
     asked = []
 
-    def read_analysis(_args, *, feedback: bool, success: bool = False, trends: bool = False):
+    def read_stats(*, feedback: bool, success: bool = False, trends: bool = False):
         asked.append(feedback)
         return stats, records if feedback else []
 
-    monkeypatch.setattr(cli.ces_commands, "read_analysis", read_analysis)
+    _fake_reads(monkeypatch, read_stats, insights)
     return asked
 
 
@@ -271,13 +285,13 @@ def test_analyze_trends_report_turn_scorers_without_enough_history(monkeypatch, 
     recent = {date(2026, 7, 3): Stat(3, 0.0, True), date(2026, 7, 9): Stat(3, 1.0, True)}
     asked = []
 
-    def read_analysis(_args, *, feedback, success=False, trends=False):
+    def read_stats(*, feedback, success=False, trends=False):
         asked.append((feedback, trends))
         days = {"implicit.completion": rise}
         turn_days = {"outcome.test": rise, "outcome.build": recent}
         return ConfigStats({"v1": {}}, {}, days=days, turn_days=turn_days), []
 
-    monkeypatch.setattr(cli.ces_commands, "read_analysis", read_analysis)
+    _fake_reads(monkeypatch, read_stats)
 
     assert cli.main(["analyze", "--trends"]) == 0
 
@@ -288,10 +302,10 @@ def test_analyze_trends_report_turn_scorers_without_enough_history(monkeypatch, 
 
 
 def test_analyze_says_how_to_fix_a_dataset_without_a_day_field(monkeypatch, capsys):
-    def read_analysis(*_args, **_kwargs):
+    def read_stats(**_kwargs):
         raise DatasetWithoutDay("This Dataset predates weave-agent-adapter's `day` field.")
 
-    monkeypatch.setattr(cli.ces_commands, "read_analysis", read_analysis)
+    _fake_reads(monkeypatch, read_stats)
 
     assert cli.main(["analyze", "--trends"]) == 2
     assert "This Dataset predates" in capsys.readouterr().err
@@ -314,15 +328,11 @@ def test_analyze_digest_summarizes_query_stats_with_raw_examples(monkeypatch, ca
 def _insights(monkeypatch, **found):
     asked = []
 
-    def read_insights(args):
-        asked.append((args.subagents, args.judges, args.segments))
+    def read_insights(*, subagents, judges, segments):
+        asked.append((subagents, judges, segments))
         return Insights(found.get("subagents"), found.get("judge_tables"), found.get("segments"))
 
-    def read_analysis(*_args, **_kwargs):
-        pytest.fail("an insight flag alone reads no Score analysis")
-
-    monkeypatch.setattr(cli.ces_commands, "read_insights", read_insights)
-    monkeypatch.setattr(cli.ces_commands, "read_analysis", read_analysis)
+    _fake_reads(monkeypatch, insights=read_insights)
     return asked
 
 
@@ -375,11 +385,11 @@ def test_analyze_summary_shows_success_rate_and_spend_per_success(monkeypatch, c
         "v3": SessionSuccess(0, 2, 0, {"measure.tokens": 10.0}),
     }
 
-    def read_analysis(_args, *, feedback, success=False, trends=False):
+    def read_stats(*, feedback, success=False, trends=False):
         stats = ConfigStats({"v1": {"outcome.test": Stat(3, 1.0, True)}}, {"v1": 3})
         return replace(stats, success=found if success else None), []
 
-    monkeypatch.setattr(cli.ces_commands, "read_analysis", read_analysis)
+    _fake_reads(monkeypatch, read_stats)
 
     assert cli.main(["analyze", "--ab"]) == 0
 
@@ -443,11 +453,8 @@ def test_analyze_segments_says_when_no_session_has_the_field(monkeypatch, capsys
 
 
 def test_analyze_with_an_insight_and_ab_reads_both(monkeypatch, capsys):
-    asked = _analysis(monkeypatch, [])
-    monkeypatch.setattr(
-        cli.ces_commands,
-        "read_insights",
-        lambda args: Insights({"v1": _depths({0: 1})}, None, None),
+    asked = _analysis(
+        monkeypatch, [], insights=lambda **_: Insights({"v1": _depths({0: 1})}, None, None)
     )
 
     assert cli.main(["analyze", "--ab", "--subagents"]) == 0

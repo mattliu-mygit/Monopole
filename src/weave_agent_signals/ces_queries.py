@@ -297,14 +297,16 @@ def _value_stats(
     return {key: histogram_stat(values) for key, values in counts.items()}
 
 
-def config_stats(client: CesClient, catalog: Catalog, state: QueryState) -> ConfigStats:
+def config_stats(
+    client: CesClient, catalog: Catalog, state: QueryState, trajectory_scorers: list[QueryScorer]
+) -> ConfigStats:
     """Every config's turn and session Stats, main agent only, from queries alone.
+    `trajectory_scorers` are the session Scorers, from `session_scorers`.
 
     Without CES's spread aggregation, each continuous Scorer that has Scores takes one more
     query, its value histogram (`_value_stats`), for an exact stddev. When that histogram is too
     large, the Scorer keeps the query's mean with a conservative stddev (`conservative_stat`)."""
     turn_scorers = _turn_scorers(catalog)
-    trajectory_scorers = session_scorers(client, catalog)
     turns = run_query(
         client,
         state,
@@ -419,10 +421,11 @@ def _day_stats(
 
 
 def session_day_stats(
-    client: CesClient, catalog: Catalog, state: QueryState
+    client: CesClient, catalog: Catalog, state: QueryState, scorers: list[QueryScorer]
 ) -> dict[str, dict[date, Stat]]:
     """Each session rating Scorer's Stat per UTC day its sessions started, for trends:
-    {Scorer: {day: Stat}}, every config pooled, sessions only.
+    {Scorer: {day: Stat}}, every config pooled, sessions only. `scorers` are the session
+    Scorers, from `session_scorers`.
 
     One query groups sessions by config, depth, and the `dim.day` Score, which `score` and
     `backfill` write, so a session without it isn't placed in time and is left out."""
@@ -433,7 +436,7 @@ def session_day_stats(
         name="monopole sessions by config and day",
         target_kind="trajectory",
         group_by=[_CONFIG, _DEPTH, _DAY],
-        scorers=session_scorers(client, catalog),
+        scorers=scorers,
     )
 
 
