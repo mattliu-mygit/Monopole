@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from weave_agent_signals.judges import cli_backend, inference
+from weave_agent_signals.judges import cli_backend, inference, process
 from weave_agent_signals.judges.agy_transport import AgyInvocation
 from weave_agent_signals.judges.cli_backend import CliJudgeClient as _CliJudgeClient
 from weave_agent_signals.judges.cli_backend import _extract_json
@@ -737,19 +737,22 @@ def test_cli_judge_argv_hardens_stored_credential_execution():
 
 
 def test_devin_judge_runs_claude_with_every_tool_denied(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_CWD", str(tmp_path / "devin"))
-    devin = CliJudgeClient(
-        provider="devin",
-        runner=lambda *_args, **_kwargs: _FakeProc(stdout='{"score":0}'),
-    )
+    monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "real-home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_ROOT", str(tmp_path / "devin"))
+    seen = {}
 
-    argv, stdin_text, mode = devin._build("claude-opus-5-5-medium", "system", "user")
+    def runner(argv, **kwargs):
+        seen.update(argv=argv, cwd=kwargs["cwd"])
+        return _FakeProc(stdout='{"score": 0}')
 
+    devin = _CliJudgeClient(provider="devin", runner=runner)
+    devin.chat_json(model="claude-opus-5-5-medium", messages=_msgs("system", "user"))
+
+    argv = seen["argv"]
     assert argv[:2] == ["devin", "-p"]
     assert argv[argv.index("--model") + 1] == "claude-opus-5-5-medium"
     assert argv[argv.index("--permission-mode") + 1] == "auto"
-    assert (stdin_text, mode) == ("system\n\nuser", "plain")
-    config = json.loads((tmp_path / "devin" / ".devin" / "config.json").read_text())
+    config = json.loads(Path(argv[argv.index("--config") + 1]).read_text())
     assert set(config["permissions"]["deny"]) >= {
         "read",
         "edit",
@@ -759,13 +762,86 @@ def test_devin_judge_runs_claude_with_every_tool_denied(tmp_path, monkeypatch):
         "Fetch(*)",
         "mcp__*",
     }
-    assert os.listdir(tmp_path / "devin") == [".devin"]
+    assert os.listdir(seen["cwd"]) == []
+
+
+def test_devin_judge_runs_in_an_isolated_home_with_only_its_login(tmp_path, monkeypatch):
+    real_home = tmp_path / "real-home"
+    credentials = real_home / ".local" / "share" / "devin" / "credentials.toml"
+    credentials.parent.mkdir(parents=True)
+    credentials.write_text("token")
+    (real_home / ".config" / "devin").mkdir(parents=True)
+    (real_home / ".config" / "devin" / "config.json").write_text('{"permissions": {}}')
+    (real_home / ".claude").mkdir()
+    (real_home / ".claude" / "CLAUDE.md").write_text("user rules")
+    monkeypatch.setattr(cli_backend, "_HOME", str(real_home))
+    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_ROOT", str(tmp_path / "devin"))
+    seen = {}
+
+    def runner(argv, **kwargs):
+        seen.update(argv=argv, env=kwargs["env"])
+        return _FakeProc(stdout='{"score": 1}')
+
+    _CliJudgeClient(provider="devin", runner=runner).chat_json(
+        model="claude-opus-5-5-medium", messages=_msgs()
+    )
+
+    judge_home = Path(seen["env"]["HOME"])
+    assert judge_home == tmp_path / "devin" / "home"
+    linked = judge_home / ".local" / "share" / "devin" / "credentials.toml"
+    assert linked.resolve() == credentials.resolve()
+    config = seen["argv"][seen["argv"].index("--config") + 1]
+    assert Path(config).is_relative_to(judge_home)
+    assert not (judge_home / ".claude").exists()
+
+
+def test_devin_judge_config_is_never_seen_half_written(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "real-home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_ROOT", str(tmp_path / "devin"))
+    config = Path(process.devin_config_path(str(tmp_path / "devin" / "home")))
+    cli_backend._build_env("devin")
+    stop = threading.Event()
+
+    def prepare():
+        while not stop.is_set():
+            cli_backend._build_env("devin")
+
+    def read():
+        bad = 0
+        for _ in range(5000):
+            try:
+                json.loads(config.read_text())["permissions"]["deny"]
+            except (ValueError, KeyError):
+                bad += 1
+        stop.set()
+        return bad
+
+    with ThreadPoolExecutor(3) as pool:
+        writers = [pool.submit(prepare) for _ in range(2)]
+        bad = pool.submit(read).result()
+        for writer in writers:
+            writer.result()
+
+    assert bad == 0
+
+
+def test_devin_judge_config_replaces_a_stale_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "real-home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_ROOT", str(tmp_path / "devin"))
+    config = Path(process.devin_config_path(str(tmp_path / "devin" / "home")))
+    config.parent.mkdir(parents=True)
+    config.write_text('{"permissions": {"allow": ["exec"]}}')
+
+    cli_backend._build_env("devin")
+
+    assert json.loads(config.read_text()) == process.DEVIN_JUDGE_CONFIG
+    assert os.listdir(config.parent) == ["config.json"]
 
 
 def test_devin_judge_runs_from_its_denied_workspace_with_the_prompt_in_a_file(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_CWD", str(tmp_path / "devin" / "workspace"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_ROOT", str(tmp_path / "devin"))
     seen = {}
 
     def runner(argv, **kwargs):
@@ -786,7 +862,7 @@ def test_devin_judge_runs_from_its_denied_workspace_with_the_prompt_in_a_file(
 
 
 def test_devin_judge_deletes_its_session_after_the_call(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_CWD", str(tmp_path / "devin" / "workspace"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_ROOT", str(tmp_path / "devin"))
     exports = []
     removed = []
 
@@ -804,12 +880,13 @@ def test_devin_judge_deletes_its_session_after_the_call(tmp_path, monkeypatch):
     parsed, _ = devin.chat_json(model="claude-opus-5-5-medium", messages=_msgs())
 
     assert parsed == {"score": 1}
-    assert removed == [(["devin", "rm", "judge-session", "--force"], os.path.expanduser("~"))]
+    judge_home = str(tmp_path / "devin" / "home")
+    assert removed == [(["devin", "rm", "judge-session", "--force"], judge_home)]
     assert not os.path.exists(exports[0])
 
 
 def test_devin_judge_returns_its_answer_when_session_cleanup_fails(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_CWD", str(tmp_path / "devin" / "workspace"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_ROOT", str(tmp_path / "devin"))
 
     def runner(argv, **_kwargs):
         Path(argv[argv.index("--export") + 1]).write_text("not json")
@@ -823,7 +900,7 @@ def test_devin_judge_returns_its_answer_when_session_cleanup_fails(tmp_path, mon
 
 
 def test_devin_judge_process_starts_in_the_denied_workspace(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_CWD", str(tmp_path / "devin" / "workspace"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_ROOT", str(tmp_path / "devin"))
     started = []
 
     def run(self, argv, stdin_text, env, *, cwd=None):
@@ -841,7 +918,7 @@ def test_devin_judge_process_starts_in_the_denied_workspace(tmp_path, monkeypatc
 
 
 def test_devin_judge_accepts_a_fenced_schema_reply(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_CWD", str(tmp_path / "devin" / "workspace"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_ROOT", str(tmp_path / "devin"))
     fenced = '```json\n{"score": 1}\n```\n'
     devin = _CliJudgeClient(provider="devin", runner=lambda *_a, **_k: _FakeProc(stdout=fenced))
     schema = inference.JsonSchemaSpec(

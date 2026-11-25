@@ -151,10 +151,12 @@ product behavior; standalone reflection does not mutate managed files.
   environment, an isolated temporary home, and a one-use FIFO carrying only
   its stored OAuth token. Persistent Gemini histories and state are not exposed.
   Devin, which runs Claude models without the `claude` CLI, can't turn its tools
-  off, so it runs from an otherwise empty workspace whose project config denies
-  every tool (read, edit, grep, glob, exec, fetch, MCP), with the prompt in a
-  file outside that workspace. Each call's Devin session is deleted when the
-  call ends, so judge calls don't fill Devin Desktop's session list.
+  off. It runs with an isolated `HOME` that links only Devin's stored login, so
+  the user's rules, config, and plugins don't load, and with an explicit
+  `--config` in that home that denies every tool (read, edit, grep, glob, exec,
+  fetch, MCP). It starts from an empty workspace with the prompt in a file
+  outside it, and each call's session is deleted when the call ends. Devin still
+  loads plugins its account's team manages; the deny rules block their tools.
 
 ## CES correctness checklist
 

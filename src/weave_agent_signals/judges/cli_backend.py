@@ -32,7 +32,11 @@ from weave_agent_signals.judges.inference import (
     _safe_provider_text,
     json_output_contract_messages,
 )
-from weave_agent_signals.judges.process import CODEX_CONFINED_ARGS, prepare_cli_subprocess
+from weave_agent_signals.judges.process import (
+    CODEX_CONFINED_ARGS,
+    devin_config_path,
+    prepare_cli_subprocess,
+)
 
 log = logging.getLogger("weave_agent_signals.judges")
 
@@ -82,18 +86,16 @@ def _unwrap_whole_json_fence(text: str) -> str:
 _HOME = os.path.expanduser("~")
 _JUDGE_CODEX_HOME = os.path.join(_HOME, ".codex-judge")
 _JUDGE_CWD = os.path.join(_HOME, ".codex-judge", "sandbox")
-# Devin's CLI can't turn its tools off, so its judge runs from this otherwise empty folder, whose
-# project config denies every tool. A deny rule wins in every permission mode.
-_JUDGE_DEVIN_CWD = os.path.join(_HOME, ".devin-judge", "workspace")
-_DEVIN_DENY_ALL = {
-    "permissions": {"deny": ["read", "edit", "grep", "glob", "exec", "Fetch(*)", "mcp__*"]}
-}
+# Devin's judge runs with `HOME` set to `home/` here, from the empty `workspace/`, with prompts in
+# `prompts/`. The home persists because a fresh one costs Devin about 13 s of setup per call.
+_JUDGE_DEVIN_ROOT = os.path.join(_HOME, ".devin-judge")
 
 
 def _delete_devin_session(export: str, env: Mapping[str, str]) -> None:
-    """Delete a judge call's Devin session, named by its export, so judge calls don't fill Devin
-    Desktop's session list. Devin writes the export when the turn ends, so a call killed mid-turn
-    leaves its session behind. A failed cleanup only logs: it never fails the judge call."""
+    """Delete a judge call's Devin session, named by its export, so the judge home's session store
+    doesn't grow with every call. Devin writes the export when the turn ends, so a call killed
+    mid-turn leaves its session behind. A failed cleanup only logs: it never fails the judge
+    call."""
     if not os.path.exists(export):
         return
     try:
@@ -304,6 +306,7 @@ def _build_env(provider: str) -> dict[str, str]:
     return prepare_cli_subprocess(
         home=_HOME,
         codex_home=_JUDGE_CODEX_HOME,
+        devin_home=os.path.join(_JUDGE_DEVIN_ROOT, "home"),
         cwd=_JUDGE_CWD,
         provider=provider,
     )
@@ -516,8 +519,10 @@ class CliJudgeClient:
                 raise RuntimeError("local CLI argv was not built")
             if self._provider == "devin":
                 # `devin -p` ignores stdin, and a judge prompt can exceed the argv limit. The file
-                # sits outside the workspace so the workspace holds only the deny-all config.
-                prompts = os.path.join(os.path.dirname(_JUDGE_DEVIN_CWD), "prompts")
+                # sits outside the workspace so the workspace stays empty.
+                workspace = os.path.join(_JUDGE_DEVIN_ROOT, "workspace")
+                prompts = os.path.join(_JUDGE_DEVIN_ROOT, "prompts")
+                os.makedirs(workspace, exist_ok=True)
                 os.makedirs(prompts, mode=0o700, exist_ok=True)
                 fd, path = tempfile.mkstemp(prefix="prompt-", suffix=".txt", dir=prompts)
                 export = path.removesuffix(".txt") + ".export.json"
@@ -525,7 +530,7 @@ class CliJudgeClient:
                     with os.fdopen(fd, "w", encoding="utf-8") as stream:
                         stream.write(base_stdin)
                     argv = [*base_argv, "--prompt-file", path, "--export", export]
-                    yield argv, "", _JUDGE_DEVIN_CWD, env
+                    yield argv, "", workspace, env
                 finally:
                     os.remove(path)
                     _delete_devin_session(export, env)
@@ -1027,15 +1032,13 @@ class CliJudgeClient:
 
         prompt = f"{system}\n\n{user}" if system else user
         if self._provider == "devin":
-            config_dir = os.path.join(_JUDGE_DEVIN_CWD, ".devin")
-            os.makedirs(config_dir, exist_ok=True)
-            with open(os.path.join(config_dir, "config.json"), "w", encoding="utf-8") as stream:
-                json.dump(_DEVIN_DENY_ALL, stream)
             argv = [
                 "devin",
                 "-p",
                 "--model",
                 model,
+                "--config",
+                devin_config_path(os.path.join(_JUDGE_DEVIN_ROOT, "home")),
                 "--permission-mode",
                 "auto",
                 "--respect-workspace-trust",
