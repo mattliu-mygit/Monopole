@@ -75,6 +75,9 @@ class FakeCes:
     def read_session(self, trajectory_id, *, subagents=True):
         return SESSION
 
+    def read_session_tree(self, trajectory_id):
+        return SESSION, []
+
     def root_case_input(self, trajectory_id):
         return self.root
 
@@ -183,9 +186,7 @@ def test_score_writes_whole_trajectory_scores_on_the_session_and_each_subagent(
     fake, monkeypatch, capsys
 ):
     monkeypatch.setattr(ces_commands, "score_trajectory", score_trajectory)
-    monkeypatch.setattr(
-        fake, "read_session", lambda sid, **_: replace(SESSION, subagent_trajectories=[SUBAGENT])
-    )
+    monkeypatch.setattr(fake, "read_session_tree", lambda sid: (SESSION, [SUBAGENT]))
     # The subagent already has its test outcome from its current turns, so only a forced pass
     # writes it again.
     fake.session_rows = {"traj-a": _recorded(SUBAGENT, "outcome.session_tests_passed")}
@@ -210,9 +211,7 @@ def test_score_writes_whole_trajectory_scores_on_the_session_and_each_subagent(
 def test_a_subagent_takes_its_sessions_dimensions(fake, monkeypatch):
     written = []
     monkeypatch.setattr(ces_commands, "score_trajectory", score_trajectory)
-    monkeypatch.setattr(
-        fake, "read_session", lambda sid, **_: replace(SESSION, subagent_trajectories=[SUBAGENT])
-    )
+    monkeypatch.setattr(fake, "read_session_tree", lambda sid: (SESSION, [SUBAGENT]))
     monkeypatch.setattr(
         fake,
         "write_scores",
@@ -263,9 +262,7 @@ def _trajectory_writes(fake, *argv):
 def whole(fake, monkeypatch):
     """The fake with the real whole-Trajectory Scorers and SESSION with SUBAGENT."""
     monkeypatch.setattr(ces_commands, "score_trajectory", score_trajectory)
-    monkeypatch.setattr(
-        fake, "read_session", lambda sid, **_: replace(SESSION, subagent_trajectories=[SUBAGENT])
-    )
+    monkeypatch.setattr(fake, "read_session_tree", lambda sid: (SESSION, [SUBAGENT]))
     return fake
 
 
@@ -339,9 +336,7 @@ def test_backfill_reports_bash_coverage(fake, capsys):
 def test_backfill_adds_only_the_session_scorers_a_historical_session_lacks(fake, monkeypatch):
     monkeypatch.setattr(ces_commands, "score_session", score_session)
     monkeypatch.setattr(ces_commands, "score_trajectory", score_trajectory)
-    monkeypatch.setattr(
-        fake, "read_session", lambda sid, **_: replace(SESSION, subagent_trajectories=[SUBAGENT])
-    )
+    monkeypatch.setattr(fake, "read_session_tree", lambda sid: (SESSION, [SUBAGENT]))
     # Scored before the whole-Trajectory Scorers existed: only the older session Scorers.
     older = ["implicit.completion", "implicit.correction_free_rate", "efficiency.session"]
     fake.session_rows = {"s1": [{"scorer_id": f"sc-{name}"} for name in older]}
@@ -652,8 +647,8 @@ def test_a_session_with_non_agent_turns_is_not_scored(fake, monkeypatch):
     mixed = replace(SESSION.turns[0], trace_role=TraceRole.SIGNAL_EVALUATION)
     monkeypatch.setattr(
         fake,
-        "read_session",
-        lambda _sid: SessionView("s1", [mixed, *SESSION.turns[1:]], None, None),
+        "read_session_tree",
+        lambda _sid: (SessionView("s1", [mixed, *SESSION.turns[1:]], None, None), []),
     )
 
     assert _run("score", "--since", "2026-11-01") == 0

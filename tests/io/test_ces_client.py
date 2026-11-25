@@ -1092,7 +1092,7 @@ def test_turn_subagents_reads_only_that_turns_subagents():
 
 
 @respx.mock
-def test_read_session_also_views_each_subagent_trajectory_with_its_own_subagents():
+def test_read_session_tree_views_each_subagent_trajectory_with_its_own_subagents():
     respx.get(f"{BASE}/trajectories/traj-s/cases").mock(
         return_value=httpx.Response(200, json={"cases": SESSION})
     )
@@ -1103,9 +1103,10 @@ def test_read_session_also_views_each_subagent_trajectory_with_its_own_subagents
         return_value=httpx.Response(200, json={"cases": AGENT_B})
     )
 
-    view = CesClient("http://ces.test", "scope-1", api_key="k").read_session("traj-s")
+    _, (agent_a, agent_b) = CesClient("http://ces.test", "scope-1", api_key="k").read_session_tree(
+        "traj-s"
+    )
 
-    agent_a, agent_b = view.subagent_trajectories
     assert [t.trace_id for t in agent_a.turns] == ["a1"]
     # traj-b descends from traj-a's own Case a2, so it attaches to traj-a's turn.
     assert [s.span_id for s in agent_a.turns[0].subagents] == ["traj-b"]
@@ -1291,3 +1292,49 @@ def test_every_paged_read_starts_at_the_page_limit():
     ]
     assert cases.calls[0].request.url.params["limit"] == str(PAGE_LIMIT)
     assert listing.calls[0].request.url.params["limit"] == str(PAGE_LIMIT)
+
+
+def _wide_session_client(subagents: int) -> CesClient:
+    """A session whose one turn launches `subagents` subagents of 20 Cases each."""
+    kids = [f"traj-{i}" for i in range(subagents)]
+    root = [_case("c1", "user_message", "t1", 0, text="go")] + [
+        _case(f"c-{kid}", "tool_call", "t1", i + 1, children=[kid], tool_name="Task")
+        for i, kid in enumerate(kids)
+    ]
+    cases = {
+        kid: [
+            _case(f"{kid}-{j}", "tool_call", f"k{j // 5}", j % 5, tool_name="Bash", agent_id="a")
+            for j in range(20)
+        ]
+        for kid in kids
+    }
+
+    def handler(request):
+        trajectory = request.url.path.split("/trajectories/")[1].split("/")[0]
+        return httpx.Response(
+            200, json={"cases": root if trajectory == "traj-s" else cases[trajectory]}
+        )
+
+    http = httpx.Client(base_url="http://ces.test", transport=httpx.MockTransport(handler))
+    return CesClient("http://ces.test", "scope-1", http=http)
+
+
+def _fastest(read, repeats: int = 2) -> float:
+    best = float("inf")
+    for _ in range(repeats):
+        started = time.perf_counter()
+        read()
+        best = min(best, time.perf_counter() - started)
+    return best
+
+
+@pytest.mark.parametrize("read", ["read_session", "read_session_tree"])
+def test_reading_a_session_takes_time_linear_in_its_subagent_count(read):
+    small, large = _wide_session_client(100), _wide_session_client(800)
+
+    ratio = _fastest(lambda: getattr(large, read)("traj-s")) / _fastest(
+        lambda: getattr(small, read)("traj-s")
+    )
+
+    # 8 times the subagents: linear work takes about 8 times as long, quadratic about 64.
+    assert ratio < 20

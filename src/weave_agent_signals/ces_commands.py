@@ -143,7 +143,7 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
         if limit is not None and stats.turns >= limit:
             break
         try:
-            session = client.read_session(sid)
+            session, subagent_views = client.read_session_tree(sid)
         except Exception as error:
             stats.errors += 1
             log.warning("Error reading session %s: %s", sid[:12], error)
@@ -184,7 +184,7 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
             continue
         # The session's Scores, then the whole-Trajectory Scores of it and each subagent, all
         # stamped with the session's config and branch and sliced by the session's dimensions.
-        for view in [session, *session.subagent_trajectories]:
+        for view in [session, *subagent_views]:
             try:
                 whole, turns = score_trajectory(view, dimensions), scored_turns(view)
                 for s in whole:

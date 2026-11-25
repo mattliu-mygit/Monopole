@@ -214,6 +214,57 @@ def _score_record(target_id: str, case_input: dict, scores: list[dict], names: d
     return records
 
 
+def _subagent_span(child: str, cases: list[dict]) -> SubagentSpan:
+    return SubagentSpan(
+        span_id=child,
+        agent_type=next((c["input"].get("agent_id") for c in cases), None),
+        tool_calls=[_tool_span(c) for c in cases if c["input"].get("kind") == "tool_call"],
+        tokens=sum(
+            _int((c.get("output") or {}).get("turn_input_tokens"))
+            + _int((c.get("output") or {}).get("turn_output_tokens"))
+            for c in cases
+        ),
+    )
+
+
+class _SubagentTree:
+    """Which subagent Trajectories each Case launched, indexed once per session read, so each
+    Trajectory's view only walks the subagents below it."""
+
+    def __init__(self, session_id: str, cases: list[dict], children: dict[str, list[dict]]):
+        self.children = children
+        self.position = {child: index for index, child in enumerate(children)}
+        owner = {c["case_id"]: child for child, cs in children.items() for c in cs}
+        launched = {
+            child: case["case_id"]
+            for case in [*cases, *(c for cs in children.values() for c in cs)]
+            for child in case.get("child_trajectory_ids") or []
+            if child in children
+        }
+        # (launching Case ID, subagent) for each Trajectory's direct subagents.
+        self.launches: dict[str, list[tuple[str, str]]] = {}
+        for child, case_id in launched.items():
+            self.launches.setdefault(owner.get(case_id, session_id), []).append((case_id, child))
+
+    def below(self, trajectory_id: str) -> dict[str, list[str]]:
+        """Each Case of this Trajectory that launched subagents, with every subagent below it,
+        nested ones included, in read order."""
+        attached: dict[str, list[str]] = {}
+        seen = {trajectory_id}
+        for case_id, child in self.launches.get(trajectory_id, []):
+            stack = [child]
+            while stack:
+                current = stack.pop()
+                if current in seen:
+                    continue
+                seen.add(current)
+                attached.setdefault(case_id, []).append(current)
+                stack += [kid for _, kid in self.launches.get(current, [])]
+        for subagents in attached.values():
+            subagents.sort(key=self.position.__getitem__)
+        return attached
+
+
 def session_view(
     trajectory_id: str, cases: list[dict], children: dict[str, list[dict]]
 ) -> SessionView:
@@ -223,6 +274,20 @@ def session_view(
     carries the turn totals, and its ID is the turn's identity, where Weave used a
     trace ID. A subagent's Cases attach to the turn whose tool call launched it.
     """
+    return _view(trajectory_id, cases, _SubagentTree(trajectory_id, cases, children))
+
+
+def session_tree(
+    trajectory_id: str, cases: list[dict], children: dict[str, list[dict]]
+) -> tuple[SessionView, list[SessionView]]:
+    """S's view, and each subagent Trajectory below S as its own view with its own subagents."""
+    tree = _SubagentTree(trajectory_id, cases, children)
+    return _view(trajectory_id, cases, tree), [
+        _view(child, child_cases, tree) for child, child_cases in children.items()
+    ]
+
+
+def _view(trajectory_id: str, cases: list[dict], tree: _SubagentTree) -> SessionView:
     # A Case without a turn ID, which the adapter never writes, has no turn to join.
     members = [
         c
@@ -235,23 +300,7 @@ def session_view(
         key=lambda c: (_int(c["input"].get("turn_index")), _int(c["input"].get("step_index"))),
     ):
         turns.setdefault(case["input"]["turn_id"], []).append(case)
-    launched = {
-        child: case["case_id"]
-        for case in [*members, *(c for cs in children.values() for c in cs)]
-        for child in case.get("child_trajectory_ids") or []
-    }
-    owner = {c["case_id"]: child for child, cs in children.items() for c in cs}
-    own = {c["case_id"] for c in members}
-
-    def launch_case(child: str) -> str | None:
-        """This Trajectory's Case a subagent descends from, following nested subagents up to
-        it. For a subagent's own view, `children` holds every subagent of the session, so the
-        climb stops at the subagent's own Cases."""
-        case_id, seen = launched.get(child), {child}
-        while case_id in owner and case_id not in own and owner[case_id] not in seen:
-            seen.add(owner[case_id])
-            case_id = launched.get(owner[case_id])
-        return case_id
+    attached = tree.below(trajectory_id)
 
     built = []
     for steps in turns.values():
@@ -268,23 +317,11 @@ def session_view(
             for s in (_ts(c["input"].get("started_at")), _ts(c["input"].get("ended_at")))
             if s
         ]
-        step_ids = {c["case_id"] for c in steps}
-        subagents = [
-            SubagentSpan(
-                span_id=child,
-                agent_type=next((c["input"].get("agent_id") for c in child_cases), None),
-                tool_calls=[
-                    _tool_span(c) for c in child_cases if c["input"].get("kind") == "tool_call"
-                ],
-                tokens=sum(
-                    _int((c.get("output") or {}).get("turn_input_tokens"))
-                    + _int((c.get("output") or {}).get("turn_output_tokens"))
-                    for c in child_cases
-                ),
-            )
-            for child, child_cases in children.items()
-            if launch_case(child) in step_ids
-        ]
+        launched = sorted(
+            {child for c in steps for child in attached.get(c["case_id"], [])},
+            key=tree.position.__getitem__,
+        )
+        subagents = [_subagent_span(child, tree.children[child]) for child in launched]
         user_input = next((t for t in texts if t), None)
         built.append(
             TurnSpan(
@@ -535,12 +572,12 @@ class CesClient:
         launched = _child_ids(cases)
         if not subagents:
             return session_view(trajectory_id, cases, {c: [] for c in launched})
-        children = self._descendants(launched)
-        view = session_view(trajectory_id, cases, children)
-        view.subagent_trajectories = [
-            session_view(child, child_cases, children) for child, child_cases in children.items()
-        ]
-        return view
+        return session_view(trajectory_id, cases, self._descendants(launched))
+
+    def read_session_tree(self, trajectory_id: str) -> tuple[SessionView, list[SessionView]]:
+        """S read in full, and each subagent Trajectory below S as its own view, for scoring."""
+        cases = self.trajectory_cases(trajectory_id)
+        return session_tree(trajectory_id, cases, self._descendants(_child_ids(cases)))
 
     def _descendants(self, roots: list[str]) -> dict[str, list[dict]]:
         """The Cases of these subagent Trajectories and every one below them, in launch order,
