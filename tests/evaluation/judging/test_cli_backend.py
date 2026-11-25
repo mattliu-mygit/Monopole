@@ -11,6 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -703,15 +704,15 @@ def test_cli_judge_subprocess_environment_is_allowlisted(
         assert forbidden not in env
 
 
-def test_cli_judge_argv_hardens_stored_credential_execution():
-    codex = CliJudgeClient(runner=lambda *_args, **_kwargs: _FakeProc(stdout='{"score":0}'))
-    claude = CliJudgeClient(
-        provider="claude",
-        runner=lambda *_args, **_kwargs: _FakeProc(stdout='{"score":0}'),
-    )
+def _provider_argv(provider: str, model: str) -> list[str]:
+    call = cli_backend._Call(model, "system", "user", {}, None, None)
+    with cli_backend._PROVIDERS[provider].attempt(call) as attempt:
+        return attempt.argv
 
-    codex_argv, _, _ = codex._build("gpt-5.1", "system", "user")
-    claude_argv, _, _ = claude._build("claude-sonnet-5", "system", "user")
+
+def test_cli_judge_argv_hardens_stored_credential_execution():
+    codex_argv = _provider_argv("codex", "gpt-5.1")
+    claude_argv = _provider_argv("claude", "claude-sonnet-5")
 
     assert "--ignore-user-config" in codex_argv
     assert "--ignore-rules" in codex_argv
@@ -915,6 +916,10 @@ def test_devin_judge_process_starts_in_the_denied_workspace(tmp_path, monkeypatc
 
     assert parsed == {"score": 1}
     assert started == [str(tmp_path / "devin" / "workspace")]
+
+
+def test_every_local_cli_provider_has_one_entry():
+    assert set(cli_backend._PROVIDERS) == process.LOCAL_CLI_PROVIDERS
 
 
 def test_devin_judge_accepts_a_fenced_schema_reply(tmp_path, monkeypatch):
@@ -1291,10 +1296,12 @@ def test_hard_process_timeout_does_not_retry_and_preserves_diagnostics(tmp_path,
     activity = []
     client.set_activity(activity.append)
 
-    def build(_model, _system, _user, **_kwargs):
-        return [sys.executable, "-c", "import time; time.sleep(30)"], "", "plain"
+    @contextmanager
+    def sleeping(call):
+        argv = [sys.executable, "-c", "import time; time.sleep(30)"]
+        yield cli_backend._Attempt(argv, "", str(sandbox), call.env)
 
-    monkeypatch.setattr(client, "_build", build)
+    monkeypatch.setattr(client, "_spec", replace(client._spec, attempt=sleeping))
 
     with pytest.raises(RuntimeError, match="error_category=process_error") as captured:
         client.chat_json(model="gpt-5.1", messages=_msgs())

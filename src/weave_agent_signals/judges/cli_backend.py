@@ -1,8 +1,10 @@
 """Confined local-provider implementation of the judge chat interface.
 
-The selected descriptor binds this client to ``claude``, ``codex``, or ``agy``.
-Model selection happens before this transport boundary; this module only
-executes the exact provider model with a restricted environment.
+The selected descriptor binds this client to one local CLI provider: ``claude``,
+``codex``, ``agy``, or ``devin``. Model selection happens before this transport
+boundary; this module only executes the exact provider model with a restricted
+environment. `_PROVIDERS` holds, for each provider, how one attempt runs its CLI
+and how its stdout carries the answer.
 """
 
 from __future__ import annotations
@@ -15,7 +17,9 @@ import subprocess
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Literal, Mapping
 
 from weave_agent_signals.judges.agy_transport import agy_prompt_invocation
@@ -34,7 +38,6 @@ from weave_agent_signals.judges.inference import (
 )
 from weave_agent_signals.judges.process import (
     CODEX_CONFINED_ARGS,
-    LOCAL_CLI_PROVIDERS,
     devin_config_path,
     prepare_cli_subprocess,
 )
@@ -313,6 +316,145 @@ def _build_env(provider: str) -> dict[str, str]:
     )
 
 
+@dataclass(frozen=True)
+class _Call:
+    """One judge call's inputs, which every attempt reuses."""
+
+    model: str
+    system: str
+    user: str
+    env: dict[str, str]
+    response_schema: JsonSchemaSpec | None
+    schema_path: str | None
+
+    @property
+    def prompt(self) -> str:
+        return f"{self.system}\n\n{self.user}" if self.system else self.user
+
+
+@dataclass(frozen=True)
+class _Attempt:
+    """One run of a CLI: its command, stdin, working folder, and environment."""
+
+    argv: list[str]
+    stdin: str
+    cwd: str
+    env: dict[str, str]
+
+
+@contextmanager
+def _claude_attempt(call: _Call) -> Iterator[_Attempt]:
+    argv = [
+        "claude",
+        "-p",
+        "--output-format",
+        "json",
+        "--model",
+        call.model,
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--safe-mode",
+        "--disable-slash-commands",
+        "--no-chrome",
+    ]
+    if call.response_schema is not None:
+        argv += ["--json-schema", json.dumps(call.response_schema.schema, separators=(",", ":"))]
+    if call.system:
+        argv += ["--system-prompt", call.system]
+    yield _Attempt(argv, call.user, _JUDGE_CWD, call.env)
+
+
+@contextmanager
+def _codex_attempt(call: _Call) -> Iterator[_Attempt]:
+    argv = [
+        "codex",
+        "exec",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        *CODEX_CONFINED_ARGS,
+        "--model",
+        call.model,
+    ]
+    if call.response_schema is not None:
+        if call.schema_path is None:
+            raise ValueError("Codex schema mode requires an output schema file")
+        argv += ["--output-schema", call.schema_path]
+    yield _Attempt([*argv, "-C", _JUDGE_CWD, "-"], call.prompt, _JUDGE_CWD, call.env)
+
+
+@contextmanager
+def _agy_attempt(call: _Call) -> Iterator[_Attempt]:
+    """Antigravity reads its prompt from a private, attempt-scoped file and home."""
+    with agy_prompt_invocation(prompt=call.prompt, model=call.model, home=_HOME) as invocation:
+        yield _Attempt(invocation.argv, "", invocation.cwd, {**call.env, "HOME": invocation.home})
+
+
+@contextmanager
+def _devin_attempt(call: _Call) -> Iterator[_Attempt]:
+    """`devin -p` ignores stdin, and a judge prompt can exceed the argv limit, so the prompt is
+    a file. It sits outside the workspace so the workspace stays empty."""
+    workspace = os.path.join(_JUDGE_DEVIN_ROOT, "workspace")
+    prompts = os.path.join(_JUDGE_DEVIN_ROOT, "prompts")
+    os.makedirs(workspace, exist_ok=True)
+    os.makedirs(prompts, mode=0o700, exist_ok=True)
+    fd, path = tempfile.mkstemp(prefix="prompt-", suffix=".txt", dir=prompts)
+    export = path.removesuffix(".txt") + ".export.json"
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(call.prompt)
+        argv = [
+            "devin",
+            "-p",
+            "--model",
+            call.model,
+            "--config",
+            devin_config_path(os.path.join(_JUDGE_DEVIN_ROOT, "home")),
+            "--permission-mode",
+            "auto",
+            "--respect-workspace-trust",
+            "false",
+            "--prompt-file",
+            path,
+            "--export",
+            export,
+        ]
+        yield _Attempt(argv, "", workspace, call.env)
+    finally:
+        os.remove(path)
+        _delete_devin_session(export, call.env)
+
+
+@dataclass(frozen=True)
+class _Provider:
+    """How Monopole runs one local CLI and reads its answer."""
+
+    attempt: Callable[[_Call], AbstractContextManager[_Attempt]]
+    # The prompt text the CLI receives, which failure diagnostics strip from its echoed output.
+    sent_prompt: Callable[[_Call], str]
+    # Claude answers inside a JSON envelope, with a schema-checked `structured_output`.
+    envelope: bool = False
+    # The CLI can't enforce a schema and often fences the whole JSON reply.
+    fenced: bool = False
+    # The CLI can't enforce a schema's required fields, so a reply missing one is retried.
+    retries_missing_fields: bool = False
+    # The CLI reads the output schema from a file in its workspace.
+    schema_file: bool = False
+
+
+_PROVIDERS = {
+    "claude": _Provider(_claude_attempt, lambda call: call.user, envelope=True),
+    "codex": _Provider(_codex_attempt, lambda call: call.prompt, schema_file=True),
+    "agy": _Provider(
+        _agy_attempt, lambda call: call.prompt, fenced=True, retries_missing_fields=True
+    ),
+    "devin": _Provider(_devin_attempt, lambda call: call.prompt, fenced=True),
+}
+
+
 class _SchemaOutputUnsupported(RuntimeError):
     def __init__(self, reason: str, request_count: int) -> None:
         super().__init__(reason)
@@ -333,10 +475,11 @@ class CliJudgeClient:
         timeout: float = 360.0,
         runner: Callable[..., Any] | None = None,
     ):
-        if provider not in LOCAL_CLI_PROVIDERS:
+        if provider not in _PROVIDERS:
             raise ValueError(f"unsupported local CLI provider: {provider}")
         self.backend = provider
         self._provider = provider
+        self._spec = _PROVIDERS[provider]
         self._timeout = timeout
         self._runner = runner
         self._activity = threading.local()
@@ -403,19 +546,13 @@ class CliJudgeClient:
         user = "\n\n".join(m["content"] for m in messages if m.get("role") == "user")
         env = _build_env(self._provider)
         schema_path: str | None = None
-        if response_schema is not None and self._provider == "codex":
+        if response_schema is not None and self._spec.schema_file:
             schema_path = self._write_schema_file(response_schema)
+        call = _Call(model, system, user, env, response_schema, schema_path)
 
         try:
             try:
-                parsed, content, raw_output, request_count = self._invoke(
-                    model=model,
-                    system=system,
-                    user=user,
-                    env=env,
-                    response_schema=response_schema,
-                    schema_path=schema_path,
-                )
+                parsed, content, raw_output, request_count = self._invoke(call)
                 output_mode = "json_schema" if response_schema is not None else "json_object"
                 fallback_reason = None
             except _SchemaOutputUnsupported as error:
@@ -423,12 +560,7 @@ class CliJudgeClient:
                     raise
                 try:
                     parsed, content, raw_output, fallback_count = self._invoke(
-                        model=model,
-                        system=system,
-                        user=user,
-                        env=env,
-                        response_schema=None,
-                        schema_path=None,
+                        replace(call, response_schema=None, schema_path=None)
                     )
                 except Exception as fallback_error:
                     _add_transport_request_count(fallback_error, error.request_count)
@@ -475,88 +607,62 @@ class CliJudgeClient:
             raise
         return schema_file.name
 
-    def _invoke(
+    def _emit_transport(
         self,
+        phase: str,
+        message: str,
         *,
         model: str,
-        system: str,
-        user: str,
-        env: dict[str, str],
-        response_schema: JsonSchemaSpec | None,
-        schema_path: str | None,
-    ) -> tuple[dict[str, Any], str, str, int]:
-        if self._provider == "agy":
-            request_prompt = self._agy_prompt(
-                system,
-                user,
-                response_schema=response_schema,
-            )
-            base_argv: list[str] | None = None
-            base_stdin = ""
-            mode = "plain"
-        else:
-            base_argv, base_stdin, mode = self._build(
-                model,
-                system,
-                user,
-                response_schema=response_schema,
-                schema_path=schema_path,
-            )
-            request_prompt = base_stdin
+        request_attempt: int,
+        elapsed: float,
+        stdout: str,
+        stderr: str,
+        prompt: str,
+        output_mode: str,
+        output_sha256: str,
+        **details: object,
+    ) -> None:
+        self._emit_activity(
+            {
+                "phase": phase,
+                "message": message,
+                "model": model,
+                "request_attempt": request_attempt,
+                "max_attempts": MAX_CLI_RETRIES + 1,
+                "elapsed_seconds": round(elapsed, 3),
+                "stdout_chars": len(stdout),
+                "stderr_chars": len(stderr),
+                "prompt_characters": len(prompt),
+                "output_mode": output_mode,
+                "output_sha256": output_sha256,
+                **details,
+            }
+        )
 
-        @contextmanager
-        def attempt_invocation():
-            if self._provider == "agy":
-                with agy_prompt_invocation(
-                    prompt=request_prompt,
-                    model=model,
-                    home=_HOME,
-                ) as invocation:
-                    attempt_env = dict(env)
-                    attempt_env["HOME"] = invocation.home
-                    yield invocation.argv, "", invocation.cwd, attempt_env
-                return
-            if base_argv is None:  # pragma: no cover - guarded by provider branch above
-                raise RuntimeError("local CLI argv was not built")
-            if self._provider == "devin":
-                # `devin -p` ignores stdin, and a judge prompt can exceed the argv limit. The file
-                # sits outside the workspace so the workspace stays empty.
-                workspace = os.path.join(_JUDGE_DEVIN_ROOT, "workspace")
-                prompts = os.path.join(_JUDGE_DEVIN_ROOT, "prompts")
-                os.makedirs(workspace, exist_ok=True)
-                os.makedirs(prompts, mode=0o700, exist_ok=True)
-                fd, path = tempfile.mkstemp(prefix="prompt-", suffix=".txt", dir=prompts)
-                export = path.removesuffix(".txt") + ".export.json"
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                        stream.write(base_stdin)
-                    argv = [*base_argv, "--prompt-file", path, "--export", export]
-                    yield argv, "", workspace, env
-                finally:
-                    os.remove(path)
-                    _delete_devin_session(export, env)
-                return
-            yield base_argv, base_stdin, _JUDGE_CWD, env
-
+    def _invoke(self, call: _Call) -> tuple[dict[str, Any], str, str, int]:
+        model, response_schema = call.model, call.response_schema
+        request_prompt = self._spec.sent_prompt(call)
+        output_mode = "json_schema" if response_schema is not None else "json_object"
+        strict = response_schema is not None
         log.info(
             "CLI judge started: provider=%s model=%s family=%s prompt_len=%d output_mode=%s",
             self._provider,
             model,
             model_family(model),
             len(request_prompt),
-            "json_schema" if response_schema is not None else "json_object",
+            output_mode,
         )
 
         if self._runner:
-            with attempt_invocation() as (argv, stdin_text, cwd, attempt_env):
+            with self._spec.attempt(call) as attempt:
                 proc = self._runner(
-                    argv,
-                    input=stdin_text,
+                    attempt.argv,
+                    input=attempt.stdin,
                     capture_output=True,
                     text=True,
                     timeout=self._timeout,
-                    env=attempt_env,
-                    cwd=cwd,
+                    env=attempt.env,
+                    cwd=attempt.cwd,
                 )
             stdout = proc.stdout or ""
             stderr = proc.stderr or ""
@@ -572,7 +678,7 @@ class CliJudgeClient:
                     prompt=request_prompt,
                 )
                 self._raise_process_error(
-                    argv,
+                    attempt.argv,
                     proc.returncode,
                     stdout,
                     stderr,
@@ -580,11 +686,7 @@ class CliJudgeClient:
                     request_count=1,
                     prompt=request_prompt,
                 )
-            parsed, content = self._decode_output(
-                stdout,
-                mode,
-                strict=response_schema is not None,
-            )
+            parsed, content = self._decode_output(stdout, strict=strict)
             log.info(
                 "CLI judge completed: provider=%s model=%s exit=0 output_len=%d "
                 "output_sha256=%s output_mode=%s request_count=1",
@@ -592,95 +694,77 @@ class CliJudgeClient:
                 model,
                 len(stdout),
                 _raw_output_digest(stdout),
-                "json_schema" if response_schema is not None else "json_object",
+                output_mode,
             )
             return parsed, content, stdout, 1
 
         last_err: RuntimeError | None = None
         invocation_started = time.monotonic()
-        for attempt in range(MAX_CLI_RETRIES + 1):
+        for attempt_index in range(MAX_CLI_RETRIES + 1):
             t0 = time.monotonic()
-            with attempt_invocation() as (argv, stdin_text, cwd, attempt_env):
+            with self._spec.attempt(call) as attempt:
                 stdout, stderr, returncode = self._run_with_cancel(
-                    argv,
-                    stdin_text,
-                    attempt_env,
-                    cwd=cwd,
+                    attempt.argv,
+                    attempt.stdin,
+                    attempt.env,
+                    cwd=attempt.cwd,
                 )
             elapsed = time.monotonic() - t0
+            event = {
+                "model": model,
+                "stdout": stdout,
+                "stderr": stderr,
+                "prompt": request_prompt,
+                "output_mode": output_mode,
+            }
 
             if returncode == 0:
-                parsed, content = self._decode_output(
-                    stdout,
-                    mode,
-                    strict=response_schema is not None,
-                )
+                parsed, content = self._decode_output(stdout, strict=strict)
                 missing_fields = (
                     _missing_required_schema_fields(parsed, response_schema)
-                    if self._provider == "agy"
+                    if self._spec.retries_missing_fields
                     else ()
                 )
                 if missing_fields:
-                    output_sha256 = _raw_output_digest(stdout)
-                    if attempt < MAX_CLI_RETRIES:
-                        self._emit_activity(
-                            {
-                                "phase": "transport_retry",
-                                "message": (
-                                    f"{model} returned schema-invalid output after "
-                                    f"{elapsed:.1f}s; retrying attempt {attempt + 2} of "
-                                    f"{MAX_CLI_RETRIES + 1}"
-                                ),
-                                "model": model,
-                                "request_attempt": attempt + 2,
-                                "max_attempts": MAX_CLI_RETRIES + 1,
-                                "elapsed_seconds": round(elapsed, 3),
-                                "error_category": "schema_validation_error",
-                                "retry_reason": "schema_output",
-                                "exit_code": 0,
-                                "stdout_chars": len(stdout),
-                                "stderr_chars": len(stderr),
-                                "prompt_characters": len(request_prompt),
-                                "output_mode": "json_schema",
-                                "output_sha256": output_sha256,
-                                "missing_required_field_count": len(missing_fields),
-                            }
+                    schema_issue = {
+                        "error_category": "schema_validation_error",
+                        "retry_reason": "schema_output",
+                        "exit_code": 0,
+                        "output_sha256": _raw_output_digest(stdout),
+                        "missing_required_field_count": len(missing_fields),
+                    }
+                    if attempt_index < MAX_CLI_RETRIES:
+                        self._emit_transport(
+                            "transport_retry",
+                            f"{model} returned schema-invalid output after {elapsed:.1f}s; "
+                            f"retrying attempt {attempt_index + 2} of {MAX_CLI_RETRIES + 1}",
+                            request_attempt=attempt_index + 2,
+                            elapsed=elapsed,
+                            **event,
+                            **schema_issue,
                         )
-                        delay = RETRY_BASE_DELAY * (2**attempt)
+                        delay = RETRY_BASE_DELAY * (2**attempt_index)
                         log.info(
-                            "Agy returned schema-invalid output for %s, waiting %.0fs...",
+                            "%s returned schema-invalid output for %s, waiting %.0fs...",
+                            self._provider,
                             model,
                             delay,
                         )
                         self._wait_before_retry(delay)
                         continue
-                    self._emit_activity(
-                        {
-                            "phase": "transport_failed",
-                            "message": (f"{model} failed after {attempt + 1} request attempts"),
-                            "model": model,
-                            "request_attempt": attempt + 1,
-                            "max_attempts": MAX_CLI_RETRIES + 1,
-                            "elapsed_seconds": round(
-                                time.monotonic() - invocation_started,
-                                3,
-                            ),
-                            "error_category": "schema_validation_error",
-                            "retry_reason": "schema_output",
-                            "exit_code": 0,
-                            "stdout_chars": len(stdout),
-                            "stderr_chars": len(stderr),
-                            "prompt_characters": len(request_prompt),
-                            "output_mode": "json_schema",
-                            "output_sha256": output_sha256,
-                            "missing_required_field_count": len(missing_fields),
-                        }
+                    self._emit_transport(
+                        "transport_failed",
+                        f"{model} failed after {attempt_index + 1} request attempts",
+                        request_attempt=attempt_index + 1,
+                        elapsed=time.monotonic() - invocation_started,
+                        **event,
+                        **schema_issue,
                     )
                     error = RuntimeError(
-                        "agy judge returned schema-invalid output: "
+                        f"{self._provider} judge returned schema-invalid output: "
                         "error_category=schema_validation_error"
                     )
-                    _add_transport_request_count(error, attempt + 1)
+                    _add_transport_request_count(error, attempt_index + 1)
                     raise error
                 log.info(
                     "CLI judge completed: provider=%s model=%s exit=0 elapsed=%.1fs "
@@ -690,118 +774,75 @@ class CliJudgeClient:
                     elapsed,
                     len(stdout),
                     _raw_output_digest(stdout),
-                    "json_schema" if response_schema is not None else "json_object",
-                    attempt + 1,
+                    output_mode,
+                    attempt_index + 1,
                 )
-                if attempt > 0:
-                    self._emit_activity(
-                        {
-                            "phase": "transport_recovered",
-                            "message": (
-                                f"{model} recovered on request attempt {attempt + 1} of "
-                                f"{MAX_CLI_RETRIES + 1}"
-                            ),
-                            "model": model,
-                            "request_attempt": attempt + 1,
-                            "max_attempts": MAX_CLI_RETRIES + 1,
-                            "elapsed_seconds": round(
-                                time.monotonic() - invocation_started,
-                                3,
-                            ),
-                            "stdout_chars": len(stdout),
-                            "stderr_chars": len(stderr),
-                            "prompt_characters": len(request_prompt),
-                            "output_mode": (
-                                "json_schema" if response_schema is not None else "json_object"
-                            ),
-                            "output_sha256": _raw_output_digest(stdout),
-                        }
+                if attempt_index > 0:
+                    self._emit_transport(
+                        "transport_recovered",
+                        f"{model} recovered on request attempt {attempt_index + 1} of "
+                        f"{MAX_CLI_RETRIES + 1}",
+                        request_attempt=attempt_index + 1,
+                        elapsed=time.monotonic() - invocation_started,
+                        output_sha256=_raw_output_digest(stdout),
+                        **event,
                     )
-                return parsed, content, stdout, attempt + 1
+                return parsed, content, stdout, attempt_index + 1
 
             diagnostic = _failure_diagnostic(stdout, stderr, request_prompt)
-            provider_issue = _provider_issue(_process_diagnostic(diagnostic))
             self._log_process_failure(
                 model=model,
                 returncode=returncode,
                 elapsed=elapsed,
                 stdout=stdout,
                 stderr=stderr,
-                attempt=attempt + 1,
+                attempt=attempt_index + 1,
                 response_schema=response_schema,
                 prompt=request_prompt,
             )
             try:
                 self._raise_process_error(
-                    argv,
+                    attempt.argv,
                     returncode,
                     stdout,
                     stderr,
                     response_schema=response_schema,
-                    request_count=attempt + 1,
+                    request_count=attempt_index + 1,
                     prompt=request_prompt,
                 )
             except _SchemaOutputUnsupported:
                 raise
             except RuntimeError as error:
                 last_err = error
-            category = _process_error_category(diagnostic, response_schema)
-            output_sha256 = _raw_output_digest(diagnostic)
-            if attempt < MAX_CLI_RETRIES and _is_retryable(diagnostic):
-                self._emit_activity(
-                    {
-                        "phase": "transport_retry",
-                        "message": (
-                            f"{model} request failed after {elapsed:.1f}s; retrying attempt "
-                            f"{attempt + 2} of {MAX_CLI_RETRIES + 1}"
-                        ),
-                        "model": model,
-                        "request_attempt": attempt + 2,
-                        "max_attempts": MAX_CLI_RETRIES + 1,
-                        "elapsed_seconds": round(elapsed, 3),
-                        "error_category": category,
-                        "retry_reason": _retry_reason(diagnostic),
-                        "exit_code": returncode,
-                        "stdout_chars": len(stdout),
-                        "stderr_chars": len(stderr),
-                        "prompt_characters": len(request_prompt),
-                        "output_mode": (
-                            "json_schema" if response_schema is not None else "json_object"
-                        ),
-                        "output_sha256": output_sha256,
-                        **provider_issue,
-                    }
+            process_issue = {
+                "error_category": _process_error_category(diagnostic, response_schema),
+                "retry_reason": _retry_reason(diagnostic),
+                "exit_code": returncode,
+                "output_sha256": _raw_output_digest(diagnostic),
+                **_provider_issue(_process_diagnostic(diagnostic)),
+            }
+            if attempt_index < MAX_CLI_RETRIES and _is_retryable(diagnostic):
+                self._emit_transport(
+                    "transport_retry",
+                    f"{model} request failed after {elapsed:.1f}s; retrying attempt "
+                    f"{attempt_index + 2} of {MAX_CLI_RETRIES + 1}",
+                    request_attempt=attempt_index + 2,
+                    elapsed=elapsed,
+                    **event,
+                    **process_issue,
                 )
-                delay = RETRY_BASE_DELAY * (2**attempt)
+                delay = RETRY_BASE_DELAY * (2**attempt_index)
                 log.info("Retryable error for %s, waiting %.0fs...", model, delay)
                 self._wait_before_retry(delay)
                 continue
-            self._emit_activity(
-                {
-                    "phase": "transport_failed",
-                    "message": (
-                        f"{model} failed after {attempt + 1} request attempt"
-                        f"{'s' if attempt else ''}"
-                    ),
-                    "model": model,
-                    "request_attempt": attempt + 1,
-                    "max_attempts": MAX_CLI_RETRIES + 1,
-                    "elapsed_seconds": round(
-                        time.monotonic() - invocation_started,
-                        3,
-                    ),
-                    "error_category": category,
-                    "retry_reason": _retry_reason(diagnostic),
-                    "exit_code": returncode,
-                    "stdout_chars": len(stdout),
-                    "stderr_chars": len(stderr),
-                    "prompt_characters": len(request_prompt),
-                    "output_mode": (
-                        "json_schema" if response_schema is not None else "json_object"
-                    ),
-                    "output_sha256": output_sha256,
-                    **provider_issue,
-                }
+            self._emit_transport(
+                "transport_failed",
+                f"{model} failed after {attempt_index + 1} request attempt"
+                f"{'s' if attempt_index else ''}",
+                request_attempt=attempt_index + 1,
+                elapsed=time.monotonic() - invocation_started,
+                **event,
+                **process_issue,
             )
             break
 
@@ -872,25 +913,30 @@ class CliJudgeClient:
         _add_transport_request_count(error, request_count)
         raise error
 
-    def _decode_output(self, stdout: str, mode: str, *, strict: bool) -> tuple[dict, str]:
-        if strict and mode == "claude":
+    def _decode_output(self, stdout: str, *, strict: bool) -> tuple[dict, str]:
+        if self._spec.envelope:
             try:
                 envelope = json.loads(stdout)
             except json.JSONDecodeError:
-                return {}, stdout
-            if not isinstance(envelope, dict) or "structured_output" not in envelope:
-                return {}, stdout
-            structured = envelope["structured_output"]
-            if isinstance(structured, str):
-                content = structured
-            else:
-                content = json.dumps(structured, ensure_ascii=False)
-            return _parse_exact_json_object(content), content
-
-        content = self._extract_text(stdout, mode)
+                envelope = None
+            if strict:
+                if not isinstance(envelope, dict) or "structured_output" not in envelope:
+                    return {}, stdout
+                structured = envelope["structured_output"]
+                if isinstance(structured, str):
+                    content = structured
+                else:
+                    content = json.dumps(structured, ensure_ascii=False)
+                return _parse_exact_json_object(content), content
+            content = (
+                str(envelope["result"])
+                if isinstance(envelope, dict) and "result" in envelope
+                else stdout
+            )
+        else:
+            content = stdout
         if strict:
-            # Neither CLI can enforce a schema, and both often fence the whole JSON reply.
-            if self._provider in {"agy", "devin"}:
+            if self._spec.fenced:
                 content = _unwrap_whole_json_fence(content)
             return _parse_exact_json_object(content), content
         return _extract_json(content), content
@@ -989,102 +1035,6 @@ class CliJudgeClient:
         finally:
             with self._procs_lock:
                 self._procs.discard(proc)
-
-    def _build(
-        self,
-        model: str,
-        system: str,
-        user: str,
-        *,
-        response_schema: JsonSchemaSpec | None = None,
-        schema_path: str | None = None,
-    ) -> tuple[list[str], str, str]:
-        """Build (argv, stdin_text, mode) for the given judge model.
-
-        The client is bound to one explicit provider. ``mode`` is "claude"
-        (answer is inside a JSON envelope) or "plain" (Codex prints the answer
-        directly). Claude and Codex read prompts from stdin. Antigravity uses
-        the separate attempt-scoped prompt-file transport.
-        """
-        if self._provider == "claude":
-            argv = [
-                "claude",
-                "-p",
-                "--output-format",
-                "json",
-                "--model",
-                model,
-                "--tools",
-                "",
-                "--strict-mcp-config",
-                "--no-session-persistence",
-                "--safe-mode",
-                "--disable-slash-commands",
-                "--no-chrome",
-            ]
-            if response_schema is not None:
-                argv += [
-                    "--json-schema",
-                    json.dumps(response_schema.schema, separators=(",", ":")),
-                ]
-            if system:
-                argv += ["--system-prompt", system]
-            return argv, user, "claude"
-
-        prompt = f"{system}\n\n{user}" if system else user
-        if self._provider == "devin":
-            argv = [
-                "devin",
-                "-p",
-                "--model",
-                model,
-                "--config",
-                devin_config_path(os.path.join(_JUDGE_DEVIN_ROOT, "home")),
-                "--permission-mode",
-                "auto",
-                "--respect-workspace-trust",
-                "false",
-            ]
-            return argv, prompt, "plain"
-        argv = [
-            "codex",
-            "exec",
-            "--ignore-user-config",
-            "--ignore-rules",
-            "--ephemeral",
-            "--skip-git-repo-check",
-            *CODEX_CONFINED_ARGS,
-            "--model",
-            model,
-        ]
-        if response_schema is not None:
-            if schema_path is None:
-                raise ValueError("Codex schema mode requires an output schema file")
-            argv += ["--output-schema", schema_path]
-        argv += ["-C", _JUDGE_CWD, "-"]
-        return argv, prompt, "plain"
-
-    @staticmethod
-    def _agy_prompt(
-        system: str,
-        user: str,
-        *,
-        response_schema: JsonSchemaSpec | None,
-    ) -> str:
-        sections = [system] if system else []
-        sections.append(user)
-        return "\n\n".join(sections)
-
-    def _extract_text(self, stdout: str, mode: str) -> str:
-        """Unwrap the assistant text from the CLI's stdout."""
-        if mode == "claude":
-            try:
-                env = json.loads(stdout)
-            except json.JSONDecodeError:
-                return stdout
-            if isinstance(env, dict) and "result" in env:
-                return str(env["result"])
-        return stdout
 
     def close(self) -> None:
         self.abort()
