@@ -625,6 +625,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="weave-agent-signals",
         description="Score coding-agent sessions in CES",
+        epilog="Exit codes: 1 for an error, 2 for a configuration error, 3 for a CES or API error.",
     )
     parser.add_argument(
         "--entity", help="W&B entity for judge inference (default: from the adapter's project)"
@@ -699,8 +700,8 @@ def build_parser() -> argparse.ArgumentParser:
             "queries, session trends every session, and turn trends every turn with a day "
             "field, by the day it started. Coaching examples and summary tag counts cover the "
             "Scores on the newest --limit turns and their sessions. A trend compares a Scorer's "
-            "last 7 days with data to the 7 days before; a turn Scorer with no rated turns in one "
-            "of those windows is reported as not having enough history yet."
+            "last 7 days with data to the 7 days before; a session or turn Scorer with no "
+            "ratings in one of those windows is reported as not having enough history yet."
         ),
     )
     ces_commands.add_arguments(p_analyze)

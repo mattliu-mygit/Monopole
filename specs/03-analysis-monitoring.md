@@ -77,8 +77,9 @@ rated on Nov 10 and Nov 14 has nothing in Nov 1 to 7, so it has no trend yet,
 whether it rates sessions or turns. A turn the adapter wrote before
 it added `day` has none, because Cases never change, so it is never placed in
 time. A Dataset set up before the adapter added the field has no `day` at all,
-which CES rejects with 400; `analyze` and `monitor` then exit with a message
-saying to rerun `weave-agent-adapter evaluations setup`, and the Analyze page
+which CES rejects with 400; `analyze` and `monitor` then exit 2, as for any
+configuration error, with a message saying to rerun
+`weave-agent-adapter evaluations setup`, and the Analyze page
 shows the same message as a 409. Turn trends read no raw Scores, so
 `analyze --trends` reads none; the coaching digest and `monitor` still read them
 for examples, tag counts, and config order.

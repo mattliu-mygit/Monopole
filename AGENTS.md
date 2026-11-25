@@ -73,7 +73,10 @@ then run all gates before declaring completion.
   comparable evidence, trends, coaching, and alerts
 - [`specs/04-evaluation-runs.md`](specs/04-evaluation-runs.md) — reproducible runs,
   review, and promotion
-- `src/weave_agent_signals/` — CES I/O, evaluation, analysis, CLI, and API
+- `src/weave_agent_signals/` — CES I/O (`ces_client` for HTTP, `ces_sessions` for
+  rebuilding sessions from Cases, `ces_queries` for EvaluationQueries),
+  evaluation, analysis (`patterns`, with interval statistics in `stats`), CLI,
+  and API
 - `src/weave_agent_signals/runs/` — durable run, reflection, review, and
   promotion lifecycle
 - `frontend/src/features/` — run and reflection product behavior
@@ -100,6 +103,10 @@ arguments and defaults.
 
 Evaluation-run persistence, proposal editing, promotion, and receipts are web
 product behavior; standalone reflection does not mutate managed files.
+
+Commands exit 2 on a configuration error (`ConfigurationError`: missing CES
+settings or credentials, an unknown model choice, a Dataset without `day`), 3 on
+a CES or API error, and 1 on any other error.
 
 ## Code conventions
 
@@ -141,6 +148,9 @@ product behavior; standalone reflection does not mutate managed files.
   budget (default three), and stops after two consecutive scored, distinct,
   non-baseline candidate iterations without a better predicted evaluator score.
 - Reflection score basis is `predicted_evaluator`; it is not a verification run.
+- A local CLI provider is one name in `LOCAL_CLI_PROVIDERS` (`judges/process.py`)
+  and one `_PROVIDERS` entry (`judges/cli_backend.py`) holding its command,
+  environment, cleanup, and answer parsing.
 - Local judge and reflection CLIs receive only platform essentials and stored
   credential locations, never arbitrary parent secrets or token/proxy variables.
   Claude is tool-disabled. Codex uses a deny-by-default filesystem profile with

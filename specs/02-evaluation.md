@@ -398,11 +398,22 @@ ones; reads take the newest Score per Scorer, and write failures remain visible.
 ## Inference trust boundary
 
 Catalog-backed HTTP evaluation supports direct OpenAI and CoreWeave Serverless
-Inference. Local evaluation supports Claude, Codex, and Antigravity (`agy`) from
-the same provider-qualified catalog. Every local provider receives a minimal
-child environment and an isolated working directory. Claude is tool-disabled.
-Codex uses isolated state and a deny-by-default filesystem profile; its
-repository-check override only removes a CLI precondition.
+Inference. Local evaluation supports Claude, Codex, Antigravity (`agy`), and
+Devin from the same provider-qualified catalog. Every local provider receives a
+minimal child environment and an isolated working directory. Claude is
+tool-disabled. Codex uses isolated state and a deny-by-default filesystem
+profile; its repository-check override only removes a CLI precondition.
+
+Devin runs Claude models but can't turn its tools off. It runs with an isolated
+`HOME` that links only Devin's stored login, so the user's always-on rules,
+config, and plugins never enter a judge's context, and with an explicit
+`--config` in that home that denies every tool. The home persists across calls,
+because a fresh one costs about 13 seconds of Devin setup per call; the config is
+replaced atomically, and only when its content differs, so a concurrent judge
+never reads it half-written. Devin still loads plugins that its account's team
+manages, whose tools the deny rules block. The prompt is a file outside the
+otherwise empty workspace, and each call's Devin session is deleted when the
+call ends.
 
 Antigravity receives each request through a unique, mode-`0600` temporary
 prompt file rather than a process argument, so the host argument limit no

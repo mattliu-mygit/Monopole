@@ -2,7 +2,9 @@
 
 This boundary reads the agent sessions that `weave-agent-adapter` writes to the
 CoreWeave Evaluations service (CES) and writes Monopole's scores back as CES
-Scores. `ces_client.py` holds every request; `ces_catalog.py` names the Scorers.
+Scores. `ces_client.py` holds every request; `ces_sessions.py` rebuilds sessions
+and turns from the Cases it reads, without I/O; `ces_catalog.py` names the
+Scorers.
 
 ## Identity model
 
@@ -24,8 +26,12 @@ missing or its pinned metadata differs. Turns added after pinning are ignored.
 ## Reading sessions
 
 `read_session` lists the session Trajectory's Cases and every child Trajectory's
-Cases, and also builds each subagent Trajectory's own view from them, so
-whole-Trajectory Scorers can score a subagent like a session. A subagent span
+Cases, and attaches each subagent, nested ones included, to the turn whose tool
+call launched it. Scoring alone also needs each subagent Trajectory's own view,
+so whole-Trajectory Scorers can score a subagent like a session; it reads the
+session with `read_session_tree`, and other readers don't build those views. A
+read indexes which Case launched each subagent once, so its time grows linearly
+with the subagent count: a session of 1,200 subagents builds in under a second. A subagent span
 carries the tokens of its own turns. Listing a Trajectory's Cases leaves out
 its root Case, so `root_case_input` reads the Trajectory and then that Case;
 scoring uses it for the session Case's fields. Turn status maps `completed` to `OK`, `aborted` to `ERROR`, and anything

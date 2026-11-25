@@ -157,8 +157,10 @@ reflection additionally need a usable model backend:
 - CoreWeave Serverless Inference uses `WANDB_API_KEY` and requires
   inference credits.
 - OpenAI inference uses `OPENAI_API_KEY`.
-- Local Claude, Codex, or Antigravity inference requires an installed,
-  authenticated `claude`, `codex`, or `agy` CLI on `PATH`.
+- Local Claude, Codex, Antigravity, or Devin inference requires an installed,
+  authenticated `claude`, `codex`, `agy`, or `devin` CLI on `PATH`. Devin judges
+  run with their own home, `~/.devin-judge/home`, which links only Devin's
+  stored login, so your Devin rules, config, and plugins don't reach them.
 
 One provider-qualified model catalog supplies proposal writers, judges, A/B
 verification judges, and proposal evaluators. The web UI only offers local
@@ -295,6 +297,9 @@ and optional webhook before loading it into `~/Library/LaunchAgents/`.
 
 ## Troubleshooting
 
+- **`Configuration error: ...` (exit 2):** a setting is missing or wrong, such as
+  the CES scope and Dataset, the W&B API key, or a model ID; the message says
+  which.
 - **`No W&B API key found`:** set `WANDB_API_KEY` or add an `api.wandb.ai`
   entry to `~/.netrc`.
 - **The UI cannot reach the API:** keep `serve` running on port `8787`; the Vite
