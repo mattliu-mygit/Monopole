@@ -3,7 +3,8 @@
 Summaries, the A/B leaderboard, config regressions, and session trends take `ConfigStats`, the
 count, mean, and spread that CES EvaluationQueries compute over every Score (`ces_queries`).
 Turn trends, coaching examples, and reflection's digest take feedback-shaped records built from
-raw CES Scores. All analysis is pure computation — no API calls.
+raw CES Scores. The interval statistics they use live in `stats`. All analysis is pure
+computation — no API calls.
 """
 
 from __future__ import annotations
@@ -20,6 +21,14 @@ from weave_agent_signals.ces_catalog import DETERMINISTIC
 from weave_agent_signals.judges.review import PANEL_CONTRACT_VERSION
 from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.models import FEEDBACK_PREFIX, parse_utc
+from weave_agent_signals.stats import (
+    Stat,
+    difference_ci,
+    mean_ci,
+    pool_stats,
+    ratings_stat,
+    wilson_ci,
+)
 
 # Below this many samples a scorer's mean/pass-rate is not trustworthy on its own.
 MIN_CONFIDENT_SAMPLES = 5
@@ -27,7 +36,6 @@ MIN_CONFIDENT_SAMPLES = 5
 # With 10 on each side, a 95% interval on a pass-rate difference still reaches about ±0.37, so
 # only large gaps are significant; raise it if small segments crowd the output.
 MIN_SEGMENT_SESSIONS = 10
-_Z_95 = 1.96  # z for a 95% interval
 # Raw Score records name a deterministic Scorer the way the catalog does; judge Scorers are
 # continuous.
 _BINARY_SCORERS = frozenset(spec.name for spec in DETERMINISTIC if spec.binary)
@@ -43,59 +51,6 @@ _MAX_EVIDENCE_IDS = 5
 _MAX_ID_CHARS = 160
 _MAX_SUCCESS_CHARS = 300
 _MAX_BEHAVIOR_CHARS = 500
-
-
-def _wilson_ci(k: float, n: int, z: float = _Z_95) -> tuple[float, float]:
-    """95% Wilson score interval for k successes in n trials.
-
-    Preferred over the normal approximation for small n and proportions near
-    0 or 1 (where the normal interval breaks down or escapes [0, 1]).
-    """
-    if n == 0:
-        return (0.0, 1.0)
-    p = k / n
-    denom = 1 + z * z / n
-    center = (p + z * z / (2 * n)) / denom
-    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
-    return (max(0.0, center - margin), min(1.0, center + margin))
-
-
-@dataclass(frozen=True)
-class Stat:
-    """One Scorer's ratings in one group: how many, their mean, and their sample standard
-    deviation. A binary Scorer's spread follows from its mean, so it has no stddev; a
-    continuous one has none below two ratings."""
-
-    count: int
-    mean: float
-    binary: bool
-    stddev: float | None = None
-    # The stddev is an upper bound (`conservative_stat`), so intervals built from it are wider
-    # than the data's own.
-    conservative: bool = False
-
-
-def histogram_stat(counts: Mapping[float, int]) -> Stat:
-    """The exact Stat of continuous ratings given as how many times each value occurs, such as
-    {0.5: 2, 1.0: 1} for the ratings 0.5, 0.5, and 1.0."""
-    n = sum(counts.values())
-    mean = sum(value * count for value, count in counts.items()) / n
-    if n < 2:
-        return Stat(n, mean, False)
-    squares = sum(count * (value - mean) ** 2 for value, count in counts.items())
-    return Stat(n, mean, False, math.sqrt(squares / (n - 1)))
-
-
-def conservative_stat(stat: Stat) -> Stat:
-    """The Stat with the largest stddev ratings in [0, 1] with its mean can have. Their
-    population variance is at most mean·(1−mean), reached when every rating is 0 or 1, so the
-    sample variance is at most n/(n−1) times that. Example: 4 ratings with mean 0.5 give
-    sqrt(4/3 · 0.25) ≈ 0.577."""
-    if stat.count < 2:
-        return Stat(stat.count, stat.mean, False)
-    mean = min(1.0, max(0.0, stat.mean))
-    variance = stat.count / (stat.count - 1) * mean * (1 - mean)
-    return Stat(stat.count, stat.mean, False, math.sqrt(variance), conservative=True)
 
 
 @dataclass(frozen=True)
@@ -138,69 +93,10 @@ class SessionSuccess:
 
     @property
     def ci(self) -> tuple[float, float]:
-        return _wilson_ci(self.passed, self.passed + self.failed)
+        return wilson_ci(self.passed, self.passed + self.failed)
 
     def per_success(self, measure: str) -> float | None:
         return self.spent[measure] / self.passed if self.passed and measure in self.spent else None
-
-
-def _stat(ratings: list[float], binary: bool | None = None) -> Stat:
-    """The Stat of observed ratings. Without `binary`, ratings that are all 0 or 1 are binary."""
-    n = len(ratings)
-    mean = sum(ratings) / n
-    if binary is None:
-        binary = all(r in (0.0, 1.0) for r in ratings)
-    if binary or n < 2:
-        return Stat(n, mean, binary)
-    return Stat(n, mean, False, math.sqrt(sum((r - mean) ** 2 for r in ratings) / (n - 1)))
-
-
-def _ci(stat: Stat, z: float = _Z_95) -> tuple[float, float]:
-    """A 95% interval for the mean: Wilson for a binary Scorer, the normal approximation from
-    the standard error otherwise, which collapses to the mean without a stddev."""
-    if stat.binary:
-        return _wilson_ci(stat.mean * stat.count, stat.count, z)
-    margin = 0.0 if stat.stddev is None else z * stat.stddev / math.sqrt(stat.count)
-    return (max(0.0, stat.mean - margin), min(1.0, stat.mean + margin))
-
-
-def pool_stats(stats: list[Stat]) -> Stat:
-    """The Stat of several groups' ratings taken together, exact for the sample variance:
-    within-group squares plus each group's squared distance from the pooled mean."""
-    n = sum(s.count for s in stats)
-    mean = sum(s.count * s.mean for s in stats) / n
-    binary = all(s.binary for s in stats)
-    if binary or n < 2 or any(s.stddev is None and s.count > 1 for s in stats):
-        return Stat(n, mean, binary)
-    squares = sum(
-        (s.count - 1) * (s.stddev or 0.0) ** 2 + s.count * (s.mean - mean) ** 2 for s in stats
-    )
-    # A bound on any group's spread bounds the pooled spread too.
-    conservative = any(s.conservative for s in stats)
-    return Stat(n, mean, False, math.sqrt(squares / (n - 1)), conservative)
-
-
-def difference_ci(new: Stat, prev: Stat, z: float = _Z_95) -> tuple[float, float] | None:
-    """A 95% interval for `new.mean - prev.mean`, or None when a continuous side has no stddev
-    or fewer than two ratings.
-
-    Binary Scorers use Newcombe's hybrid score interval, built from each side's Wilson interval.
-    Continuous ones use Welch's standard error with the normal approximation. Unlike asking
-    whether the two groups' own intervals overlap, which is stricter than a 95% test, this
-    flags a difference whenever the interval excludes 0."""
-    delta = new.mean - prev.mean
-    if new.binary and prev.binary:
-        new_lo, new_hi = _ci(new, z)
-        prev_lo, prev_hi = _ci(prev, z)
-        return (
-            delta - math.hypot(new.mean - new_lo, prev_hi - prev.mean),
-            delta + math.hypot(new_hi - new.mean, prev.mean - prev_lo),
-        )
-    # One rating has no spread, whatever stddev CES reports for it.
-    if new.stddev is None or prev.stddev is None or min(new.count, prev.count) < 2:
-        return None
-    se = math.sqrt(new.stddev**2 / new.count + prev.stddev**2 / prev.count)
-    return (delta - z * se, delta + z * se)
 
 
 @dataclass
@@ -406,7 +302,7 @@ def _summary(scorer: str, stat: Stat, tag_counts: dict[str, int] | None = None) 
         mean=stat.mean,
         tag_counts=tag_counts or {},
         binary=stat.binary,
-        ci=_ci(stat),
+        ci=mean_ci(stat),
         conservative=stat.conservative,
     )
 
@@ -416,7 +312,7 @@ def _summarize(scorer: str, ratings: list[float], tags: list[list[str]]) -> Scor
     for tag_list in tags:
         for tag in tag_list:
             tag_counts[tag] += 1
-    return _summary(scorer, _stat(ratings), dict(tag_counts))
+    return _summary(scorer, ratings_stat(ratings), dict(tag_counts))
 
 
 def aggregate_scores(feedback: list[dict]) -> dict[str, ScoreSummary]:
@@ -637,7 +533,7 @@ def day_stats(feedback: Iterable[dict]) -> dict[str, dict[date, Stat]]:
         if scorer and rating is not None and run_time is not None:
             ratings[scorer][run_time.astimezone(timezone.utc).date()].append(rating)
     return {
-        scorer: {day: _stat(found, scorer in _BINARY_SCORERS) for day, found in days.items()}
+        scorer: {day: ratings_stat(found, scorer in _BINARY_SCORERS) for day, found in days.items()}
         for scorer, days in ratings.items()
     }
 
@@ -741,7 +637,7 @@ class Agreement:
 
     @property
     def ci(self) -> tuple[float, float]:
-        return _wilson_ci(self.agree, self.count)
+        return wilson_ci(self.agree, self.count)
 
     @property
     def gap_ci(self) -> tuple[float, float] | None:
@@ -763,7 +659,8 @@ def agreement(judge: str, reference: str, joint: Mapping[tuple, int]) -> Agreeme
             agree += sessions
         ratings[reference_passes] += [float(judge_rating)] * sessions
     passing, failing = (
-        _stat(ratings[side], binary=False) if ratings[side] else None for side in (True, False)
+        ratings_stat(ratings[side], binary=False) if ratings[side] else None
+        for side in (True, False)
     )
     return Agreement(judge, reference, sum(joint.values()), agree, passing, failing)
 

@@ -7,7 +7,8 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 
 from weave_agent_signals import cli
-from weave_agent_signals.patterns import ConfigStats, Stat
+from weave_agent_signals.patterns import ConfigStats
+from weave_agent_signals.stats import Stat
 
 
 def _fb(scorer, rating, config, scored_at):

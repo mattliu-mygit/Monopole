@@ -19,9 +19,10 @@ from weave_agent_signals.ces_catalog import (
 from weave_agent_signals.ces_client import CesSession
 from weave_agent_signals.ces_sessions import session_view
 from weave_agent_signals.models import Score, SessionView, TraceRole
-from weave_agent_signals.patterns import ConfigStats, SessionSuccess, Stat
+from weave_agent_signals.patterns import ConfigStats, SessionSuccess
 from weave_agent_signals.scorers import score_session, score_trajectory
 from weave_agent_signals.scorers.session import scored_turns
+from weave_agent_signals.stats import Stat
 
 CATALOG = Catalog(
     "ev-turns",

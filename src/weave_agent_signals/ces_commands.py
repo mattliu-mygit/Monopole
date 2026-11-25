@@ -30,10 +30,11 @@ from weave_agent_signals.ces_client import (
 )
 from weave_agent_signals.judges.inference import DEFAULT_ENTITY, DEFAULT_PROJECT
 from weave_agent_signals.models import Score, SessionView, TurnSpan, session_is_evaluable
-from weave_agent_signals.patterns import ConfigStats, Stat
+from weave_agent_signals.patterns import ConfigStats
 from weave_agent_signals.scorers import score_session, score_trajectory, score_turn
 from weave_agent_signals.scorers.outcome import classify_command
 from weave_agent_signals.scorers.session import scored_turns, session_dimensions
+from weave_agent_signals.stats import Stat
 
 log = logging.getLogger("weave_agent_signals")
 

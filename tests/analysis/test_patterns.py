@@ -11,24 +11,17 @@ from weave_agent_signals.judges.rubrics import SESSION_RUBRICS
 from weave_agent_signals.patterns import (
     ConfigStats,
     ScoreSummary,
-    Stat,
-    _ci,
-    _stat,
     _summarize,
-    _wilson_ci,
     ab_leaderboard,
     aggregate_scores,
     agreement,
     coaching_digest,
     config_latest,
     config_regressions,
-    conservative_stat,
     covers_trend_windows,
     day_stats,
     day_trends,
     detect_regressions,
-    difference_ci,
-    histogram_stat,
     is_evaluation_feedback_eligible,
     pass_threshold,
     segment_gaps,
@@ -38,6 +31,15 @@ from weave_agent_signals.patterns import (
     stat_summaries,
     subagent_gaps,
     trends,
+)
+from weave_agent_signals.stats import (
+    Stat,
+    conservative_stat,
+    difference_ci,
+    histogram_stat,
+    mean_ci,
+    ratings_stat,
+    wilson_ci,
 )
 
 
@@ -639,10 +641,10 @@ def test_a_continuous_trend_pools_its_days_exactly_for_welchs_interval():
     # Each side's two days pool to 0.8, 0.9 (x5) then 0.5, 0.7 (x5), as in the raw test.
     steady = {
         "efficiency": _days(
-            d0601=_stat([0.8, 0.9] * 2),
-            d0602=_stat([0.8, 0.9] * 3),
-            d0701=_stat([0.5, 0.7] * 2),
-            d0702=_stat([0.5, 0.7] * 3),
+            d0601=ratings_stat([0.8, 0.9] * 2),
+            d0602=ratings_stat([0.8, 0.9] * 3),
+            d0701=ratings_stat([0.5, 0.7] * 2),
+            d0702=ratings_stat([0.5, 0.7] * 3),
         )
     }
 
@@ -777,7 +779,7 @@ def test_config_regressions_flag_a_drop_whose_own_intervals_overlap():
 
     (reg,) = config_regressions(stats, _DAYS)
 
-    assert _ci(new)[1] > _ci(prev)[0]
+    assert mean_ci(new)[1] > mean_ci(prev)[0]
     assert reg["difference_ci"] == (-0.364, -0.02)
     assert reg["significant"] is True
 
@@ -897,7 +899,10 @@ def test_difference_ci_uses_welchs_standard_error_for_continuous_scorers():
 def test_stat_summaries_pool_configs_exactly():
     values = {"v1": [0.2, 0.4, 0.9], "v2": [0.5, 0.7]}
     stats = _stats(
-        {config: {"efficiency": _stat(ratings, binary=False)} for config, ratings in values.items()}
+        {
+            config: {"efficiency": ratings_stat(ratings, binary=False)}
+            for config, ratings in values.items()
+        }
     )
 
     pooled = stat_summaries(stats)["efficiency"]
@@ -916,7 +921,7 @@ def test_stat_summaries_give_binary_scorers_a_pass_rate_and_wilson_interval():
     summary = stat_summaries(stats)["outcome.test"]
 
     assert (summary.count, summary.pass_rate) == (4, 0.75)
-    assert summary.ci == pytest.approx(_wilson_ci(3, 4))
+    assert summary.ci == pytest.approx(wilson_ci(3, 4))
 
 
 def test_stat_summaries_count_tags_from_the_raw_score_records():
@@ -964,7 +969,10 @@ def test_a_value_histogram_gives_the_same_stat_as_its_ratings():
     ratings = [0.2, 0.2, 0.5, 0.9, 0.9, 0.9]
 
     assert histogram_stat({0.2: 2, 0.5: 1, 0.9: 3}) == Stat(
-        6, pytest.approx(_stat(ratings).mean), False, pytest.approx(_stat(ratings).stddev)
+        6,
+        pytest.approx(ratings_stat(ratings).mean),
+        False,
+        pytest.approx(ratings_stat(ratings).stddev),
     )
     assert histogram_stat({0.4: 1}) == Stat(1, 0.4, False)
 
@@ -975,8 +983,10 @@ def test_a_conservative_stddev_bounds_any_ratings_in_0_1_with_that_mean():
 
     bound = conservative_stat(Stat(4, 0.75, False))
 
-    assert bound == Stat(4, 0.75, False, pytest.approx(_stat(extreme, binary=False).stddev), True)
-    assert _stat(spread).stddev < bound.stddev
+    assert bound == Stat(
+        4, 0.75, False, pytest.approx(ratings_stat(extreme, binary=False).stddev), True
+    )
+    assert ratings_stat(spread).stddev < bound.stddev
     assert conservative_stat(Stat(1, 0.75, False)) == Stat(1, 0.75, False)
 
 
@@ -1480,7 +1490,7 @@ def test_spend_per_success_divides_what_tested_sessions_spent_by_the_successes()
     assert found.spent == {"measure.tokens": 11000.0}
     assert found.per_success("measure.tokens") == pytest.approx(11000 / 3)
     assert found.rate == 0.6
-    assert found.ci == pytest.approx(_wilson_ci(3, 5))
+    assert found.ci == pytest.approx(wilson_ci(3, 5))
     assert found.per_success("measure.turns") is None
 
 

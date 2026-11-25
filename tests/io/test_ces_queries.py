@@ -25,7 +25,8 @@ from weave_agent_signals.ces_queries import (
     subagent_outcomes,
     turn_day_stats,
 )
-from weave_agent_signals.patterns import SessionSuccess, Stat
+from weave_agent_signals.patterns import SessionSuccess
+from weave_agent_signals.stats import Stat
 
 BASE = "http://ces.test/v1/namespaces/wandb/scopes/scope-1"
 QUERIES = f"{BASE}/evaluations/ev-turns/queries"

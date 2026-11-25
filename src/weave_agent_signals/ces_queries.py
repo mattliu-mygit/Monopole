@@ -43,15 +43,7 @@ import httpx
 
 from weave_agent_signals.ces_catalog import DETAILS_SUFFIX, RATING, Catalog, ScorerRef
 from weave_agent_signals.ces_client import CesClient, content_digest
-from weave_agent_signals.patterns import (
-    ConfigStats,
-    SessionSuccess,
-    Stat,
-    conservative_stat,
-    histogram_stat,
-    pool_stats,
-    session_success,
-)
+from weave_agent_signals.patterns import ConfigStats, SessionSuccess, session_success
 from weave_agent_signals.scorers.session import (
     MEASURE_DURATION,
     MEASURE_TOKENS,
@@ -59,6 +51,7 @@ from weave_agent_signals.scorers.session import (
     SESSION_OUTCOMES,
     SESSION_TESTS,
 )
+from weave_agent_signals.stats import Stat, conservative_stat, histogram_stat, pool_stats
 
 # CES's spread aggregation, from a CES change that hasn't merged. Its name and its sample (n-1)
 # denominator are assumptions until it does.

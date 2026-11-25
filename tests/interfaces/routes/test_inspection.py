@@ -8,9 +8,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from weave_agent_signals.models import SessionView, SubagentSpan, ToolSpan, TraceRole, TurnSpan
-from weave_agent_signals.patterns import ConfigStats, Stat
+from weave_agent_signals.patterns import ConfigStats
 from weave_agent_signals.routes import inspection
 from weave_agent_signals.routes.inspection import create_inspection_router
+from weave_agent_signals.stats import Stat
 
 
 def _turn(

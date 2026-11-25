@@ -13,8 +13,9 @@ from weave_agent_signals import cli
 from weave_agent_signals.catalogs import build_model_catalog
 from weave_agent_signals.ces_commands import Insights
 from weave_agent_signals.ces_queries import DatasetWithoutDay, Group
-from weave_agent_signals.patterns import ConfigStats, SessionSuccess, Stat
+from weave_agent_signals.patterns import ConfigStats, SessionSuccess
 from weave_agent_signals.runs.bundles import bundle_from_content_map
+from weave_agent_signals.stats import Stat
 
 
 def test_judge_parser_accepts_ordered_explicit_panel():
