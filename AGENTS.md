@@ -117,9 +117,9 @@ product behavior; standalone reflection does not mutate managed files.
   rating paths skip it.
 - Payloads include scorer version and score time; scorer-specific data belongs
   under `payload.details`.
-- Trends place a turn Score on its turn Case's `day` field, or in the raw fallback on the
-  UTC day of `details.turn_started_at`, not its write time, and a session Score on its
-  session's `dim.day` Score.
+- Trends place a turn Score on its turn Case's `day` field and a session Score on its
+  session's `dim.day` Score, not on their write time. Reflection's digest, which reads only
+  the raw Scores it pins, places each on the UTC day of `details.turn_started_at`.
 - `--force` writes newer Scores under a new pass; nothing is purged, and reads take
   the newest Score per Scorer.
 - Evaluation runs pin exact trace identities and configuration before work.

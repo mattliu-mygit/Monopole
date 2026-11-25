@@ -386,8 +386,7 @@ def read_analysis(
     """Every config's Score stats from CES queries, with each config's session success and
     spend when `success`, each session and turn Scorer's stats per day when `trends`, and, with
     `feedback`, the Scores on the newest `args.limit` turns and their sessions as feedback
-    records. Those records are also read for `trends` while turn trends fall back to raw
-    Scores (`ces_queries.turn_day_stats`)."""
+    records."""
     with connect(args) as ces:
         state = ces_queries.QueryState()
         stats = ces_queries.config_stats(ces.client, ces.catalog, state)
@@ -398,6 +397,5 @@ def read_analysis(
             days = ces_queries.session_day_stats(ces.client, ces.catalog, state)
             turn_days = ces_queries.turn_day_stats(ces.client, ces.catalog, state)
             stats = replace(stats, days=days, turn_days=turn_days)
-        raw = feedback or (trends and stats.turn_days is None)
-        records = ces.client.read_all_scores(ces.catalog, limit=args.limit) if raw else []
+        records = ces.client.read_all_scores(ces.catalog, limit=args.limit) if feedback else []
         return stats, records

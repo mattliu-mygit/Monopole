@@ -26,7 +26,7 @@ from weave_agent_signals.models import (
 )
 from weave_agent_signals.patterns import (
     MIN_SEGMENT_SESSIONS,
-    TREND_SOURCES,
+    SHORT_HISTORY,
     Agreement,
     SessionSuccess,
     agreement,
@@ -35,6 +35,7 @@ from weave_agent_signals.patterns import (
     config_regressions,
     is_evaluation_feedback_eligible,
     segment_gaps,
+    short_turn_history,
     stat_leaderboard,
     subagent_gaps,
     trends,
@@ -273,9 +274,8 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 
 def _print_score_analysis(args: argparse.Namespace, digest: bool) -> None:
-    # Summaries, the A/B leaderboard, and session trends come from CES queries over every
-    # Score, and so do turn trends once the turn day query covers both windows; coaching
-    # examples, and turn trends until then, from the Scores on the newest `--limit` turns.
+    # Summaries, the A/B leaderboard, and session and turn trends come from CES queries over
+    # every Score; coaching examples from the Scores on the newest `--limit` turns.
     summary = args.ab or digest
     stats, feedback = ces_commands.read_analysis(
         args, feedback=digest, success=summary, trends=args.trends or digest
@@ -326,9 +326,10 @@ def _print_score_analysis(args: argparse.Namespace, digest: bool) -> None:
                 print(
                     f"  {arrow} {r['scorer']:35s} "
                     f"{r['older_mean']:.2f} → {r['recent_mean']:.2f} "
-                    f"({r['delta']:+.2f}, n={r['sample_count']}, "
-                    f"from {TREND_SOURCES[r['source']]}){mark}"
+                    f"({r['delta']:+.2f}, n={r['sample_count']}){mark}"
                 )
+        for scorer in short_turn_history(stats):
+            print(f"  {scorer:37s} {SHORT_HISTORY}")
 
     if digest:
         print(coaching_digest(feedback, stats))
@@ -684,11 +685,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Analyze scored feedback patterns",
         description=(
             "Summaries and the A/B leaderboard cover every Score, by config version, from CES "
-            "queries, and session trends every session, by the day it started. Turn trends "
-            "cover every turn with a day field, by that day, once those turns span both trend "
-            "windows; until then they, like coaching examples and summary tag counts, cover the "
+            "queries, session trends every session, and turn trends every turn with a day "
+            "field, by the day it started. Coaching examples and summary tag counts cover the "
             "Scores on the newest --limit turns and their sessions. A trend compares a Scorer's "
-            "last 7 days with data to the 7 days before."
+            "last 7 days with data to the 7 days before; a turn Scorer with no rated turns in one "
+            "of those windows is reported as not having enough history yet."
         ),
     )
     ces_commands.add_arguments(p_analyze)
@@ -697,8 +698,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1000,
         help=(
-            "Newest turns whose Scores feed coaching examples, summary tag counts, and turn "
-            "trends while they fall back to raw Scores (default: 1000)"
+            "Newest turns whose Scores feed coaching examples and summary tag counts "
+            "(default: 1000)"
         ),
     )
     p_analyze.add_argument(
@@ -708,8 +709,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--trends",
         action="store_true",
         help=(
-            "Detect score regressions/improvements: sessions over every session, turns over "
-            "every turn with a day field, or the newest --limit turns until those span both windows"
+            "Detect score regressions/improvements over every session and every turn with a day "
+            "field"
         ),
     )
     p_analyze.add_argument("--coaching", action="store_true", help="Generate coaching digest")
@@ -749,9 +750,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Config regressions compare the newest two config versions over every Score, from "
             "CES queries; a drop is significant when the 95% interval on the difference lies "
-            "below 0. Configs are ordered from the Scores on the newest --limit turns, and turn "
-            "trends computed from them until turns with a day field span both trend windows; "
-            "session trends cover every session, by the day it started."
+            "below 0. Configs are ordered from the Scores on the newest --limit turns; session "
+            "and turn trends cover every session and every turn with a day field, by the day it "
+            "started."
         ),
     )
     ces_commands.add_arguments(p_mon)
@@ -759,10 +760,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit",
         type=int,
         default=1000,
-        help=(
-            "Newest turns whose Scores feed config order, and turn trends while they fall back "
-            "to raw Scores (default: 1000)"
-        ),
+        help="Newest turns whose Scores feed config order (default: 1000)",
     )
     p_mon.add_argument(
         "--alert-webhook",

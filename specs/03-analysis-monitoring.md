@@ -44,7 +44,7 @@ movement always has one interpretation.
 | --- | --- | --- |
 | Summaries, the A/B leaderboard, config regressions, session success and spend | CES EvaluationQueries (`ces_queries.py`) | every Score the Evaluations hold, by config version |
 | Session trends | a CES EvaluationQuery | every session with a `dim.day` Score, by day |
-| Turn trends | a CES EvaluationQuery, or raw Scores until its days cover both trend windows | every turn with a `day` field, by day; or the newest `--limit` turns |
+| Turn trends | a CES EvaluationQuery | every turn with a `day` field, by day |
 | Config order, coaching examples, summary tag counts | raw Scores (`read_all_scores`) | the newest `--limit` turns and their sessions |
 | Reflection's digest (runs and `reflect`) | the raw Scores it pins | that cohort or the newest `--limit` turns |
 
@@ -68,21 +68,19 @@ writes on every turn Case. Only a main-agent turn's first Case carries turn
 Scores, so the turn's other Cases and every subagent Case drop out of each mean
 and count. Each day's configs are pooled, as for sessions.
 
-Turns the adapter wrote before it added `day` have none, because Cases never
-change, so while turns with `day` accumulate the query can see only part of the
-history. Turn trends use the query only when its days hold ratings in both trend
-windows, the 7 days ending on the latest day any turn Scorer has a rating and
-the 7 days before (see Trend analysis). Example: with the latest rated turn on
-Nov 14 and the first turn with `day` on Nov 10, the older window, Nov 1 to 7,
-has none, so turn trends fall back. They also fall back when the Dataset has no
-`day` field at all, which CES rejects with 400, as on a Dataset not set up again
-since the adapter added the field. The fallback reads the newest `--limit`
-turns' raw Scores, each placed on the UTC day of its turn's start. The CLI
-trend lines and the coaching digest say which source each trend used; the
-Analyze page doesn't show it yet. `analyze --trends` reads no raw Scores when
-the query holds; the coaching digest and `monitor` still read them for examples,
-tag counts, and config order. Turn `dim.day` Scores aren't backfilled: the
-fallback ends as data with `day` accumulates.
+A turn Scorer gets a trend only when its rated days include at least one day in
+each trend window, the 7 days ending on its latest rated day and the 7 days
+before (see Trend analysis). Otherwise the CLI's `--trends` output and the
+coaching digest say it doesn't have enough history yet; the Analyze page's
+trend list leaves it out. Example: a Scorer rated on Nov 10 and Nov 14 has
+nothing in Nov 1 to 7, so it has no trend yet. A turn the adapter wrote before
+it added `day` has none, because Cases never change, so it is never placed in
+time. A Dataset set up before the adapter added the field has no `day` at all,
+which CES rejects with 400; `analyze` and `monitor` then exit with a message
+saying to rerun `weave-agent-adapter evaluations setup`, and the Analyze page
+shows the same message as a 409. Turn trends read no raw Scores, so
+`analyze --trends` reads none; the coaching digest and `monitor` still read them
+for examples, tag counts, and config order.
 Coaching examples are session judge Scores read with the newest `--limit` turns'
 sessions. Configs are ordered by their latest turn among the newest `--limit`
 turns, so a config missing from that window is not compared.

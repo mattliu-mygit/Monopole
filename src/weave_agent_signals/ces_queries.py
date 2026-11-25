@@ -48,7 +48,6 @@ from weave_agent_signals.patterns import (
     SessionSuccess,
     Stat,
     conservative_stat,
-    covers_trend_windows,
     histogram_stat,
     pool_stats,
     session_success,
@@ -444,28 +443,23 @@ def session_day_stats(
 _NO_DAY = re.compile(r'input\.\\?"?day\b')
 
 
-def _rejects_day(error: httpx.HTTPStatusError) -> bool:
-    return error.response.status_code == 400 and bool(_NO_DAY.search(error.response.text))
+class DatasetWithoutDay(RuntimeError):
+    """The Dataset's catalog has no `day` field, so turns can't be grouped by day."""
 
 
 def turn_day_stats(
     client: CesClient, catalog: Catalog, state: QueryState
-) -> dict[str, dict[date, Stat]] | None:
+) -> dict[str, dict[date, Stat]]:
     """Each turn rating Scorer's Stat per UTC day its turns started, for trends: {Scorer: {day:
-    Stat}}, every config pooled, main agent only. None when turn trends must read raw Scores
-    instead: the Dataset has no `day` field, or its turns with one don't yet cover both trend
-    windows (`covers_trend_windows`).
+    Stat}}, every config pooled, main agent only.
 
     One Case query on the turns Evaluation groups by config and the `day` field the adapter
     writes on every turn Case. Turn Scores target each main-agent turn's first Case, so the
     turn's other Cases and subagent Cases have no turn Score and drop out of each mean and
-    count, as in `config_stats`."""
-    # Fallback while turns with a `day` field accumulate. Cases never change, so turns the
-    # adapter wrote before it added `day` sit on no day, and a Dataset never set up again
-    # since has no `day` field, which CES rejects with 400. Delete once every Dataset has two
-    # weeks of turns with a day field.
+    count, as in `config_stats`. A Dataset set up before the adapter added `day` has no such
+    field, which CES rejects with 400; that raises `DatasetWithoutDay`, saying how to fix it."""
     try:
-        days = _day_stats(
+        return _day_stats(
             client,
             state,
             catalog.turns_evaluation_id,
@@ -475,10 +469,13 @@ def turn_day_stats(
             scorers=_turn_scorers(catalog),
         )
     except httpx.HTTPStatusError as error:
-        if not _rejects_day(error):
+        if error.response.status_code != 400 or not _NO_DAY.search(error.response.text):
             raise
-        return None
-    return days if covers_trend_windows(days) else None
+        raise DatasetWithoutDay(
+            "This Dataset predates weave-agent-adapter's `day` field, so turn trends can't "
+            "group turns by day. Rerun `weave-agent-adapter evaluations setup`, which declares "
+            "the field on the Dataset."
+        ) from error
 
 
 def _date(value: Any) -> date | None:

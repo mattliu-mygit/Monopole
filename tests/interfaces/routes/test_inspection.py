@@ -327,7 +327,7 @@ def test_session_detail_returns_children_and_splits_session_and_turn_scores():
 
 
 def _stats(monkeypatch, stats: ConfigStats, days=None, turn_days=None) -> list:
-    """Stub the route's queries; `turn_days` None is the turn day query falling back."""
+    """Stub the route's queries."""
     calls = []
 
     def config_stats(client, catalog, state):
@@ -340,7 +340,7 @@ def _stats(monkeypatch, stats: ConfigStats, days=None, turn_days=None) -> list:
 
     def turn_day_stats(client, catalog, state):
         calls.append(state)
-        return turn_days
+        return turn_days or {}
 
     monkeypatch.setattr(inspection.ces_queries, "config_stats", config_stats)
     monkeypatch.setattr(inspection.ces_queries, "session_day_stats", session_day_stats)
@@ -363,14 +363,19 @@ def test_empty_analysis_is_stable(monkeypatch):
     }
 
 
-def test_analysis_summarizes_query_stats_with_session_trends_from_days_and_turn_trends_raw(
-    monkeypatch,
-):
-    # implicit.completion passed 3 of 3 sessions on Jul 1, then 0 of 3 on Jul 9.
+def test_analysis_summarizes_query_stats_with_trends_from_the_day_queries(monkeypatch):
+    # implicit.completion passed 3 of 3 sessions on Jul 1, then 0 of 3 on Jul 9, and efficiency
+    # rose from 0.2 to 0.9 over turns on the same days.
     days = {
         "implicit.completion": {
             date(2026, 7, 1): Stat(3, 1.0, True),
             date(2026, 7, 9): Stat(3, 0.0, True),
+        }
+    }
+    turn_days = {
+        "efficiency": {
+            date(2026, 7, 1): Stat(3, 0.2, False, 0.1),
+            date(2026, 7, 9): Stat(3, 0.9, False, 0.1),
         }
     }
     calls = _stats(
@@ -383,8 +388,10 @@ def test_analysis_summarizes_query_stats_with_session_trends_from_days_and_turn_
             {"v1": 3, "v2": 1},
         ),
         days,
+        turn_days,
     )
     client, backend = _client()
+    # Raw turn and session Scores are left out of trends: the day queries cover every Scorer.
     turn_scores = [
         {
             **_record(f"t{index}", "efficiency", rating),
@@ -396,7 +403,6 @@ def test_analysis_summarizes_query_stats_with_session_trends_from_days_and_turn_
         }
         for index, rating in enumerate([1.0, 1.0, 0.0, 0.0])
     ]
-    # A raw session Score is left out of trends: the day query covers session Scorers.
     session_scores = [
         {
             **_record(f"s{index}", "efficiency.session", rating),
@@ -422,11 +428,32 @@ def test_analysis_summarizes_query_stats_with_session_trends_from_days_and_turn_
         ("v1", 3),
         ("v2", 1),
     ]
-    assert sorted(t["scorer"] for t in first["trends"]) == ["efficiency", "implicit.completion"]
+    assert sorted((t["scorer"], t["direction"]) for t in first["trends"]) == [
+        ("efficiency", "improvement"),
+        ("implicit.completion", "regression"),
+    ]
     assert "implicit.completion**: 1.00 → 0.00" in first["coaching_markdown"]
     assert "outcome.test**: 75% pass rate (n=4" in first["coaching_markdown"]
     # One query state per router, so a process creates each query once.
     assert len({id(state) for state in calls}) == 1
+
+
+def test_analysis_says_how_to_fix_a_dataset_without_a_day_field(monkeypatch):
+    _stats(monkeypatch, ConfigStats({}, {}))
+
+    def turn_day_stats(client, catalog, state):
+        raise inspection.ces_queries.DatasetWithoutDay("This Dataset predates the `day` field.")
+
+    monkeypatch.setattr(inspection.ces_queries, "turn_day_stats", turn_day_stats)
+    client, _backend = _client()
+
+    response = client.get("/api/analyze")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "dataset_without_day",
+        "message": "This Dataset predates the `day` field.",
+    }
 
 
 def test_session_listing_includes_judge_token_estimates_only_when_asked():

@@ -111,8 +111,8 @@ class ConfigStats:
     # Each session rating Scorer's Stat per UTC day its sessions started, every config pooled,
     # read only for trends (`trends`).
     days: dict[str, dict[date, Stat]] | None = None
-    # Each turn rating Scorer's Stat per UTC day its turns started, from the turn day query, or
-    # None while turn trends read raw Scores instead (`ces_queries.turn_day_stats`).
+    # Each turn rating Scorer's Stat per UTC day its turns started, every config pooled, read
+    # only for trends (`trends`).
     turn_days: dict[str, dict[date, Stat]] | None = None
 
 
@@ -530,8 +530,11 @@ def _parse_dt(val: object) -> datetime | None:
 
 
 TREND_WINDOW_DAYS = 7
-# How a trend's `source` reads in the CLI and the coaching digest.
-TREND_SOURCES = {"query": "a CES query", "raw": "raw Scores"}
+# What the CLI and the coaching digest say for a turn Scorer in `short_turn_history`.
+SHORT_HISTORY = (
+    f"not enough history for a trend yet: needs rated turns in each of the two "
+    f"{TREND_WINDOW_DAYS}-day windows ending on its latest rated day"
+)
 
 
 def _window(day: date, latest: date, window_days: int) -> str | None:
@@ -547,17 +550,23 @@ def _window(day: date, latest: date, window_days: int) -> str | None:
     return None
 
 
-def covers_trend_windows(
-    by_day: Mapping[str, Mapping[date, Stat]], window_days: int = TREND_WINDOW_DAYS
-) -> bool:
-    """Whether these days hold ratings in both trend windows, measured back from the latest day
-    any Scorer has a rating. Example, with 7: ratings on Nov 1 and Nov 14 cover both windows,
+def covers_trend_windows(days: Iterable[date], window_days: int = TREND_WINDOW_DAYS) -> bool:
+    """Whether one Scorer's rated days include a day in each trend window, measured back from
+    its latest rated day. Example, with 7: ratings on Nov 1 and Nov 14 cover both windows,
     ratings on Nov 8 and Nov 14 only the recent one."""
-    found = {day for days in by_day.values() for day in days}
+    found = set(days)
     if not found:
         return False
     latest = max(found)
     return {"recent", "older"} <= {_window(day, latest, window_days) for day in found}
+
+
+def short_turn_history(stats: ConfigStats) -> list[str]:
+    """The turn rating Scorers with ratings whose days don't yet cover both trend windows
+    (`covers_trend_windows`), so `trends` reports no trend for them. Example: a Scorer rated
+    only from Nov 8 to Nov 14 has nothing in Nov 1 to 7."""
+    days = stats.turn_days or {}
+    return sorted(scorer for scorer, found in days.items() if not covers_trend_windows(found))
 
 
 def _split_days(
@@ -659,22 +668,19 @@ def detect_regressions(
 
 
 def trends(feedback: list[dict], stats: ConfigStats | None = None) -> list[dict[str, Any]]:
-    """The trends `analyze`, `monitor`, and the Analyze page report, each with the `source` it
-    came from: "query" for a CES day query over every Score, "raw" for raw Score records.
-
-    With `stats.days`, session Scorers come from that day query, and turn Scorers from
-    `stats.turn_days` when the turn day query covers both windows, else from the raw turn
-    Scores in `feedback`, the newest `--limit` turns. Without `stats.days`, every Scorer comes
-    from `feedback`."""
+    """The trends `analyze`, `monitor`, and the Analyze page report. With `stats.days`, they come
+    from the day queries over every Score: session Scorers from `stats.days`, and turn Scorers
+    from `stats.turn_days` once their days cover both trend windows (`short_turn_history` names
+    the rest). Without, every Scorer comes from the raw Score records in `feedback`, as
+    reflection's digest needs."""
     if stats is None or stats.days is None:
-        return [{**r, "source": "raw"} for r in detect_regressions(feedback)]
-    if stats.turn_days is None:
-        turns = day_stats(fb for fb in feedback if _payload(fb).get("granularity") == "turn")
-        turn_source = "raw"
-    else:
-        turns, turn_source = stats.turn_days, "query"
-    source = {**dict.fromkeys(turns, turn_source), **dict.fromkeys(stats.days, "query")}
-    return [{**r, "source": source[r["scorer"]]} for r in day_trends({**turns, **stats.days})]
+        return detect_regressions(feedback)
+    turns = {
+        scorer: days
+        for scorer, days in (stats.turn_days or {}).items()
+        if covers_trend_windows(days)
+    }
+    return day_trends({**turns, **stats.days})
 
 
 def config_regressions(
@@ -1019,16 +1025,18 @@ def coaching_digest(feedback: list[dict], stats: ConfigStats | None = None) -> s
                             lines.append(f"  - {label}: {value}")
 
     regressions = trends(representative, stats)
-    if regressions:
+    short = [] if stats is None else short_turn_history(stats)
+    if regressions or short:
         lines.extend(["", "## Trends", ""])
         for r in regressions:
             arrow = "↓" if r["direction"] == "regression" else "↑"
             mark = "" if r["significant"] else "  (tentative — interval includes 0)"
             lines.append(
                 f"- {arrow} **{r['scorer']}**: {r['older_mean']:.2f} → {r['recent_mean']:.2f} "
-                f"({r['delta']:+.2f}, n={r['sample_count']}, from {TREND_SOURCES[r['source']]})"
-                f"{mark}"
+                f"({r['delta']:+.2f}, n={r['sample_count']}){mark}"
             )
+        for scorer in short:
+            lines.append(f"- **{scorer}**: {SHORT_HISTORY}")
 
     ab = ab_leaderboard(representative) if stats is None else stat_leaderboard(stats)
     if len(ab) > 1:

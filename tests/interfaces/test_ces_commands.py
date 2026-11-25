@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -533,14 +533,10 @@ def test_read_analysis_reads_the_newest_scores_only_for_feedback(monkeypatch, fe
     assert client.reads == reads
 
 
-@pytest.mark.parametrize(
-    ("turn_days", "reads"), [({"outcome.test": {}}, []), (None, [7])], ids=["query", "fallback"]
-)
-def test_read_analysis_reads_raw_scores_for_trends_only_while_turn_trends_fall_back(
-    monkeypatch, turn_days, reads
-):
+def test_read_analysis_reads_trends_from_the_day_queries_without_raw_scores(monkeypatch):
     client = _ScoresOnly([])
     stats = ConfigStats({"v1": {"efficiency": Stat(1, 1.0, False)}}, {"v1": 1})
+    turn_days = {"outcome.test": {date(2026, 7, 1): Stat(1, 1.0, True)}}
     monkeypatch.setattr(ces_commands, "connect", lambda args: CesSession(client, CATALOG))
     monkeypatch.setattr(ces_commands.ces_queries, "config_stats", lambda *_: stats)
     monkeypatch.setattr(ces_commands.ces_queries, "session_day_stats", lambda *_: {})
@@ -550,7 +546,7 @@ def test_read_analysis_reads_raw_scores_for_trends_only_while_turn_trends_fall_b
     got, _ = ces_commands.read_analysis(args, feedback=False, trends=True)
 
     assert (got.days, got.turn_days) == ({}, turn_days)
-    assert client.reads == reads
+    assert client.reads == []
 
 
 def test_read_analysis_adds_session_success_on_the_same_connection(monkeypatch):

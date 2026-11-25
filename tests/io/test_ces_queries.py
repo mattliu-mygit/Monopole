@@ -12,6 +12,7 @@ import respx
 from weave_agent_signals.ces_catalog import DETERMINISTIC, Catalog, ScorerRef
 from weave_agent_signals.ces_client import CesClient
 from weave_agent_signals.ces_queries import (
+    DatasetWithoutDay,
     QueryScorer,
     QueryState,
     config_stats,
@@ -768,8 +769,7 @@ def _tests(count, mean):
 
 
 @respx.mock
-def test_turn_day_stats_pool_each_days_turns_when_both_windows_have_turns():
-    # Latest day Jul 20: Jul 14-20 is recent and Jul 7-13 older, and both have turns.
+def test_turn_day_stats_pool_each_days_turns():
     rows = [
         _row(["cfg1", "2026-07-08"], 9, **_tests(2, 1.0)),
         _row(["cfg2", "2026-07-08"], 6, **_tests(2, 0.0)),
@@ -794,30 +794,17 @@ def test_turn_day_stats_pool_each_days_turns_when_both_windows_have_turns():
     assert not any(v.startswith(("v-measure.", "v-dim.", "v-implicit.completion")) for v in named)
 
 
-@respx.mock
-def test_turn_day_stats_fall_back_when_the_previous_window_has_no_turns():
-    # Latest day Jul 20: every dated turn falls in Jul 14-20, none in Jul 7-13. The Jul 6
-    # turns are older than both windows, so they don't count for the older one.
-    rows = [
-        _row(["cfg1", "2026-07-06"], 9, **_tests(5, 1.0)),
-        _row(["cfg1", "2026-07-14"], 9, **_tests(5, 1.0)),
-        _row(["cfg1", "2026-07-20"], 4, **_tests(5, 0.0)),
-    ]
-    TurnDays(rows)
-
-    assert turn_day_stats(_client(), CATALOG, QueryState()) is None
-
-
 NO_DAY = httpx.Response(
     400, json={"detail": 'column input."day" is not in the queried EvaluationVersion'}
 )
 
 
 @respx.mock
-def test_turn_day_stats_fall_back_when_the_dataset_has_no_day_field():
+def test_turn_day_stats_say_how_to_fix_a_dataset_without_a_day_field():
     TurnDays([], create=NO_DAY)
 
-    assert turn_day_stats(_client(), CATALOG, QueryState()) is None
+    with pytest.raises(DatasetWithoutDay, match="Rerun `weave-agent-adapter evaluations setup`"):
+        turn_day_stats(_client(), CATALOG, QueryState())
 
 
 @respx.mock

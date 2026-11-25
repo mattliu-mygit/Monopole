@@ -12,7 +12,7 @@ import pytest
 from weave_agent_signals import cli
 from weave_agent_signals.catalogs import build_model_catalog
 from weave_agent_signals.ces_commands import Insights
-from weave_agent_signals.ces_queries import Group
+from weave_agent_signals.ces_queries import DatasetWithoutDay, Group
 from weave_agent_signals.patterns import ConfigStats, SessionSuccess, Stat
 from weave_agent_signals.runs.bundles import bundle_from_content_map
 
@@ -265,25 +265,17 @@ def test_analyze_ab_reads_only_query_stats(monkeypatch, capsys):
     assert "outcome.test" in out and "100% pass  (n=3" in out
 
 
-def test_analyze_trends_say_which_source_each_trend_used(monkeypatch, capsys):
+def test_analyze_trends_report_turn_scorers_without_enough_history(monkeypatch, capsys):
+    # outcome.build's turns all fall in the 7 days ending on its latest, Jul 9.
     rise = {date(2026, 7, 1): Stat(3, 0.0, True), date(2026, 7, 9): Stat(3, 1.0, True)}
-    turns = [
-        {
-            "feedback_type": "weave_agent_signals.outcome.test",
-            "payload": {
-                "rating": rating,
-                "granularity": "turn",
-                "details": {"turn_started_at": f"2026-07-0{day}T00:00:00Z"},
-            },
-        }
-        for rating, day in ((1.0, 1), (1.0, 2), (0.0, 8), (0.0, 9))
-    ]
+    recent = {date(2026, 7, 3): Stat(3, 0.0, True), date(2026, 7, 9): Stat(3, 1.0, True)}
     asked = []
 
     def read_analysis(_args, *, feedback, success=False, trends=False):
         asked.append((feedback, trends))
-        stats = ConfigStats({}, {}, days={"implicit.completion": rise})
-        return stats, turns
+        days = {"implicit.completion": rise}
+        turn_days = {"outcome.test": rise, "outcome.build": recent}
+        return ConfigStats({"v1": {}}, {}, days=days, turn_days=turn_days), []
 
     monkeypatch.setattr(cli.ces_commands, "read_analysis", read_analysis)
 
@@ -291,8 +283,18 @@ def test_analyze_trends_say_which_source_each_trend_used(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert asked == [(False, True)]
-    assert "outcome.test" in out and "n=4, from raw Scores)" in out
-    assert "implicit.completion" in out and "n=6, from a CES query)" in out
+    assert "outcome.test" in out and "implicit.completion" in out and "(+1.00, n=6)" in out
+    assert "outcome.build                         not enough history for a trend yet" in out
+
+
+def test_analyze_says_how_to_fix_a_dataset_without_a_day_field(monkeypatch, capsys):
+    def read_analysis(*_args, **_kwargs):
+        raise DatasetWithoutDay("This Dataset predates weave-agent-adapter's `day` field.")
+
+    monkeypatch.setattr(cli.ces_commands, "read_analysis", read_analysis)
+
+    assert cli.main(["analyze", "--trends"]) == 2
+    assert "This Dataset predates" in capsys.readouterr().err
 
 
 def test_analyze_digest_summarizes_query_stats_with_raw_examples(monkeypatch, capsys):
