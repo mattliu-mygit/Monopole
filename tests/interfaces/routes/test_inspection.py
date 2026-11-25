@@ -494,6 +494,26 @@ def test_session_listing_reuses_estimates_while_a_sessions_turns_are_unchanged()
     assert second["judging_token_estimates"] == first["judging_token_estimates"]
 
 
+def test_session_listing_keeps_only_the_newest_sessions_cached(monkeypatch):
+    monkeypatch.setattr(inspection, "SESSION_CACHE_SIZE", 1)
+    client, backend = _client()
+    reads: list[str] = []
+    read_session = backend.read_session
+
+    def counting_read(trajectory_id, **kwargs):
+        reads.append(trajectory_id)
+        return read_session(trajectory_id, **kwargs)
+
+    backend.read_session = counting_read
+    params = {"since": "2026-07-14T00:00:00Z", "limit": 2, "include_estimates": "true"}
+
+    client.get("/api/sessions", params=params)
+    client.get("/api/sessions", params=params)
+
+    # Two sessions, room for one estimate: the second listing reads both sessions again.
+    assert len(reads) == 4
+
+
 def test_session_listing_serves_cached_turns_and_refreshes_them_in_the_background():
     import dataclasses
     import time

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from typing import get_args
+from typing import Any, get_args
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -35,6 +36,9 @@ _SIGNAL_THRESHOLD = 0.5
 
 
 SESSION_SCAN_FACTOR = 3
+# How many sessions' turn rows and judging estimates the list keeps: two of the largest scans
+# (100 sessions times SESSION_SCAN_FACTOR), so one load never evicts its own sessions.
+SESSION_CACHE_SIZE = 2 * 100 * SESSION_SCAN_FACTOR
 _LOG = logging.getLogger(__name__)
 
 
@@ -186,17 +190,41 @@ def _date_error(error: DateFilterError) -> HTTPException:
     )
 
 
+class _LruCache:
+    """A dict that keeps only its `size` most recently used entries, safe across threads."""
+
+    def __init__(self, size: int) -> None:
+        self._size = size
+        self._entries: OrderedDict[str, Any] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: str) -> Any | None:
+        with self._lock:
+            if key not in self._entries:
+                return None
+            self._entries.move_to_end(key)
+            return self._entries[key]
+
+    def update(self, entries: dict[str, Any]) -> None:
+        with self._lock:
+            for key, value in entries.items():
+                self._entries[key] = value
+                self._entries.move_to_end(key)
+            while len(self._entries) > self._size:
+                self._entries.popitem(last=False)
+
+
 def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["inspection"])
     # Query IDs and whether CES has a stddev aggregation, learned once per process.
     query_state = ces_queries.QueryState()
-    # Estimates read a whole session, subagents included. Stored turns never change, so they're
-    # reused until the session's turn list does.
-    estimates: dict[tuple[str, tuple[str, ...]], dict] = {}
+    # Estimates read a whole session, subagents included. Stored turns never change, so each
+    # session's estimate, kept with its turn IDs, is reused until its turn list changes.
+    estimates = _LruCache(SESSION_CACHE_SIZE)
     # CES row search is the slowest part of a list load and can't ask for only newer turns, so
     # the list serves each session's last-read turn rows and refreshes them in the background.
     # A just-finished turn appears one load later. Runs never read this cache.
-    cached_rows: dict[str, list[dict]] = {}
+    cached_rows = _LruCache(SESSION_CACHE_SIZE)
     refreshing: set[str] = set()
     refresh_lock = threading.Lock()
 
@@ -211,7 +239,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                 refreshing.difference_update(session_ids)
 
     def turn_rows(ces: CesSession, batch: list[str]) -> dict[str, list[dict]]:
-        found = {sid: cached_rows[sid] for sid in batch if sid in cached_rows}
+        found = {sid: rows for sid in batch if (rows := cached_rows.get(sid)) is not None}
         if missing := [sid for sid in batch if sid not in found]:
             fresh = ces.client.session_turn_rows(ces.catalog, missing)
             cached_rows.update(fresh)
@@ -274,13 +302,14 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             if include_estimates:
                 for summary, _turns in visible:
                     sid = summary["conversation_id"]
-                    key = (sid, turn_ids[sid])
-                    if key not in estimates:
+                    known = estimates.get(sid)
+                    if known is None or known[0] != turn_ids[sid]:
                         session = session_or_none(ces.client, sid)
                         if session is None:
                             continue
-                        estimates[key] = _judging_token_estimates(session.turns)
-                    summary["judging_token_estimates"] = estimates[key]
+                        known = (turn_ids[sid], _judging_token_estimates(session.turns))
+                        estimates.update({sid: known})
+                    summary["judging_token_estimates"] = known[1]
             feedback = _by_target(
                 ces.client.cohort_scores(ces.catalog, list(visible_rows), turn_rows=visible_rows)
                 if visible
