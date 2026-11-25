@@ -18,7 +18,7 @@ from weave_agent_signals.ces_catalog import (
 )
 from weave_agent_signals.ces_client import CesSession
 from weave_agent_signals.ces_sessions import session_view
-from weave_agent_signals.models import Score, SessionView, TraceRole
+from weave_agent_signals.models import ConfigurationError, Score, SessionView, TraceRole
 from weave_agent_signals.patterns import ConfigStats, SessionSuccess
 from weave_agent_signals.scorers import score_session, score_trajectory
 from weave_agent_signals.scorers.session import scored_turns
@@ -410,7 +410,7 @@ def test_connect_without_a_scope_or_dataset_explains_how_to_set_them(tmp_path, m
     monkeypatch.setenv("WEAVE_AGENT_ADAPTER_EVALUATIONS_STATE", str(tmp_path / "missing.json"))
     args = cli.build_parser().parse_args(["inspect", "--session", "s1"])
 
-    with pytest.raises(SystemExit, match="--ces-scope-ref"):
+    with pytest.raises(ConfigurationError, match="--ces-scope-ref"):
         ces_commands.connect(args)
 
 

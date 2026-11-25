@@ -29,7 +29,13 @@ from weave_agent_signals.ces_client import (
     session_or_none,
 )
 from weave_agent_signals.judges.inference import DEFAULT_ENTITY, DEFAULT_PROJECT
-from weave_agent_signals.models import Score, SessionView, TurnSpan, session_is_evaluable
+from weave_agent_signals.models import (
+    ConfigurationError,
+    Score,
+    SessionView,
+    TurnSpan,
+    session_is_evaluable,
+)
 from weave_agent_signals.patterns import ConfigStats
 from weave_agent_signals.scorers import score_session, score_trajectory, score_turn
 from weave_agent_signals.scorers.outcome import classify_command
@@ -88,7 +94,7 @@ def ces_settings(
         dataset or os.environ.get("WEAVE_AGENT_SIGNALS_CES_DATASET_ID") or state.get("dataset_id")
     )
     if not scope or not dataset:
-        raise RuntimeError(
+        raise ConfigurationError(
             "CES needs --ces-scope-ref and --ces-dataset-id, "
             "or `weave-agent-adapter evaluations setup`"
         )
@@ -108,10 +114,7 @@ def open_session(
 
 
 def connect(args: argparse.Namespace) -> CesSession:
-    try:
-        return open_session(args.ces_url, args.ces_scope_ref, args.ces_dataset_id)
-    except RuntimeError as error:
-        raise SystemExit(str(error)) from error
+    return open_session(args.ces_url, args.ces_scope_ref, args.ces_dataset_id)
 
 
 class _Stats:

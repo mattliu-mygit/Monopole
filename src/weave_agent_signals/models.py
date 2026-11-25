@@ -9,6 +9,11 @@ from typing import Any, Union
 FEEDBACK_PREFIX = "weave_agent_signals."
 
 
+class ConfigurationError(RuntimeError):
+    """Monopole is set up wrongly: a missing setting, credential, or Dataset field, or an
+    unknown model choice. The CLI reports it as a configuration error and exits 2."""
+
+
 def parse_utc(value: object) -> datetime | None:
     """An ISO 8601 timestamp as an aware datetime, UTC when it has no offset; None when it
     isn't one. Python 3.11's `fromisoformat` reads a trailing `Z` as UTC."""

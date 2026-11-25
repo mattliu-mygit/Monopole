@@ -464,3 +464,24 @@ def test_analyze_with_an_insight_and_ab_reads_both(monkeypatch, capsys):
     assert asked == [False]
     assert "A/B Leaderboard" in out and "sessions=1" in out
     assert "# Coaching Digest" not in out
+
+
+def test_missing_ces_settings_are_a_configuration_error(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("WEAVE_AGENT_ADAPTER_EVALUATIONS_STATE", str(tmp_path / "missing.json"))
+    for name in ("SCOPE_REF", "DATASET_ID"):
+        monkeypatch.delenv(f"WEAVE_AGENT_SIGNALS_CES_{name}", raising=False)
+
+    assert cli.main(["analyze"]) == 2
+    assert "Configuration error: CES needs --ces-scope-ref" in capsys.readouterr().err
+
+
+def test_an_unrelated_runtime_error_is_not_labeled_a_configuration_error(monkeypatch, capsys):
+    def read_stats(**_kwargs):
+        raise RuntimeError("Pinned turn cohort sessions are missing: s1")
+
+    _fake_reads(monkeypatch, read_stats)
+
+    assert cli.main(["analyze", "--ab"]) == 1
+    err = capsys.readouterr().err
+    assert "Error: Pinned turn cohort sessions are missing" in err
+    assert "Configuration error" not in err

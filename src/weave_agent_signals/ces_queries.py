@@ -43,6 +43,7 @@ import httpx
 
 from weave_agent_signals.ces_catalog import DETAILS_SUFFIX, RATING, Catalog, ScorerRef
 from weave_agent_signals.ces_client import CesClient, content_digest
+from weave_agent_signals.models import ConfigurationError
 from weave_agent_signals.patterns import ConfigStats, SessionSuccess, session_success
 from weave_agent_signals.scorers.session import (
     MEASURE_DURATION,
@@ -458,7 +459,7 @@ def session_day_stats(
 _NO_DAY = re.compile(r'input\.\\?"?day\b')
 
 
-class DatasetWithoutDay(RuntimeError):
+class DatasetWithoutDay(ConfigurationError):
     """The Dataset's catalog has no `day` field, so turns can't be grouped by day."""
 
 

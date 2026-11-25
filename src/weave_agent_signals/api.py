@@ -25,6 +25,7 @@ from weave_agent_signals.ces_client import CesClient, CesSession, ces_http
 from weave_agent_signals.judges.cli_backend import CliJudgeClient
 from weave_agent_signals.judges.inference import ChatClient, InferenceClient
 from weave_agent_signals.judges.process import LOCAL_CLI_PROVIDERS
+from weave_agent_signals.models import ConfigurationError
 from weave_agent_signals.patterns import coaching_digest
 from weave_agent_signals.routes.catalogs import create_catalogs_router
 from weave_agent_signals.routes.inspection import create_inspection_router
@@ -181,9 +182,9 @@ def _build_default_dependencies(
         )
 
     if target_registry is None:
-        raise RuntimeError("TARGET_REGISTRY is required to start the server")
+        raise ConfigurationError("TARGET_REGISTRY is required to start the server")
     if sandbox_runtime is None:
-        raise RuntimeError("SMOLMACHINES_RUNTIME is required to start the server")
+        raise ConfigurationError("SMOLMACHINES_RUNTIME is required to start the server")
     registry = load_target_registry(target_registry)
     runtime = load_sandbox_runtime(sandbox_runtime)
     reflection_dependencies = ReflectionDependencies(

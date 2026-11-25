@@ -5,6 +5,8 @@ from __future__ import annotations
 import netrc
 import os
 
+from weave_agent_signals.models import ConfigurationError
+
 
 def get_api_key() -> str:
     """`WANDB_API_KEY`, else the `api.wandb.ai` entry in `~/.netrc`."""
@@ -19,4 +21,6 @@ def get_api_key() -> str:
                 return auth[2]
         except Exception:
             pass
-    raise RuntimeError("No W&B API key found. Set WANDB_API_KEY or add api.wandb.ai to ~/.netrc")
+    raise ConfigurationError(
+        "No W&B API key found. Set WANDB_API_KEY or add api.wandb.ai to ~/.netrc"
+    )

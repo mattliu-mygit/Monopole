@@ -16,6 +16,7 @@ from typing import Any
 
 from weave_agent_signals.judges.plan import JudgingPlan
 from weave_agent_signals.judges.records import JudgeCallAudit, JudgeCallRecord
+from weave_agent_signals.models import ConfigurationError
 from weave_agent_signals.run_config import EffectiveRunConfig, RunConfig
 from weave_agent_signals.runs.events import RunEvent, RunEventDraft, RunEventStage
 from weave_agent_signals.runs.reflection_records import (
@@ -32,7 +33,7 @@ def _default_db_path() -> Path:
     return _DEFAULT_DB_DIR / "runs.db"
 
 
-class RunDatabaseSchemaError(RuntimeError):
+class RunDatabaseSchemaError(ConfigurationError):
     """The run database was written by an incompatible version of Monopole."""
 
 

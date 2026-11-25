@@ -22,6 +22,7 @@ from weave_agent_signals.judges.process import LOCAL_CLI_PROVIDERS
 from weave_agent_signals.judges.records import JudgeCallRecord
 from weave_agent_signals.judges.runner import JudgeExecutionError, judge_session
 from weave_agent_signals.models import (
+    ConfigurationError,
     Score,
     SessionView,
 )
@@ -103,19 +104,19 @@ def _resolve_judge_panel(args: argparse.Namespace) -> tuple[PositionedJudge, ...
     catalog = build_model_catalog()
     model_ids = tuple(args.judge_models or catalog.recommended_judges)
     if not 1 <= len(model_ids) <= 3:
-        raise RuntimeError("judge_models must contain one through three models")
+        raise ConfigurationError("judge_models must contain one through three models")
     judges: list[PositionedJudge] = []
     for position, model_id in enumerate(model_ids, start=1):
         try:
             model = catalog.model(model_id)
         except KeyError as exc:
-            raise RuntimeError(f"Unknown judge model: {model_id}") from exc
+            raise ConfigurationError(f"Unknown judge model: {model_id}") from exc
         if "judge" not in model.supported_roles:
-            raise RuntimeError(f"Model {model_id} does not support judging")
+            raise ConfigurationError(f"Model {model_id} does not support judging")
         judges.append(_positioned_judge(model, position))
 
     if len({judge.id for judge in judges}) != len(judges):
-        raise RuntimeError("judge model IDs must be unique")
+        raise ConfigurationError("judge model IDs must be unique")
     return tuple(judges)
 
 
@@ -131,19 +132,19 @@ def _resolve_reflection_models(
     except KeyError:
         writer = None
     if writer is None or "proposal_writer" not in writer.supported_roles:
-        raise RuntimeError(f"Unknown or unavailable proposal model: {writer_id}")
+        raise ConfigurationError(f"Unknown or unavailable proposal model: {writer_id}")
 
     evaluator_id = args.proposal_evaluator_model
     if evaluator_id is None:
         evaluator_id = next(iter(catalog.proposal_evaluator_preferences), None)
     if evaluator_id is None:
-        raise RuntimeError("Model catalog has no proposal evaluator")
+        raise ConfigurationError("Model catalog has no proposal evaluator")
     try:
         evaluator = catalog.model(evaluator_id)
     except KeyError as exc:
-        raise RuntimeError(f"Unknown proposal evaluator: {evaluator_id}") from exc
+        raise ConfigurationError(f"Unknown proposal evaluator: {evaluator_id}") from exc
     if "proposal_evaluator" not in evaluator.supported_roles:
-        raise RuntimeError(f"Model {evaluator_id} does not support proposal evaluation")
+        raise ConfigurationError(f"Model {evaluator_id} does not support proposal evaluation")
     return writer, evaluator
 
 
@@ -902,7 +903,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if handler:
         try:
             return handler(args)
-        except RuntimeError as e:
+        except ConfigurationError as e:
             print(f"Configuration error: {e}", file=sys.stderr)
             return 2
         except httpx.HTTPStatusError as e:

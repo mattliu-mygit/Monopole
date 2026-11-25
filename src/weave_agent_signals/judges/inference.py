@@ -20,6 +20,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from weave_agent_signals.auth import get_api_key
+from weave_agent_signals.models import ConfigurationError
 
 log = logging.getLogger("weave_agent_signals.judges")
 
@@ -437,7 +438,9 @@ def _resolve_backend(
     if backend == "openai":
         api_key = os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY not set. Export it or use --judge-backend=wandb")
+            raise ConfigurationError(
+                "OPENAI_API_KEY not set. Export it or use --judge-backend=wandb"
+            )
         return (
             OPENAI_BASE,
             {
