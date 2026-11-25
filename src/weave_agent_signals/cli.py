@@ -35,7 +35,7 @@ from weave_agent_signals.patterns import (
     config_regressions,
     is_evaluation_feedback_eligible,
     segment_gaps,
-    short_turn_history,
+    short_history,
     stat_leaderboard,
     subagent_gaps,
     trends,
@@ -331,7 +331,7 @@ def _print_score_analysis(
                     f"{r['older_mean']:.2f} → {r['recent_mean']:.2f} "
                     f"({r['delta']:+.2f}, n={r['sample_count']}){mark}"
                 )
-        for scorer in short_turn_history(stats):
+        for scorer in short_history(stats):
             print(f"  {scorer:37s} {SHORT_HISTORY}")
 
     if digest:

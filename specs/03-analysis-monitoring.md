@@ -68,12 +68,13 @@ writes on every turn Case. Only a main-agent turn's first Case carries turn
 Scores, so the turn's other Cases and every subagent Case drop out of each mean
 and count. Each day's configs are pooled, as for sessions.
 
-A turn Scorer gets a trend only when its rated days include at least one day in
-each trend window, the 7 days ending on its latest rated day and the 7 days
-before (see Trend analysis). Otherwise the CLI's `--trends` output and the
+A session or turn Scorer gets a trend only when its rated days include at least
+one day in each trend window, the 7 days ending on its latest rated day and the
+7 days before (see Trend analysis). Otherwise the CLI's `--trends` output and the
 coaching digest say it doesn't have enough history yet; the Analyze page's
-trend list leaves it out. Example: a Scorer rated on Nov 10 and Nov 14 has
-nothing in Nov 1 to 7, so it has no trend yet. A turn the adapter wrote before
+trend list leaves it out, and `monitor` never alerts on it. Example: a Scorer
+rated on Nov 10 and Nov 14 has nothing in Nov 1 to 7, so it has no trend yet,
+whether it rates sessions or turns. A turn the adapter wrote before
 it added `day` has none, because Cases never change, so it is never placed in
 time. A Dataset set up before the adapter added the field has no `day` at all,
 which CES rejects with 400; `analyze` and `monitor` then exit with a message
@@ -121,10 +122,13 @@ Score-write time, and compares older and recent windows only after the evidence
 passes the representative/comparability rules. For each Scorer, recent is the 7
 days ending on its latest day with a rating, and older is the 7 days before
 those: with the latest rating on Nov 14, Nov 8 to 14 is compared with Nov 1 to 7,
-and anything earlier is left out. When either window has fewer than 2 ratings,
-as with sparse data, all its days are split instead at the day boundary nearest
-half the ratings, each side keeping at least 2; ratings all on one day show no
-trend. A Scorer needs at least 4 ratings in all. Without CES's spread
+and anything earlier is left out. Trends from the day queries need a rated day in
+each window, as above. When either window has fewer than 2 ratings, all its days
+are split instead at the day boundary nearest half the ratings, each side keeping
+at least 2; ratings all on one day show no trend. Reflection's digest, which
+reads only the raw Scores it pins, has no window requirement, so for it this
+split also covers data that fills only one window. A Scorer needs at least 4
+ratings in all. Without CES's spread
 aggregation, a continuous Scorer's daily stddev from a day query comes from a
 value histogram grouped the same way, as for summaries, so its interval is exact.
 

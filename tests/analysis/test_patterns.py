@@ -33,7 +33,7 @@ from weave_agent_signals.patterns import (
     pass_threshold,
     segment_gaps,
     session_success,
-    short_turn_history,
+    short_history,
     stat_leaderboard,
     stat_summaries,
     subagent_gaps,
@@ -698,14 +698,26 @@ def test_turn_scorers_without_both_trend_windows_have_no_trend_and_are_reported_
     )
 
     assert [r["scorer"] for r in trends([], stats)] == ["outcome.build"]
-    assert short_turn_history(stats) == ["outcome.test"]
-    assert short_turn_history(ConfigStats({}, {})) == []
+    assert short_history(stats) == ["outcome.test"]
+    assert short_history(ConfigStats({}, {})) == []
     digest = coaching_digest([], stats)
     assert "**outcome.build**: 1.00 → 0.00" in digest
     assert "**outcome.test**: not enough history for a trend yet" in digest
     # A Dataset whose every turn Scorer is short still says so, with no trend to list.
     only_short = replace(stats, turn_days={"outcome.test": stats.turn_days["outcome.test"]})
     assert "## Trends\n\n- **outcome.test**: not enough history" in coaching_digest([], only_short)
+
+
+def test_session_and_turn_scorers_with_the_same_days_follow_one_history_rule():
+    # Nov 12 and 13 all pass and Nov 14 all fails: every day is in the recent window ending
+    # Nov 14, so neither kind of Scorer has a trend, and both are reported short.
+    days = {date(2026, 11, d): Stat(5, m, True) for d, m in ((12, 1.0), (13, 1.0), (14, 0.0))}
+    stats = ConfigStats(
+        {}, {}, days={"implicit.completion": days}, turn_days={"outcome.test": days}
+    )
+
+    assert trends([], stats) == []
+    assert short_history(stats) == ["implicit.completion", "outcome.test"]
 
 
 def test_turn_trend_windows_are_covered_exactly_where_a_trend_splits_them():

@@ -530,9 +530,9 @@ def _parse_dt(val: object) -> datetime | None:
 
 
 TREND_WINDOW_DAYS = 7
-# What the CLI and the coaching digest say for a turn Scorer in `short_turn_history`.
+# What the CLI and the coaching digest say for a Scorer in `short_history`.
 SHORT_HISTORY = (
-    f"not enough history for a trend yet: needs rated turns in each of the two "
+    f"not enough history for a trend yet: needs ratings in each of the two "
     f"{TREND_WINDOW_DAYS}-day windows ending on its latest rated day"
 )
 
@@ -561,11 +561,11 @@ def covers_trend_windows(days: Iterable[date], window_days: int = TREND_WINDOW_D
     return {"recent", "older"} <= {_window(day, latest, window_days) for day in found}
 
 
-def short_turn_history(stats: ConfigStats) -> list[str]:
-    """The turn rating Scorers with ratings whose days don't yet cover both trend windows
-    (`covers_trend_windows`), so `trends` reports no trend for them. Example: a Scorer rated
-    only from Nov 8 to Nov 14 has nothing in Nov 1 to 7."""
-    days = stats.turn_days or {}
+def short_history(stats: ConfigStats) -> list[str]:
+    """The session and turn rating Scorers with ratings whose days don't yet cover both trend
+    windows (`covers_trend_windows`), so `trends` reports no trend for them. Example: a Scorer
+    rated only from Nov 8 to Nov 14 has nothing in Nov 1 to 7."""
+    days = {**(stats.turn_days or {}), **(stats.days or {})}
     return sorted(scorer for scorer, found in days.items() if not covers_trend_windows(found))
 
 
@@ -669,18 +669,16 @@ def detect_regressions(
 
 def trends(feedback: list[dict], stats: ConfigStats | None = None) -> list[dict[str, Any]]:
     """The trends `analyze`, `monitor`, and the Analyze page report. With `stats.days`, they come
-    from the day queries over every Score: session Scorers from `stats.days`, and turn Scorers
-    from `stats.turn_days` once their days cover both trend windows (`short_turn_history` names
+    from the day queries over every Score: session Scorers from `stats.days` and turn Scorers
+    from `stats.turn_days`, each once its days cover both trend windows (`short_history` names
     the rest). Without, every Scorer comes from the raw Score records in `feedback`, as
     reflection's digest needs."""
     if stats is None or stats.days is None:
         return detect_regressions(feedback)
-    turns = {
-        scorer: days
-        for scorer, days in (stats.turn_days or {}).items()
-        if covers_trend_windows(days)
-    }
-    return day_trends({**turns, **stats.days})
+    by_day = {**(stats.turn_days or {}), **stats.days}
+    return day_trends(
+        {scorer: days for scorer, days in by_day.items() if covers_trend_windows(days)}
+    )
 
 
 def config_regressions(
@@ -1025,7 +1023,7 @@ def coaching_digest(feedback: list[dict], stats: ConfigStats | None = None) -> s
                             lines.append(f"  - {label}: {value}")
 
     regressions = trends(representative, stats)
-    short = [] if stats is None else short_turn_history(stats)
+    short = [] if stats is None else short_history(stats)
     if regressions or short:
         lines.extend(["", "## Trends", ""])
         for r in regressions:
