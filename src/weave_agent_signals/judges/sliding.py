@@ -80,8 +80,9 @@ _WINDOW_SYSTEM_TEMPLATE = (
     "Return bounded findings, not a score. Every finding must "
     "cite at least one ID from ALLOWED_FINDING_EVIDENCE_IDS. If no supported finding exists, "
     'return "findings": [] instead of an uncited finding. Do not cite any other ID; the response '
-    "schema enforces the active raw window's evidence scope. Use the short e1, e2, ... aliases "
-    "shown in the raw window; the host resolves them to canonical source IDs. Include a short "
+    "schema enforces the active raw window's evidence scope. Use the short labels shown in the raw "
+    "window: t12 is turn 12, and t12.1, t12.2, ... are the model replies, tool calls, and "
+    "subagents inside it. The host resolves them to canonical source IDs. Include a short "
     "exact quote when useful; otherwise set quote to null. Finding IDs need only be unique "
     "within this response; the host "
     "scopes them to the active window."
@@ -144,15 +145,28 @@ def _redact_evidence_ids(text: str, evidence_ids: Sequence[str]) -> str:
     return text
 
 
-def _alias_evidence(text: str, evidence_ids: Sequence[str]) -> tuple[str, dict[str, str]]:
-    aliases = {f"e{index}": evidence_id for index, evidence_id in enumerate(evidence_ids, 1)}
+def _evidence_labels(session: SessionView, raw_trace_ids: Sequence[str]) -> dict[str, str]:
+    """Label each turn `t<position>`, the number in its `## Turn <position>` heading, and the
+    replies, tool calls, and subagents inside it `t<position>.1`, `t<position>.2`, .... When
+    labels counted items across the window instead, judges cited a turn's heading number."""
+    positions = {turn.trace_id: index for index, turn in enumerate(session.turns, start=1)}
+    turns = {turn.trace_id: turn for turn in session.turns}
+    labels: dict[str, str] = {}
+    for trace_id in raw_trace_ids:
+        turn_id, *items = _turn_evidence_ids(turns[trace_id])
+        labels[turn_id] = f"t{positions[trace_id]}"
+        labels.update((item, f"t{positions[trace_id]}.{n}") for n, item in enumerate(items, 1))
+    return labels
+
+
+def _alias_evidence(text: str, labels: Mapping[str, str]) -> tuple[str, dict[str, str]]:
     rendered = text
-    for alias, evidence_id in aliases.items():
-        rendered = rendered.replace(f"[evidence_id={evidence_id}]", f"[evidence_id={alias}]")
+    for evidence_id, label in labels.items():
+        rendered = rendered.replace(f"[evidence_id={evidence_id}]", f"[evidence_id={label}]")
         rendered = rendered.replace(
-            f"trace_id: {_value(evidence_id)}\n", f"trace_id: {_value(alias)}\n"
+            f"trace_id: {_value(evidence_id)}\n", f"trace_id: {_value(label)}\n"
         )
-    return rendered, aliases
+    return rendered, {label: evidence_id for evidence_id, label in labels.items()}
 
 
 def _sha256(value: object) -> str:
@@ -845,7 +859,9 @@ class SlidingReviewer:
         digests: Sequence[ChunkDigest],
     ) -> tuple[list[dict[str, str]], dict[str, str], str]:
         raw = render_raw_window(self.session, window, self.judge.token_counter)
-        aliased_raw_text, evidence_aliases = _alias_evidence(raw.text, raw.evidence_ids)
+        aliased_raw_text, evidence_aliases = _alias_evidence(
+            raw.text, _evidence_labels(self.session, window["raw_trace_ids"])
+        )
         hidden_evidence_ids = set(self._all_evidence_ids).difference(raw.evidence_ids)
         sections: list[str] = []
         for index, digest in enumerate(digests):
@@ -860,25 +876,22 @@ class SlidingReviewer:
                         _redact_evidence_ids(digest.text, hidden_evidence_ids),
                     )
                 )
-        return (
-            [
-                {
-                    "role": "system",
-                    "content": _WINDOW_SYSTEM_TEMPLATE.format(rubric_system=rubric.system_prompt),
-                },
-                {
-                    "role": "user",
-                    "content": _WINDOW_USER_TEMPLATE.format(
-                        example_evidence_id=next(iter(evidence_aliases)),
-                        allowed_evidence_ids=_canonical_json(list(evidence_aliases)),
-                        rubric_criteria=rubric.criteria_text,
-                        sections="\n\n".join(sections),
-                    ),
-                },
-            ],
-            evidence_aliases,
-            aliased_raw_text,
-        )
+        messages = [
+            {
+                "role": "system",
+                "content": _WINDOW_SYSTEM_TEMPLATE.format(rubric_system=rubric.system_prompt),
+            },
+            {
+                "role": "user",
+                "content": _WINDOW_USER_TEMPLATE.format(
+                    example_evidence_id=next(iter(evidence_aliases)),
+                    allowed_evidence_ids=_canonical_json(list(evidence_aliases)),
+                    rubric_criteria=rubric.criteria_text,
+                    sections="\n\n".join(sections),
+                ),
+            },
+        ]
+        return messages, evidence_aliases, aliased_raw_text
 
     def _load_or_create_window_findings(
         self,

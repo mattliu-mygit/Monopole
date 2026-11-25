@@ -102,8 +102,12 @@ For each reviewer, the pipeline first creates one rubric-neutral factual digest
 per core chunk. A rubric evaluation then slides across every window: the active
 chunk is supplied as raw captured evidence while the rest of the session is
 represented by that reviewer's ordered digests. The host replaces the active
-raw evidence IDs with short, window-local aliases before inference and resolves
-valid citations back to canonical trace identities. Surrounding digest
+raw evidence IDs with short labels before inference and resolves valid citations
+back to canonical trace identities. A turn's label is its session position, the
+number in its heading (`t12` for turn 12), and the replies, tool calls, and
+subagents inside it are `t12.1`, `t12.2`, and so on. Labels that counted items
+across the window put two numbers in each heading, and judges cited the heading's
+number instead of the label. Surrounding digest
 provenance remains host-owned and is represented by the chunk ID rather than
 model-authored citations. Every window returns a bounded set of
 positive or negative findings, not a score. Findings are deduplicated in session

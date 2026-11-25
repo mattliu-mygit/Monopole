@@ -136,7 +136,7 @@ WINDOW_FINDING_SCHEMA = JsonSchemaSpec(
             "finding_id": "finding-1",
             "polarity": "positive",
             "observation": "The agent verified the completed change with a focused check.",
-            "evidence_ids": ["e1"],
+            "evidence_ids": ["t1"],
             "quote": None,
         },
     ),
