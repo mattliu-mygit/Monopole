@@ -24,13 +24,13 @@ from weave_agent_signals.runs.reflection_records import (
     ReflectionResultRecord,
 )
 
-_DEFAULT_DB_DIR = Path.home() / ".weave-agent-signals"
+DEFAULT_DB_PATH = Path.home() / ".weave-agent-signals" / "runs.db"
 RUN_DB_SCHEMA_VERSION = 11
 
 
 def _default_db_path() -> Path:
-    _DEFAULT_DB_DIR.mkdir(parents=True, exist_ok=True)
-    return _DEFAULT_DB_DIR / "runs.db"
+    DEFAULT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    return DEFAULT_DB_PATH
 
 
 class RunDatabaseSchemaError(ConfigurationError):

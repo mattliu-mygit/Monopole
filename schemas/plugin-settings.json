@@ -1,0 +1,40 @@
+{
+  "title": "Monopole settings",
+  "description": "The settings Monopole's server and actions read when it runs as a Prompting Time plugin, saved in $XDG_STATE_HOME/monopole/settings.json. A blank field keeps the usual source: the environment, the repository's .env, or the adapter's ~/.weave-agent-adapter/evaluations.json. Changes apply when Monopole next starts.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "target_registry": {
+      "title": "Target registry",
+      "description": "Path of the JSON registry of the instruction files and skills a proposal may change. The server needs it.",
+      "type": "string"
+    },
+    "sandbox_runtime": {
+      "title": "Sandbox runtime",
+      "description": "Path of the JSON runtime for the A/B check's Smol Machines sandbox. The server needs it.",
+      "type": "string"
+    },
+    "run_db": {
+      "title": "Run database",
+      "description": "Path of the SQLite database that holds Monopole's runs. Blank uses WEAVE_AGENT_SIGNALS_RUN_DB, else ~/.weave-agent-signals/runs.db.",
+      "type": "string"
+    },
+    "port": {
+      "title": "Web UI port",
+      "description": "The port of Monopole's web UI on 127.0.0.1, where new runs start and proposals are reviewed.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "ces": {
+      "title": "CES scope",
+      "description": "Where Monopole reads sessions and writes Scores. Blank fields use the adapter's ~/.weave-agent-adapter/evaluations.json.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": { "title": "CES URL", "type": "string" },
+        "scope_ref": { "title": "Scope", "type": "string" },
+        "dataset_id": { "title": "Dataset ID", "type": "string" }
+      }
+    }
+  }
+}

@@ -42,6 +42,7 @@ from weave_agent_signals.patterns import (
     subagent_gaps,
     trends,
 )
+from weave_agent_signals.plugin import commands as plugin_commands
 from weave_agent_signals.run_config import (
     DEFAULT_JUDGING_CONTEXT_POLICY,
     ModelDescriptor,
@@ -845,6 +846,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Closed JSON runtime for identical local Smol Machines comparison arms",
     )
+    plugin_commands.add_parser(subs)
 
     return parser
 
@@ -900,6 +902,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "monitor": cmd_monitor,
         "reflect": cmd_reflect,
         "serve": cmd_serve,
+        "plugin": plugin_commands.run_plugin_action,
     }
     handler = handlers.get(args.command)
     if handler:

@@ -43,15 +43,22 @@ def serialize_run(run: Run, store: RunStore | None = None) -> dict:
     }
 
 
-def _review_state(summary: RunSummarySource) -> str:
-    if summary.review_status == "pending":
+def review_state(
+    status: str,
+    review_status: str | None,
+    reflection_reason: str | None,
+    baseline_won: bool | None,
+) -> str:
+    """Where a run's proposal review stands, from its status and reflection fields."""
+
+    if review_status == "pending":
         return "review-needed"
-    if summary.review_status in {"promoted", "partial", "dismissed"}:
-        return summary.review_status
-    if summary.status.value == "complete":
-        if summary.reflection_reason == NO_VALID_PROPOSAL_REASON:
+    if review_status in {"promoted", "partial", "dismissed"}:
+        return review_status
+    if status == "complete":
+        if reflection_reason == NO_VALID_PROPOSAL_REASON:
             return "no-valid-proposal"
-        if summary.baseline_won is True:
+        if baseline_won is True:
             return "no-change"
     return "none"
 
@@ -74,5 +81,10 @@ def serialize_run_summary(summary: RunSummarySource) -> dict:
             if summary.session_count is not None
             else None
         ),
-        "review_state": _review_state(summary),
+        "review_state": review_state(
+            summary.status.value,
+            summary.review_status,
+            summary.reflection_reason,
+            summary.baseline_won,
+        ),
     }

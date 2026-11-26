@@ -306,7 +306,8 @@ def _missing_required_schema_fields(
     return tuple(field for field in required if isinstance(field, str) and field not in parsed)
 
 
-def _build_env(provider: str) -> dict[str, str]:
+def cli_environment(provider: str) -> dict[str, str]:
+    """The environment judging runs `provider`'s CLI with, which signs in from its stored login."""
     return prepare_cli_subprocess(
         home=_HOME,
         codex_home=_JUDGE_CODEX_HOME,
@@ -544,7 +545,7 @@ class CliJudgeClient:
             messages = json_output_contract_messages(messages, response_schema)
         system = "\n\n".join(m["content"] for m in messages if m.get("role") == "system")
         user = "\n\n".join(m["content"] for m in messages if m.get("role") == "user")
-        env = _build_env(self._provider)
+        env = cli_environment(self._provider)
         schema_path: str | None = None
         if response_schema is not None and self._spec.schema_file:
             schema_path = self._write_schema_file(response_schema)

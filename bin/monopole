@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Runs one of Monopole's Prompting Time plugin actions, `weave-agent-signals plugin <action>`, such
+# as `bin/monopole status`. uv runs it from this repository's locked environment (uv.lock, with the
+# server and reflection extras), creating .venv on first use; --frozen never changes the lockfile.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+exec uv run --project "$root" --frozen --quiet --extra server --extra reflection \
+  weave-agent-signals plugin "$@"

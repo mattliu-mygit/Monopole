@@ -800,12 +800,12 @@ def test_devin_judge_config_is_never_seen_half_written(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "real-home"))
     monkeypatch.setattr(cli_backend, "_JUDGE_DEVIN_ROOT", str(tmp_path / "devin"))
     config = Path(process.devin_config_path(str(tmp_path / "devin" / "home")))
-    cli_backend._build_env("devin")
+    cli_backend.cli_environment("devin")
     stop = threading.Event()
 
     def prepare():
         while not stop.is_set():
-            cli_backend._build_env("devin")
+            cli_backend.cli_environment("devin")
 
     def read():
         bad = 0
@@ -833,7 +833,7 @@ def test_devin_judge_config_replaces_a_stale_file(tmp_path, monkeypatch):
     config.parent.mkdir(parents=True)
     config.write_text('{"permissions": {"allow": ["exec"]}}')
 
-    cli_backend._build_env("devin")
+    cli_backend.cli_environment("devin")
 
     assert json.loads(config.read_text()) == process.DEVIN_JUDGE_CONFIG
     assert os.listdir(config.parent) == ["config.json"]

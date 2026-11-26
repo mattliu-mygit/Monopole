@@ -1,0 +1,33 @@
+{
+  "manifest_version": 1,
+  "name": "monopole",
+  "title": "Monopole",
+  "version": "0.1.0",
+  "description": "Scores and judges your coding-agent sessions in CES, and proposes reviewed changes to your agent instructions.",
+  "start": ["bin/monopole-run"],
+  "prerequisites": [
+    { "command": "uv", "purpose": "Supplies the Python and the locked packages Monopole runs with." }
+  ],
+  "page": { "entry": "page/dist/index.html", "protocol": 2 },
+  "status": {
+    "format": 2,
+    "groups": [
+      { "id": "failed", "title": "Run failed", "needs_you": true, "order": 1 },
+      { "id": "review", "title": "Review needed", "needs_you": true, "order": 2 },
+      { "id": "running", "title": "Running", "needs_you": false, "order": 3 },
+      { "id": "done", "title": "Done", "needs_you": false, "order": 4, "folded": true }
+    ],
+    "item_actions": ["delete"]
+  },
+  "settings": "schemas/plugin-settings.json",
+  "actions": [
+    { "name": "status", "title": "Status", "description": "Prints Prompting Time's status format 2: whether runs are running, the providers a recent check found signed out, and the newest 50 runs that are not drafts. Reads files only.", "command": ["bin/monopole", "status"], "confirm": false },
+    { "name": "runs", "title": "List runs", "description": "Prints the newest runs as JSON, with each run's session, judges, mean rating, failure cause, and how its proposal compared with the current instructions. Reads files only.", "command": ["bin/monopole", "runs"], "confirm": false },
+    { "name": "run", "title": "Show a run", "description": "Prints one run as JSON, given --item <run id>: its card, selection, stages, rubric ratings, and models. Reads files only.", "command": ["bin/monopole", "run"], "confirm": false },
+    { "name": "delete", "title": "Delete run", "description": "Deletes a run that is not running from Monopole's run database, with its saved judge calls and events. Its Scores in CES stay.", "command": ["bin/monopole", "delete"], "confirm": true },
+    { "name": "providers", "title": "Last provider check", "description": "Prints the last provider sign-in check as JSON. Reads files only.", "command": ["bin/monopole", "providers"], "confirm": false },
+    { "name": "check-providers", "title": "Check providers", "description": "Checks whether Claude, Codex, and Devin are signed in with their status commands, and whether the W&B and OpenAI keys work with GET /models. Calls no model and spends nothing.", "command": ["bin/monopole", "check-providers"], "confirm": false },
+    { "name": "get-settings", "title": "Read settings", "description": "Prints the settings as JSON.", "command": ["bin/monopole", "get-settings"], "confirm": false },
+    { "name": "save-settings", "title": "Save settings", "description": "Checks the changed settings and saves them in Monopole's state folder.", "command": ["bin/monopole", "save-settings"], "confirm": false }
+  ]
+}

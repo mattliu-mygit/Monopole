@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Prompting Time's start command for Monopole: runs Monopole's server, which executes run stages and
+# recovers interrupted runs when it starts, until stopped. Settings come from the plugin's settings
+# (bin/monopole get-settings).
+#
+# Only one copy runs at a time: monopole-run holds the lock <state>/run.lock, with its process ID in
+# run.lock/pid, where <state> is $XDG_STATE_HOME/monopole (default ~/.local/state/monopole). Prompting
+# Time reads that file to tell a copy started elsewhere from its own. A lock whose process is gone,
+# or is now another program, is stale and is taken over.
+set -uo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/monopole"
+lock="$state/run.lock"
+mkdir -p "$state"
+
+# mkdir is atomic, so of two copies started at once only one gets the lock.
+if ! mkdir "$lock" 2>/dev/null; then
+  holder="$(cat "$lock/pid" 2>/dev/null || true)"
+  if [[ -n "$holder" ]] && ps -o command= -p "$holder" 2>/dev/null | grep -q monopole-run; then
+    echo "monopole-run: process $holder is already running Monopole; see $lock/pid" >&2
+    exit 1
+  fi
+  rm -rf "$lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    echo "monopole-run: another copy took $lock first" >&2
+    exit 1
+  fi
+fi
+echo "$$" > "$lock/pid.tmp" && mv "$lock/pid.tmp" "$lock/pid"
+
+server=""
+trap 'rm -rf "$lock"; [[ -z "$server" ]] || kill "$server" 2>/dev/null || true' EXIT
+trap 'exit 130' INT TERM HUP
+
+# The server runs as a child, not through exec, so this process, whose command line names
+# monopole-run, keeps the lock for as long as the server runs.
+"$root/bin/monopole" serve &
+server=$!
+wait "$server"

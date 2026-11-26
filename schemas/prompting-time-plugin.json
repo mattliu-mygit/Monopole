@@ -1,0 +1,106 @@
+{
+  "title": "Prompting Time plugin manifest",
+  "description": "What Prompting Time reads from a plugin's prompting-time-plugin.json to install, check, start, configure, and show it. Paths are relative to the plugin's folder.",
+  "type": "object",
+  "required": ["manifest_version", "name", "title", "version", "description", "start", "prerequisites", "page", "settings", "actions"],
+  "additionalProperties": false,
+  "properties": {
+    "manifest_version": { "description": "The number of this manifest format.", "enum": [1] },
+    "name": {
+      "description": "The plugin's ID, which names its page's address, pt-plugin://<name>/.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "title": { "description": "The name Prompting Time shows.", "type": "string" },
+    "version": {
+      "description": "The plugin's version; its release is tagged v<version>.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "description": { "type": "string" },
+    "start": {
+      "description": "The command Prompting Time starts when it opens, unless a copy already runs, and stops when it quits: a path, then its arguments.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "prerequisites": {
+      "description": "The programs Prompting Time checks for on PATH before it starts the plugin.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["command", "purpose"],
+        "additionalProperties": false,
+        "properties": {
+          "command": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+          "purpose": { "description": "Why the plugin needs it, for the message when it is missing.", "type": "string" },
+          "only_when": {
+            "description": "The program is needed only when one of the values in the settings object setting is value, as whooper-settings get prints the settings.",
+            "type": "object",
+            "required": ["setting", "value"],
+            "additionalProperties": false,
+            "properties": { "setting": { "type": "string" }, "value": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "page": {
+      "type": "object",
+      "required": ["entry", "protocol"],
+      "additionalProperties": false,
+      "properties": {
+        "entry": { "description": "The built page's HTML file, which the release archive holds.", "type": "string" },
+        "protocol": {
+          "description": "The version of the messages the page and Prompting Time exchange: 2, in which the page runs the manifest's actions itself, or 1, Whooper's review messages, which Prompting Time reads until no page speaks it.",
+          "enum": [1, 2]
+        }
+      }
+    },
+    "status": {
+      "description": "What the status action prints in status format 2, which schemas/prompting-time-status.json describes: the groups its items go in, and the actions their rows offer, which Prompting Time runs as the action's command, --item, and the item's id.",
+      "type": "object",
+      "required": ["format", "groups"],
+      "additionalProperties": false,
+      "properties": {
+        "format": { "enum": [2] },
+        "groups": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "title", "needs_you", "order"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "description": "What each item names as its group.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+              "title": { "type": "string", "pattern": "\\S" },
+              "needs_you": { "description": "Whether the group's items wait on the user, which lists them under Needs you.", "type": "boolean" },
+              "order": { "description": "Where the group lists among the others, lowest first.", "type": "integer", "minimum": 0 },
+              "folded": { "description": "Whether the group's section starts folded.", "type": "boolean" }
+            }
+          }
+        },
+        "item_actions": { "description": "Names of the manifest's actions.", "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "settings": { "description": "The JSON Schema of the settings Prompting Time's form edits.", "type": "string" },
+    "actions": {
+      "description": "The commands Prompting Time runs, each a path and its fixed arguments; Prompting Time adds the rest, such as a run ID.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "title", "description", "command", "confirm"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "command": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+          "confirm": {
+            "description": "Prompting Time asks the user before it runs the action, which acts outside this Mac, such as posting to GitHub.",
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}
