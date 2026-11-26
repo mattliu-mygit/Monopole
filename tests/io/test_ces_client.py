@@ -287,7 +287,10 @@ def test_scores_and_their_details_go_in_one_request_keyed_by_pass_and_target():
         "pass-1",
         "case",
         "c1",
-        [Score("efficiency", 1, ["fast"], {"waste": 0}, "turn", reason="ok")],
+        [
+            Score("efficiency", 1, ["fast"], {"waste": 0}, "turn", reason="ok"),
+            Score("outcome.test", 1, [], {}, "turn", version="v2"),
+        ],
     )
 
     request = route.calls.last.request
@@ -296,6 +299,8 @@ def test_scores_and_their_details_go_in_one_request_keyed_by_pass_and_target():
     assert request.headers["Idempotency-Key"].startswith("score-v2:pass-1:case:c1:")
     assert [s["value"] for s in body["scores"]][0] == 1.0
     assert body["scores"][1]["value"]["tags"] == ["fast"]
+    # Each details Score names its scorer's version.
+    assert [s["value"]["scorer_version"] for s in body["scores"][1::2]] == ["v1", "v2"]
     assert {s["target"]["id"] for s in body["scores"]} == {"c1"}
 
 

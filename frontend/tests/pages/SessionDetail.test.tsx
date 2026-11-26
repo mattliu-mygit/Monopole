@@ -201,6 +201,37 @@ describe('SessionDetail disclosures', () => {
     expect(screen.getByText('exit 1')).not.toBeNull()
   })
 
+  it('says how many outcomes a turn score did not store', async () => {
+    const session: SessionDetailData = await api.getSession('conversation-1')
+    api.getSession.mockResolvedValue({
+      ...session,
+      turn_scores: {
+        'trace-1234567890': [{
+          id: 'feedback-2',
+          feedback_type: 'weave_agent_signals.outcome.test',
+          payload: {
+            rating: 0,
+            tags: ['test_failure'],
+            reason: 'pytest: 1 failed out of 25',
+            details: {
+              outcomes: [
+                { framework: 'pytest', passed: 0, failed: 1 },
+                { framework: 'pytest', passed: 3, failed: 0 },
+              ],
+              outcome_count: 25,
+            },
+          },
+        }],
+      },
+    })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Turn 1/ }))
+
+    expect(screen.getByText('pytest: 0 passed, 1 failed')).not.toBeNull()
+    expect(screen.getByText('23 more not stored')).not.toBeNull()
+  })
+
   it("loads a turn's subagents only when asked", async () => {
     const session: SessionDetailData = await api.getSession('conversation-1')
     api.getSession.mockResolvedValue({

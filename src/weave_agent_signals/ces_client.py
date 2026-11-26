@@ -886,7 +886,7 @@ class CesClient:
                     f"scorer {score.scorer!r} is {ref.spec.value_type}, got {score.value!r}"
                 )
             details = {
-                "scorer_version": "v1",
+                "scorer_version": score.version,
                 "tags": score.tags,
                 "reason": score.reason,
                 "confidence": score.confidence,

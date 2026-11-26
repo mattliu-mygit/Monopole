@@ -20,6 +20,14 @@ are authoritative. An explicit null exit code is unknown; framework output or
 span status is used only when it can establish an outcome safely. Unknown
 evidence produces no invented success or failure.
 
+A turn outcome Score's details list the outcomes it saw (framework or tool,
+exit code, and parsed counts) without their command strings, which no reader
+used and which once made up 79% of turn Score bytes. A turn that drives
+subagents can run its tests hundreds of times, so the list keeps at most 20
+outcomes, failed ones first, in run order, and records the full count. Session
+outcome Scores store their failed builds the same way. Both are scorer version
+v2; Scores written earlier keep the commands and the full list.
+
 Process evaluation produces:
 
 - turn and session efficiency, based on observable repeated failing attempts and

@@ -52,6 +52,9 @@ function ScoreDetail({ fb, rubrics }: { fb: ScoreItem; rubrics: RubricDescriptor
   const repeatedReads = details.repeated_reads as Array<{ path: string; count: number }> | undefined
   const wasteRatio = details.waste_ratio as number | undefined
   const outcomes = details.outcomes as Array<Record<string, any>> | undefined
+  // Outcome scorers since v2 store at most 20 outcomes, failures first, with the full count.
+  const outcomeCount = details.outcome_count as number | undefined
+  const unstored = outcomes && outcomeCount != null ? outcomeCount - outcomes.length : 0
 
   const attempts = Array.isArray(details.attempts)
     ? details.attempts as ReviewAttempt[]
@@ -140,6 +143,9 @@ function ScoreDetail({ fb, rubrics }: { fb: ScoreItem; rubrics: RubricDescriptor
               {o.success != null && o.passed == null && o.issue_count == null && o.error_count == null && o.files_changed == null && `: ${o.success ? 'success' : 'failed'}`}
             </div>
           ))}
+          {unstored > 0 && (
+            <div className="ml-2 text-gray-400">{unstored} more not stored</div>
+          )}
         </div>
       )}
 

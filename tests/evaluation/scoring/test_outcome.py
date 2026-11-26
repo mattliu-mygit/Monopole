@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from weave_agent_signals.models import ToolSpan, TurnSpan
 from weave_agent_signals.scorers.outcome import (
+    MAX_STORED_OUTCOMES,
+    OUTCOME_SCORER_VERSION,
     CommandOutcome,
     GitOutcome,
     InstallOutcome,
@@ -885,3 +888,51 @@ def test_exploration_not_scored():
     t3 = _bash("grep -r TODO .", result="file.py:# TODO fix")
     scores = score_turn_outcomes(_turn([t1, t2, t3]))
     assert len(scores) == 0
+
+
+def _run(cmd, exit_code, result=""):
+    return replace(_bash(cmd, result), exit_code=exit_code)
+
+
+def test_outcome_details_store_no_commands_and_name_their_scorer_version():
+    turn = _turn(
+        [
+            _run("pytest tests/", 0, "===== 2 passed in 0.1s ====="),
+            _run("go build ./...", 0),
+            _run("ruff check .", 1, "Found 3 errors."),
+            _run("pip install requests", 0),
+            _run("git commit -m done", 0),
+            _run("frobnicate --all", 1),
+        ]
+    )
+
+    scores = score_turn_outcomes(turn)
+
+    assert sorted(s.scorer for s in scores) == [
+        "outcome.build",
+        "outcome.command",
+        "outcome.git",
+        "outcome.install",
+        "outcome.lint",
+        "outcome.test",
+    ]
+    for score in scores:
+        assert score.version == OUTCOME_SCORER_VERSION == "v2"
+        assert score.metadata["outcome_count"] == len(score.metadata["outcomes"]) == 1
+        assert "command" not in score.metadata["outcomes"][0], score.scorer
+    assert "frobnicate" in next(s for s in scores if s.scorer == "outcome.command").reason
+
+
+def test_outcome_details_keep_at_most_the_cap_failures_first_in_run_order():
+    runs = [
+        _run(f"pytest tests/test_{i}.py", 1 if i in (3, 23) else 0, f"== {i} passed in 0.1s ==")
+        for i in range(MAX_STORED_OUTCOMES + 5)
+    ]
+
+    [score] = score_turn_outcomes(_turn(runs))
+
+    stored = score.metadata["outcomes"]
+    assert score.metadata["outcome_count"] == MAX_STORED_OUTCOMES + 5
+    assert [o["passed"] for o in stored] == [*range(MAX_STORED_OUTCOMES - 1), 23]
+    assert [o["exit_code"] for o in stored].count(1) == 2
+    assert score.metadata["test_count"] == sum(range(MAX_STORED_OUTCOMES + 5))

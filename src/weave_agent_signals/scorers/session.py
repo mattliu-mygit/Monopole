@@ -16,7 +16,13 @@ from collections.abc import Mapping
 from datetime import timezone
 
 from weave_agent_signals.models import Score, SessionView, ToolSpan, TurnSpan, parse_utc
-from weave_agent_signals.scorers.outcome import BuildOutcome, TestRunOutcome, extract_outcomes
+from weave_agent_signals.scorers.outcome import (
+    OUTCOME_SCORER_VERSION,
+    BuildOutcome,
+    TestRunOutcome,
+    extract_outcomes,
+    stored_outcomes,
+)
 
 SESSION_TESTS = "outcome.session_tests_passed"
 SESSION_BUILDS = "outcome.session_no_failed_builds"
@@ -72,6 +78,7 @@ def score_session_outcomes(session: SessionView) -> list[Score]:
                 confidence=1.0,
                 metadata={"last_run": last.to_dict(), "runs": len(tests), "failed_runs": failed},
                 granularity="session",
+                version=OUTCOME_SCORER_VERSION,
                 reason=f"last of {len(tests)} test runs ({last.framework}) {state}",
             )
         )
@@ -84,8 +91,13 @@ def score_session_outcomes(session: SessionView) -> list[Score]:
                 value=not failed_builds,
                 tags=["build_failure"] if failed_builds else ["builds_passed"],
                 confidence=1.0,
-                metadata={"runs": len(builds), "failed": [b.to_dict() for b in failed_builds]},
+                metadata={
+                    "runs": len(builds),
+                    "failed": stored_outcomes(failed_builds, lambda _b: True),
+                    "failed_count": len(failed_builds),
+                },
                 granularity="session",
+                version=OUTCOME_SCORER_VERSION,
                 reason=f"{len(failed_builds)} of {len(builds)} builds failed",
             )
         )

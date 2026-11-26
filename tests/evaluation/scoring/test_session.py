@@ -11,6 +11,7 @@ import pytest
 
 from weave_agent_signals.models import SessionView, SubagentSpan, ToolSpan, TurnSpan
 from weave_agent_signals.scorers import score_trajectory
+from weave_agent_signals.scorers.outcome import MAX_STORED_OUTCOMES, OUTCOME_SCORER_VERSION
 from weave_agent_signals.scorers.session import (
     MEASURE_DURATION,
     MEASURE_TOKENS,
@@ -298,3 +299,16 @@ def test_dimension_scores_are_strings_named_by_field():
         "core",
         {"source": "derived"},
     )
+
+
+def test_session_outcomes_store_no_commands_and_keep_at_most_the_cap_of_failed_builds():
+    builds = [_bash(f"go build ./pkg{i}/...", 1, i) for i in range(MAX_STORED_OUTCOMES + 3)]
+    session = _session(_turn(0, [*builds, _bash("pytest -q", 0, 40)]))
+
+    scores = _by_name(score_session_outcomes(session))
+
+    failed = scores[SESSION_BUILDS].metadata
+    assert (len(failed["failed"]), failed["failed_count"]) == (MAX_STORED_OUTCOMES, 23)
+    assert "command" not in failed["failed"][0]
+    assert "command" not in scores[SESSION_TESTS].metadata["last_run"]
+    assert {s.version for s in scores.values()} == {OUTCOME_SCORER_VERSION}

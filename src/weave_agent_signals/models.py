@@ -156,6 +156,7 @@ class Score:
     granularity: str
     confidence: float | None = None
     reason: str = ""
+    version: str = "v1"  # the scorer's version, which its details record as `scorer_version`
 
     def stamp(self, *, config_version, git_branch, run_time) -> None:
         self.metadata.setdefault("config_version", config_version)

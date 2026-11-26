@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,7 +39,6 @@ class TestRunOutcome:
     def to_dict(self) -> dict[str, Any]:
         return {
             "framework": self.framework,
-            "command": self.command,
             "exit_code": self.exit_code,
             "passed": self.passed,
             "failed": self.failed,
@@ -61,7 +61,6 @@ class BuildOutcome:
     def to_dict(self) -> dict[str, Any]:
         return {
             "tool": self.tool,
-            "command": self.command,
             "exit_code": self.exit_code,
             "success": self.success,
             "error_count": self.error_count,
@@ -81,7 +80,6 @@ class LintOutcome:
     def to_dict(self) -> dict[str, Any]:
         return {
             "tool": self.tool,
-            "command": self.command,
             "exit_code": self.exit_code,
             "clean": self.clean,
             "issue_count": self.issue_count,
@@ -99,7 +97,6 @@ class InstallOutcome:
     def to_dict(self) -> dict[str, Any]:
         return {
             "tool": self.tool,
-            "command": self.command,
             "exit_code": self.exit_code,
             "success": self.success,
             "error_message": self.error_message,
@@ -119,7 +116,6 @@ class GitOutcome:
     def to_dict(self) -> dict[str, Any]:
         return {
             "operation": self.operation,
-            "command": self.command,
             "exit_code": self.exit_code,
             "success": self.success,
             "files_changed": self.files_changed,
@@ -138,7 +134,6 @@ class CommandOutcome:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "command": self.command,
             "exit_code": self.exit_code,
             "success": self.success,
         }
@@ -768,6 +763,27 @@ OUTCOME_TAGS: dict[str, tuple[str, str | None]] = {
 }
 
 
+# v2 stores no command strings and at most MAX_STORED_OUTCOMES outcomes. Commands were 79% of
+# turn Score bytes in November 2026 and no reader used them; a turn that drives subagents can
+# run its tests hundreds of times.
+OUTCOME_SCORER_VERSION = "v2"
+MAX_STORED_OUTCOMES = 20
+
+
+def stored_outcomes(outcomes: Sequence, failed: Callable[[Any], bool]) -> list[dict[str, Any]]:
+    """At most MAX_STORED_OUTCOMES of the outcomes, in run order, keeping failed ones first."""
+    kept = sorted(range(len(outcomes)), key=lambda i: not failed(outcomes[i]))
+    return [outcomes[i].to_dict() for i in sorted(kept[:MAX_STORED_OUTCOMES])]
+
+
+def _outcome_details(outcomes: Sequence, failed: Callable[[Any], bool], **extra) -> dict:
+    return {
+        "outcomes": stored_outcomes(outcomes, failed),
+        "outcome_count": len(outcomes),
+        **extra,
+    }
+
+
 def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
     all_tool_calls = turn.tool_calls + [tc for sub in turn.subagents for tc in sub.tool_calls]
     outcomes = extract_outcomes(all_tool_calls)
@@ -792,12 +808,14 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
                 value=1.0 if all_passed else 0.0,
                 tags=[OUTCOME_TAGS["outcome.test"][all_passed]],
                 confidence=1.0,
-                metadata={
-                    "outcomes": [t.to_dict() for t in tests],
-                    "test_count": total_passed + total_failed,
-                    "fail_count": total_failed,
-                },
+                metadata=_outcome_details(
+                    tests,
+                    lambda t: not t.success,
+                    test_count=total_passed + total_failed,
+                    fail_count=total_failed,
+                ),
                 granularity="turn",
+                version=OUTCOME_SCORER_VERSION,
                 reason=reason,
             )
         )
@@ -813,8 +831,9 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
                 value=1.0 if all_ok else 0.0,
                 tags=[OUTCOME_TAGS["outcome.build"][all_ok]],
                 confidence=1.0,
-                metadata={"outcomes": [b.to_dict() for b in builds]},
+                metadata=_outcome_details(builds, lambda b: not b.success),
                 granularity="turn",
+                version=OUTCOME_SCORER_VERSION,
                 reason=reason,
             )
         )
@@ -831,8 +850,9 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
                 value=1.0 if all_clean else 0.0,
                 tags=[OUTCOME_TAGS["outcome.lint"][all_clean]],
                 confidence=1.0,
-                metadata={"outcomes": [lo.to_dict() for lo in lints]},
+                metadata=_outcome_details(lints, lambda lo: not lo.clean),
                 granularity="turn",
+                version=OUTCOME_SCORER_VERSION,
                 reason=reason,
             )
         )
@@ -848,8 +868,9 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
                 value=1.0 if all_ok else 0.0,
                 tags=[OUTCOME_TAGS["outcome.install"][all_ok]],
                 confidence=1.0,
-                metadata={"outcomes": [i.to_dict() for i in installs]},
+                metadata=_outcome_details(installs, lambda i: not i.success),
                 granularity="turn",
+                version=OUTCOME_SCORER_VERSION,
                 reason=reason,
             )
         )
@@ -865,8 +886,9 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
                 value=1.0 if all_ok else 0.0,
                 tags=[OUTCOME_TAGS["outcome.git"][all_ok]],
                 confidence=1.0,
-                metadata={"outcomes": [g.to_dict() for g in gits]},
+                metadata=_outcome_details(gits, lambda g: not g.success),
                 granularity="turn",
+                version=OUTCOME_SCORER_VERSION,
                 reason=reason,
             )
         )
@@ -882,12 +904,14 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
                 value=0.0,
                 tags=[OUTCOME_TAGS["outcome.command"][False]],
                 confidence=0.5,
-                metadata={
-                    "outcomes": [c.to_dict() for c in failed_cmds],
-                    "total_commands": len(cmds),
-                    "failed_commands": len(failed_cmds),
-                },
+                metadata=_outcome_details(
+                    failed_cmds,
+                    lambda _c: True,
+                    total_commands=len(cmds),
+                    failed_commands=len(failed_cmds),
+                ),
                 granularity="turn",
+                version=OUTCOME_SCORER_VERSION,
                 reason=reason,
             )
         )
