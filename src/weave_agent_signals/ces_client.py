@@ -523,11 +523,26 @@ class CesClient:
         limit: int | None = None,
     ) -> list[str]:
         """Session Trajectories with a turn that started in the window, newest first. With no
-        `since` the window has no start, so pass a `limit` to keep the read bounded.
+        `since` the window has no start, so pass a `limit` to keep the read bounded."""
+        return list(self.recent_turn_rows(catalog, since=since, until=until, limit=limit)[0])
+
+    def recent_turn_rows(
+        self,
+        catalog: Catalog,
+        *,
+        since: datetime | None,
+        until: datetime | None = None,
+        limit: int | None = None,
+    ) -> tuple[dict[str, list[dict]], bool]:
+        """The turn rows read while finding the sessions with a turn in the window, by session,
+        newest activity first, and whether they are all of those sessions' turn rows. They are
+        when the read reached the Dataset's oldest turn; a read that stops at `since` or at
+        `limit` sessions leaves their older turns unread.
 
         CES filters can't range-compare string fields, so this reads turns newest first and
         stops at the first one before `since`. The adapter's timestamps sort in time order."""
-        found = {}
+        seen: dict[str, list[dict]] = {}
+        found: dict[str, None] = {}
         path = f"/evaluations/{catalog.turns_evaluation_id}/rows/search"
         for page in self._pages(path, {"filter": FIRST_STEP, "order_by": "i.started_at desc"}):
             for row in page.get("rows") or []:
@@ -535,15 +550,17 @@ class CesClient:
                     parse_utc(row["input"].get("started_at")),
                     row["input"].get("session_trajectory_id"),
                 )
+                if session:
+                    seen.setdefault(session, []).append(row)
                 if started is None:
                     continue  # a turn without a start time can't be placed in the window
                 if since is not None and started < since:
-                    return list(found)
+                    return {sid: seen[sid] for sid in found}, False
                 if session and (until is None or started <= until):
                     found.setdefault(session, None)
                     if limit is not None and len(found) >= limit:
-                        return list(found)
-        return list(found)
+                        return {sid: seen[sid] for sid in found}, False
+        return {sid: seen[sid] for sid in found}, True
 
     def turn_scores(self, catalog: Catalog, trajectory_id: str) -> dict[str, list[dict]]:
         """Scores on each turn of one session, keyed by the turn's first Case ID."""

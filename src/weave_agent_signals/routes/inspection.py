@@ -271,9 +271,10 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             # that can't be evaluated are skipped, and the scan reads at most SESSION_SCAN_FACTOR
             # times `limit` of them, so one request's CES reads stay bounded.
             scan = limit * SESSION_SCAN_FACTOR
-            session_ids = ces.client.find_sessions(
+            scanned, complete = ces.client.recent_turn_rows(
                 ces.catalog, since=since_value, until=until_value, limit=scan
             )
+            session_ids = list(scanned)
             visible: list[tuple[dict, list[TurnSpan]]] = []
             visible_rows: dict[str, list[dict]] = {}
             turn_ids: dict[str, tuple[str, ...]] = {}
@@ -283,7 +284,11 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             while read < len(session_ids) and len(visible) < limit:
                 batch = session_ids[read : read + limit - len(visible)]
                 read += len(batch)
-                for sid, rows in turn_rows(ces, batch).items():
+                # A scan that reached the oldest turn already read every turn row of its sessions.
+                batch_rows = (
+                    {sid: scanned[sid] for sid in batch} if complete else turn_rows(ces, batch)
+                )
+                for sid, rows in batch_rows.items():
                     turns = turns_from_rows(sid, rows)
                     if not session_is_evaluable(turns):
                         continue

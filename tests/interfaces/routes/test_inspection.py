@@ -111,6 +111,7 @@ class FakeCes:
         self.all_scores: list[dict] = []
         self.windows: list[tuple] = []
         self.feedback_calls: list[list[str]] = []
+        self.scan_complete = False
         self.client = self
         self.catalog = None
 
@@ -119,6 +120,11 @@ class FakeCes:
 
     def __exit__(self, *_args):
         return None
+
+    def recent_turn_rows(self, catalog, *, since, until=None, limit=None):
+        found = self.find_sessions(catalog, since=since, until=until, limit=limit)
+        rows = {sid: [_row_of(t) for t in self.turns if t.conversation_id == sid] for sid in found}
+        return rows, self.scan_complete
 
     def find_sessions(self, _catalog, *, since, until=None, limit=None):
         self.windows.append((since, until))
@@ -220,6 +226,16 @@ def test_session_listing_without_since_lists_the_newest_sessions_of_any_age():
 
     assert [s["conversation_id"] for s in body["sessions"]] == ["session-one"]
     assert backend.windows == [(None, None)]
+
+
+def test_session_listing_uses_the_scans_rows_when_it_read_every_turn():
+    client, backend = _client()
+    backend.scan_complete = True
+    backend.session_turn_rows = None  # a second read would fail
+
+    body = client.get("/api/sessions", params={"since": "2026-07-14T00:00:00Z"}).json()
+
+    assert [s["conversation_id"] for s in body["sessions"]] == ["session-one", "session-two"]
 
 
 def test_session_listing_totals_only_turns_inside_the_window():

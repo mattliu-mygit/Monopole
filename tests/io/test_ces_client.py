@@ -899,6 +899,28 @@ def test_find_sessions_stops_reading_at_its_limit():
 
 
 @respx.mock
+def test_recent_turn_rows_are_complete_only_when_the_read_reaches_the_oldest_turn():
+    _catalog_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = client.ensure_catalog("ds-1")
+    rows = [
+        {"input": {"started_at": f"2026-11-0{day}T10:00:00Z", "session_trajectory_id": sid}}
+        for day, sid in ((5, "s1"), (4, "s2"), (3, "s1"), (2, "s3"))
+    ]
+    respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
+        return_value=httpx.Response(200, json={"rows": rows})
+    )
+
+    everything = client.recent_turn_rows(catalog, since=None)
+    two = client.recent_turn_rows(catalog, since=None, limit=2)
+    windowed = client.recent_turn_rows(catalog, since=datetime(2026, 11, 3, tzinfo=timezone.utc))
+
+    assert everything == ({"s1": [rows[0], rows[2]], "s2": [rows[1]], "s3": [rows[3]]}, True)
+    assert two == ({"s1": [rows[0]], "s2": [rows[1]]}, False)
+    assert windowed == ({"s1": [rows[0], rows[2]], "s2": [rows[1]]}, False)
+
+
+@respx.mock
 def test_find_sessions_without_since_reads_any_age_until_its_limit():
     _catalog_routes()
     client = CesClient("http://ces.test", "scope-1", api_key="k")
