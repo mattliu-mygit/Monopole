@@ -519,6 +519,8 @@ def test_session_listing_reuses_estimates_while_a_sessions_turns_are_unchanged()
     params = {"since": "2026-07-14T00:00:00Z", "limit": 1, "include_estimates": "true"}
 
     first = client.get("/api/sessions", params=params).json()["sessions"][0]
+    # Another window, so the route builds a new list instead of serving the last one.
+    params["until"] = "2026-07-15T00:00:00Z"
     second = client.get("/api/sessions", params=params).json()["sessions"][0]
 
     assert len(reads) == 1
@@ -539,13 +541,13 @@ def test_session_listing_keeps_only_the_newest_sessions_cached(monkeypatch):
     params = {"since": "2026-07-14T00:00:00Z", "limit": 2, "include_estimates": "true"}
 
     client.get("/api/sessions", params=params)
-    client.get("/api/sessions", params=params)
+    client.get("/api/sessions", params={**params, "until": "2026-07-15T00:00:00Z"})
 
     # Two sessions, room for one estimate: the second listing reads both sessions again.
     assert len(reads) == 4
 
 
-def test_session_listing_serves_cached_turns_and_refreshes_them_in_the_background():
+def test_session_listing_serves_the_last_list_and_rebuilds_it_in_the_background():
     import dataclasses
     import time
     from datetime import timedelta

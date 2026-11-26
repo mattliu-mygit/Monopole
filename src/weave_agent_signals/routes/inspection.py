@@ -7,6 +7,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime
 from typing import Any, get_args
 
 from fastapi import APIRouter, HTTPException, Query
@@ -35,9 +36,11 @@ _SIGNAL_THRESHOLD = 0.5
 
 
 SESSION_SCAN_FACTOR = 3
-# How many sessions' turn rows and judging estimates the list keeps: two of the largest scans
+# How many sessions' judging estimates the list keeps: two of the largest scans
 # (100 sessions times SESSION_SCAN_FACTOR), so one load never evicts its own sessions.
 SESSION_CACHE_SIZE = 2 * 100 * SESSION_SCAN_FACTOR
+# How many distinct list queries (window, limit, and estimates) keep their last list.
+LISTING_CACHE_SIZE = 32
 _LOG = logging.getLogger(__name__)
 
 
@@ -194,17 +197,17 @@ class _LruCache:
 
     def __init__(self, size: int) -> None:
         self._size = size
-        self._entries: OrderedDict[str, Any] = OrderedDict()
+        self._entries: OrderedDict[Any, Any] = OrderedDict()
         self._lock = threading.Lock()
 
-    def get(self, key: str) -> Any | None:
+    def get(self, key: Any) -> Any | None:
         with self._lock:
             if key not in self._entries:
                 return None
             self._entries.move_to_end(key)
             return self._entries[key]
 
-    def update(self, entries: dict[str, Any]) -> None:
+    def update(self, entries: dict[Any, Any]) -> None:
         with self._lock:
             for key, value in entries.items():
                 self._entries[key] = value
@@ -220,59 +223,24 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
     # Estimates read a whole session, subagents included. Stored turns never change, so each
     # session's estimate, kept with its turn IDs, is reused until its turn list changes.
     estimates = _LruCache(SESSION_CACHE_SIZE)
-    # CES row search is the slowest part of a list load and can't ask for only newer turns, so
-    # the list serves each session's last-read turn rows and refreshes them in the background.
-    # A just-finished turn appears one load later. Runs never read this cache.
-    cached_rows = _LruCache(SESSION_CACHE_SIZE)
-    refreshing: set[str] = set()
-    refresh_lock = threading.Lock()
+    # Reading turn rows from CES takes 10 s or more per list load, mostly in 503 retries and
+    # small pages, and CES can't ask for only newer turns. So the route serves each query's
+    # last list and rebuilds it in the background: a just-finished turn appears one load
+    # later. Runs never read this cache.
+    listings = _LruCache(LISTING_CACHE_SIZE)
+    rebuilding: set[tuple] = set()
+    rebuild_lock = threading.Lock()
 
-    def refresh_rows(session_ids: list[str]) -> None:
-        try:
-            with ces_factory() as ces:
-                cached_rows.update(ces.client.session_turn_rows(ces.catalog, session_ids))
-        except Exception:
-            _LOG.warning("background turn-row refresh failed", exc_info=True)
-        finally:
-            with refresh_lock:
-                refreshing.difference_update(session_ids)
-
-    def turn_rows(ces: CesSession, batch: list[str]) -> dict[str, list[dict]]:
-        found = {sid: rows for sid in batch if (rows := cached_rows.get(sid)) is not None}
-        if missing := [sid for sid in batch if sid not in found]:
-            fresh = ces.client.session_turn_rows(ces.catalog, missing)
-            cached_rows.update(fresh)
-            found.update(fresh)
-        with refresh_lock:
-            stale = [sid for sid in batch if sid not in missing and sid not in refreshing]
-            refreshing.update(stale)
-        if stale:
-            threading.Thread(target=refresh_rows, args=(stale,), daemon=True).start()
-        return {sid: found[sid] for sid in batch}
-
-    @router.get("/sessions")
-    def get_sessions(
-        since: str | None = None,
-        until: str | None = None,
-        timezone_name: str | None = Query(default=None, alias="timezone"),
-        limit: int = Query(default=20, ge=1, le=100),
-        include_estimates: bool = False,
-    ) -> SessionListResponse:
-        try:
-            since_value, until_value = parse_selection_bounds(
-                since,
-                until,
-                timezone_name,
-            )
-        except DateFilterError as error:
-            raise _date_error(error) from error
+    def build_listing(
+        since: datetime | None, until: datetime | None, limit: int, include_estimates: bool
+    ) -> dict:
         with ces_factory() as ces:
             # Newest activity first, so reading stops once `limit` sessions are found. Sessions
             # that can't be evaluated are skipped, and the scan reads at most SESSION_SCAN_FACTOR
             # times `limit` of them, so one request's CES reads stay bounded.
             scan = limit * SESSION_SCAN_FACTOR
             scanned, complete = ces.client.recent_turn_rows(
-                ces.catalog, since=since_value, until=until_value, limit=scan
+                ces.catalog, since=since, until=until, limit=scan
             )
             session_ids = list(scanned)
             visible: list[tuple[dict, list[TurnSpan]]] = []
@@ -286,7 +254,9 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                 read += len(batch)
                 # A scan that reached the oldest turn already read every turn row of its sessions.
                 batch_rows = (
-                    {sid: scanned[sid] for sid in batch} if complete else turn_rows(ces, batch)
+                    {sid: scanned[sid] for sid in batch}
+                    if complete
+                    else ces.client.session_turn_rows(ces.catalog, batch)
                 )
                 for sid, rows in batch_rows.items():
                     turns = turns_from_rows(sid, rows)
@@ -295,8 +265,8 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                     in_window = [
                         turn
                         for turn in turns
-                        if (since_value is None or turn.started_at >= since_value)
-                        and (until_value is None or turn.started_at <= until_value)
+                        if (since is None or turn.started_at >= since)
+                        and (until is None or turn.started_at <= until)
                     ]
                     if in_window:
                         visible.append((_session_summary(sid, in_window), in_window))
@@ -317,14 +287,50 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             feedback = _by_target(ces.client.turn_row_scores(visible_rows))
         for summary, turns in visible:
             summary["signal_evidence"] = _signal_evidence(turns, feedback)
-        return SessionListResponse.model_validate(
-            {
-                "sessions": [summary for summary, _turns in visible],
-                "total": len(session_ids),
-                "truncated": read < len(session_ids) or len(session_ids) == scan,
-                "limit": limit,
-            }
-        )
+        return {
+            "sessions": [summary for summary, _turns in visible],
+            "total": len(session_ids),
+            "truncated": read < len(session_ids) or len(session_ids) == scan,
+            "limit": limit,
+        }
+
+    def rebuild(key: tuple) -> None:
+        try:
+            listings.update({key: build_listing(*key)})
+        except Exception:
+            _LOG.warning("background session-list rebuild failed", exc_info=True)
+        finally:
+            with rebuild_lock:
+                rebuilding.discard(key)
+
+    @router.get("/sessions")
+    def get_sessions(
+        since: str | None = None,
+        until: str | None = None,
+        timezone_name: str | None = Query(default=None, alias="timezone"),
+        limit: int = Query(default=20, ge=1, le=100),
+        include_estimates: bool = False,
+    ) -> SessionListResponse:
+        try:
+            since_value, until_value = parse_selection_bounds(
+                since,
+                until,
+                timezone_name,
+            )
+        except DateFilterError as error:
+            raise _date_error(error) from error
+        key = (since_value, until_value, limit, include_estimates)
+        listing = listings.get(key)
+        if listing is None:
+            listing = build_listing(*key)
+            listings.update({key: listing})
+        else:
+            with rebuild_lock:
+                stale = key not in rebuilding
+                rebuilding.add(key)
+            if stale:
+                threading.Thread(target=rebuild, args=(key,), daemon=True).start()
+        return SessionListResponse.model_validate(listing)
 
     @router.get("/sessions/{conversation_id}")
     def get_session(conversation_id: str) -> SessionDetailResponse:
