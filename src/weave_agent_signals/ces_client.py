@@ -731,10 +731,16 @@ class CesClient:
             limit=limit,
         )
         targets = [(r["case_id"], r["input"], r.get("scores") or []) for r in turn_rows]
-        sessions = (
-            None if limit is None else {r["input"].get("session_trajectory_id") for r in turn_rows}
-        )
-        return self._score_records(targets + self._session_targets(catalog, sessions))
+        sessions = {r["input"].get("session_trajectory_id") for r in turn_rows}
+        # One paged read of every session row instead of one read per session: CES can't filter
+        # Trajectory rows by ID. It reads sessions the turns don't reach too, which costs more
+        # than per-session reads only once the Dataset holds far more sessions than those.
+        targets += [
+            target
+            for target in self._session_targets(catalog)
+            if limit is None or target[0] in sessions
+        ]
+        return self._score_records(targets)
 
     def cohort_scores(
         self, catalog: Catalog, session_ids: list[str], *, turn_rows: dict | None = None

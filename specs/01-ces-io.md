@@ -84,7 +84,12 @@ a subagent Trajectory's root Case is the parent's Case that launched it, and
 the adapter writes the session's Trajectory ID on every Case of a session.
 `score` and `backfill` read each session's row and its subagents' rows before
 writing, so the number of reads grows with the sessions scored, not with the
-Dataset.
+Dataset. CES can't filter Trajectory rows by ID, so analysis and monitoring,
+which want the sessions of the newest turns, read every session's row with
+`depth = 0` in one paged read and keep those sessions: all 10 sessions in
+0.2-0.4 s in November 2026, against 0.8-4.8 s for ten single-row reads two at a
+time. That read grows with the Dataset's sessions; it stops paying once the
+Dataset holds far more sessions than the newest turns reach.
 
 Analysis, reflection, and the session pages read Scores as records shaped
 `{id, feedback_type, target_id, payload}`. Reflection pins each record's Score

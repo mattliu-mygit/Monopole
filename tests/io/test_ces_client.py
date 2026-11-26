@@ -623,7 +623,7 @@ def test_read_all_scores_turns_ces_rows_into_feedback_records():
 
 
 @respx.mock
-def test_a_limit_reads_the_newest_turns_and_only_their_sessions_scores():
+def test_a_limit_reads_the_newest_turns_and_only_their_sessions_scores_in_one_session_read():
     client = CesClient("http://ces.test", "scope-1", api_key="k")
     catalog = Catalog("ev-turns", "ev-sessions", {})
     turns = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
@@ -638,14 +638,16 @@ def test_a_limit_reads_the_newest_turns_and_only_their_sessions_scores():
             },
         )
     )
-    sessions = _session_row_routes(
-        {
-            tid: _trajectory_row(
-                tid,
-                scores=[{"score_id": tid, "scorer_id": "sc", "scorer_version_id": "v", "value": 1}],
-            )
-            for tid in ("s-new", "s-old")
-        }
+    rows = [
+        _trajectory_row(
+            tid,
+            scores=[{"score_id": tid, "scorer_id": "sc", "scorer_version_id": "v", "value": 1}],
+        )
+        for tid in ("s-new", "s-old")
+    ]
+    by_id = _session_row_routes({row["trajectory"]["trajectory_id"]: row for row in rows})
+    listing = respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
+        return_value=httpx.Response(200, json={"rows": rows})
     )
     names = respx.get(f"{BASE}/scorers/sc/versions/v").mock(
         return_value=httpx.Response(200, json={"name": "efficiency.session"})
@@ -657,7 +659,8 @@ def test_a_limit_reads_the_newest_turns_and_only_their_sessions_scores():
     assert turns.call_count == 2
     assert json.loads(turns.calls.last.request.content)["order_by"] == "i.started_at desc"
     assert [r["target_id"] for r in records] == ["s-new"]
-    assert {c.request.url.path.rsplit("/", 1)[-1] for c in sessions.calls} == {"s-new"}
+    assert (listing.call_count, by_id.call_count) == (2, 0)
+    assert listing.calls.last.request.url.params["filter"] == "depth = 0"
     assert names.call_count == 1
 
 
