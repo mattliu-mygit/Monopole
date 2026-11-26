@@ -1,0 +1,31 @@
+{
+  "name": "monopole-page",
+  "private": true,
+  "description": "Monopole's page in Prompting Time: its runs, one run, and provider sign-in checks, through page protocol 2.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@prompting-time/ui": "file:../../repos/prompting-time-uipkg/packages/ui/prompting-time-ui-0.1.0.tgz",
+    "@solidjs/web": "2.0.1",
+    "solid-js": "2.0.1"
+  },
+  "devDependencies": {
+    "@solidjs/vite-plugin": "3.0.1",
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/jest-dom": "6.10.0",
+    "jsdom": "30.0.1",
+    "typescript": "5.9.3",
+    "vite": "8.2.2",
+    "vitest": "4.1.11"
+  },
+  "overrides": {
+    "@solidjs/compiler": "2.0.1",
+    "@solidjs/signals": "2.0.1"
+  }
+}

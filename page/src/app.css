@@ -1,0 +1,291 @@
+/* The page's layout, after the agreed A5 mock: tight cards in one column. Every value is a Sigil
+   variable from @prompting-time/ui's styles.css; color appears only where a status means it: red
+   for failed or blocked, orange for waiting on you, green for ready. */
+html,
+body,
+#root {
+  block-size: 100%;
+}
+
+h2,
+h3,
+p,
+dl,
+dd {
+  margin: 0;
+}
+
+ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.m-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-space-8);
+  max-inline-size: 960px;
+  padding: var(--s-space-8) var(--s-space-12);
+}
+
+.m-nav {
+  display: flex;
+  gap: var(--s-space-4);
+}
+
+.m-nav button {
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--s-text-muted);
+  cursor: pointer;
+}
+
+.m-nav button[aria-current="page"] {
+  border-color: var(--s-border-muted);
+  color: var(--s-text);
+}
+
+.m-hint,
+.m-meta,
+.m-quiet {
+  color: var(--s-text-muted);
+  font-size: var(--s-size-xs);
+}
+
+.m-error {
+  color: var(--s-error);
+  font-size: var(--s-size-sm);
+}
+
+.m-failed {
+  color: var(--s-error);
+}
+
+.m-mono {
+  font-family: var(--s-font-mono);
+}
+
+.m-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.m-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--s-space-8);
+  padding: var(--s-space-8) var(--s-space-12);
+  border: 1px solid var(--s-border-muted);
+  background: var(--s-surface);
+}
+
+.m-card-body {
+  min-inline-size: 0;
+}
+
+.m-title {
+  display: block;
+  max-inline-size: 100%;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-weight: var(--s-weight-medium);
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.m-title:hover {
+  text-decoration: underline;
+}
+
+.m-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-space-4);
+  margin-block-start: 2px;
+  color: var(--s-text-secondary);
+  font-size: var(--s-size-xs);
+}
+
+.m-facts strong,
+.m-proposal strong {
+  color: var(--s-text);
+  font-weight: var(--s-weight-medium);
+}
+
+.m-card-side {
+  display: flex;
+  align-items: flex-start;
+}
+
+.m-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-space-4);
+  white-space: nowrap;
+  font-size: var(--s-size-xs);
+}
+
+.m-status-button {
+  padding: 2px var(--s-space-4);
+  border: 1px solid transparent;
+  background: none;
+  cursor: pointer;
+}
+
+.m-status-button:hover,
+.m-status-button[aria-expanded="true"] {
+  border-color: var(--s-border-muted);
+}
+
+.m-caret {
+  color: var(--s-text-subtle);
+  font-size: 10px;
+}
+
+.m-popover {
+  position: absolute;
+  inset-block-start: calc(100% - var(--s-space-4));
+  inset-inline-end: var(--s-space-8);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-space-4);
+  inline-size: min(380px, 90vw);
+  padding: var(--s-space-8);
+  border: 1px solid var(--s-border-muted);
+  background: var(--s-surface-elevated);
+  font-size: var(--s-size-sm);
+}
+
+.m-popover h3 {
+  font-size: var(--s-size-sm);
+}
+
+.m-kv {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 2px 6px;
+  font-size: var(--s-size-xs);
+}
+
+.m-kv dt {
+  color: var(--s-text-muted);
+}
+
+.m-proposal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-block-start: var(--s-space-4);
+  padding-block-start: var(--s-space-4);
+  border-block-start: 1px dashed var(--s-border-muted);
+  color: var(--s-text-secondary);
+  font-size: var(--s-size-xs);
+}
+
+.m-label {
+  color: var(--s-text-muted);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.m-bars {
+  display: inline-grid;
+  grid-template-columns: auto 60px auto;
+  gap: 2px var(--s-space-4);
+  align-items: center;
+}
+
+.m-track {
+  display: block;
+  block-size: 5px;
+  background: var(--s-border-muted);
+}
+
+.m-track i {
+  display: block;
+  block-size: 100%;
+  background: var(--s-text-muted);
+}
+
+.m-track i.m-proposed {
+  background: var(--s-text);
+}
+
+.m-chip {
+  padding: 0 var(--s-space-4);
+  border: 1px solid var(--s-border-muted);
+}
+
+.m-note {
+  flex: 1;
+  min-inline-size: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-run,
+.m-providers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-space-8);
+}
+
+.m-run-header {
+  display: flex;
+  align-items: center;
+  gap: var(--s-space-8);
+}
+
+.m-run-title {
+  flex: 1;
+  min-inline-size: 0;
+}
+
+.m-run-title h2 {
+  overflow: hidden;
+  font-size: var(--s-size-lg);
+  font-weight: var(--s-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-space-4);
+}
+
+.m-section h3 {
+  font-size: var(--s-size-sm);
+  font-weight: var(--s-weight-medium);
+}
+
+.m-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--s-size-sm);
+}
+
+.m-provider-list li {
+  display: grid;
+  grid-template-columns: 160px 110px 1fr;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.m-popover .pt-button {
+  align-self: flex-start;
+}
