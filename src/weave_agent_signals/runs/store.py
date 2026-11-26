@@ -478,6 +478,7 @@ class RunStore:
 
     def __init__(self, db_path: str | Path | None = None):
         path = Path(db_path or _default_db_path())
+        self.path = path
         self._conn = sqlite3.connect(
             str(path),
             check_same_thread=False,

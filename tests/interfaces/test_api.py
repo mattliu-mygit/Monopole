@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from weave_agent_signals import api as api_module
 from weave_agent_signals.api import ApiDependencies, create_app
+from weave_agent_signals.models import ConfigurationError
 from weave_agent_signals.runs.store import RunStatus
 
 
@@ -141,3 +143,27 @@ def test_scoring_hydrates_whole_subagents_and_judging_only_their_counts(monkeypa
 
     # Scoring reads each subagent's tool calls; judging renders only their type and count.
     assert hydrated == [True, False]
+
+
+def test_a_second_server_on_the_same_run_database_stops_before_recovery(monkeypatch, tmp_path):
+    for name in ("load_target_registry", "load_sandbox_runtime"):
+        monkeypatch.setattr(api_module, name, lambda _path: None)
+    monkeypatch.setattr(api_module, "create_challenge_runner", lambda *_a, **_k: None)
+
+    def build():
+        return api_module._build_default_dependencies(
+            entity="e",
+            project="p",
+            target_registry=tmp_path / "targets.json",
+            sandbox_runtime=tmp_path / "runtime.json",
+            db_path=tmp_path / "runs.db",
+        )
+
+    first = build()
+    try:
+        with pytest.raises(ConfigurationError, match="another Monopole server"):
+            build()
+    finally:
+        first.close()
+    # Closing the first server releases the database for the next one.
+    build().close()

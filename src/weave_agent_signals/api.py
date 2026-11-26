@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import threading
 from collections.abc import Callable
@@ -9,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import IO, Any, cast
 
 import httpx
 from dotenv import load_dotenv
@@ -93,6 +94,23 @@ def _chat_client(
     return InferenceClient(entity=entity, project=project, backend=provider)
 
 
+def _lock_run_database(path: Path) -> IO[str]:
+    """Hold an exclusive lock beside the run database while this server runs. Startup recovery
+    fails every run another live server is executing, so a second server on the same database
+    stops here instead. The OS drops the lock when the process ends, even on SIGKILL."""
+
+    handle = open(f"{path}.server-lock", "a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        raise ConfigurationError(
+            f"another Monopole server already uses the run database {path}; stop it, or "
+            "point this server at another database with WEAVE_AGENT_SIGNALS_RUN_DB"
+        ) from None
+    return handle
+
+
 def _build_default_dependencies(
     *,
     entity: str,
@@ -104,6 +122,11 @@ def _build_default_dependencies(
     """Build production services once during application startup."""
 
     store = RunStore(db_path)
+    try:
+        server_lock = _lock_run_database(store.path)
+    except BaseException:
+        store.close()
+        raise
     executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="evaluation-run")
 
     # One catalog per CES Dataset, built once; the lock keeps concurrent stages from racing.
@@ -230,6 +253,7 @@ def _build_default_dependencies(
     def close() -> None:
         executor.shutdown(wait=True, cancel_futures=True)
         store.close()
+        server_lock.close()
         for http in http_clients.values():
             http.close()
 
