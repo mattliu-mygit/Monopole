@@ -191,6 +191,15 @@ def _turns_of_any(session_ids: list[str]) -> str:
     return f"{FIRST_STEP} AND ({either})"
 
 
+def _turn_targets(turn_rows: dict[str, list[dict]]) -> list[tuple[str, dict, list]]:
+    """(turn Case ID, Case input, Score rows) for each turn row, by session."""
+    return [
+        (r["case_id"], r["input"], r.get("scores") or [])
+        for rows in turn_rows.values()
+        for r in rows
+    ]
+
+
 @dataclass
 class CesSession:
     """A CES client and Monopole's catalog for the adapter's Dataset. Exiting closes the client."""
@@ -675,12 +684,13 @@ class CesClient:
         `turn_rows` when the sessions' turn rows were already read."""
         if turn_rows is None:
             turn_rows = self.session_turn_rows(catalog, session_ids)
-        targets = [
-            (r["case_id"], r["input"], r.get("scores") or [])
-            for rows in turn_rows.values()
-            for r in rows
-        ]
-        return self._score_records(targets + self._session_targets(catalog, set(session_ids)))
+        return self._score_records(
+            _turn_targets(turn_rows) + self._session_targets(catalog, set(session_ids))
+        )
+
+    def turn_row_scores(self, turn_rows: dict[str, list[dict]]) -> list[dict]:
+        """The Scores that already-read turn rows carry, as feedback-shaped records."""
+        return self._score_records(_turn_targets(turn_rows))
 
     def write_scores(
         self, catalog: Catalog, pass_id: str, target_kind: str, target_id: str, scores: list[Score]

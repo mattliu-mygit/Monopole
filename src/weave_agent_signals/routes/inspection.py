@@ -313,11 +313,8 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                         known = (turn_ids[sid], _judging_token_estimates(session.turns))
                         estimates.update({sid: known})
                     summary["judging_token_estimates"] = known[1]
-            feedback = _by_target(
-                ces.client.cohort_scores(ces.catalog, list(visible_rows), turn_rows=visible_rows)
-                if visible
-                else []
-            )
+            # Signal evidence comes from turn Scores only, so session Scores aren't read.
+            feedback = _by_target(ces.client.turn_row_scores(visible_rows))
         for summary, turns in visible:
             summary["signal_evidence"] = _signal_evidence(turns, feedback)
         return SessionListResponse.model_validate(

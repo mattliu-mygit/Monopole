@@ -164,6 +164,11 @@ class FakeCes:
             for sid in session_ids
         }
 
+    def turn_row_scores(self, turn_rows):
+        self.feedback_calls.append(list(turn_rows))
+        targets = {row["case_id"] for rows in turn_rows.values() for row in rows}
+        return [record for record in self.feedback if record["target_id"] in targets]
+
     def cohort_scores(self, _catalog, session_ids, *, turn_rows=None):
         self.feedback_calls.append(list(session_ids))
         targets = set(session_ids) | {
