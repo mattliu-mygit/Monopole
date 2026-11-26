@@ -121,7 +121,8 @@ class FakeCes:
     def __exit__(self, *_args):
         return None
 
-    def recent_turn_rows(self, catalog, *, since, until=None, limit=None):
+    def recent_turn_rows(self, catalog, *, since, until=None, limit=None, columns=None):
+        assert columns is None, "the list reads whole rows: its callouts need every reason"
         found = self.find_sessions(catalog, since=since, until=until, limit=limit)
         rows = {sid: [_row_of(t) for t in self.turns if t.conversation_id == sid] for sid in found}
         return rows, self.scan_complete
@@ -158,7 +159,8 @@ class FakeCes:
         )
         return None if turn is None else turn.subagents
 
-    def session_turn_rows(self, _catalog, session_ids):
+    def session_turn_rows(self, _catalog, session_ids, *, columns=None):
+        assert columns is None, "the list reads whole rows: its callouts need every reason"
         return {
             sid: [_row_of(turn) for turn in self.turns if turn.conversation_id == sid]
             for sid in session_ids
@@ -176,7 +178,8 @@ class FakeCes:
         }
         return [record for record in self.feedback if record["target_id"] in targets]
 
-    def read_all_scores(self, _catalog, limit=None):
+    def read_all_scores(self, _catalog, limit=None, *, outcome_details=True):
+        self.outcome_details = outcome_details
         return list(self.all_scores)
 
 
@@ -469,6 +472,7 @@ def test_analysis_summarizes_query_stats_with_trends_from_the_day_queries(monkey
     assert "outcome.test**: 75% pass rate (n=4" in first["coaching_markdown"]
     # One query state per router, so a process creates each query once.
     assert len({id(state) for state in calls}) == 1
+    assert backend.outcome_details is False
 
 
 def test_analysis_says_how_to_fix_a_dataset_without_a_day_field(monkeypatch):

@@ -396,7 +396,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                     detail={"code": "dataset_without_day", "message": str(error)},
                 ) from error
             stats = replace(stats, days=days, turn_days=turn_days)
-            feedback = ces.client.read_all_scores(ces.catalog, limit=limit)
+            feedback = ces.client.read_all_scores(ces.catalog, limit=limit, outcome_details=False)
         if not stats.by_config and not feedback:
             return AnalysisResponse.model_validate(
                 {

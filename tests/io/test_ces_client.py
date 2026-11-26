@@ -661,6 +661,106 @@ def test_a_limit_reads_the_newest_turns_and_only_their_sessions_scores():
     assert names.call_count == 1
 
 
+TURN_VALUES = [
+    "efficiency",
+    "outcome.test",
+    "outcome.build",
+    "outcome.lint",
+    "outcome.install",
+    "outcome.git",
+    "outcome.command",
+]
+RECORD_FIELDS = ["session_trajectory_id", "started_at", "config_version", "git_branch"]
+ALL_TURN_SCORERS = TURN_VALUES + [f"{name}.details" for name in TURN_VALUES]
+
+
+@pytest.mark.parametrize(
+    ("read", "columns"),
+    [
+        pytest.param(
+            lambda c, cat: c.find_sessions(cat, since=None, limit=5),
+            {"input": ["session_trajectory_id", "started_at"]},
+            id="find_sessions",
+        ),
+        pytest.param(
+            lambda c, cat: c.recent_turn_rows(cat, since=None, limit=5), None, id="session list"
+        ),
+        pytest.param(
+            lambda c, cat: c.session_turn_rows(cat, ["s1"]), None, id="session list batch"
+        ),
+        pytest.param(
+            lambda c, cat: c.turn_scores(cat, "s1", details=False),
+            {"score": TURN_VALUES},
+            id="existence check",
+        ),
+        pytest.param(lambda c, cat: c.turn_scores(cat, "s1"), None, id="inspect"),
+        pytest.param(
+            lambda c, cat: c.read_all_scores(cat, outcome_details=False),
+            {"input": RECORD_FIELDS, "score": [*TURN_VALUES, "efficiency.details"]},
+            id="analysis",
+        ),
+        pytest.param(
+            lambda c, cat: c.read_all_scores(cat),
+            {"input": RECORD_FIELDS, "score": ALL_TURN_SCORERS},
+            id="reflect preview",
+        ),
+        pytest.param(
+            lambda c, cat: c.cohort_scores(cat, ["s1"]),
+            {"input": RECORD_FIELDS, "score": ALL_TURN_SCORERS},
+            id="session detail and reflection",
+        ),
+    ],
+)
+@respx.mock
+def test_each_turn_row_read_asks_ces_for_only_the_columns_it_uses(read, columns):
+    _catalog_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = client.ensure_catalog("ds-1")
+    turns = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
+        return_value=httpx.Response(200, json={"rows": []})
+    )
+    respx.get(f"{BASE}/evaluations/ev-sessions/trajectory-rows").mock(
+        return_value=httpx.Response(200, json={"rows": []})
+    )
+    _session_row_routes({})
+
+    read(client, catalog)
+
+    assert turns.called
+    assert json.loads(turns.calls.last.request.content).get("columns") == columns
+
+
+def test_an_outcome_score_without_its_details_counts_the_tag_its_value_implies():
+    names = {
+        ("sc-t", "v"): "outcome.test",
+        ("sc-c", "v"): "outcome.command",
+        ("sc-e", "v"): "efficiency",
+        ("sc-ed", "v"): "efficiency.details",
+    }
+    scores = [
+        {"score_id": "1", "scorer_id": "sc-t", "scorer_version_id": "v", "value": 0},
+        {"score_id": "2", "scorer_id": "sc-c", "scorer_version_id": "v", "value": 0},
+        {"score_id": "3", "scorer_id": "sc-e", "scorer_version_id": "v", "value": 0.9},
+        {
+            "score_id": "4",
+            "scorer_id": "sc-ed",
+            "scorer_version_id": "v",
+            "value": {"tags": ["error_loop"], "reason": "1 error loop(s)"},
+        },
+    ]
+
+    records = _score_record("c1", {"started_at": "2026-11-02T10:00:00.000Z"}, scores, names)
+    passing = _score_record("c1", {}, [{**scores[0], "value": 1}], names)
+
+    assert {r["feedback_type"]: r["payload"]["tags"] for r in records} == {
+        "weave_agent_signals.outcome.test": ["test_failure"],
+        "weave_agent_signals.outcome.command": ["command_failure"],
+        "weave_agent_signals.efficiency": ["error_loop"],
+    }
+    assert passing[0]["payload"]["tags"] == ["test_pass"]
+    assert [r["payload"]["granularity"] for r in [*records[:2], *passing]] == ["turn"] * 3
+
+
 def _turn_row(session_id: str, case_id: str) -> dict:
     return {"case_id": case_id, "input": {"session_trajectory_id": session_id}}
 

@@ -90,6 +90,22 @@ Analysis, reflection, and the session pages read Scores as records shaped
 `{id, feedback_type, target_id, payload}`. Reflection pins each record's Score
 ID and digest.
 
+Each turn row search asks CES for only the columns its reader uses. Score
+details are about 89% of a turn row's bytes, mostly the outcome Scorers' lists
+of classified commands. Finding sessions selects each turn's session and start
+time; skip checks before scoring select only value Scores; analysis and
+monitoring select the values, the details of Scorers whose tags don't follow
+from their value (efficiency), and the four input fields a record reads, and
+take each outcome Scorer's tag from its value. Reflection and the session detail
+page select every turn Scorer with its details, so their records don't change.
+The Sessions list reads whole rows: every turn Scorer is a rating, and its
+callouts need the reason of each Score at or below 0.5, which held 7.9 of the
+10.5 MB of details in November 2026. CES selects whole Scorers by name, not
+fields inside a details Score, and rejects a selected input field its Dataset
+lacks, so selections name only fields the adapter writes on every Case.
+Selecting fewer columns cuts bytes but not CES's `503` refusals, which depend
+on the rows per page.
+
 ## Queries
 
 `ces_queries.py` asks CES for each config's count, mean, and spread per Scorer

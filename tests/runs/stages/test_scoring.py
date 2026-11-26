@@ -200,7 +200,8 @@ class TrackingCes:
     def _rows(self, kind: str, target: str) -> list[dict]:
         return [{"scorer_id": f"sc-{name}"} for name in self.existing.get((kind, target), [])]
 
-    def turn_scores(self, catalog, trajectory_id):
+    def turn_scores(self, catalog, trajectory_id, *, details=True):
+        assert not details, "an existence check needs only the value Scores"
         self.events.append(("query", ("case", trajectory_id)))
         return {
             target: self._rows(kind, target) for kind, target in self.existing if kind == "case"

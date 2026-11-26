@@ -83,7 +83,8 @@ class FakeCes:
     def root_case_input(self, trajectory_id):
         return self.root
 
-    def turn_scores(self, catalog, trajectory_id):
+    def turn_scores(self, catalog, trajectory_id, *, details=True):
+        self.turn_score_details = details
         return self.turn_rows
 
     def session_scores(self, catalog, trajectory_ids, *, subagents=False):
@@ -162,6 +163,7 @@ def test_scoring_reads_existing_session_scores_once_for_all_sessions():
     )
 
     assert client.session_score_reads == [(["s1", "s2"], True)]
+    assert client.turn_score_details is False
 
 
 SUBAGENT = session_view(
@@ -534,8 +536,8 @@ class _ScoresOnly:
     def __init__(self, records):
         self.records, self.reads = records, []
 
-    def read_all_scores(self, catalog, limit=None):
-        self.reads.append(limit)
+    def read_all_scores(self, catalog, limit=None, *, outcome_details=True):
+        self.reads.append((limit, outcome_details))
         return self.records
 
     def close(self):
@@ -548,7 +550,7 @@ def _reads(client, monkeypatch, limit=7) -> ces_commands.AnalysisReads:
     return ces_commands.AnalysisReads(CesSession(client, CATALOG), limit)
 
 
-@pytest.mark.parametrize(("feedback", "reads"), [(True, [7]), (False, [])])
+@pytest.mark.parametrize(("feedback", "reads"), [(True, [(7, False)]), (False, [])])
 def test_analysis_stats_read_the_newest_scores_only_for_feedback(monkeypatch, feedback, reads):
     records = [{"feedback_type": "weave_agent_signals.efficiency", "payload": {"rating": 1.0}}]
     client = _ScoresOnly(records)

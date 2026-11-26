@@ -258,7 +258,7 @@ def _existing_scores(
     """The Scorers that already scored each target, so a rerun skips them unless forced."""
     existing: dict[Target, set[str]] = {}
     for sid in sessions:
-        for case_id, rows in ces.client.turn_scores(ces.catalog, sid).items():
+        for case_id, rows in ces.client.turn_scores(ces.catalog, sid, details=False).items():
             existing[("case", case_id)] = ces.catalog.scored(rows)
     for sid, rows in ces.client.session_scores(ces.catalog, list(sessions)).items():
         existing[("trajectory", sid)] = ces.catalog.scored(rows)

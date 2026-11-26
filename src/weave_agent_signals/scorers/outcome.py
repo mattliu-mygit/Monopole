@@ -756,6 +756,17 @@ def extract_outcomes(tool_calls: list[ToolSpan]) -> list:
 
 # --- Turn-level scoring ---
 
+# Each turn outcome Scorer's tag, indexed by whether its value is 1, so a read that skips the
+# heavy details Score can still count tags. outcome.command scores only failures.
+OUTCOME_TAGS: dict[str, tuple[str, str | None]] = {
+    "outcome.test": ("test_failure", "test_pass"),
+    "outcome.build": ("build_failure", "build_pass"),
+    "outcome.lint": ("lint_issues", "lint_clean"),
+    "outcome.install": ("install_failure", "install_success"),
+    "outcome.git": ("git_failure", "git_success"),
+    "outcome.command": ("command_failure", None),
+}
+
 
 def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
     all_tool_calls = turn.tool_calls + [tc for sub in turn.subagents for tc in sub.tool_calls]
@@ -779,7 +790,7 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
             Score(
                 scorer="outcome.test",
                 value=1.0 if all_passed else 0.0,
-                tags=["test_pass"] if all_passed else ["test_failure"],
+                tags=[OUTCOME_TAGS["outcome.test"][all_passed]],
                 confidence=1.0,
                 metadata={
                     "outcomes": [t.to_dict() for t in tests],
@@ -800,7 +811,7 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
             Score(
                 scorer="outcome.build",
                 value=1.0 if all_ok else 0.0,
-                tags=["build_pass"] if all_ok else ["build_failure"],
+                tags=[OUTCOME_TAGS["outcome.build"][all_ok]],
                 confidence=1.0,
                 metadata={"outcomes": [b.to_dict() for b in builds]},
                 granularity="turn",
@@ -818,7 +829,7 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
             Score(
                 scorer="outcome.lint",
                 value=1.0 if all_clean else 0.0,
-                tags=["lint_clean"] if all_clean else ["lint_issues"],
+                tags=[OUTCOME_TAGS["outcome.lint"][all_clean]],
                 confidence=1.0,
                 metadata={"outcomes": [lo.to_dict() for lo in lints]},
                 granularity="turn",
@@ -835,7 +846,7 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
             Score(
                 scorer="outcome.install",
                 value=1.0 if all_ok else 0.0,
-                tags=["install_success"] if all_ok else ["install_failure"],
+                tags=[OUTCOME_TAGS["outcome.install"][all_ok]],
                 confidence=1.0,
                 metadata={"outcomes": [i.to_dict() for i in installs]},
                 granularity="turn",
@@ -852,7 +863,7 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
             Score(
                 scorer="outcome.git",
                 value=1.0 if all_ok else 0.0,
-                tags=["git_success"] if all_ok else ["git_failure"],
+                tags=[OUTCOME_TAGS["outcome.git"][all_ok]],
                 confidence=1.0,
                 metadata={"outcomes": [g.to_dict() for g in gits]},
                 granularity="turn",
@@ -869,7 +880,7 @@ def score_turn_outcomes(turn: TurnSpan) -> list[Score]:
             Score(
                 scorer="outcome.command",
                 value=0.0,
-                tags=["command_failure"],
+                tags=[OUTCOME_TAGS["outcome.command"][False]],
                 confidence=0.5,
                 metadata={
                     "outcomes": [c.to_dict() for c in failed_cmds],

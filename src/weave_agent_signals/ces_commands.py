@@ -172,7 +172,7 @@ def _score_sessions(client, catalog, session_ids, *, since, until, force, limit=
         if not session_is_evaluable(session.turns):
             continue
         try:
-            have_turns = {} if force else client.turn_scores(catalog, sid)
+            have_turns = {} if force else client.turn_scores(catalog, sid, details=False)
         except Exception as error:
             log.warning("Could not read existing Scores for %s: %s", sid, error)
             stats.errors += 1
@@ -412,7 +412,11 @@ class AnalysisReads:
             days = ces_queries.session_day_stats(client, catalog, state, self.session_scorers)
             turn_days = ces_queries.turn_day_stats(client, catalog, state)
             stats = replace(stats, days=days, turn_days=turn_days)
-        records = client.read_all_scores(catalog, limit=self.limit) if feedback else []
+        records = (
+            client.read_all_scores(catalog, limit=self.limit, outcome_details=False)
+            if feedback
+            else []
+        )
         return stats, records
 
     def insights(self, *, subagents: bool, judges: bool, segments: str | None) -> Insights:

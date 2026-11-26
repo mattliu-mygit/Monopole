@@ -11,6 +11,7 @@ import json
 import math
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -32,6 +33,7 @@ from weave_agent_signals.ces_catalog import (
 )
 from weave_agent_signals.ces_sessions import child_ids, session_tree, session_view
 from weave_agent_signals.models import Score, SessionView, SubagentSpan, parse_utc
+from weave_agent_signals.scorers.outcome import OUTCOME_TAGS
 
 # CES runs at most 2 queries at a time per instance: row reads, Trajectory-row reads, and
 # EvaluationQuery results share them, and a request with none free gets 503 with Retry-After: 1.
@@ -68,6 +70,10 @@ SESSIONS_PER_SEARCH = 50
 # A turn's row is its first Case; the adapter numbers each turn's Cases from 0. Subagent turns
 # carry an agent ID and belong to the session turn that launched them, so they're left out.
 FIRST_STEP = "i.step_index = 0 AND i.agent_id = null"
+# The turn Case input fields a Score record reads (`_score_record`), and the session that groups
+# the turn. The adapter writes them on every Case, so every adapter Dataset has them: CES rejects
+# a selected field that its Dataset lacks.
+RECORD_INPUT = ["session_trajectory_id", "started_at", "config_version", "git_branch"]
 
 
 def _error_code(response: httpx.Response) -> str | None:
@@ -117,9 +123,10 @@ def _score_record(target_id: str, case_input: dict, scores: list[dict], names: d
     """One target's Scores as feedback-shaped records, the shape the analysis code takes.
 
     `names` maps (scorer_id, scorer_version_id) to the CES Scorer name. A `.details` Scorer
-    supplies the tags, reason, and details of the value Scorer it shadows. The target Case
-    fills in the config, branch, and start time when the details lack them. A judge Scorer
-    named `<rubric>.panel-<digest>` reports as its rubric."""
+    supplies the tags, reason, and details of the value Scorer it shadows; without it, a turn
+    outcome Scorer's tag follows from its value. The target Case fills in the config, branch,
+    and start time when the details lack them. A judge Scorer named `<rubric>.panel-<digest>`
+    reports as its rubric."""
     values, details, ids = {}, {}, {}
     for score in scores:
         name = names.get((score["scorer_id"], score["scorer_version_id"]))
@@ -137,6 +144,9 @@ def _score_record(target_id: str, case_input: dict, scores: list[dict], names: d
         if not isinstance(value, (bool, int, float)) or not math.isfinite(value):
             continue  # not a rating; one malformed Score must not break a whole read
         extra = details.get(name) if isinstance(details.get(name), dict) else {}
+        if name not in details and name in OUTCOME_TAGS:
+            tag = OUTCOME_TAGS[name][value == 1]
+            extra = {"tags": [tag] if tag else [], "granularity": "turn"}
         detail = dict(extra.get("details") or {})
         detail.setdefault("config_version", case_input.get("config_version"))
         detail.setdefault("git_branch", case_input.get("git_branch"))
@@ -195,6 +205,14 @@ def _turns_of_any(session_ids: list[str]) -> str:
     """A rows/search filter for several sessions' turns. CES has no IN operator."""
     either = " OR ".join(f"i.session_trajectory_id = {json.dumps(sid)}" for sid in session_ids)
     return f"{FIRST_STEP} AND ({either})"
+
+
+def _turn_scorers(catalog: Catalog, details: Callable[[str], bool]) -> list[str]:
+    """The CES Scorers a turn row read selects: every turn scorer's value Scorer, and the details
+    Scorer of each one `details` accepts. A selected Scorer the turns Evaluation lacks is
+    rejected, and the catalog's turn scorers are the ones it selects."""
+    names = [name for name, ref in catalog.scorers.items() if ref.spec.target_kind == "case"]
+    return names + [name + DETAILS_SUFFIX for name in names if details(name)]
 
 
 def _turn_targets(turn_rows: dict[str, list[dict]]) -> list[tuple[str, dict, list]]:
@@ -341,8 +359,11 @@ class CesClient:
         turn = next(iter(view.turns), None)
         return turn.subagents if turn is not None and turn.trace_id == turn_case_id else None
 
-    def session_turn_rows(self, catalog: Catalog, session_ids: list[str]) -> dict[str, list]:
-        """Each session's turn rows with their Scores, subagent turns included.
+    def session_turn_rows(
+        self, catalog: Catalog, session_ids: list[str], *, columns: dict | None = None
+    ) -> dict[str, list]:
+        """Each session's own turn rows with their Scores, or only the CES `columns` asked for,
+        which must include the input's `session_trajectory_id`.
 
         CES runs only a few searches at a time and rejects the rest with 503 and a 1 s
         Retry-After, so sessions are read in batches with one search each. A deployment whose
@@ -353,10 +374,12 @@ class CesClient:
             for i in range(0, len(session_ids), SESSIONS_PER_SEARCH)
         ]
         found: dict[str, list] = {sid: [] for sid in session_ids}
+        selected = {} if columns is None else {"columns": columns}
         try:
             with ThreadPoolExecutor(max_workers=QUERY_SLOTS) as pool:
                 for rows in pool.map(
-                    lambda batch: self._rows(path, {"filter": _turns_of_any(batch)}), batches
+                    lambda batch: self._rows(path, {"filter": _turns_of_any(batch), **selected}),
+                    batches,
                 ):
                     for row in rows:
                         if (sid := row["input"].get("session_trajectory_id")) in found:
@@ -366,7 +389,9 @@ class CesClient:
             if error.response.status_code != 400:
                 raise
         with ThreadPoolExecutor(max_workers=QUERY_SLOTS) as pool:
-            rows = pool.map(lambda sid: self._rows(path, {"filter": _turns_of(sid)}), session_ids)
+            rows = pool.map(
+                lambda sid: self._rows(path, {"filter": _turns_of(sid), **selected}), session_ids
+            )
             return dict(zip(session_ids, rows))
 
     def _rows(
@@ -544,7 +569,11 @@ class CesClient:
     ) -> list[str]:
         """Session Trajectories with a turn that started in the window, newest first. With no
         `since` the window has no start, so pass a `limit` to keep the read bounded."""
-        return list(self.recent_turn_rows(catalog, since=since, until=until, limit=limit)[0])
+        columns = {"input": ["session_trajectory_id", "started_at"]}
+        found, _ = self.recent_turn_rows(
+            catalog, since=since, until=until, limit=limit, columns=columns
+        )
+        return list(found)
 
     def recent_turn_rows(
         self,
@@ -553,18 +582,24 @@ class CesClient:
         since: datetime | None,
         until: datetime | None = None,
         limit: int | None = None,
+        columns: dict | None = None,
     ) -> tuple[dict[str, list[dict]], bool]:
         """The turn rows read while finding the sessions with a turn in the window, by session,
         newest activity first, and whether they are all of those sessions' turn rows. They are
         when the read reached the Dataset's oldest turn; a read that stops at `since` or at
-        `limit` sessions leaves their older turns unread.
+        `limit` sessions leaves their older turns unread. With `columns`, the rows hold only
+        those CES columns, which must include the input's `session_trajectory_id` and
+        `started_at`.
 
         CES filters can't range-compare string fields, so this reads turns newest first and
         stops at the first one before `since`. The adapter's timestamps sort in time order."""
         seen: dict[str, list[dict]] = {}
         found: dict[str, None] = {}
         path = f"/evaluations/{catalog.turns_evaluation_id}/rows/search"
-        for page in self._pages(path, {"filter": FIRST_STEP, "order_by": "i.started_at desc"}):
+        body = {"filter": FIRST_STEP, "order_by": "i.started_at desc"}
+        if columns is not None:
+            body["columns"] = columns
+        for page in self._pages(path, body):
             for row in page.get("rows") or []:
                 started, session = (
                     parse_utc(row["input"].get("started_at")),
@@ -582,12 +617,15 @@ class CesClient:
                         return {sid: seen[sid] for sid in found}, False
         return {sid: seen[sid] for sid in found}, True
 
-    def turn_scores(self, catalog: Catalog, trajectory_id: str) -> dict[str, list[dict]]:
-        """Scores on each turn of one session, keyed by the turn's first Case ID."""
-        rows = self._rows(
-            f"/evaluations/{catalog.turns_evaluation_id}/rows/search",
-            {"filter": _turns_of(trajectory_id)},
-        )
+    def turn_scores(
+        self, catalog: Catalog, trajectory_id: str, *, details: bool = True
+    ) -> dict[str, list[dict]]:
+        """Scores on each turn of one session, keyed by the turn's first Case ID. Without
+        `details`, only the value Scores, which tell which Scorers scored the turn."""
+        body: dict[str, Any] = {"filter": _turns_of(trajectory_id)}
+        if not details:
+            body["columns"] = {"score": _turn_scorers(catalog, lambda _name: False)}
+        rows = self._rows(f"/evaluations/{catalog.turns_evaluation_id}/rows/search", body)
         return {r["case_id"]: r.get("scores") or [] for r in rows}
 
     def _session_rows(self, catalog: Catalog, trajectory_id: str, subagents: bool) -> list[dict]:
@@ -672,14 +710,24 @@ class CesClient:
         self._scorer_names[key] = name
         return name
 
-    def read_all_scores(self, catalog: Catalog, limit: int | None = None) -> list[dict]:
+    def read_all_scores(
+        self, catalog: Catalog, limit: int | None = None, *, outcome_details: bool = True
+    ) -> list[dict]:
         """Turn and session Scores, newest turn first, as feedback-shaped records.
 
         With `limit`, only the newest `limit` turns are read, with the Scores of their sessions,
-        so a bound never drops session Scores for lacking a turn time."""
+        so a bound never drops session Scores for lacking a turn time. Without
+        `outcome_details`, outcome Scorers' records carry the tag their value implies but no
+        reason or details: rating analysis needs no more, and those details, which list every
+        classified command, are most of a turn row's bytes."""
+        details = (lambda _name: True) if outcome_details else (lambda n: n not in OUTCOME_TAGS)
         turn_rows = self._rows(
             f"/evaluations/{catalog.turns_evaluation_id}/rows/search",
-            {"filter": FIRST_STEP, "order_by": "i.started_at desc"},
+            {
+                "filter": FIRST_STEP,
+                "order_by": "i.started_at desc",
+                "columns": {"input": RECORD_INPUT, "score": _turn_scorers(catalog, details)},
+            },
             limit=limit,
         )
         targets = [(r["case_id"], r["input"], r.get("scores") or []) for r in turn_rows]
@@ -694,7 +742,8 @@ class CesClient:
         """The Scores on these sessions and their turns, as feedback-shaped records. Pass
         `turn_rows` when the sessions' turn rows were already read."""
         if turn_rows is None:
-            turn_rows = self.session_turn_rows(catalog, session_ids)
+            columns = {"input": RECORD_INPUT, "score": _turn_scorers(catalog, lambda _name: True)}
+            turn_rows = self.session_turn_rows(catalog, session_ids, columns=columns)
         return self._score_records(
             _turn_targets(turn_rows) + self._session_targets(catalog, set(session_ids))
         )
