@@ -76,7 +76,8 @@ Runs pin four independent roles:
    on that task.
 
 The form uses catalog-backed selectors with user overrides allowed. It shows
-the configuration only once sessions are selected, then preselects the
+the configuration only once sessions are selected and the judging token
+estimates it requests for exactly those sessions arrive, then preselects the
 recommendations that fit every selected session, and keeps following the
 selection until the user changes a choice. Normal judging recommends up to
 three fitting reviewers from distinct model families, recommended models first;

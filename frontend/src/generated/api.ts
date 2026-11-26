@@ -262,6 +262,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/estimates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Get Session Estimates */
+        post: operations["get_session_estimates_api_sessions_estimates_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{conversation_id}": {
         parameters: {
             query?: never;
@@ -1810,6 +1827,17 @@ export interface components {
             /** Turns */
             turns: components["schemas"]["TurnDetailResponse"][];
         };
+        /** SessionEstimatesRequest */
+        SessionEstimatesRequest: {
+            /** Session Ids */
+            session_ids: string[];
+        };
+        /** SessionEstimatesResponse */
+        SessionEstimatesResponse: {
+            [key: string]: {
+                [key: string]: components["schemas"]["JudgingTokenEstimateResponse"];
+            };
+        };
         /** SessionListResponse */
         SessionListResponse: {
             /** Limit */
@@ -1835,10 +1863,6 @@ export interface components {
             git_branch: string | null;
             /** Input Preview */
             input_preview: string | null;
-            /** Judging Token Estimates */
-            judging_token_estimates?: {
-                [key: string]: components["schemas"]["JudgingTokenEstimateResponse"];
-            } | null;
             /** Last Activity */
             last_activity: string | null;
             /** Model */
@@ -2608,7 +2632,6 @@ export interface operations {
                 until?: string | null;
                 timezone?: string | null;
                 limit?: number;
-                include_estimates?: boolean;
             };
             header?: never;
             path?: never;
@@ -2623,6 +2646,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_session_estimates_api_sessions_estimates_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionEstimatesRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionEstimatesResponse"];
                 };
             };
             /** @description Validation Error */

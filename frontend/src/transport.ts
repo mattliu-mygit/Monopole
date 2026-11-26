@@ -8,6 +8,7 @@ export type RunTransport = components['schemas']['RunResponse']
 export type RunListTransport = components['schemas']['RunListResponse']
 export type SessionListTransport = components['schemas']['SessionListResponse']
 export type SessionDetailTransport = components['schemas']['SessionDetailResponse']
+export type SessionEstimatesTransport = components['schemas']['SessionEstimatesResponse']
 export type TurnSubagentsTransport = components['schemas']['TurnSubagentsResponse']
 
 export type PromoteRequestTransport =

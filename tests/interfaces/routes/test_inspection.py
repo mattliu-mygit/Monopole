@@ -111,6 +111,8 @@ class FakeCes:
         self.all_scores: list[dict] = []
         self.windows: list[tuple] = []
         self.feedback_calls: list[list[str]] = []
+        self.turn_row_columns: list[dict | None] = []
+        self.session_reads: list[tuple[str, bool]] = []
         self.scan_complete = False
         self.client = self
         self.catalog = None
@@ -139,6 +141,7 @@ class FakeCes:
         return list(dict.fromkeys(turn.conversation_id for turn in newest))
 
     def read_session(self, trajectory_id, *, subagents=True):
+        self.session_reads.append((trajectory_id, subagents))
         turns = sorted(
             (turn for turn in self.turns if turn.conversation_id == trajectory_id),
             key=lambda turn: turn.started_at,
@@ -160,11 +163,22 @@ class FakeCes:
         return None if turn is None else turn.subagents
 
     def session_turn_rows(self, _catalog, session_ids, *, columns=None):
-        assert columns is None, "the list reads whole rows: its callouts need every reason"
-        return {
+        self.turn_row_columns.append(columns)
+        rows = {
             sid: [_row_of(turn) for turn in self.turns if turn.conversation_id == sid]
             for sid in session_ids
         }
+        if columns is not None:
+            # CES returns each row's Case ID and only the columns asked for.
+            for sid in rows:
+                rows[sid] = [
+                    {
+                        "case_id": row["case_id"],
+                        "input": {k: row["input"][k] for k in columns.get("input", [])},
+                    }
+                    for row in rows[sid]
+                ]
+        return rows
 
     def turn_row_scores(self, turn_rows):
         self.feedback_calls.append(list(turn_rows))
@@ -493,62 +507,94 @@ def test_analysis_says_how_to_fix_a_dataset_without_a_day_field(monkeypatch):
     }
 
 
-def test_session_listing_includes_judge_token_estimates_only_when_asked():
-    client, _backend = _client()
-    params = {"since": "2026-07-14T00:00:00Z", "limit": 1}
+def test_session_listing_reads_whole_turn_rows_and_no_sessions():
+    client, backend = _client()
 
-    plain = client.get("/api/sessions", params=params).json()["sessions"][0]
-    estimated = client.get("/api/sessions", params={**params, "include_estimates": "true"}).json()[
+    summary = client.get("/api/sessions", params={"since": "2026-07-14T00:00:00Z"}).json()[
         "sessions"
     ][0]
 
-    assert plain.get("judging_token_estimates") is None
-    assert set(estimated["judging_token_estimates"]) == {
-        "utf8_bytes_div_3",
-        "o200k_base",
-        "o200k_harmony",
-    }
+    assert backend.turn_row_columns == [None], "the list's callouts need every Score's reason"
+    assert backend.session_reads == []
+    assert "judging_token_estimates" not in summary
 
 
-def test_session_listing_reuses_estimates_while_a_sessions_turns_are_unchanged():
+def _estimates(client, session_ids):
+    return client.post("/api/sessions/estimates", json={"session_ids": session_ids})
+
+
+def test_session_estimates_read_only_the_requested_sessions_with_their_subagents():
     client, backend = _client()
-    reads: list[str] = []
-    read_session = backend.read_session
 
-    def counting_read(trajectory_id, **kwargs):
-        reads.append(trajectory_id)
-        return read_session(trajectory_id, **kwargs)
+    response = _estimates(client, ["session-two"])
 
-    backend.read_session = counting_read
-    params = {"since": "2026-07-14T00:00:00Z", "limit": 1, "include_estimates": "true"}
-
-    first = client.get("/api/sessions", params=params).json()["sessions"][0]
-    # Another window, so the route builds a new list instead of serving the last one.
-    params["until"] = "2026-07-15T00:00:00Z"
-    second = client.get("/api/sessions", params=params).json()["sessions"][0]
-
-    assert len(reads) == 1
-    assert second["judging_token_estimates"] == first["judging_token_estimates"]
+    assert response.status_code == 200
+    body = response.json()
+    assert list(body) == ["session-two"]
+    assert set(body["session-two"]) == {"utf8_bytes_div_3", "o200k_base", "o200k_harmony"}
+    assert body["session-two"]["o200k_base"]["turn_tokens"] == [
+        body["session-two"]["o200k_base"]["total_tokens"]
+    ]
+    # The judge renders each subagent's type and tool-call count, so estimates read them.
+    assert backend.session_reads == [("session-two", True)]
+    assert backend.turn_row_columns == [{"input": ["session_trajectory_id"]}]
 
 
-def test_session_listing_keeps_only_the_newest_sessions_cached(monkeypatch):
-    monkeypatch.setattr(inspection, "SESSION_CACHE_SIZE", 1)
+def test_session_estimates_leave_out_unknown_sessions_without_reading_them():
     client, backend = _client()
-    reads: list[str] = []
-    read_session = backend.read_session
 
-    def counting_read(trajectory_id, **kwargs):
-        reads.append(trajectory_id)
-        return read_session(trajectory_id, **kwargs)
+    body = _estimates(client, ["session-one", "no-such-session", "session-one"]).json()
 
-    backend.read_session = counting_read
-    params = {"since": "2026-07-14T00:00:00Z", "limit": 2, "include_estimates": "true"}
+    assert list(body) == ["session-one"]
+    assert backend.session_reads == [("session-one", True)]
 
-    client.get("/api/sessions", params=params)
-    client.get("/api/sessions", params={**params, "until": "2026-07-15T00:00:00Z"})
 
-    # Two sessions, room for one estimate: the second listing reads both sessions again.
-    assert len(reads) == 4
+def test_session_estimates_are_reused_while_a_sessions_turns_are_unchanged():
+    import dataclasses
+
+    client, backend = _client()
+    first = _estimates(client, ["session-one", "session-two"]).json()
+    second = _estimates(client, ["session-two", "session-one"]).json()
+
+    assert second == first
+    assert sorted(sid for sid, _ in backend.session_reads) == ["session-one", "session-two"]
+
+    newest = next(t for t in backend.turns if t.conversation_id == "session-one")
+    backend.turns.append(
+        dataclasses.replace(
+            newest, trace_id="trace-new", started_at=newest.started_at + timedelta(minutes=1)
+        )
+    )
+    third = _estimates(client, ["session-one", "session-two"]).json()
+
+    assert [sid for sid, _ in backend.session_reads[2:]] == ["session-one"]
+    assert len(third["session-one"]["o200k_base"]["turn_tokens"]) == 2
+    assert third["session-two"] == first["session-two"]
+
+
+def test_session_estimates_keep_only_the_newest_sessions(monkeypatch):
+    monkeypatch.setattr(inspection, "ESTIMATE_CACHE_SIZE", 1)
+    client, backend = _client()
+
+    _estimates(client, ["session-one", "session-two"])
+    _estimates(client, ["session-one", "session-two"])
+
+    # Two sessions, room for one estimate: the second request reads both sessions again.
+    assert len(backend.session_reads) == 4
+
+
+def test_session_estimates_name_one_to_a_hundred_sessions():
+    client, backend = _client()
+
+    at_cap = _estimates(client, ["session-one"] + [f"missing-{i}" for i in range(99)])
+    over_cap = _estimates(client, [f"missing-{i}" for i in range(101)])
+    empty = _estimates(client, [])
+
+    assert at_cap.status_code == 200
+    assert list(at_cap.json()) == ["session-one"]
+    assert over_cap.status_code == 422
+    assert empty.status_code == 422
+    assert len(backend.turn_row_columns) == 1
 
 
 def test_session_listing_serves_the_last_list_and_rebuilds_it_in_the_background():

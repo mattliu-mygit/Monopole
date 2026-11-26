@@ -562,8 +562,12 @@ class SessionSummaryResponse(ResponseModel):
     total_tokens: int
     input_preview: str | None
     signal_evidence: list[SignalEvidenceResponse]
-    # Only when the request asks for them, since estimating every listed session costs time.
-    judging_token_estimates: dict[TokenCounterName, JudgingTokenEstimateResponse] | None = None
+
+
+class SessionEstimatesResponse(
+    RootModel[dict[str, dict[TokenCounterName, JudgingTokenEstimateResponse]]]
+):
+    pass
 
 
 class SessionListResponse(ResponseModel):

@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any, get_args
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 from weave_agent_signals import ces_queries
 from weave_agent_signals.ces_client import CesSession, session_or_none
@@ -28,6 +29,7 @@ from weave_agent_signals.routes._time import DateFilterError, parse_selection_bo
 from weave_agent_signals.routes.models import (
     AnalysisResponse,
     SessionDetailResponse,
+    SessionEstimatesResponse,
     SessionListResponse,
     TurnSubagentsResponse,
 )
@@ -36,11 +38,16 @@ _SIGNAL_THRESHOLD = 0.5
 
 
 SESSION_SCAN_FACTOR = 3
-# How many sessions' judging estimates the list keeps: two of the largest scans
-# (100 sessions times SESSION_SCAN_FACTOR), so one load never evicts its own sessions.
-SESSION_CACHE_SIZE = 2 * 100 * SESSION_SCAN_FACTOR
-# How many distinct list queries (window, limit, and estimates) keep their last list.
+# The most sessions one estimates request may name: the list's own limit.
+ESTIMATE_REQUEST_LIMIT = 100
+# How many sessions' judging estimates the API keeps: two of the largest requests, so one
+# request never evicts its own sessions.
+ESTIMATE_CACHE_SIZE = 2 * ESTIMATE_REQUEST_LIMIT
+# How many distinct list queries (window and limit) keep their last list.
 LISTING_CACHE_SIZE = 32
+# An estimates request's turn rows: each row's Case ID is its turn's identity, so the request
+# asks CES only for the session each row belongs to.
+_TURN_ID_COLUMNS = {"input": ["session_trajectory_id"]}
 _LOG = logging.getLogger(__name__)
 
 
@@ -185,6 +192,12 @@ def _session_summary(conversation_id: str, turns: list[TurnSpan]) -> dict:
     }
 
 
+class SessionEstimatesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_ids: list[StrictStr] = Field(min_length=1, max_length=ESTIMATE_REQUEST_LIMIT)
+
+
 def _date_error(error: DateFilterError) -> HTTPException:
     return HTTPException(
         status_code=400,
@@ -222,7 +235,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
     query_state = ces_queries.QueryState()
     # Estimates read a whole session, subagents included. Stored turns never change, so each
     # session's estimate, kept with its turn IDs, is reused until its turn list changes.
-    estimates = _LruCache(SESSION_CACHE_SIZE)
+    estimates = _LruCache(ESTIMATE_CACHE_SIZE)
     # Reading turn rows from CES takes 10 s or more per list load, mostly in 503 retries and
     # small pages, and CES can't ask for only newer turns. So the route serves each query's
     # last list and rebuilds it in the background: a just-finished turn appears one load
@@ -231,9 +244,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
     rebuilding: set[tuple] = set()
     rebuild_lock = threading.Lock()
 
-    def build_listing(
-        since: datetime | None, until: datetime | None, limit: int, include_estimates: bool
-    ) -> dict:
+    def build_listing(since: datetime | None, until: datetime | None, limit: int) -> dict:
         with ces_factory() as ces:
             # Newest activity first, so reading stops once `limit` sessions are found. Sessions
             # that can't be evaluated are skipped, and the scan reads at most SESSION_SCAN_FACTOR
@@ -245,7 +256,6 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             session_ids = list(scanned)
             visible: list[tuple[dict, list[TurnSpan]]] = []
             visible_rows: dict[str, list[dict]] = {}
-            turn_ids: dict[str, tuple[str, ...]] = {}
             read = 0
             # Turn rows only: a session's steps and subagents can take hundreds of reads. The
             # rows also carry the turn Scores, so they're read once.
@@ -271,18 +281,6 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                     if in_window:
                         visible.append((_session_summary(sid, in_window), in_window))
                         visible_rows[sid] = rows
-                        turn_ids[sid] = tuple(sorted(turn.trace_id for turn in turns))
-            if include_estimates:
-                for summary, _turns in visible:
-                    sid = summary["conversation_id"]
-                    known = estimates.get(sid)
-                    if known is None or known[0] != turn_ids[sid]:
-                        session = session_or_none(ces.client, sid)
-                        if session is None:
-                            continue
-                        known = (turn_ids[sid], _judging_token_estimates(session.turns))
-                        estimates.update({sid: known})
-                    summary["judging_token_estimates"] = known[1]
             # Signal evidence comes from turn Scores only, so session Scores aren't read.
             feedback = _by_target(ces.client.turn_row_scores(visible_rows))
         for summary, turns in visible:
@@ -309,7 +307,6 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
         until: str | None = None,
         timezone_name: str | None = Query(default=None, alias="timezone"),
         limit: int = Query(default=20, ge=1, le=100),
-        include_estimates: bool = False,
     ) -> SessionListResponse:
         try:
             since_value, until_value = parse_selection_bounds(
@@ -319,7 +316,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             )
         except DateFilterError as error:
             raise _date_error(error) from error
-        key = (since_value, until_value, limit, include_estimates)
+        key = (since_value, until_value, limit)
         listing = listings.get(key)
         if listing is None:
             listing = build_listing(*key)
@@ -331,6 +328,33 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             if stale:
                 threading.Thread(target=rebuild, args=(key,), daemon=True).start()
         return SessionListResponse.model_validate(listing)
+
+    @router.post("/sessions/estimates")
+    def get_session_estimates(request: SessionEstimatesRequest) -> SessionEstimatesResponse:
+        # Judging token estimates for the named sessions, by session; unknown ones are left out.
+        # Run setup asks only for the sessions the user selects, since each reads a whole session.
+        found: dict[str, dict] = {}
+        with ces_factory() as ces:
+            # One small search finds each session's current turns, so a kept estimate is
+            # reused only while they are unchanged, and an unknown session costs no read.
+            rows = ces.client.session_turn_rows(
+                ces.catalog, list(dict.fromkeys(request.session_ids)), columns=_TURN_ID_COLUMNS
+            )
+            for sid, session_rows in rows.items():
+                turn_ids = tuple(sorted(row["case_id"] for row in session_rows))
+                if not turn_ids:
+                    continue
+                known = estimates.get(sid)
+                if known is None or known[0] != turn_ids:
+                    # The judge renders each subagent's type and tool-call count, so the
+                    # estimate reads subagents too.
+                    session = session_or_none(ces.client, sid)
+                    if session is None or not session.turns:
+                        continue
+                    known = (turn_ids, _judging_token_estimates(session.turns))
+                    estimates.update({sid: known})
+                found[sid] = known[1]
+        return SessionEstimatesResponse.model_validate(found)
 
     @router.get("/sessions/{conversation_id}")
     def get_session(conversation_id: str) -> SessionDetailResponse:

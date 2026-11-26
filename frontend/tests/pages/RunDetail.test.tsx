@@ -21,6 +21,7 @@ import { renderWithQueryClient } from '../support/render'
 const api = vi.hoisted(() => ({
   getRun: vi.fn(),
   getSessions: vi.fn(),
+  getSessionEstimates: vi.fn(),
   getSession: vi.fn(),
   getModels: vi.fn(),
   getRubrics: vi.fn(),
@@ -228,6 +229,11 @@ const sessionEstimates = {
 
 const plan = persistedPlan as unknown as JudgingPlan
 
+function estimatesFor(estimates: typeof sessionEstimates) {
+  return (ids: readonly string[]) =>
+    Promise.resolve(Object.fromEntries(ids.map((id) => [id, estimates])))
+}
+
 function renderPage() {
   const router = createMemoryRouter([
     { path: '/runs/:runId', element: <RunDetail /> },
@@ -356,11 +362,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   const created = baseRun()
   api.getRun.mockResolvedValue(created)
-  api.getSessions.mockResolvedValue({
-    sessions: [{ ...session, judging_token_estimates: sessionEstimates }],
-    total: 1,
-    truncated: false,
-  })
+  api.getSessions.mockResolvedValue({ sessions: [session], total: 1, truncated: false })
+  api.getSessionEstimates.mockImplementation(estimatesFor(sessionEstimates))
   api.getModels.mockResolvedValue(models)
   api.getRubrics.mockResolvedValue(rubrics)
   api.setRunSelection.mockResolvedValue(created)
@@ -526,18 +529,11 @@ describe('RunDetail wiring', () => {
   })
 
   it('keeps start disabled when the selected session exceeds configured model capacity', async () => {
-    api.getSessions.mockResolvedValue({
-      sessions: [{
-        ...session,
-        judging_token_estimates: {
-          utf8_bytes_div_3: { total_tokens: 130_000, largest_turn_tokens: 120_000, turn_tokens: [120_000, 10_000] },
-          o200k_base: { total_tokens: 125_000, largest_turn_tokens: 115_000, turn_tokens: [115_000, 10_000] },
-          o200k_harmony: { total_tokens: 122_000, largest_turn_tokens: 112_000, turn_tokens: [112_000, 10_000] },
-        },
-      }],
-      total: 1,
-      truncated: false,
-    })
+    api.getSessionEstimates.mockImplementation(estimatesFor({
+      utf8_bytes_div_3: { total_tokens: 130_000, largest_turn_tokens: 120_000, turn_tokens: [120_000, 10_000] },
+      o200k_base: { total_tokens: 125_000, largest_turn_tokens: 115_000, turn_tokens: [115_000, 10_000] },
+      o200k_harmony: { total_tokens: 122_000, largest_turn_tokens: 112_000, turn_tokens: [112_000, 10_000] },
+    }))
     renderPage()
 
     fireEvent.click(await screen.findByRole('checkbox', {
@@ -551,6 +547,36 @@ describe('RunDetail wiring', () => {
       'textContent',
       expect.stringContaining('Select models that fit the selected sessions.'),
     )
+  })
+
+  it('estimates exactly the selected sessions, once they are selected', async () => {
+    const second = { ...session, conversation_id: 'session-2' }
+    const third = { ...session, conversation_id: 'session-3' }
+    api.getSessions.mockResolvedValue({
+      sessions: [session, second, third],
+      total: 3,
+      truncated: false,
+    })
+    let answer = (_value: Record<string, typeof sessionEstimates>) => {}
+    api.getSessionEstimates.mockImplementation(() => new Promise((resolve) => { answer = resolve }))
+    renderPage()
+
+    const thirdCheckbox = await screen.findByRole('checkbox', { name: 'Select session session-3' })
+    expect(api.getSessionEstimates).not.toHaveBeenCalled()
+    fireEvent.click(thirdCheckbox)
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select session session-1' }))
+
+    await waitFor(() =>
+      expect(api.getSessionEstimates).toHaveBeenLastCalledWith(['session-1', 'session-3']))
+    expect(api.getSessionEstimates.mock.calls).toEqual([[['session-3']], [['session-1', 'session-3']]])
+    expect(screen.getByText('Sizing the selected sessions…')).not.toBeNull()
+    expect(screen.queryByRole('region', { name: 'Run configuration' })).toBeNull()
+    await act(async () => answer({ 'session-1': sessionEstimates, 'session-3': sessionEstimates }))
+    expect(await screen.findByRole('region', { name: 'Run configuration' })).not.toBeNull()
+    expect(api.getSessions).toHaveBeenCalled()
+    for (const [params] of api.getSessions.mock.calls) {
+      expect(Object.keys(params ?? {}).sort()).toEqual(['limit', 'since', 'timezone', 'until'])
+    }
   })
 
   it('shows pipeline configuration only once a session is selected', async () => {
@@ -568,14 +594,7 @@ describe('RunDetail wiring', () => {
 
   it('keeps a manual configuration change when the selection changes', async () => {
     const second = { ...session, conversation_id: 'session-2' }
-    api.getSessions.mockResolvedValue({
-      sessions: [
-        { ...session, judging_token_estimates: sessionEstimates },
-        { ...second, judging_token_estimates: sessionEstimates },
-      ],
-      total: 2,
-      truncated: false,
-    })
+    api.getSessions.mockResolvedValue({ sessions: [session, second], total: 2, truncated: false })
     renderPage()
 
     fireEvent.click(await screen.findByRole('checkbox', { name: 'Select session session-1' }))
@@ -598,9 +617,7 @@ describe('RunDetail wiring', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Retry configuration catalogs' }))
     await waitFor(() => expect(api.getModels).toHaveBeenCalledTimes(2))
     fireEvent.click(await screen.findByRole('button', { name: 'Retry session discovery' }))
-    const listCalls = () =>
-      api.getSessions.mock.calls.filter(([params]) => !params?.include_estimates).length
-    await waitFor(() => expect(listCalls()).toBe(2))
+    await waitFor(() => expect(api.getSessions).toHaveBeenCalledTimes(2))
     expect(await screen.findByRole('checkbox', { name: 'Select session session-1' })).not.toBeNull()
   })
 

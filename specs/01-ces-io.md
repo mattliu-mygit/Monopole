@@ -52,6 +52,16 @@ turns, which CES serves only in small pages. CES can't return only newer turns,
 so the API keeps each list query's last result, serves it, and rebuilds it in
 the background; a just-finished turn appears one load later.
 
+The list carries no judging token estimates. Run setup asks for them only for
+the sessions the user selects, at most 100 per request, because each estimate
+reads the whole session with its subagents: the judge renders each subagent's
+type and tool-call count. Before the change, estimating a 55-day window's
+sessions with the list read 627 MB in about 2,250 requests per cold load. The
+API keeps each session's estimate with its turn IDs and reuses it while they
+are unchanged. Each request first searches the named sessions' turn rows,
+asking only for each row's session, so a kept estimate costs that one search
+and an unknown session is left out without a read.
+
 ## Scores
 
 Each Monopole scorer is two CES Scorers: `<name>` holds the number, boolean, or
@@ -98,10 +108,11 @@ ID and digest.
 Each turn row search asks CES for only the columns its reader uses. Score
 details are about 89% of a turn row's bytes, mostly the outcome Scorers' lists
 of classified commands. Finding sessions selects each turn's session and start
-time; skip checks before scoring select only value Scores; analysis and
-monitoring select the values, the details of Scorers whose tags don't follow
-from their value (efficiency), and the four input fields a record reads, and
-take each outcome Scorer's tag from its value. Reflection and the session detail
+time; estimates select only each turn's session; skip checks before scoring
+select only value Scores; analysis and monitoring select the values, the
+details of Scorers whose tags don't follow from their value (efficiency), and
+the four input fields a record reads, and take each outcome Scorer's tag from
+its value. Reflection and the session detail
 page select every turn Scorer with its details, so their records don't change.
 The Sessions list reads whole rows: every turn Scorer is a rating, and its
 callouts need the reason of each Score at or below 0.5, which held 7.9 of the

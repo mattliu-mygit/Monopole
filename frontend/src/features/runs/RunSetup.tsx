@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { getSessions } from '../../api'
+import { getSessionEstimates, getSessions } from '../../api'
 import type { DataSelection, ModelCatalog, RubricCatalog, RunConfig } from '../../types'
 import RunConfiguration from './RunConfiguration'
 import RunSelection from './RunSelection'
@@ -127,25 +127,23 @@ export default function RunSetup({
   )
   const sinceInstant = dayBoundary(since, false, timezone) ?? undefined
   const untilInstant = dayBoundary(until, true, timezone) ?? undefined
-  const sessionParams = { since: sinceInstant, until: untilInstant, timezone, limit: 100 }
   const sessionsQuery = useQuery({
     queryKey: ['sessions-for-run', sinceInstant, untilInstant, timezone],
-    queryFn: () => getSessions(sessionParams),
+    queryFn: () => getSessions({ since: sinceInstant, until: untilInstant, timezone, limit: 100 }),
   })
-  // Estimates read every session in full, so they load beside the list instead of holding it up.
+  // Each estimate reads a whole session, so only the selected sessions are estimated.
+  const estimatedIds = [...selectedIds].sort()
   const estimatesQuery = useQuery({
-    queryKey: ['session-estimates-for-run', sinceInstant, untilInstant, timezone],
-    queryFn: () => getSessions({ ...sessionParams, include_estimates: true }),
+    queryKey: ['session-estimates', estimatedIds],
+    queryFn: () => getSessionEstimates(estimatedIds),
+    enabled: estimatedIds.length > 0,
   })
   const sessions = sessionsQuery.data?.sessions ?? []
   const selectedSessions = sessions.filter((session) =>
     selectedIds.includes(session.conversation_id))
-  const estimates = new Map(
-    (estimatesQuery.data?.sessions ?? []).map((session) =>
-      [session.conversation_id, session.judging_token_estimates]),
-  )
+  const estimates = estimatesQuery.data ?? {}
   const capacitySessions = selectedSessions.flatMap((session) => {
-    const estimate = estimates.get(session.conversation_id)
+    const estimate = estimates[session.conversation_id]
     return estimate ? [{ judging_token_estimates: estimate }] : []
   })
   const capacityLoading = estimatesQuery.isLoading

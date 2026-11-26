@@ -1,6 +1,7 @@
 import type {
   SessionSummary,
   SessionDetail,
+  SessionEstimates,
   TurnSubagents,
   Run,
   RunSummary,
@@ -17,6 +18,7 @@ import type {
   RunListTransport,
   RunTransport,
   SessionDetailTransport,
+  SessionEstimatesTransport,
   SessionListTransport,
   TurnSubagentsTransport,
 } from './transport'
@@ -74,7 +76,6 @@ export function getSessions(
     until?: string
     timezone?: string
     limit?: number
-    include_estimates?: boolean
   },
 ): Promise<{
   sessions: SessionSummary[]
@@ -88,9 +89,17 @@ export function getSessions(
       until: params?.until,
       timezone: params?.timezone,
       limit: params?.limit,
-      include_estimates: params?.include_estimates,
     })}`,
   )
+}
+
+/** Judging token estimates for these sessions, by session. Unknown sessions are left out. */
+export function getSessionEstimates(sessionIds: readonly string[]): Promise<SessionEstimates> {
+  return apiFetch<SessionEstimatesTransport>('/api/sessions/estimates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_ids: sessionIds }),
+  })
 }
 
 export function getSession(conversationId: string): Promise<SessionDetail> {
