@@ -9,6 +9,8 @@ adapter's `specs/EVALUATIONS_CASE_CONTRACT.md` defines the fields. Nothing here 
 from __future__ import annotations
 
 import json
+import re
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -101,12 +103,77 @@ def _subagent_span(child: str, cases: list[dict]) -> SubagentSpan:
     )
 
 
+# weave-agent-adapter names each subagent Trajectory `<harness> subagent <agent ID>`, and writes
+# every Case of that subagent, and no other, with that `agent_id` and its session's
+# `session_trajectory_id`. A subagent's type, as Monopole reads it, is its first Case's agent ID.
+_SUBAGENT_NAME = re.compile(r"\S+ subagent (\S+)")
+
+
+class SubagentIndex:
+    """Each subagent Trajectory's type and tool-call count without reading its Cases.
+
+    `trajectories` is the Dataset's Trajectory listing by ID, and `cases` counts the Dataset's
+    Cases by (session Trajectory, agent ID) and kind. A subagent gets a span only when nothing
+    about it is in doubt: it is in the listing below the session being read, launched no
+    subagent of its own (whose launch order only its Cases hold), its name gives an agent ID that
+    no other subagent of the session has, and Cases with that agent ID exist. Any other subagent
+    is read in full."""
+
+    def __init__(self, trajectories: dict[str, dict], cases: dict[tuple[str, str], dict[str, int]]):
+        self.trajectories, self.cases = trajectories, cases
+        parents = {t.get("parent_trajectory_id") for t in trajectories.values()}
+        agents = {}
+        for tid, trajectory in trajectories.items():
+            match = _SUBAGENT_NAME.fullmatch(trajectory.get("name") or "")
+            session = self._session_of(tid)
+            if match and session:
+                agents[tid] = (session, match[1])
+        repeated = Counter(agents.values())
+        self._agents = {
+            tid: key for tid, key in agents.items() if repeated[key] == 1 and tid not in parents
+        }
+
+    def _session_of(self, tid: str) -> str | None:
+        """The depth-0 Trajectory above a subagent Trajectory, or None for a session itself or
+        when the listing lacks a Trajectory on the way."""
+        seen, current = set(), self.trajectories.get(tid)
+        while current is not None and current.get("parent_trajectory_id"):
+            if current["trajectory_id"] in seen:
+                return None
+            seen.add(current["trajectory_id"])
+            current = self.trajectories.get(current["parent_trajectory_id"])
+        if current is None or current["trajectory_id"] == tid:
+            return None
+        return current["trajectory_id"]
+
+    def span(self, session_id: str, child: str) -> SubagentSpan | None:
+        key = self._agents.get(child)
+        kinds = self.cases.get(key) if key and key[0] == session_id else None
+        if not kinds:
+            return None
+        return SubagentSpan(
+            span_id=child,
+            agent_type=key[1],
+            tool_calls=None,
+            tokens=None,
+            counted_tool_calls=kinds.get("tool_call", 0),
+        )
+
+
 class _SubagentTree:
     """Which subagent Trajectories each Case launched, indexed once per session read, so each
-    Trajectory's view only walks the subagents below it."""
+    Trajectory's view only walks the subagents below it. A subagent in `spans` was not read: it
+    has no Cases in `children`, and its span stands in for the one its Cases would give."""
 
-    def __init__(self, session_id: str, cases: list[dict], children: dict[str, list[dict]]):
+    def __init__(
+        self,
+        session_id: str,
+        cases: list[dict],
+        children: dict[str, list[dict]],
+        spans: dict[str, SubagentSpan] | None = None,
+    ):
         self.children = children
+        self.spans = spans or {}
         self.position = {child: index for index, child in enumerate(children)}
         owner = {c["case_id"]: child for child, cs in children.items() for c in cs}
         launched = {
@@ -140,15 +207,19 @@ class _SubagentTree:
 
 
 def session_view(
-    trajectory_id: str, cases: list[dict], children: dict[str, list[dict]]
+    trajectory_id: str,
+    cases: list[dict],
+    children: dict[str, list[dict]],
+    spans: dict[str, SubagentSpan] | None = None,
 ) -> SessionView:
     """Rebuild Monopole's turns from S's Cases and its subagents' Cases.
 
     A turn is the Cases sharing `turn_id`, ordered by `step_index`. Its first Case
     carries the turn totals, and its ID is the turn's identity, where Weave used a
-    trace ID. A subagent's Cases attach to the turn whose tool call launched it.
+    trace ID. A subagent's Cases attach to the turn whose tool call launched it. A subagent
+    in `spans` wasn't read and takes that span instead.
     """
-    return _view(trajectory_id, cases, _SubagentTree(trajectory_id, cases, children))
+    return _view(trajectory_id, cases, _SubagentTree(trajectory_id, cases, children, spans))
 
 
 def session_tree(
@@ -193,7 +264,10 @@ def _view(trajectory_id: str, cases: list[dict], tree: _SubagentTree) -> Session
             {child for c in steps for child in attached.get(c["case_id"], [])},
             key=tree.position.__getitem__,
         )
-        subagents = [_subagent_span(child, tree.children[child]) for child in launched]
+        subagents = [
+            tree.spans.get(child) or _subagent_span(child, tree.children[child])
+            for child in launched
+        ]
         user_input = next((t for t in texts if t), None)
         built.append(
             TurnSpan(

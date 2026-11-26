@@ -31,7 +31,12 @@ from weave_agent_signals.ces_catalog import (
     judge_spec,
     rubric_of,
 )
-from weave_agent_signals.ces_sessions import child_ids, session_tree, session_view
+from weave_agent_signals.ces_sessions import (
+    SubagentIndex,
+    child_ids,
+    session_tree,
+    session_view,
+)
 from weave_agent_signals.models import Score, SessionView, SubagentSpan, parse_utc
 from weave_agent_signals.scorers.outcome import OUTCOME_TAGS
 
@@ -177,11 +182,15 @@ def _score_record(target_id: str, case_input: dict, scores: list[dict], names: d
 
 
 def session_or_none(
-    client: CesClient, trajectory_id: str, *, subagents: bool = True
+    client: CesClient,
+    trajectory_id: str,
+    *,
+    subagents: bool = True,
+    counts: SubagentCounts | None = None,
 ) -> SessionView | None:
     """The session, or None when CES has no such session Trajectory."""
     try:
-        return client.read_session(trajectory_id, subagents=subagents)
+        return client.read_session(trajectory_id, subagents=subagents, counts=counts)
     except httpx.HTTPStatusError as error:
         if error.response.status_code == 404:
             return None
@@ -222,6 +231,30 @@ def _turn_targets(turn_rows: dict[str, list[dict]]) -> list[tuple[str, dict, lis
         for rows in turn_rows.values()
         for r in rows
     ]
+
+
+class SubagentCounts:
+    """Each subagent's type and tool-call count, the whole of what a judge shows of it, for
+    session reads that need nothing more (`CesClient.read_session`). It reads the Dataset's
+    Trajectory listing and one EvaluationQuery counting Cases by session, agent ID, and kind on
+    first use, and every read given it shares them.
+
+    Measured 2026-11-26 against prod CES: the listing and the query were 1.5 MB in 10 requests,
+    where reading the Cases of the 2,117 subagents of 10 sessions was 603 MB in 2,191. Both grow
+    with the whole Dataset, about 300 bytes per Trajectory and 3 query rows per subagent, so a
+    Dataset holding far more subagents than the sessions read would favor reading them."""
+
+    def __init__(self, client: CesClient, catalog: Catalog):
+        self._client, self._catalog = client, catalog
+        self._index: SubagentIndex | None = None
+        self._lock = threading.Lock()
+
+    def span(self, session_id: str, child: str) -> SubagentSpan | None:
+        """The subagent's span from the counts, or None when it must be read."""
+        with self._lock:
+            if self._index is None:
+                self._index = self._client.subagent_index(self._catalog)
+        return self._index.span(session_id, child)
 
 
 @dataclass
@@ -315,35 +348,101 @@ class CesClient:
         root = self._request("GET", f"/trajectories/{trajectory_id}")["root_case_id"]
         return self._request("GET", f"/cases/{root}").get("input") or {}
 
-    def read_session(self, trajectory_id: str, *, subagents: bool = True) -> SessionView:
+    def read_session(
+        self, trajectory_id: str, *, subagents: bool = True, counts: SubagentCounts | None = None
+    ) -> SessionView:
         """S's Cases plus every subagent Trajectory below it, as Monopole turns. Without
         `subagents`, the subagents S launched are named but not read, so they have no type or
-        tool calls; a session can have hundreds."""
+        tool calls; a session can have hundreds. With `counts`, each subagent they cover gets
+        its type and tool-call count from them, and no tool calls or tokens, instead of being
+        read."""
         cases = self.trajectory_cases(trajectory_id)
         launched = child_ids(cases)
         if not subagents:
             return session_view(trajectory_id, cases, {c: [] for c in launched})
-        return session_view(trajectory_id, cases, self._descendants(launched))
+        return session_view(
+            trajectory_id, cases, *self._descendants(launched, trajectory_id, counts)
+        )
 
     def read_session_tree(self, trajectory_id: str) -> tuple[SessionView, list[SessionView]]:
         """S read in full, and each subagent Trajectory below S as its own view, for scoring."""
         cases = self.trajectory_cases(trajectory_id)
-        return session_tree(trajectory_id, cases, self._descendants(child_ids(cases)))
+        children, _spans = self._descendants(child_ids(cases), trajectory_id)
+        return session_tree(trajectory_id, cases, children)
 
-    def _descendants(self, roots: list[str]) -> dict[str, list[dict]]:
-        """The Cases of these subagent Trajectories and every one below them, in launch order,
-        each level read concurrently."""
+    def _descendants(
+        self, roots: list[str], session_id: str, counts: SubagentCounts | None = None
+    ) -> tuple[dict[str, list[dict]], dict[str, SubagentSpan]]:
+        """The Cases of these subagent Trajectories of session S and every one below them, in
+        launch order, each level read concurrently, and the spans of those `counts` covers,
+        which aren't read and have no Cases."""
         children: dict[str, list[dict]] = {}
+        spans: dict[str, SubagentSpan] = {}
         level = roots
         with ThreadPoolExecutor(max_workers=CONCURRENT_READS) as pool:
             while level := [c for c in dict.fromkeys(level) if c not in children]:
-                children.update(zip(level, pool.map(self.trajectory_cases, level)))
+                if counts is not None:
+                    spans.update((c, span) for c in level if (span := counts.span(session_id, c)))
+                unread = [c for c in level if c not in spans]
+                read = dict(zip(unread, pool.map(self.trajectory_cases, unread)))
+                children.update((c, read.get(c, [])) for c in level)
                 level = [c for child in level for c in child_ids(children[child])]
-        return children
+        return children, spans
 
-    def turn_subagents(self, trajectory_id: str, turn_case_id: str) -> list[SubagentSpan] | None:
-        """The subagents one turn of S launched, nested ones included, read in full. None when
-        S doesn't exist or has no turn whose first Case is `turn_case_id`."""
+    def subagent_index(self, catalog: Catalog) -> SubagentIndex:
+        """The Dataset's Trajectory listing and its Case counts by session, agent ID, and kind,
+        read concurrently (`SubagentCounts`)."""
+        scorer = catalog.scorers[
+            min(n for n, r in catalog.scorers.items() if r.spec.target_kind == "case")
+        ]
+        body = {
+            "name": "monopole subagent cases by kind",
+            "definition": {
+                "v": 2,
+                "target_kind": "case",
+                # CES takes no filter on a saved query, so the main thread's Cases (agent ID null)
+                # form a few groups per session too.
+                "group_by": [
+                    {"kind": "dataset_field", "source": "input", "name": name}
+                    for name in ("session_trajectory_id", "agent_id", "kind")
+                ],
+                # CES requires a metric; a group's `targets` is its Case count.
+                "metrics": [
+                    {
+                        "name": "cases",
+                        "scorer_version_id": scorer.version_id,
+                        "aggregation": "count",
+                    }
+                ],
+            },
+        }
+        evaluation = catalog.turns_evaluation_id
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            listing = pool.submit(
+                self._rows,
+                f"/datasets/{catalog.dataset_id}/trajectories",
+                None,
+                items="trajectories",
+                slot=False,
+            )
+            query_id = self.create_query(
+                evaluation, body, key=f"monopole-query-v1:{evaluation}:{content_digest(body)}"
+            )
+            rows = self.query_results(evaluation, query_id)
+            trajectories = {t["trajectory_id"]: t for t in listing.result()}
+        cases: dict[tuple[str, str], dict[str, int]] = {}
+        for row in rows:
+            session, agent, kind = row["group"]
+            if agent is not None:
+                cases.setdefault((session, agent), {})[kind] = row["targets"]
+        return SubagentIndex(trajectories, cases)
+
+    def turn_subagents(
+        self, trajectory_id: str, turn_case_id: str, counts: SubagentCounts | None = None
+    ) -> list[SubagentSpan] | None:
+        """The subagents one turn of S launched, nested ones included, read in full or, with
+        `counts`, from them. None when S doesn't exist or has no turn whose first Case is
+        `turn_case_id`."""
         try:
             cases = self.trajectory_cases(trajectory_id)
         except httpx.HTTPStatusError as error:
@@ -355,7 +454,9 @@ class CesClient:
             None,
         )
         steps = [c for c in cases if turn_id and (c.get("input") or {}).get("turn_id") == turn_id]
-        view = session_view(trajectory_id, steps, self._descendants(child_ids(steps)))
+        view = session_view(
+            trajectory_id, steps, *self._descendants(child_ids(steps), trajectory_id, counts)
+        )
         turn = next(iter(view.turns), None)
         return turn.subagents if turn is not None and turn.trace_id == turn_case_id else None
 
@@ -472,7 +573,8 @@ class CesClient:
                 body=body,
                 key=f"monopole-evaluation-v1:{dataset_id}:{label}",
             )["evaluation_id"]
-        return self.add_scorers(Catalog(evaluations["case"], evaluations["trajectory"], {}), specs)
+        catalog = Catalog(evaluations["case"], evaluations["trajectory"], {}, dataset_id)
+        return self.add_scorers(catalog, specs)
 
     def add_scorers(self, catalog: Catalog, specs: tuple[ScorerSpec, ...]) -> Catalog:
         """Create each spec's value and details Scorers and add them to the matching Evaluation.
@@ -523,7 +625,7 @@ class CesClient:
         for kind, scorers in selected.items():
             if scorers:
                 self.select_scorers(catalog.evaluation_for(kind), scorers)
-        return Catalog(catalog.turns_evaluation_id, catalog.sessions_evaluation_id, refs)
+        return replace(catalog, scorers=refs)
 
     def select_scorers(self, evaluation_id: str, scorers: list[dict]) -> list[dict]:
         """Add Scorer versions, given as {scorer_id, version_id}, to the Evaluation, and return

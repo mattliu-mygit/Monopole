@@ -794,3 +794,22 @@ def test_render_raw_window_rejects_rehashed_bogus_raw_geometry():
 
     with pytest.raises(ValueError, match="window references missing trace IDs: missing"):
         render_raw_window(session, window, "utf8_bytes_div_3")
+
+
+def test_a_counted_subagent_renders_exactly_as_the_one_its_cases_give():
+    tool = ToolSpan("tool-1", "Bash", "{}", "", "OK", _ts(1), None)
+    read = replace(
+        _turn("trace-1", position=1),
+        subagents=[SubagentSpan("subagent-1", "reviewer", [tool, replace(tool, span_id="t2")])],
+    )
+    counted = replace(
+        read,
+        subagents=[
+            SubagentSpan(
+                "subagent-1", "reviewer", tool_calls=None, tokens=None, counted_tool_calls=2
+            )
+        ],
+    )
+
+    assert render_raw_turn(counted, 1) == render_raw_turn(read, 1)
+    assert "internal_tool_calls_omitted: 2" in render_raw_turn(counted, 1)

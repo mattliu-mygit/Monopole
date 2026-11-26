@@ -55,8 +55,11 @@ class FakeCes:
     def __init__(self, *turns: TurnSpan):
         self.turns = list(turns)
         self.reads: list[str] = []
+        # How each read took subagents: "full", "counts" (type and tool-call count), or "names".
+        self.modes: list[str] = []
         self.closed = False
         self.client = self
+        self.catalog = None
 
     def __enter__(self):
         return self
@@ -64,8 +67,11 @@ class FakeCes:
     def __exit__(self, *_args):
         self.closed = True
 
-    def read_session(self, trajectory_id: str, *, subagents: bool = True) -> SessionView:
+    def read_session(
+        self, trajectory_id: str, *, subagents: bool = True, counts=None
+    ) -> SessionView:
         self.reads.append(trajectory_id)
+        self.modes.append("names" if not subagents else "counts" if counts else "full")
         turns = [turn for turn in self.turns if turn.conversation_id == trajectory_id]
         if not turns:
             request = httpx.Request("GET", "http://ces.test")
@@ -142,7 +148,19 @@ def test_a_turn_without_a_model_takes_the_closest_earlier_turns_model_and_effort
     assert [(t.trace_id, t.model, t.effort_level) for t in turns] == expected
 
 
-def test_discover_turn_cohort_reads_each_selected_session_in_full_and_filters_dates():
+def test_discovery_reads_no_subagents_and_hydration_reads_what_its_stage_needs():
+    pinned = _turn("turn-1", "session-1")
+    ces = FakeCes(pinned)
+
+    cohort = _discover(ces, "session-1")
+    hydrate_turn_cohort(cohort, ces_factory=lambda: ces)
+    hydrate_turn_cohort(cohort, ces_factory=lambda: ces, subagent_calls=False)
+
+    # The cohort pins turns only; scoring needs tool calls; judging only types and counts.
+    assert ces.modes == ["names", "full", "counts"]
+
+
+def test_discover_turn_cohort_reads_each_selected_session_and_filters_dates():
     early = _turn("early", "session-1", STARTED - timedelta(days=2))
     inside = _turn("inside", "session-1")
     late = _turn("late", "session-1", STARTED + timedelta(days=2))

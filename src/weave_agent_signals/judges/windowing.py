@@ -169,7 +169,7 @@ def render_raw_turn(turn: TurnSpan, position: int) -> str:
             [
                 f"  Subagent [evidence_id={subagent.span_id}]",
                 f"    agent_type: {_value(subagent.agent_type)}",
-                f"    internal_tool_calls_omitted: {len(subagent.tool_calls)}",
+                f"    internal_tool_calls_omitted: {subagent.tool_call_count}",
             ]
         )
 

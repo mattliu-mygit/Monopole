@@ -191,7 +191,8 @@ trace-identity evidence while omitting the generating model's identity from the
 judge-facing content. Parent-session judging retains each subagent's identity
 and internal tool-call count but omits its internal tool payloads; the parent's
 delegation call still carries the input and returned output that influenced the
-parent. The complete hydrated trace remains available outside this judge view.
+parent. So judging reads only each subagent's type and tool-call count, not its
+Cases ([`01-ces-io.md`](01-ces-io.md)); scoring still reads the complete trace.
 Digests, findings, verdicts, and behavioral feedback are schema-bounded. Models
 author semantic fields plus short citation references only where needed. The
 host adds protocol, chunk, and window identity and resolves aliases before using

@@ -69,12 +69,14 @@ class FakeCes:
         self.root = {"cwd": "/Users/x/repos/core", "started_at": "2026-11-03T23:30:00Z"}
         self.writes: list[tuple] = []
         self.session_score_reads: list[list[str]] = []
+        self.session_counts: list = []
         self.closed = False
 
     def find_sessions(self, catalog, *, since, until=None, limit=None):
         return ["s1"]
 
-    def read_session(self, trajectory_id, *, subagents=True):
+    def read_session(self, trajectory_id, *, subagents=True, counts=None):
+        self.session_counts.append(counts)
         return SESSION
 
     def read_session_tree(self, trajectory_id):
@@ -383,6 +385,8 @@ def test_inspect_prints_a_session_with_its_scores(fake, capsys):
 
     out = capsys.readouterr().out
     assert "Session s1" in out and "Turns: 2" in out
+    # The listing shows each turn's subagent count only.
+    assert [type(c).__name__ for c in fake.session_counts] == ["SubagentCounts"]
     assert "outcome.test                    rating=1.0  tags=['verified']  \"passed\"" in out
 
 

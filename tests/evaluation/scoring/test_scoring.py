@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from weave_agent_signals.models import SessionView, SubagentSpan, ToolSpan, TurnSpan
 from weave_agent_signals.scorers import score_session, score_turn
 
@@ -99,3 +101,14 @@ def test_score_turn_includes_subagent_outcomes():
     scores = score_turn(turn)
     scorer_names = {s.scorer for s in scores}
     assert "outcome.test" in scorer_names
+
+
+def test_scoring_refuses_a_subagent_read_without_its_tool_calls():
+    """A counted subagent (`SubagentCounts`) has no calls; scoring must fail, not see none."""
+    turn = _turn([])
+    turn.subagents = [SubagentSpan("sub-1", "a1", tool_calls=None, counted_tool_calls=3)]
+
+    with pytest.raises(TypeError):
+        score_turn(turn)
+    with pytest.raises(TypeError):
+        score_session(_session([turn]))

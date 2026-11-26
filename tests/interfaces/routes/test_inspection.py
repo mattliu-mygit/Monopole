@@ -7,6 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from weave_agent_signals.ces_client import SubagentCounts
 from weave_agent_signals.models import SessionView, SubagentSpan, ToolSpan, TraceRole, TurnSpan
 from weave_agent_signals.patterns import ConfigStats
 from weave_agent_signals.routes import inspection
@@ -112,7 +113,8 @@ class FakeCes:
         self.windows: list[tuple] = []
         self.feedback_calls: list[list[str]] = []
         self.turn_row_columns: list[dict | None] = []
-        self.session_reads: list[tuple[str, bool]] = []
+        self.session_reads: list[tuple[str, str]] = []
+        self.subagent_counts: list = []
         self.scan_complete = False
         self.client = self
         self.catalog = None
@@ -140,8 +142,9 @@ class FakeCes:
         newest = sorted(in_window, key=lambda turn: turn.started_at, reverse=True)
         return list(dict.fromkeys(turn.conversation_id for turn in newest))
 
-    def read_session(self, trajectory_id, *, subagents=True):
-        self.session_reads.append((trajectory_id, subagents))
+    def read_session(self, trajectory_id, *, subagents=True, counts=None):
+        mode = "names" if not subagents else "counts" if counts else "full"
+        self.session_reads.append((trajectory_id, mode))
         turns = sorted(
             (turn for turn in self.turns if turn.conversation_id == trajectory_id),
             key=lambda turn: turn.started_at,
@@ -151,7 +154,8 @@ class FakeCes:
             raise httpx.HTTPStatusError("missing", request=request, response=httpx.Response(404))
         return SessionView(trajectory_id, turns, "config-v1", "main")
 
-    def turn_subagents(self, trajectory_id, turn_case_id):
+    def turn_subagents(self, trajectory_id, turn_case_id, counts=None):
+        self.subagent_counts.append(counts)
         turn = next(
             (
                 t
@@ -523,7 +527,7 @@ def _estimates(client, session_ids):
     return client.post("/api/sessions/estimates", json={"session_ids": session_ids})
 
 
-def test_session_estimates_read_only_the_requested_sessions_with_their_subagents():
+def test_session_estimates_read_only_the_requested_sessions_with_subagent_counts():
     client, backend = _client()
 
     response = _estimates(client, ["session-two"])
@@ -535,8 +539,8 @@ def test_session_estimates_read_only_the_requested_sessions_with_their_subagents
     assert body["session-two"]["o200k_base"]["turn_tokens"] == [
         body["session-two"]["o200k_base"]["total_tokens"]
     ]
-    # The judge renders each subagent's type and tool-call count, so estimates read them.
-    assert backend.session_reads == [("session-two", True)]
+    # The judge renders each subagent's type and tool-call count, so estimates take those.
+    assert backend.session_reads == [("session-two", "counts")]
     assert backend.turn_row_columns == [{"input": ["session_trajectory_id"]}]
 
 
@@ -546,7 +550,7 @@ def test_session_estimates_leave_out_unknown_sessions_without_reading_them():
     body = _estimates(client, ["session-one", "no-such-session", "session-one"]).json()
 
     assert list(body) == ["session-one"]
-    assert backend.session_reads == [("session-one", True)]
+    assert backend.session_reads == [("session-one", "counts")]
 
 
 def test_session_estimates_are_reused_while_a_sessions_turns_are_unchanged():
@@ -648,6 +652,7 @@ def test_session_detail_names_subagents_without_their_counts():
     assert response.json()["turns"][0]["subagents"] == [
         {"span_id": "traj-sub", "agent_type": None, "tool_call_count": None}
     ]
+    assert backend.session_reads == [("session-one", "names")]
 
 
 def test_turn_subagents_route_counts_a_turns_subagents_and_404s_for_other_cases():
@@ -671,4 +676,6 @@ def test_turn_subagents_route_counts_a_turns_subagents_and_404s_for_other_cases(
     assert found.json() == {
         "subagents": [{"span_id": "traj-sub", "agent_type": "explorer", "tool_call_count": 1}]
     }
+    # The route shows types and counts only, so it reads subagents through counts.
+    assert all(isinstance(counts, SubagentCounts) for counts in backend.subagent_counts)
     assert (missing.status_code, missing.json()["detail"]["code"]) == (404, "turn_not_found")

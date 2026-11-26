@@ -32,7 +32,33 @@ so whole-Trajectory Scorers can score a subagent like a session; it reads the
 session with `read_session_tree`, and other readers don't build those views. A
 read indexes which Case launched each subagent once, so its time grows linearly
 with the subagent count: a session of 1,200 subagents builds in under a second. A subagent span
-carries the tokens of its own turns. Listing a Trajectory's Cases leaves out
+carries the tokens of its own turns.
+
+Most readers need nothing of a subagent but what a judge renders: its type (its
+first Case's agent ID) and its tool-call count. Estimates, judging (the CLI and
+a run's judging stage), `inspect`, and the turn-subagents endpoint read
+sessions with `SubagentCounts`, which takes both from two Dataset-wide reads
+shared by every session in the request: the Dataset's Trajectory listing and one
+saved query counting Cases by session, agent ID, and kind. The adapter names
+each subagent Trajectory `<harness> subagent <agent ID>` and writes that agent
+ID, and the session's Trajectory ID, on every Case of it and of no other
+Trajectory, so the name keys the counts. A subagent is still read in full when
+anything is in doubt: the listing lacks it, its name gives no agent ID or one
+another subagent of the session shares, no Case has that agent ID, or it
+launched subagents of its own, whose launch order only its Cases hold. A
+counted subagent has no tool calls or tokens (`None`), so a scorer given one
+fails instead of scoring nothing. Scoring (`score`, `backfill`, and a run's
+scoring stage) reads every subagent in full, since outcomes and efficiency need
+the calls themselves, and run discovery reads no subagents, since the cohort
+pins only turns. In November 2026 the counts were 1.5 MB in about 10 requests
+and gave all 2,117 subagents of the Dataset's 10 sessions the same type, count,
+and order as reading them, which took 603 MB in 2,191 requests. Both reads grow
+with the whole Dataset, about 300 bytes per Trajectory and 3 query rows per
+subagent, so a Dataset holding far more subagents than one request reads would
+favor reading them again. CES takes no filter on a saved query, so the counts
+can't be narrowed to the sessions read.
+
+Listing a Trajectory's Cases leaves out
 its root Case, so `root_case_input` reads the Trajectory and then that Case;
 scoring uses it for the session Case's fields. Turn status maps `completed` to `OK`, `aborted` to `ERROR`, and anything
 else to `UNSET`. A turn without a user prompt starts with a reply or tool call;
@@ -54,9 +80,10 @@ the background; a just-finished turn appears one load later.
 
 The list carries no judging token estimates. Run setup asks for them only for
 the sessions the user selects, at most 100 per request, because each estimate
-reads the whole session with its subagents: the judge renders each subagent's
-type and tool-call count. Before the change, estimating a 55-day window's
-sessions with the list read 627 MB in about 2,250 requests per cold load. The
+reads the whole session; the judge renders each subagent's type and tool-call
+count, which the estimate takes from `SubagentCounts`. Estimating a 55-day
+window's sessions with the list once read 627 MB in about 2,250 requests per
+cold load, almost all of it subagent Cases. The
 API keeps each session's estimate with its turn IDs and reuses it while they
 are unchanged. Each request first searches the named sessions' turn rows,
 asking only for each row's session, so a kept estimate costs that one search

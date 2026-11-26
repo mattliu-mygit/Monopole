@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from weave_agent_signals.ces_client import CesSession, session_or_none
+from weave_agent_signals.ces_client import CesSession, SubagentCounts, session_or_none
 from weave_agent_signals.judges.families import model_family
 from weave_agent_signals.models import SessionView, TurnSpan, session_is_evaluable
 from weave_agent_signals.runs.store import DataSelection
@@ -181,7 +181,10 @@ def discover_turn_cohort(
 
     since, until = _selection_bounds(selection)
     with ces_factory() as ces:
-        sessions = {sid: session_or_none(ces.client, sid) for sid in selection.session_ids}
+        # The cohort pins turns only, so subagents aren't read.
+        sessions = {
+            sid: session_or_none(ces.client, sid, subagents=False) for sid in selection.session_ids
+        }
 
     filtered: list[TurnSpan] = []
     for session in sessions.values():
@@ -321,16 +324,22 @@ def hydrate_turn_cohort(
     cohort: Mapping[str, Any],
     *,
     ces_factory: Callable[[], CesSession],
+    subagent_calls: bool = True,
 ) -> tuple[list[TurnSpan], dict[str, SessionView]]:
     """Read exactly the pinned turns back from CES and reject any identity drift.
 
     Turns added to a pinned session after pinning are ignored, because the pin lists
-    Case IDs. A pinned session or turn that CES no longer returns fails closed."""
+    Case IDs. A pinned session or turn that CES no longer returns fails closed. Without
+    `subagent_calls`, each subagent has only its type and tool-call count (`SubagentCounts`),
+    which is all judging renders; scoring needs the calls."""
 
     turn_entries, session_entries = _validated_cohort(cohort)
     with ces_factory() as ces:
+        counts = None if subagent_calls else SubagentCounts(ces.client, ces.catalog)
         live = {
-            entry["conversation_id"]: session_or_none(ces.client, entry["conversation_id"])
+            entry["conversation_id"]: session_or_none(
+                ces.client, entry["conversation_id"], counts=counts
+            )
             for entry in session_entries
         }
     gone = sorted(sid for sid, session in live.items() if session is None)

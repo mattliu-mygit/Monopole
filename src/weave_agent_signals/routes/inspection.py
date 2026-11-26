@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 from weave_agent_signals import ces_queries
-from weave_agent_signals.ces_client import CesSession, session_or_none
+from weave_agent_signals.ces_client import CesSession, SubagentCounts, session_or_none
 from weave_agent_signals.ces_sessions import turns_from_rows
 from weave_agent_signals.judges.tokens import TokenCounterName, count_tokens
 from weave_agent_signals.judges.windowing import render_raw_turn
@@ -94,7 +94,7 @@ def _subagent_json(item, *, read: bool = True) -> dict:
     return {
         "span_id": item.span_id,
         "agent_type": item.agent_type,
-        "tool_call_count": len(item.tool_calls) if read else None,
+        "tool_call_count": item.tool_call_count if read else None,
     }
 
 
@@ -340,15 +340,16 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             rows = ces.client.session_turn_rows(
                 ces.catalog, list(dict.fromkeys(request.session_ids)), columns=_TURN_ID_COLUMNS
             )
+            # The judge renders each subagent's type and tool-call count, so the estimate
+            # takes those, from counts that every session here shares.
+            counts = SubagentCounts(ces.client, ces.catalog)
             for sid, session_rows in rows.items():
                 turn_ids = tuple(sorted(row["case_id"] for row in session_rows))
                 if not turn_ids:
                     continue
                 known = estimates.get(sid)
                 if known is None or known[0] != turn_ids:
-                    # The judge renders each subagent's type and tool-call count, so the
-                    # estimate reads subagents too.
-                    session = session_or_none(ces.client, sid)
+                    session = session_or_none(ces.client, sid, counts=counts)
                     if session is None or not session.turns:
                         continue
                     known = (turn_ids, _judging_token_estimates(session.turns))
@@ -392,7 +393,9 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
     @router.get("/sessions/{conversation_id}/turns/{trace_id}/subagents")
     def get_turn_subagents(conversation_id: str, trace_id: str) -> TurnSubagentsResponse:
         with ces_factory() as ces:
-            subagents = ces.client.turn_subagents(conversation_id, trace_id)
+            # The page shows each subagent's type and tool-call count, and no more.
+            counts = SubagentCounts(ces.client, ces.catalog)
+            subagents = ces.client.turn_subagents(conversation_id, trace_id, counts)
         if subagents is None:
             raise HTTPException(
                 status_code=404,

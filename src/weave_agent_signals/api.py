@@ -133,6 +133,9 @@ def _build_default_dependencies(
     def hydrate(cohort):
         return hydrate_turn_cohort(cohort, ces_factory=ces_factory)
 
+    def hydrate_for_judging(cohort):
+        return hydrate_turn_cohort(cohort, ces_factory=ces_factory, subagent_calls=False)
+
     scoring_dependencies = ScoringDependencies(
         store=store,
         ces_factory=ces_factory,
@@ -168,7 +171,7 @@ def _build_default_dependencies(
                     entity=entity,
                     project=project,
                 ),
-                hydrate_cohort=hydrate,
+                hydrate_cohort=hydrate_for_judging,
             ),
         )
 

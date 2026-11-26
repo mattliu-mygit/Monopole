@@ -118,6 +118,7 @@ class Catalog:
     turns_evaluation_id: str
     sessions_evaluation_id: str
     scorers: dict[str, ScorerRef]
+    dataset_id: str | None = None  # the adapter's Dataset, which both Evaluations read
 
     def evaluation_for(self, target_kind: str) -> str:
         return self.turns_evaluation_id if target_kind == "case" else self.sessions_evaluation_id

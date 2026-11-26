@@ -12,13 +12,14 @@ import httpx
 import pytest
 import respx
 
-from weave_agent_signals.ces_catalog import VERDICT, Catalog, ScorerSpec
+from weave_agent_signals.ces_catalog import DETERMINISTIC, VERDICT, Catalog, ScorerRef, ScorerSpec
 from weave_agent_signals.ces_client import (
     MAX_RETRY_AFTER_S,
     PAGE_LIMIT,
     QUERY_SLOTS,
     SESSIONS_PER_SEARCH,
     CesClient,
+    SubagentCounts,
     _score_record,
 )
 from weave_agent_signals.ces_sessions import _tool_span, session_view, turns_from_rows
@@ -1503,3 +1504,166 @@ def test_reading_a_session_takes_time_linear_in_its_subagent_count(read):
 
     # 8 times the subagents: linear work takes about 8 times as long, quadratic about 64.
     assert ratio < 20
+
+
+def _named(agent: str, *kinds: str) -> list[dict]:
+    """A subagent's Cases, all with its agent ID, one turn of the given kinds."""
+    return [
+        _case(f"{agent}-{i}", kind, "k1", i, agent_id=agent, tool_name="Bash")
+        for i, kind in enumerate(kinds)
+    ]
+
+
+# Under traj-s: traj-a and traj-n (below traj-p) can come from the counts. traj-p launched a
+# subagent, traj-x's name gives no agent ID, traj-d1 and traj-d2 share one, traj-e has no Cases,
+# and the listing doesn't have traj-new yet: each of those is read.
+COUNTED_ROOT = [
+    _case("c1", "user_message", "t1", 0, text="go"),
+    _case(
+        "c2",
+        "tool_call",
+        "t1",
+        1,
+        children=["traj-a", "traj-p", "traj-x", "traj-d1", "traj-d2", "traj-e", "traj-new"],
+        tool_name="Task",
+    ),
+    _case("c3", "user_message", "t2", 0, text="more"),
+]
+COUNTED_CASES = {
+    "traj-a": _named("ag-a", "user_message", "tool_call", "tool_call"),
+    "traj-p": [
+        *_named("ag-p", "user_message", "tool_call"),
+        _case("ag-p-launch", "tool_call", "k2", 0, children=["traj-n"], agent_id="ag-p"),
+    ],
+    "traj-n": _named("ag-n", "user_message", "assistant_message", "tool_call"),
+    "traj-x": _named("ag-x", "user_message", "tool_call"),
+    "traj-d1": _named("ag-d", "tool_call"),
+    "traj-d2": _named("ag-d", "user_message"),
+    "traj-e": [],
+    "traj-new": _named("ag-new", "tool_call"),
+}
+COUNTED_LISTING = [
+    {"trajectory_id": "traj-s", "name": "codex session sess-1", "parent_trajectory_id": None},
+    *(
+        {"trajectory_id": tid, "name": f"codex subagent {agent}", "parent_trajectory_id": parent}
+        for tid, agent, parent in [
+            ("traj-a", "ag-a", "traj-s"),
+            ("traj-p", "ag-p", "traj-s"),
+            ("traj-n", "ag-n", "traj-p"),
+            ("traj-d1", "ag-d", "traj-s"),
+            ("traj-d2", "ag-d", "traj-s"),
+            ("traj-e", "ag-e", "traj-s"),
+        ]
+    ),
+    {"trajectory_id": "traj-x", "name": "custom helper", "parent_trajectory_id": "traj-s"},
+]
+COUNTED_CATALOG = Catalog(
+    "ev-turns",
+    "ev-sessions",
+    {"efficiency": ScorerRef(DETERMINISTIC[0], "sc-e", "v-e", "sc-ed", "v-ed")},
+    "ds-1",
+)
+
+
+def _counted_routes() -> dict[str, respx.Route]:
+    """CES as it stands for COUNTED_*: Case lists, the Trajectory listing, and the count query,
+    whose rows hold every Case's (session, agent ID, kind) count."""
+    respx.get(f"{BASE}/trajectories/traj-s/cases").mock(
+        return_value=httpx.Response(200, json={"cases": COUNTED_ROOT})
+    )
+    reads = {
+        tid: respx.get(f"{BASE}/trajectories/{tid}/cases").mock(
+            return_value=httpx.Response(200, json={"cases": cases})
+        )
+        for tid, cases in COUNTED_CASES.items()
+    }
+    groups: dict[tuple, int] = {}
+    for case in [*COUNTED_ROOT, *(c for cases in COUNTED_CASES.values() for c in cases)]:
+        key = ("traj-s", case["input"].get("agent_id"), case["input"]["kind"])
+        groups[key] = groups.get(key, 0) + 1
+    rows = [{"group": list(key), "targets": n, "metrics": []} for key, n in groups.items()]
+    reads["listing"] = respx.get(f"{BASE}/datasets/ds-1/trajectories").mock(
+        return_value=httpx.Response(200, json={"trajectories": COUNTED_LISTING})
+    )
+    reads["create"] = respx.post(f"{BASE}/evaluations/ev-turns/queries").mock(
+        return_value=httpx.Response(200, json={"evaluation_query_id": "q-sub"})
+    )
+    reads["results"] = respx.get(f"{BASE}/evaluations/ev-turns/queries/q-sub/results").mock(
+        return_value=httpx.Response(200, json={"rows": rows})
+    )
+    return reads
+
+
+def _shown(view) -> list[list[tuple]]:
+    """What a judge renders of each turn's subagents."""
+    return [[(s.span_id, s.agent_type, s.tool_call_count) for s in t.subagents] for t in view.turns]
+
+
+@respx.mock
+def test_counts_give_each_subagent_the_type_and_tool_call_count_its_cases_would():
+    reads = _counted_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+
+    full = client.read_session("traj-s")
+    full_reads = {tid: reads[tid].call_count for tid in COUNTED_CASES}
+    counted = client.read_session("traj-s", counts=SubagentCounts(client, COUNTED_CATALOG))
+
+    assert _shown(counted) == _shown(full)
+    assert _shown(full)[0] == [
+        ("traj-a", "ag-a", 2),
+        ("traj-p", "ag-p", 2),
+        ("traj-x", "ag-x", 1),
+        ("traj-d1", "ag-d", 1),
+        ("traj-d2", "ag-d", 0),
+        ("traj-e", None, 0),
+        ("traj-new", "ag-new", 1),
+        ("traj-n", "ag-n", 1),
+    ]
+    assert {tid: reads[tid].call_count - full_reads[tid] for tid in COUNTED_CASES} == {
+        "traj-a": 0,
+        "traj-n": 0,
+        **{t: 1 for t in ["traj-p", "traj-x", "traj-d1", "traj-d2", "traj-e", "traj-new"]},
+    }
+    by_id = {s.span_id: s for s in counted.turns[0].subagents}
+    # A counted subagent has no calls or tokens, so a scorer can't take it for one with none.
+    assert (by_id["traj-a"].tool_calls, by_id["traj-a"].tokens) == (None, None)
+    assert len(by_id["traj-p"].tool_calls) == 2
+    query = json.loads(reads["create"].calls[0].request.content)
+    assert [g["name"] for g in query["definition"]["group_by"]] == [
+        "session_trajectory_id",
+        "agent_id",
+        "kind",
+    ]
+
+
+@respx.mock
+def test_counts_are_read_once_for_every_session_that_shares_them_and_not_when_unused():
+    reads = _counted_routes()
+    respx.get(f"{BASE}/trajectories/traj-lone/cases").mock(
+        return_value=httpx.Response(200, json={"cases": COUNTED_ROOT[:1]})
+    )
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    counts = SubagentCounts(client, COUNTED_CATALOG)
+
+    client.read_session("traj-lone", counts=counts)  # no subagents: nothing to count
+    assert reads["listing"].call_count == reads["results"].call_count == 0
+    client.read_session("traj-s", counts=counts)
+    client.turn_subagents("traj-s", "c1", counts)
+
+    assert (reads["listing"].call_count, reads["create"].call_count) == (1, 1)
+    assert reads["results"].call_count == 1
+
+
+@respx.mock
+def test_turn_subagents_with_counts_reads_only_the_subagents_they_lack():
+    reads = _counted_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+
+    subagents = client.turn_subagents("traj-s", "c1", SubagentCounts(client, COUNTED_CATALOG))
+
+    assert [(s.span_id, s.tool_call_count) for s in subagents][:2] == [
+        ("traj-a", 2),
+        ("traj-p", 2),
+    ]
+    assert (reads["traj-a"].call_count, reads["traj-n"].call_count) == (0, 0)
+    assert reads["traj-p"].call_count == 1

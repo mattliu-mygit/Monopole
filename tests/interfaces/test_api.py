@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from weave_agent_signals import api as api_module
 from weave_agent_signals.api import ApiDependencies, create_app
+from weave_agent_signals.runs.store import RunStatus
 
 
 class _Runs:
@@ -101,3 +102,42 @@ def test_an_unknown_api_path_is_a_404_not_the_app_shell(tmp_path):
 
     with TestClient(app) as client:
         assert client.get("/api/no-such-route").status_code == 404
+
+
+def test_scoring_hydrates_whole_subagents_and_judging_only_their_counts(monkeypatch, tmp_path):
+    hydrated: list[bool] = []
+    monkeypatch.setattr(
+        api_module,
+        "hydrate_turn_cohort",
+        lambda _cohort, *, ces_factory, subagent_calls=True: hydrated.append(subagent_calls),
+    )
+    stages = {}
+    for name in ("run_scoring_stage", "run_judging_stage"):
+        monkeypatch.setattr(
+            api_module,
+            name,
+            lambda run, config, cancel, *, dependencies, name=name: stages.update(
+                {name: dependencies}
+            ),
+        )
+    for name in ("load_target_registry", "load_sandbox_runtime"):
+        monkeypatch.setattr(api_module, name, lambda _path: None)
+    monkeypatch.setattr(api_module, "create_challenge_runner", lambda *_a, **_k: None)
+    deps = api_module._build_default_dependencies(
+        entity="e",
+        project="p",
+        target_registry=tmp_path / "targets.json",
+        sandbox_runtime=tmp_path / "runtime.json",
+        db_path=tmp_path / "runs.db",
+    )
+    try:
+        service = deps.run_service
+        service._stages[RunStatus.SCORING](None, None, None)
+        service._stages[RunStatus.JUDGING](None, None, None)
+        stages["run_scoring_stage"].hydrate_cohort({})
+        stages["run_judging_stage"].hydrate_cohort({})
+    finally:
+        deps.close()
+
+    # Scoring reads each subagent's tool calls; judging renders only their type and count.
+    assert hydrated == [True, False]

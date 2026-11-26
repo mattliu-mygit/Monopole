@@ -83,8 +83,15 @@ class ChatSpan:
 class SubagentSpan:
     span_id: str
     agent_type: str | None
-    tool_calls: list[ToolSpan] = field(default_factory=list)
-    tokens: int = 0  # input plus output tokens of the subagent's own turns
+    # None when the read took only the subagent's type and tool-call count (`SubagentCounts`),
+    # so a scorer, which needs the calls themselves, fails on it instead of seeing none.
+    tool_calls: list[ToolSpan] | None = field(default_factory=list)
+    tokens: int | None = 0  # input plus output tokens of the subagent's own turns; None likewise
+    counted_tool_calls: int = 0  # the tool-call count when tool_calls is None
+
+    @property
+    def tool_call_count(self) -> int:
+        return self.counted_tool_calls if self.tool_calls is None else len(self.tool_calls)
 
 
 @dataclass

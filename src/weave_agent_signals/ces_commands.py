@@ -25,6 +25,7 @@ from weave_agent_signals.ces_catalog import Catalog
 from weave_agent_signals.ces_client import (
     CesClient,
     CesSession,
+    SubagentCounts,
     plan_judge_writes,
     session_or_none,
 )
@@ -333,7 +334,13 @@ def inspect(args: argparse.Namespace) -> int:
             session_ids = [args.session]
         else:
             session_ids = client.find_sessions(catalog, since=None, limit=args.recent)
-        sessions = [s for sid in session_ids if (s := session_or_none(client, sid)) is not None]
+        # The listing shows each turn's subagent count, so counts stand in for their Cases.
+        counts = SubagentCounts(client, catalog)
+        sessions = [
+            s
+            for sid in session_ids
+            if (s := session_or_none(client, sid, counts=counts)) is not None
+        ]
         session_rows = client.session_scores(catalog, session_ids) if args.scores else {}
         for session in sessions:
             turn_rows = client.turn_scores(catalog, session.conversation_id) if args.scores else {}
@@ -350,9 +357,13 @@ def inspect(args: argparse.Namespace) -> int:
 def sessions_to_judge(
     client, catalog: Catalog, *, since: datetime, limit: int
 ) -> list[SessionView]:
-    """The newest `limit` sessions with a turn since `since` that are agent sessions throughout."""
+    """The newest `limit` sessions with a turn since `since` that are agent sessions throughout.
+    The judge renders each subagent's type and tool-call count only, so counts stand in for
+    their Cases."""
+    counts = SubagentCounts(client, catalog)
     sessions = [
-        client.read_session(sid) for sid in client.find_sessions(catalog, since=since, limit=limit)
+        client.read_session(sid, counts=counts)
+        for sid in client.find_sessions(catalog, since=since, limit=limit)
     ]
     return [
         session for session in sessions if session.turns and session_is_evaluable(session.turns)

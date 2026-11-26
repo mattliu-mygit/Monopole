@@ -8,7 +8,7 @@ import pytest
 
 from weave_agent_signals import ces_commands, cli
 from weave_agent_signals.catalogs import build_model_catalog, build_rubric_catalog
-from weave_agent_signals.ces_client import CesSession
+from weave_agent_signals.ces_client import CesSession, SubagentCounts
 from weave_agent_signals.models import Score, SessionView, TraceRole
 
 
@@ -161,10 +161,15 @@ def test_sessions_to_judge_keeps_only_agent_sessions_with_turns():
         ),
         "empty": SessionView("empty", [], "cfg", "main"),
     }
-    client.read_session.side_effect = sessions.__getitem__
+    client.read_session.side_effect = lambda sid, *, counts: sessions[sid]
     since = datetime(2026, 7, 14, tzinfo=timezone.utc)
 
     found = ces_commands.sessions_to_judge(client, None, since=since, limit=3)
 
     assert [session.conversation_id for session in found] == ["agent"]
     client.find_sessions.assert_called_once_with(None, since=since, limit=3)
+    # The judge renders each subagent's type and tool-call count only.
+    assert all(
+        isinstance(call.kwargs["counts"], SubagentCounts)
+        for call in client.read_session.call_args_list
+    )
