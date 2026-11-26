@@ -332,8 +332,7 @@ def inspect(args: argparse.Namespace) -> int:
         if args.session:
             session_ids = [args.session]
         else:
-            epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
-            session_ids = client.find_sessions(catalog, since=epoch, limit=args.recent)
+            session_ids = client.find_sessions(catalog, since=None, limit=args.recent)
         sessions = [s for sid in session_ids if (s := session_or_none(client, sid)) is not None]
         session_rows = client.session_scores(catalog, session_ids) if args.scores else {}
         for session in sessions:

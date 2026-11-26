@@ -73,7 +73,7 @@ describe('Sessions', () => {
     renderPage()
 
     expect(await screen.findByText(/showing the newest 2 sessions/i)).not.toBeNull()
-    expect(screen.getByText(/older sessions in this window are not/i)).not.toBeNull()
+    expect(screen.getByText(/older sessions are not shown/i)).not.toBeNull()
   })
 
   it('calls out sessions with low hydrated signal evidence', async () => {

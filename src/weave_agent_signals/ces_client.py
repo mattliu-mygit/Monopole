@@ -510,11 +510,12 @@ class CesClient:
         self,
         catalog: Catalog,
         *,
-        since: datetime,
+        since: datetime | None,
         until: datetime | None = None,
         limit: int | None = None,
     ) -> list[str]:
-        """Session Trajectories with a turn that started in the window, newest first.
+        """Session Trajectories with a turn that started in the window, newest first. With no
+        `since` the window has no start, so pass a `limit` to keep the read bounded.
 
         CES filters can't range-compare string fields, so this reads turns newest first and
         stops at the first one before `since`. The adapter's timestamps sort in time order."""
@@ -528,7 +529,7 @@ class CesClient:
                 )
                 if started is None:
                     continue  # a turn without a start time can't be placed in the window
-                if started < since:
+                if since is not None and started < since:
                     return list(found)
                 if session and (until is None or started <= until):
                     found.setdefault(session, None)

@@ -125,7 +125,8 @@ class FakeCes:
         in_window = [
             turn
             for turn in self.turns
-            if turn.started_at >= since and (until is None or turn.started_at <= until)
+            if (since is None or turn.started_at >= since)
+            and (until is None or turn.started_at <= until)
         ]
         newest = sorted(in_window, key=lambda turn: turn.started_at, reverse=True)
         return list(dict.fromkeys(turn.conversation_id for turn in newest))
@@ -210,6 +211,15 @@ def test_session_listing_stops_at_the_limit_newest_first():
 
     assert [s["conversation_id"] for s in body["sessions"]] == ["session-one"]
     assert (body["total"], body["truncated"]) == (3, True)
+
+
+def test_session_listing_without_since_lists_the_newest_sessions_of_any_age():
+    client, backend = _client()
+
+    body = client.get("/api/sessions", params={"limit": 1}).json()
+
+    assert [s["conversation_id"] for s in body["sessions"]] == ["session-one"]
+    assert backend.windows == [(None, None)]
 
 
 def test_session_listing_totals_only_turns_inside_the_window():

@@ -56,8 +56,7 @@ export default function Sessions() {
         <p className="mb-3 text-sm text-gray-500">
           {data.truncated ? (
             <>
-              Showing the newest {sessions.length} sessions. Older sessions in this window are not
-              shown.
+              Showing the newest {sessions.length} sessions. Older sessions are not shown.
             </>
           ) : (
             <>

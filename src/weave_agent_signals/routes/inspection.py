@@ -7,7 +7,6 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
 from typing import Any, get_args
 
 from fastapi import APIRouter, HTTPException, Query
@@ -267,7 +266,6 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
             )
         except DateFilterError as error:
             raise _date_error(error) from error
-        since_value = since_value or (datetime.now(timezone.utc) - timedelta(hours=168))
         with ces_factory() as ces:
             # Newest activity first, so reading stops once `limit` sessions are found. Sessions
             # that can't be evaluated are skipped, and the scan reads at most SESSION_SCAN_FACTOR
@@ -292,7 +290,7 @@ def create_inspection_router(ces_factory: Callable[[], CesSession]) -> APIRouter
                     in_window = [
                         turn
                         for turn in turns
-                        if turn.started_at >= since_value
+                        if (since_value is None or turn.started_at >= since_value)
                         and (until_value is None or turn.started_at <= until_value)
                     ]
                     if in_window:

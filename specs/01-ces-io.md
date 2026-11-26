@@ -39,7 +39,10 @@ else to `UNSET`. A turn without a user prompt starts with a reply or tool call;
 that span's ID gets a `/span` suffix so judge evidence IDs stay unique.
 
 `find_sessions` reads turn rows newest first and stops at the first turn before
-`since`, because CES filters cannot range-compare string fields.
+`since`, because CES filters cannot range-compare string fields With no
+`since`, it reads sessions of any age until its limit. The Sessions page sends no
+`since`, so it lists the newest sessions however old they are; the list reads at
+most three times its limit of sessions.
 
 ## Scores
 

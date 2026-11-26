@@ -898,6 +898,26 @@ def test_find_sessions_stops_reading_at_its_limit():
 
 
 @respx.mock
+def test_find_sessions_without_since_reads_any_age_until_its_limit():
+    _catalog_routes()
+    client = CesClient("http://ces.test", "scope-1", api_key="k")
+    catalog = client.ensure_catalog("ds-1")
+    rows = [
+        {"input": {"started_at": started, "session_trajectory_id": sid}}
+        for started, sid in (("2026-11-03T10:00:00Z", "s1"), ("2019-01-01T10:00:00Z", "s2"))
+    ]
+    route = respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
+        side_effect=[
+            httpx.Response(200, json={"rows": rows[:1], "next_cursor": "more"}),
+            httpx.Response(200, json={"rows": rows[1:], "next_cursor": "more"}),
+        ]
+    )
+
+    assert client.find_sessions(catalog, since=None, limit=2) == ["s1", "s2"]
+    assert route.call_count == 2
+
+
+@respx.mock
 def test_turn_scores_are_keyed_by_each_turns_first_case():
     client = CesClient("http://ces.test", "scope-1", api_key="k")
     respx.post(f"{BASE}/evaluations/ev-turns/rows/search").mock(
