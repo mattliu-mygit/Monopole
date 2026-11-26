@@ -489,6 +489,27 @@ def test_trajectory_cases_shrink_the_page_when_ces_storage_capacity_is_exceeded(
 
 
 @respx.mock
+def test_a_shrunken_page_doubles_again_after_three_accepted_pages():
+    limits = []
+    refused = iter([True, False, False, False, False, True, False])
+
+    def page(request):
+        limits.append(int(request.url.params["limit"]))
+        if next(refused):
+            return httpx.Response(503, json={"error": {"code": "storage_capacity_exceeded"}})
+        more = len(limits) < 7
+        return httpx.Response(
+            200, json={"cases": [{"case_id": "c"}], "next_cursor": "more" if more else None}
+        )
+
+    respx.get(f"{BASE}/trajectories/traj-s/cases").mock(side_effect=page)
+    client = CesClient("http://ces.test", "scope-1", api_key="k", sleep=lambda _: None)
+
+    assert len(client.trajectory_cases("traj-s")) == 5
+    assert limits == [1000, 500, 500, 500, 1000, 1000, 500]
+
+
+@respx.mock
 def test_a_page_at_the_smallest_size_retries_ces_storage_errors_instead_of_shrinking():
     limits = []
     refusals_at_smallest = iter([True, True, False])

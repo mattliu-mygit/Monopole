@@ -123,12 +123,13 @@ Prod CES also answers a page that reads too much, such as 100 whole Cases
 (about 450 KB) or 200 turn rows, with the same 503 `storage_capacity_exceeded`,
 and keeps failing it on retry. So every paged read (a Trajectory's Case list,
 row searches, Trajectory rows, query results) asks for 1,000 rows a page, and on
-that error halves the page instead of resending it, keeping the smaller size for
-the rest of the read. At 20 rows it stops shrinking, and the page gets the usual
-retries, since CES also refuses small pages now and then. A transient refusal of
-a large page therefore also halves it. In November 2026 this read two large
-sessions in 40 s and 60 s, against 75 s and 89 s at a fixed 20 rows, because CES
-accepted about 31 of their Cases a page.
+that error halves the page instead of resending it. After three accepted pages
+in a row it doubles the page again, up to 1,000, because the refusals come and go
+with CES load and with how large the page's rows and Scores are. At 20 rows it
+stops shrinking, and the page gets the usual retries, since CES also refuses
+small pages now and then. Measured in November 2026, keeping the shrunken size
+for the rest of the read took 62-66 s for session 8138dbc5's Cases; doubling
+again took 7-18 s.
 
 ## External correctness constraints
 
@@ -143,7 +144,8 @@ accepted about 31 of their Cases a page.
    `Retry-After`. CES answers `503 storage_capacity_exceeded` when one page
    reads too much, which a session with large Cases hits at 1,000 Cases, so lists
    and searches halve their page size on that error until CES accepts it, down to
-   20 rows, instead of resending the same page.
+   20 rows, instead of resending the same page, and grow it again after three
+   accepted pages.
 5. CoreWeave Serverless Inference uses bearer W&B authentication plus the
    entity/project header; HTTP 402 means inference credits are unavailable.
 

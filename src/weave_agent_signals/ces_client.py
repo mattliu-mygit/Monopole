@@ -54,6 +54,12 @@ PAGE_LIMIT = 1000
 # and 8138dbc5 in 40 s and 60 s, against 75 s and 89 s at a fixed 20, because CES accepted about
 # 31 Cases per page there.
 CASE_PAGE_LIMIT = 20
+# A shrunken page doubles after this many accepted pages in a row. Measured 2026-11-25 against
+# prod CES: staying at the accepted size read session 8138dbc5's Cases in 62-66 s with 171-206
+# requests, and doubling after 1 or 3 accepted pages in 7-18 s with 14-37; the Dataset's 1,075
+# turn rows took 2-34 s (mean 18 s) staying and 3-21 s (mean 10-12 s) doubling. Three bounds
+# the refusals a uniformly heavy listing pays to one per three accepted pages.
+GROW_AFTER = 3
 # Independent reads (one session's turn rows, one subagent's Cases) run this many at once. Reads
 # that take a CES query slot still wait for one of QUERY_SLOTS.
 CONCURRENT_READS = 16
@@ -387,11 +393,13 @@ class CesClient:
         self, path: str, body: dict | None, *, params: dict | None = None, slot: bool = True
     ):
         """Each page of a list (GET) or search (POST), so a caller can stop early. A page of
-        large Cases can exceed CES's per-query storage budget, which CES rejects with 503
-        storage_capacity_exceeded, so the page starts at PAGE_LIMIT and halves on that error
-        until CES accepts it, then stays at that size. At CASE_PAGE_LIMIT it stops shrinking
-        and gets the usual retries, since CES also refuses small pages now and then."""
-        cursor, page_limit = None, PAGE_LIMIT
+        large Cases or Scores can exceed CES's per-query storage budget, which CES rejects
+        with 503 storage_capacity_exceeded, so the page starts at PAGE_LIMIT and halves on that
+        error until CES accepts it. After GROW_AFTER accepted pages in a row it doubles again,
+        since the refusals come and go with CES load and with the rows in the page. At
+        CASE_PAGE_LIMIT it stops shrinking and gets the usual retries, since CES also refuses
+        small pages now and then."""
+        cursor, page_limit, accepted = None, PAGE_LIMIT, 0
         while True:
             paging = {"limit": page_limit, **({"cursor": cursor} if cursor else {})}
             shrinkable = page_limit > CASE_PAGE_LIMIT
@@ -412,9 +420,12 @@ class CesClient:
             except httpx.HTTPStatusError as error:
                 if not shrinkable or _error_code(error.response) != "storage_capacity_exceeded":
                     raise
-                page_limit = max(page_limit // 2, CASE_PAGE_LIMIT)
+                page_limit, accepted = max(page_limit // 2, CASE_PAGE_LIMIT), 0
                 continue
             yield page
+            accepted += 1
+            if accepted == GROW_AFTER and page_limit < PAGE_LIMIT:
+                page_limit, accepted = min(page_limit * 2, PAGE_LIMIT), 0
             cursor = page.get("next_cursor")
             if not cursor:
                 return
