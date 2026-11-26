@@ -39,10 +39,18 @@ else to `UNSET`. A turn without a user prompt starts with a reply or tool call;
 that span's ID gets a `/span` suffix so judge evidence IDs stay unique.
 
 `find_sessions` reads turn rows newest first and stops at the first turn before
-`since`, because CES filters cannot range-compare string fields With no
+`since`, because CES filters cannot range-compare string fields. With no
 `since`, it reads sessions of any age until its limit. The Sessions page sends no
 `since`, so it lists the newest sessions however old they are; the list reads at
-most three times its limit of sessions.
+most three times its limit of sessions. When the scan reaches the Dataset's
+oldest turn, it has already read every turn row of the sessions it found, and
+the list builds them from those rows; otherwise it searches the listed sessions'
+turn rows. Its signal callouts use only the turn Scores on those rows, so it
+reads no session Scores. In November 2026 a cold list took 8-12 s, almost all in
+the turn rows: they carry each turn's Score details, about 12 MB for 1,075
+turns, which CES serves only in small pages. CES can't return only newer turns,
+so the API keeps each list query's last result, serves it, and rebuilds it in
+the background; a just-finished turn appears one load later.
 
 ## Scores
 
