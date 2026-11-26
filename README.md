@@ -149,6 +149,39 @@ uv run weave-agent-signals serve \
 
 Then open [http://127.0.0.1:8787](http://127.0.0.1:8787).
 
+## Run Monopole as a Prompting Time plugin
+
+[Prompting Time](https://github.com/mattliu-mygit/prompting-time) can run Monopole as a
+plugin from this folder. `prompting-time-plugin.json` declares it: Prompting Time starts
+`bin/monopole-run`, which runs this server; lists runs that failed or wait for review under
+Needs you, from `bin/monopole status`; and shows the page in `page/`, which lists runs, shows
+one run, and checks provider sign-in through the plugin's actions. Delete there runs only after
+Prompting Time's confirmation. New runs and proposal reviews still happen in the web app at
+http://127.0.0.1:8787.
+
+To install the development folder:
+
+1. Install [uv](https://docs.astral.sh/uv/), the plugin's one required program.
+2. Build the page. Its `@prompting-time/ui` dependency is the tarball a Prompting Time checkout
+   builds with `scripts/pack-ui.sh`, at the path `page/package.json` names:
+
+   ```bash
+   cd page && npm ci && npm run build
+   ```
+
+3. In Prompting Time, install a plugin from a folder and choose this repository.
+4. In the plugin's settings, set the target registry and the sandbox runtime, and the run
+   database if yours is not `~/.weave-agent-signals/runs.db`. Blank CES fields use the adapter's
+   `~/.weave-agent-adapter/evaluations.json`. Restart the plugin to apply them.
+
+The plugin keeps its settings, the last provider check, and a file it rewrites when runs change in
+`$XDG_STATE_HOME/monopole` (default `~/.local/state/monopole`), which Prompting Time watches. Only
+one server may use a run database, so stop a `serve` you started yourself before Prompting Time
+starts Monopole on the same database.
+
+Page checks, from `page/`: `npm test`, `npm run typecheck`, and `npm run build`. `npm run dev` serves
+the page with a fake host at http://localhost:5176/dev/index.html.
+
 ## Model-backed features
 
 Deterministic scoring and trace inspection need only W&B access. Judging and
