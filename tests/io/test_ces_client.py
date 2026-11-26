@@ -207,10 +207,11 @@ def _catalog_routes():
     made = []
 
     def scorer(request):
-        made.append(request.headers["Idempotency-Key"])
-        return httpx.Response(
-            200, json={"scorer_id": f"sc-{len(made)}", "version_id": f"v-{len(made)}"}
-        )
+        # Scorers are created concurrently, so their IDs follow the name, not the call order.
+        key = request.headers["Idempotency-Key"]
+        made.append(key)
+        name = key.split(":")[1]
+        return httpx.Response(200, json={"scorer_id": f"sc-{name}", "version_id": f"v-{name}"})
 
     respx.post(f"{BASE}/scorers").mock(side_effect=scorer)
     respx.patch(url__regex=rf"{BASE}/evaluations/ev-.*/scorers").mock(
@@ -228,12 +229,12 @@ def test_the_catalog_makes_a_value_and_a_details_scorer_for_each_scorer():
         "ev-turns",
         "ev-sessions",
     )
-    assert made[:2] == [
+    assert {
         "monopole-scorer-v1:efficiency:number:case",
         "monopole-scorer-v1:efficiency.details:json:case",
-    ]
-    assert "monopole-scorer-v1:implicit.completion:boolean:trajectory" in made
-    assert catalog.by_scorer_id()["sc-2"] == ("efficiency", True)
+        "monopole-scorer-v1:implicit.completion:boolean:trajectory",
+    } <= set(made)
+    assert catalog.by_scorer_id()["sc-efficiency.details"] == ("efficiency", True)
 
 
 @respx.mock

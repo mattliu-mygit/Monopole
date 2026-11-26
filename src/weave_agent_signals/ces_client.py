@@ -430,31 +430,39 @@ class CesClient:
         return self.add_scorers(Catalog(evaluations["case"], evaluations["trajectory"], {}), specs)
 
     def add_scorers(self, catalog: Catalog, specs: tuple[ScorerSpec, ...]) -> Catalog:
-        """Create each spec's value and details Scorers and add them to the matching Evaluation."""
-        refs, selected = dict(catalog.scorers), {"case": [], "trajectory": []}
-        for spec in specs:
-            made = []
-            for name, value_type in (
-                (spec.name, spec.value_type),
-                (spec.name + DETAILS_SUFFIX, "json"),
-            ):
-                body = {
-                    "name": name,
-                    "value_type": value_type,
-                    "allowed_target_kinds": [spec.target_kind],
-                }
-                if spec.description:
-                    body["description"] = spec.description
-                made.append(
-                    self._request(
-                        "POST",
-                        "/scorers",
-                        body=body,
-                        key=f"monopole-scorer-v1:{name}:{value_type}:{spec.target_kind}",
-                    )
+        """Create each spec's value and details Scorers and add them to the matching Evaluation.
+        The creates are independent, so they run concurrently."""
+
+        def create(name: str, value_type: str, spec: ScorerSpec) -> dict:
+            body = {
+                "name": name,
+                "value_type": value_type,
+                "allowed_target_kinds": [spec.target_kind],
+            }
+            if spec.description:
+                body["description"] = spec.description
+            made = self._request(
+                "POST",
+                "/scorers",
+                body=body,
+                key=f"monopole-scorer-v1:{name}:{value_type}:{spec.target_kind}",
+            )
+            # Reads name a Score by its Scorer version; this one needs no lookup.
+            self._scorer_names[(made["scorer_id"], made["version_id"])] = name
+            return made
+
+        with ThreadPoolExecutor(max_workers=CONCURRENT_READS) as pool:
+            created = [
+                (
+                    spec,
+                    pool.submit(create, spec.name, spec.value_type, spec),
+                    pool.submit(create, spec.name + DETAILS_SUFFIX, "json", spec),
                 )
-                # Reads name a Score by its Scorer version; this one needs no lookup.
-                self._scorer_names[(made[-1]["scorer_id"], made[-1]["version_id"])] = name
+                for spec in specs
+            ]
+            pairs = [(spec, (value.result(), details.result())) for spec, value, details in created]
+        refs, selected = dict(catalog.scorers), {"case": [], "trajectory": []}
+        for spec, made in pairs:
             refs[spec.name] = ScorerRef(
                 spec,
                 made[0]["scorer_id"],
