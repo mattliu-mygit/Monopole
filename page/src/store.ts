@@ -291,9 +291,10 @@ export function createPageStore(link: HostLink) {
       open(started.route);
     },
     /** Runs the provider's login, after Prompting Time's confirmation, until it finishes; then
-     * shows the provider check the action ran after it. */
-    signIn: async (provider: string) => {
-      const done = (await holdingAfter(() => call("sign-in", ["--item", provider]))) as { sign_in: ProviderCheck["sign_in"]; providers: ProviderCheck };
+     * shows the provider check the action ran after it. `deviceAuth` runs Codex's device-code login. */
+    signIn: async (provider: string, deviceAuth = false) => {
+      const args = ["--item", provider, ...(deviceAuth ? ["--device-auth"] : [])];
+      const done = (await holdingAfter(() => call("sign-in", args))) as { sign_in: ProviderCheck["sign_in"]; providers: ProviderCheck };
       setState((s) => {
         s.providers = { ...done.providers, sign_in: done.sign_in };
       });

@@ -3,14 +3,17 @@
 `sign-in --item <provider>` is a confirmed action. It starts `claude auth login`, `codex login`, or
 `devin auth login` with the user's own environment, so the login lands where judging reads it,
 and waits until the command exits, the user cancels, or SIGN_IN_TIMEOUT_SECONDS pass. Each CLI
-opens the browser and waits for a redirect to a localhost port. Starting `codex login` deletes the
-current Codex login at once, even when the sign-in is then cancelled.
+opens the browser and waits for a redirect to a localhost port. `--item codex --device-auth` runs
+`codex login --device-auth` instead, which prints a link and a one-time code to enter there, for
+when the redirect can't reach this machine. Starting either Codex login deletes the current Codex
+login at once, even when the sign-in is then cancelled.
 
 While it waits, it keeps `<state folder>/sign-in.json` current: the provider, the first https link
-the CLI printed (the fallback when the browser doesn't open), and whether the CLI asks for a
-pasted code. Prompting Time gives an action no stdin, so a pasted code reaches the CLI through a
-second action: `sign-in-code` writes `<state folder>/sign-in-code` (mode 600), which the waiting
-action reads, deletes, and types into the CLI's stdin. `sign-in-cancel` writes
+the CLI printed (the fallback when the browser doesn't open, or the device-code page), the
+one-time code a device-code sign-in printed, and whether the CLI asks for a pasted code.
+Prompting Time gives an action no stdin, so a pasted code reaches the CLI through a second action:
+`sign-in-code` writes `<state folder>/sign-in-code` (mode 600), which the waiting action reads,
+deletes, and types into the CLI's stdin. `sign-in-cancel` writes
 `<state folder>/sign-in-cancel` the same way, and the waiting action stops the CLI. When the CLI
 exits, the action checks every provider again and prints both results.
 """
@@ -45,6 +48,8 @@ COMMANDS = {
     "codex": ["codex", "login"],
     "devin": ["devin", "auth", "login"],
 }
+# Codex's sign-in with a one-time code entered in any browser, rather than a localhost redirect.
+DEVICE_AUTH_COMMAND = ["codex", "login", "--device-auth"]
 CODEX_WARNING = "Starting sign-in removes the current Codex login, even if you cancel."
 
 STATE_FILE = "sign-in.json"
@@ -52,6 +57,10 @@ CODE_FILE = "sign-in-code"
 CANCEL_FILE = "sign-in-cancel"
 _LINK = re.compile(r"https://[^\s\"'<>]+")
 _ASKS_FOR_CODE = re.compile(r"paste|enter (the )?code", re.IGNORECASE)
+# `codex login --device-auth` prints "Enter this one-time code (expires in 15 minutes)" and, on the
+# next line, the code, such as BUT6-0M8K4, possibly colored.
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_DEVICE_CODE = re.compile(r"one-time code[^\n]*\n\s*([A-Z0-9]+(?:-[A-Z0-9]+)+)\b")
 
 
 def _now() -> str:
@@ -70,9 +79,13 @@ def _alive(pid: object) -> bool:
     return True
 
 
-def _provider(provider: str) -> list[str]:
+def _provider(provider: str, device_auth: bool = False) -> list[str]:
     if provider not in COMMANDS:
         raise Refused(f"Monopole signs in to {', '.join(COMMANDS)} only, not {provider}.")
+    if device_auth:
+        if provider != "codex":
+            raise Refused("Only Codex signs in with a device code.")
+        return DEVICE_AUTH_COMMAND
     return COMMANDS[provider]
 
 
@@ -98,8 +111,8 @@ def _waiting(provider: str | None = None) -> dict[str, Any] | None:
     return found
 
 
-def sign_in_request(provider: str) -> str:
-    argv = _provider(provider)
+def sign_in_request(provider: str, device_auth: bool = False) -> str:
+    argv = _provider(provider, device_auth)
     request = {
         "action": "sign-in",
         "provider": providers.PROVIDER_TITLES[provider],
@@ -150,10 +163,12 @@ def _take(path: Path) -> str | None:
     return text
 
 
-def sign_in(provider: str, *, timeout: float = SIGN_IN_TIMEOUT_SECONDS) -> dict[str, Any]:
+def sign_in(
+    provider: str, *, device_auth: bool = False, timeout: float = SIGN_IN_TIMEOUT_SECONDS
+) -> dict[str, Any]:
     """Run the provider's login command to its end, then check every provider again."""
 
-    argv = _provider(provider)
+    argv = _provider(provider, device_auth)
     if _waiting() is not None:
         raise Refused("Another sign-in is waiting; finish or cancel it first.")
     env = {**os.environ, "WEAVE_AGENT_ADAPTER_DISABLE": "1"}
@@ -172,6 +187,7 @@ def sign_in(provider: str, *, timeout: float = SIGN_IN_TIMEOUT_SECONDS) -> dict[
         "finished_at": None,
         "pid": os.getpid(),
         "link": None,
+        "device_code": None,
         "asks_for_code": False,
         "message": None,
     }
@@ -192,11 +208,14 @@ def sign_in(provider: str, *, timeout: float = SIGN_IN_TIMEOUT_SECONDS) -> dict[
     outcome = None
     try:
         while process.poll() is None:
-            output = "".join(chunks)
+            output = _ANSI.sub("", "".join(chunks))
             link = state["link"] or next(iter(_LINK.findall(output)), None)
             asks = state["asks_for_code"] or bool(_ASKS_FOR_CODE.search(output))
-            if (link, asks) != (state["link"], state["asks_for_code"]):
-                state.update(link=link, asks_for_code=asks)
+            device = _DEVICE_CODE.search(output) if device_auth else None
+            device_code = state["device_code"] or (device.group(1) if device else None)
+            found = (link, asks, device_code)
+            if found != (state["link"], state["asks_for_code"], state["device_code"]):
+                state.update(link=link, asks_for_code=asks, device_code=device_code)
                 _write_state(state)
             code = _take(folder / CODE_FILE)
             if code is not None:

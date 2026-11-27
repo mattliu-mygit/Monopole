@@ -32,7 +32,8 @@
 //   sessions [--limit n]       the newest sessions a new run can choose
 //   providers                  the last provider sign-in check, and the last or waiting sign-in
 //   check-providers            checks every provider now and prints the result
-//   sign-in* --item <cli>      runs claude, codex, or devin's login and waits for it to finish
+//   sign-in* --item <cli> [--device-auth]   runs claude, codex, or devin's login and waits for it to
+//                              finish; codex --device-auth shows a link and a one-time code instead
 //   sign-in-code --item <cli> --code <code>   types a pasted code into the waiting sign-in
 //   sign-in-cancel --item <cli>               stops the waiting sign-in
 //   stage-key --item wandb|openai --key <key> holds a key for set-key, and exits at once
@@ -125,12 +126,14 @@ export interface RunDetail extends Card {
 
 export type ProviderState = "signed_in" | "signed_out" | "no_key" | "not_installed" | "unknown";
 
-/** A sign-in the sign-in action runs or ran; `link` is the CLI's fallback sign-in link. */
+/** A sign-in the sign-in action runs or ran; `link` is the CLI's fallback sign-in link, or for a
+ * Codex device-code sign-in, the page where the user enters `device_code`. */
 export interface SignIn {
   provider: string;
   state: "waiting" | "signed_in" | "failed" | "timed_out" | "cancelled" | "stopped";
   started_at: string;
   link: string | null;
+  device_code?: string | null;
   asks_for_code: boolean;
   message: string | null;
 }

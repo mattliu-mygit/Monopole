@@ -153,6 +153,26 @@ describe("provider sign-in", () => {
     expect(within(screen.getByText("Codex").closest("li")!).getByText("Signed in")).toBeInTheDocument();
   });
 
+  it("signs in to Codex with a device code, showing the link and the code", async () => {
+    const confirm = vi.fn(() => true);
+    const host = renderWithFakeHost({ confirm, openOnReady: "/providers", holdSignIn: true });
+    fireEvent.click(await screen.findByRole("button", { name: "Check all" }));
+    const codex = (await screen.findByText("Codex")).closest("li")!;
+    fireEvent.click(await enabled(() => within(codex).getByRole("button", { name: "Sign in" })));
+
+    const warning = screen.getByRole("dialog", { name: "Sign in to Codex" });
+    expect(within(warning).getByText(CODEX_WARNING)).toBeInTheDocument();
+    fireEvent.click(await enabled(() => within(warning).getByRole("button", { name: "Use a device code" })));
+    await waitFor(() => expect(confirm).toHaveBeenCalledWith("sign-in", ["--item", "codex", "--device-auth"]));
+
+    const panel = await screen.findByRole("dialog", { name: "Signing in with codex login --device-auth" });
+    expect(await within(panel).findByText("BUT6-0M8K4")).toBeInTheDocument();
+    expect(within(panel).getByText("https://auth.openai.com/codex/device")).toBeInTheDocument();
+    expect(within(panel).queryByLabelText("Code from the browser, if it shows one")).not.toBeInTheDocument();
+    host.finishSignIn();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
   it("checks and saves a key and never shows it", async () => {
     const host = renderWithFakeHost({ openOnReady: "/providers" });
     fireEvent.click(await screen.findByRole("button", { name: "Check all" }));

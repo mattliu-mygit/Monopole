@@ -9,6 +9,7 @@ type Provider = ProviderCheck["providers"][number];
 const CLIS = new Set(["claude", "codex", "devin"]);
 const KEYS = new Set(["wandb", "openai"]);
 const COMMANDS: Record<string, string> = { claude: "claude auth login", codex: "codex login", devin: "devin auth login" };
+const DEVICE_COMMAND = "codex login --device-auth";
 export const CODEX_WARNING = "Starting sign-in removes the current Codex login, even if you cancel.";
 
 /** Red for a provider that stops runs, green for one that works, no color otherwise. A missing
@@ -40,15 +41,17 @@ export function Providers(props: { store: PageStore }) {
   // The provider whose Codex warning or key field is open.
   const [asking, setAsking] = createSignal<string | null>(null);
   const [signingIn, setSigningIn] = createSignal<string | null>(null);
+  const [deviceAuth, setDeviceAuth] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [saved, setSaved] = createSignal<string | null>(null);
 
-  async function signIn(provider: string) {
+  async function signIn(provider: string, device = false) {
     setAsking(null);
     setError(null);
     setSigningIn(provider);
+    setDeviceAuth(device);
     try {
-      await store.signIn(provider);
+      await store.signIn(provider, device);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
     } finally {
@@ -117,9 +120,16 @@ export function Providers(props: { store: PageStore }) {
           <h3>Sign in to Codex</h3>
           <p class="m-warning">{CODEX_WARNING}</p>
           <p class="m-quiet">Monopole runs {COMMANDS.codex}; it finishes when the browser returns to localhost:1455.</p>
+          <p class="m-quiet">
+            Or sign in with a device code, when the browser can't reach this Mac: Monopole runs {DEVICE_COMMAND}, which shows a link and a
+            one-time code to enter there.
+          </p>
           <div class="m-actions">
             <Button variant="primary" onClick={() => void signIn("codex")} disabled={store.held()}>
               Start sign-in
+            </Button>
+            <Button onClick={() => void signIn("codex", true)} disabled={store.held()}>
+              Use a device code
             </Button>
             <Button onClick={() => setAsking(null)}>Cancel</Button>
           </div>
@@ -136,7 +146,16 @@ export function Providers(props: { store: PageStore }) {
           onCancel={() => setAsking(null)}
         />
       </Show>
-      <Show when={waiting()}>{(provider) => <SignInPanel store={store} provider={provider()} state={signInState()} />}</Show>
+      <Show when={waiting()}>
+        {(provider) => (
+          <SignInPanel
+            store={store}
+            provider={provider()}
+            command={provider() === "codex" && (deviceAuth() || signInState()?.device_code) ? DEVICE_COMMAND : COMMANDS[provider()]}
+            state={signInState()}
+          />
+        )}
+      </Show>
       <Show when={!waiting() && signInState()}>
         {(last) => (
           <p class="m-hint">
@@ -150,7 +169,7 @@ export function Providers(props: { store: PageStore }) {
   );
 }
 
-function SignInPanel(props: { store: PageStore; provider: string; state: SignIn | null }) {
+function SignInPanel(props: { store: PageStore; provider: string; command: string; state: SignIn | null }) {
   const [code, setCode] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
   const current = () => (props.state?.provider === props.provider ? props.state : null);
@@ -165,32 +184,49 @@ function SignInPanel(props: { store: PageStore; provider: string; state: SignIn 
   }
 
   return (
-    <div class="m-panel" role="dialog" aria-label={`Signing in with ${COMMANDS[props.provider]}`}>
-      <h3>Signing in with {COMMANDS[props.provider]}</h3>
+    <div class="m-panel" role="dialog" aria-label={`Signing in with ${props.command}`}>
+      <h3>Signing in with {props.command}</h3>
       <p class="m-status">
         <StatusDot status="running" />
         Waiting for the browser… Finish signing in there; this closes on its own.
       </p>
-      <Show when={current()?.link}>
-        {(link) => (
-          <p class="m-quiet">
-            Browser didn't open? Copy this link into it: <span class="m-mono">{link()}</span>
-          </p>
+      <Show
+        when={current()?.device_code}
+        fallback={
+          <Show when={current()?.link}>
+            {(link) => (
+              <p class="m-quiet">
+                Browser didn't open? Copy this link into it: <span class="m-mono">{link()}</span>
+              </p>
+            )}
+          </Show>
+        }
+      >
+        {(code) => (
+          <dl class="m-kv">
+            <dt>Open</dt>
+            <dd class="m-mono">{current()?.link ?? "the link Codex printed"}</dd>
+            <dt>Enter the code</dt>
+            <dd class="m-mono m-device-code">{code()}</dd>
+          </dl>
         )}
       </Show>
       <div class="m-actions">
-        <TextField label="Code from the browser, if it shows one" value={code()} onInput={(event) => setCode(event.currentTarget.value)} />
-        <Button
-          disabled={!code().trim()}
-          onClick={() =>
-            void attempt(async () => {
-              await props.store.sendSignInCode(props.provider, code().trim());
-              setCode("");
-            })
-          }
-        >
-          Submit code
-        </Button>
+        {/* A device-code sign-in takes its code in the browser, not here. */}
+        <Show when={!current()?.device_code}>
+          <TextField label="Code from the browser, if it shows one" value={code()} onInput={(event) => setCode(event.currentTarget.value)} />
+          <Button
+            disabled={!code().trim()}
+            onClick={() =>
+              void attempt(async () => {
+                await props.store.sendSignInCode(props.provider, code().trim());
+                setCode("");
+              })
+            }
+          >
+            Submit code
+          </Button>
+        </Show>
         <Button onClick={() => void attempt(() => props.store.cancelSignIn(props.provider))}>Cancel sign-in</Button>
       </div>
       <Show when={error()}>

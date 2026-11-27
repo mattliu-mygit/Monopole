@@ -357,6 +357,11 @@ def add_parser(subs: argparse._SubParsersAction) -> None:
     actions.add_parser("check-providers", help="Check every provider's sign-in now")
     login = actions.add_parser("sign-in", help="Run a provider CLI's login command")
     login.add_argument("--item", required=True, choices=sorted(signin.COMMANDS))
+    login.add_argument(
+        "--device-auth",
+        action="store_true",
+        help="Codex only: sign in with a one-time code entered in any browser",
+    )
     add_confirm_flags(login)
     code = actions.add_parser("sign-in-code", help="Type a pasted code into the waiting sign-in")
     code.add_argument("--item", required=True, choices=sorted(signin.COMMANDS))
@@ -436,10 +441,10 @@ def _run(args: argparse.Namespace) -> int:
     elif action == "check-providers":
         _print_json(providers.check_providers())
     elif action == "sign-in":
-        text = signin.sign_in_request(args.item)
+        text = signin.sign_in_request(args.item, args.device_auth)
         what = f"sign in to {providers.PROVIDER_TITLES[args.item]}"
         if confirmed("sign-in", text, print_only=args.print_only, expect=args.expect, what=what):
-            _print_json(signin.sign_in(args.item))
+            _print_json(signin.sign_in(args.item, device_auth=args.device_auth))
     elif action == "sign-in-code":
         _print_json(signin.send_code(args.item, args.code))
     elif action == "sign-in-cancel":

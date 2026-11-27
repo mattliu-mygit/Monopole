@@ -30,6 +30,20 @@ echo "Starting local login server on http://localhost:1455"
 echo "Error: login was not completed" >&2
 exit 1
 """
+# What codex login --device-auth prints, colored as Codex colors it; it exits once $FAKE_OUT exists,
+# as the real one does once the code is entered in the browser.
+FAKE_CODEX_DEVICE = """#!/bin/sh
+[ "$*" = "login --device-auth" ] || exit 2
+echo "Follow these steps to sign in with ChatGPT using device code authorization:"
+echo
+echo "1. Open this link in your browser and sign in to your account"
+printf "   \\033[94mhttps://auth.openai.com/codex/device\\033[0m\\n"
+echo
+echo "2. Enter this one-time code \\033[90m(expires in 15 minutes)\\033[0m"
+printf "   \\033[94mBUT6-0M8K4\\033[0m\\n"
+while [ ! -e "$FAKE_OUT" ]; do sleep 0.02; done
+echo "Successfully logged in"
+"""
 FAKE_WAITS = """#!/bin/sh
 echo "Waiting for the browser..."
 sleep 30
@@ -152,3 +166,34 @@ def test_a_sign_in_whose_process_is_gone_reads_as_stopped(clis):
     (state_dir() / "sign-in.json").write_text(json.dumps(state))
 
     assert signin.current()["state"] == "stopped"
+
+
+def test_codex_device_code_sign_in_shows_the_link_and_the_code(clis, capsys):
+    tmp_path, _ = clis
+    (tmp_path / "bin" / "codex").write_text(FAKE_CODEX_DEVICE)
+    assert main(["plugin", "sign-in", "--item", "codex", "--device-auth", "--print"]) == 0
+    request = json.loads((state_dir() / "sign-in-request.json").read_text())
+    assert request["runs"] == "codex login --device-auth"
+    assert request["warning"] == signin.CODEX_WARNING
+
+    results: list = []
+    thread = threading.Thread(
+        target=lambda: results.append(signin.sign_in("codex", device_auth=True))
+    )
+    thread.start()
+    _wait_for(lambda: (signin.current() or {}).get("device_code"))
+    waiting = signin.current()
+    assert (waiting["link"], waiting["device_code"]) == (
+        "https://auth.openai.com/codex/device",
+        "BUT6-0M8K4",
+    )
+    assert waiting["asks_for_code"] is False
+
+    (tmp_path / "typed-code").write_text("entered in the browser")
+    thread.join(10)
+    assert results[0]["sign_in"]["state"] == "signed_in"
+
+
+def test_only_codex_signs_in_with_a_device_code(clis, capsys):
+    assert main(["plugin", "sign-in", "--item", "claude", "--device-auth", "--print"]) == 1
+    assert "Only Codex signs in with a device code" in capsys.readouterr().err

@@ -150,7 +150,9 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
         return providers;
       case "sign-in": {
         const provider = item(args);
-        signIn = { provider, state: "waiting", started_at: "2026-11-26T18:00:00+00:00", link: `https://${provider}.example/sign-in`, asks_for_code: true, message: null };
+        signIn = args.includes("--device-auth")
+          ? { provider, state: "waiting", started_at: "2026-11-26T18:00:00+00:00", link: "https://auth.openai.com/codex/device", device_code: "BUT6-0M8K4", asks_for_code: false, message: null }
+          : { provider, state: "waiting", started_at: "2026-11-26T18:00:00+00:00", link: `https://${provider}.example/sign-in`, device_code: null, asks_for_code: true, message: null };
         changed("sign-in.json");
         const state = options.holdSignIn ? await new Promise<SignIn["state"]>((resolve) => (finishSignIn = resolve)) : "signed_in";
         signIn = { ...signIn, state };

@@ -383,3 +383,8 @@ ul {
   color: var(--s-text-muted);
   font-weight: var(--s-weight-medium);
 }
+
+.m-device-code {
+  font-size: var(--s-size-lg);
+  letter-spacing: 0.08em;
+}
