@@ -27,6 +27,19 @@ function words(value: string): string {
   return value.replaceAll('_', ' ')
 }
 
+/** Turn positions as readable ranges, such as "turns 1–39, 41" or "turn 114". */
+function turnRanges(positions: number[]): string {
+  const sorted = [...positions].sort((left, right) => left - right)
+  const ranges: string[] = []
+  for (let start = 0; start < sorted.length;) {
+    let end = start
+    while (end + 1 < sorted.length && sorted[end + 1] === sorted[end] + 1) end += 1
+    ranges.push(end === start ? `${sorted[start]}` : `${sorted[start]}–${sorted[end]}`)
+    start = end + 1
+  }
+  return `${sorted.length === 1 ? 'turn' : 'turns'} ${ranges.join(', ')}`
+}
+
 function usageText(usage: Record<string, unknown>): string {
   return Object.entries(usage).map(([key, value]) => `${words(key)} ${String(value)}`).join(' · ') || '—'
 }
@@ -537,13 +550,20 @@ export default function JudgingProgress({
                             {reviewer.work_bounds.merge_calls_per_rubric} merge per rubric
                           </div>
                           <ol className="mt-2 space-y-1">
-                            {reviewer.window_plan?.windows.map((window) => (
-                              <li key={window.window_id} className="rounded border border-gray-200 bg-white p-2">
-                                <span className="font-medium">Window {window.index}</span>{' · '}
-                                core {window.core_trace_ids.join(', ')} · raw {window.raw_trace_ids.join(', ')} ·{' '}
-                                {window.raw_tokens.toLocaleString()} estimated tokens
-                              </li>
-                            ))}
+                            {reviewer.window_plan?.windows.map((window) => {
+                              const positions = new Map(reviewer.window_plan!.raw_turns.map((turn) => [turn.trace_id, turn.position]))
+                              const core = new Set(window.core_trace_ids)
+                              const context = window.raw_trace_ids.filter((id) => !core.has(id))
+                              const turnsOf = (ids: string[]) => turnRanges(ids.flatMap((id) => positions.get(id) ?? []))
+                              return (
+                                <li key={window.window_id} className="rounded border border-gray-200 bg-white p-2">
+                                  <span className="font-medium">Window {window.index}</span>{' · '}
+                                  {turnsOf(window.core_trace_ids)}
+                                  {context.length > 0 && `, plus ${turnsOf(context)} for context`} ·{' '}
+                                  {window.raw_tokens.toLocaleString()} estimated tokens
+                                </li>
+                              )
+                            })}
                           </ol>
                         </>
                       )}

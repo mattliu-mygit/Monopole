@@ -162,6 +162,33 @@ describe('JudgingProgress', () => {
     expect(screen.queryByText(/episode/i)).toBeNull()
   })
 
+  it('names each pinned window by its turn numbers', () => {
+    const reviewer = plan.sessions[0].reviewers[0]
+    const overlapPlan: JudgingPlan = {
+      ...plan,
+      sessions: [{
+        ...plan.sessions[0],
+        reviewers: [{
+          ...reviewer,
+          window_plan: {
+            ...reviewer.window_plan!,
+            windows: [
+              { ...reviewer.window_plan!.windows[0], core_trace_ids: ['trace-1', 'trace-2'], raw_trace_ids: ['trace-1', 'trace-2'] },
+              { ...reviewer.window_plan!.windows[1], core_trace_ids: ['trace-2'], raw_trace_ids: ['trace-1', 'trace-2'] },
+            ],
+          },
+        }],
+      }],
+    }
+
+    render(<JudgingProgress plan={overlapPlan} progress={null} result={null} />)
+
+    const windows = screen.getAllByRole('listitem').map((item) => item.textContent)
+    expect(windows).toContain('Window 1 · turns 1–2 · 100 estimated tokens')
+    expect(windows).toContain('Window 2 · turn 2, plus turn 1 for context · 100 estimated tokens')
+    expect(screen.queryByText(/trace-1/)).toBeNull()
+  })
+
   it('shows capacity-skipped reviewers without trying to render windows', () => {
     const skippedPlan: JudgingPlan = {
       ...plan,
