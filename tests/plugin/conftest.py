@@ -19,6 +19,10 @@ def state(monkeypatch, tmp_path):
         "WEAVE_AGENT_SIGNALS_CES_URL",
         "WEAVE_AGENT_SIGNALS_CES_SCOPE_REF",
         "WEAVE_AGENT_SIGNALS_CES_DATASET_ID",
+        "OPENAI_API_KEY",
     ):
-        monkeypatch.delenv(name, raising=False)
+        # setenv first, so monkeypatch records the variable and removes whatever the test
+        # sets directly through os.environ (apply_settings, set-key) when it ends.
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
     return tmp_path
