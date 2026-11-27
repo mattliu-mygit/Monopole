@@ -28,6 +28,7 @@ from weave_agent_signals.plugin.runs import (
     list_cards,
     one_line,
     run_detail,
+    run_page,
 )
 from weave_agent_signals.plugin.settings import (
     apply_settings,
@@ -40,6 +41,9 @@ from weave_agent_signals.plugin.settings import (
 from weave_agent_signals.runs.store import RunStore
 
 STATUS_ITEM_LIMIT = 50
+# How long `trends` waits for the server's analysis, which reads every Score's statistics and
+# the newest turns' Scores from CES; on a large Dataset that takes minutes.
+TRENDS_TIMEOUT_SECONDS = 600
 RUNS_CHANGED_FILE = "runs-changed"
 # How often the server looks for committed run changes. While a run writes progress, the page
 # and Prompting Time read again at most this often; a run-store commit callback would be
@@ -353,6 +357,9 @@ def add_parser(subs: argparse._SubParsersAction) -> None:
     listed.add_argument("--until")
     listed.add_argument("--timezone")
     listed.add_argument("--limit", type=int, default=50)
+    actions.add_parser(
+        "trends", help="Score summaries, trends, A/B leaderboard, and coaching, as Analysis shows"
+    )
     sizes = actions.add_parser(
         "session-estimates", help="Judging token estimates for the sessions New run selects"
     )
@@ -421,7 +428,7 @@ def _run(args: argparse.Namespace) -> int:
         cards, truncated = list_cards(run_db_path(), args.limit)
         _print_json({"format": 1, "runs": cards, "truncated": truncated})
     elif action == "run":
-        detail = run_detail(run_db_path(), args.item)
+        detail = run_page(run_db_path(), args.item)
         if detail is None:
             raise Refused(f"There is no run {args.item}.")
         _print_json({"format": 1, "run": detail})
@@ -440,6 +447,11 @@ def _run(args: argparse.Namespace) -> int:
         with server.open_server(settings["port"]) as monopole:
             found = newrun.sessions(monopole, args.since, args.until, args.timezone, args.limit)
             _print_json(found)
+    elif action == "trends":
+        # The web UI's analysis, from the same route: summaries, the A/B leaderboard, trends,
+        # and coaching. The route only reads CES.
+        with server.open_server(settings["port"]) as monopole:
+            _print_json(monopole.call("GET", "/api/analyze", timeout=TRENDS_TIMEOUT_SECONDS))
     elif action == "session-estimates":
         with server.open_server(settings["port"]) as monopole:
             _print_json(newrun.session_estimates(monopole, args.session_ids))

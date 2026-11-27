@@ -8,7 +8,7 @@ from typing import Annotated, TypeVar
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 
-from weave_agent_signals.routes import serialize_run
+from weave_agent_signals.routes import run_response
 from weave_agent_signals.routes.models import RunResponse
 from weave_agent_signals.runs.review import (
     ReviewConflictError,
@@ -79,7 +79,7 @@ def create_reviews_router(service: ReviewService) -> APIRouter:
     router = APIRouter(prefix="/api/runs", tags=["reviews"])
 
     def response(run):
-        return RunResponse.model_validate(serialize_run(run, getattr(service, "store", None)))
+        return run_response(run, getattr(service, "store", None))
 
     @router.put("/{run_id}/reflection_selection")
     def select_candidate(run_id: str, request: SelectionRequest) -> RunResponse:

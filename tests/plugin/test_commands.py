@@ -23,7 +23,10 @@ def test_the_json_actions_print_what_the_page_reads(state, capsys):
 
     assert main(["plugin", "runs"]) == 0
     listed = json.loads(capsys.readouterr().out)
-    assert main(["plugin", "run", "--item", "run-1"]) == 0
+    # The run view validates a run's stored stages as the web UI's run route does, so it reads a
+    # run in real shapes; the card fixtures above store only the fields cards read.
+    add_run(state / "runs.db", "run-2", "failed", "2026-11-04T22:00:00+00:00", error="boom")
+    assert main(["plugin", "run", "--item", "run-2"]) == 0
     shown = json.loads(capsys.readouterr().out)
     assert main(["plugin", "status"]) == 0
     printed = json.loads(capsys.readouterr().out)
@@ -32,7 +35,8 @@ def test_the_json_actions_print_what_the_page_reads(state, capsys):
 
     assert listed["format"] == 1 and listed["truncated"] is False
     assert [run["run_id"] for run in listed["runs"]] == ["run-1"]
-    assert shown["run"]["run_id"] == "run-1" and len(shown["run"]["stages"]) == 3
+    assert shown["run"]["run_id"] == "run-2" and len(shown["run"]["stages"]) == 3
+    assert shown["run"]["error"] == "boom" and shown["run"]["judging_result"] is None
     assert printed["format"] == 2 and printed["items"][0]["group"] == "failed"
     assert last == {"format": 1, "checked_at": None, "providers": [], "sign_in": None}
 

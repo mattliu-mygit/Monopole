@@ -164,7 +164,6 @@ def test_run_detail_adds_stages_rubrics_and_models(state):
         "proposal_writer": "GLM 5.3",
         "proposal_evaluator": "DeepSeek V4.1 Flash",
     }
-    assert detail["selection"]["session_ids"] == ["01a1ad64-7d00-75f7-b10f-e2e0471fdf58"]
     assert run_detail(db, "run-missing") is None
 
 

@@ -8,7 +8,7 @@ from typing import TypeVar
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, model_validator
 
-from weave_agent_signals.routes import serialize_run, serialize_run_summary
+from weave_agent_signals.routes import run_response, serialize_run_summary
 from weave_agent_signals.routes._time import DateFilterError, parse_selection_bounds
 from weave_agent_signals.routes.models import RunListResponse, RunResponse
 from weave_agent_signals.routes.reviews import call_review
@@ -115,7 +115,7 @@ def create_runs_router(
     router = APIRouter(prefix="/api/runs", tags=["runs"])
 
     def response(run):
-        return RunResponse.model_validate(serialize_run(run, getattr(service, "store", None)))
+        return run_response(run, getattr(service, "store", None))
 
     @router.post("")
     def create_run() -> RunResponse:

@@ -15,8 +15,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from weave_agent_signals.routes import review_state
-from weave_agent_signals.runs.store import RUN_DB_SCHEMA_VERSION, RunDatabaseSchemaError
+from weave_agent_signals.routes import review_state, run_response
+from weave_agent_signals.runs.store import RUN_DB_SCHEMA_VERSION, RunDatabaseSchemaError, RunStore
 
 _STAGES = ("scoring", "judging", "reflecting")
 _ACTIVE = frozenset(_STAGES)
@@ -302,7 +302,7 @@ def get_card(path: Path, run_id: str) -> dict[str, Any] | None:
 
 
 _DETAIL_COLUMNS = f"""
-    data_selection, run_config, auto_run,
+    auto_run,
     json((SELECT json_group_object(json_extract(value, '$.id'), json_extract(value, '$.label'))
         FROM json_each(effective_config, '$.rubrics'))) AS rubric_labels,
     json_extract(effective_config, '$.models.proposal_writer.label') AS proposal_writer,
@@ -313,7 +313,7 @@ _DETAIL_COLUMNS = f"""
         'rating', json_extract(value, '$.rating'),
         'review_status', json_extract(value, '$.review_status')))
         FROM json_each(judging_result, '$.attempt_summaries'))) AS rubric_reviews,
-    status, scoring_succeeded, judging_succeeded, reflecting_succeeded, error,
+    status, scoring_succeeded, judging_succeeded, reflecting_succeeded,
     {", ".join(_stage_messages(stage) for stage in _STAGES)}
 """
 
@@ -344,9 +344,6 @@ def run_detail(path: Path, run_id: str) -> dict[str, Any] | None:
         stages.append({"stage": stage, "state": state, "message": one_line(message, 2_000)})
     return {
         **found,
-        "selection": json.loads(row["data_selection"]) if row["data_selection"] else None,
-        # What the run asked for, which Edit and rerun fills New run with.
-        "config": json.loads(row["run_config"]) if row["run_config"] else None,
         "auto_run": bool(row["auto_run"]),
         "stages": stages,
         "rubrics": [
@@ -357,5 +354,22 @@ def run_detail(path: Path, run_id: str) -> dict[str, Any] | None:
             "proposal_writer": row["proposal_writer"],
             "proposal_evaluator": row["proposal_evaluator"],
         },
-        "error": row["error"],
     }
+
+
+def run_page(path: Path, run_id: str) -> dict[str, Any] | None:
+    """What the page's run view shows: `run_detail`, plus every field Monopole's web UI reads
+    from GET /api/runs/{run_id}, serialized by the same code, so the page can show each stage's
+    progress, events, judge attempts, and reflection evidence. Unlike that route, it doesn't
+    check a pending review's managed files for drift; reviewing stays in the web UI."""
+
+    detail = run_detail(path, run_id)
+    if detail is None:
+        return None
+    store = RunStore(path, read_only=True)
+    try:
+        run = store.get(run_id)
+        full = run_response(run, store).model_dump(mode="json") if run is not None else None
+    finally:
+        store.close()
+    return {**detail, **full} if full is not None else None

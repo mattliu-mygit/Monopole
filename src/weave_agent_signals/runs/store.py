@@ -476,11 +476,16 @@ _JSON_FIELDS = {
 class RunStore:
     """SQLite store whose writes enforce the evaluation-run lifecycle."""
 
-    def __init__(self, db_path: str | Path | None = None):
+    def __init__(self, db_path: str | Path | None = None, *, read_only: bool = False):
+        """Opens the run database, creating its tables when it is new. With `read_only`, SQLite
+        opens an existing database read-only and nothing is created or written, so a reader such
+        as the plugin's page never takes the write lock or wakes the server's change watcher."""
+
         path = Path(db_path or _default_db_path())
         self.path = path
         self._conn = sqlite3.connect(
-            str(path),
+            f"{path.resolve().as_uri()}?mode=ro" if read_only else str(path),
+            uri=read_only,
             check_same_thread=False,
         )
         self._lock = threading.Lock()
@@ -488,6 +493,13 @@ class RunStore:
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA busy_timeout=5000")
             stored_version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+            if read_only:
+                if stored_version != RUN_DB_SCHEMA_VERSION:
+                    raise RunDatabaseSchemaError(
+                        f"unsupported run database schema: {stored_version}; this Monopole "
+                        f"reads schema {RUN_DB_SCHEMA_VERSION} ({path})"
+                    )
+                return
             has_runs = self._conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runs'"
             ).fetchone()

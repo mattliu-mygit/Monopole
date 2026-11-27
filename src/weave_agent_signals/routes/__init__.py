@@ -2,6 +2,7 @@
 
 from dataclasses import asdict
 
+from weave_agent_signals.routes.models import RunResponse
 from weave_agent_signals.routes.run_views import (
     judging_plan_view,
     progress_with_events,
@@ -41,6 +42,12 @@ def serialize_run(run: Run, store: RunStore | None = None) -> dict:
         "reflection_review_revision": run.reflection_review_revision,
         "error": run.error,
     }
+
+
+def run_response(run: Run, store: RunStore | None = None) -> RunResponse:
+    """The run as GET /api/runs/{run_id} returns it, which the plugin's run page reads too."""
+
+    return RunResponse.model_validate(serialize_run(run, store))
 
 
 def review_state(

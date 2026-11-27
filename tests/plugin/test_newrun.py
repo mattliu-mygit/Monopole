@@ -218,21 +218,17 @@ def test_create_run_refuses_settings_without_a_session(state, fake, capsys):
     assert "Choose at least one session" in capsys.readouterr().err
 
 
-def test_catalog_sessions_and_run_detail_give_new_run_what_it_fills_in(state, fake, capsys):
-    _stored_run(state, auto_run=0)
-
+def test_catalog_and_sessions_give_new_run_its_choices(state, fake, capsys):
+    # Edit and rerun fills New run from `run`'s run_config and data_selection, which
+    # test_run_page checks against the web UI's run route.
     assert main(["plugin", "catalog"]) == 0
     found = json.loads(capsys.readouterr().out)
     assert main(["plugin", "sessions", "--since", "2026-11-01", "--limit", "20"]) == 0
     listed = json.loads(capsys.readouterr().out)
-    assert main(["plugin", "run", "--item", "run-old"]) == 0
-    shown = json.loads(capsys.readouterr().out)["run"]
 
     assert found["models"]["catalog_version"] == "models-2"
     assert found["rubrics"]["catalog_version"] == "rubrics-2"
     assert listed["params"] == {"since": "2026-11-01", "limit": "20"}
-    assert (shown["config"], shown["auto_run"]) == (CONFIG, False)
-    assert shown["selection"]["session_ids"] == [SESSION]
 
 
 def test_session_estimates_ask_the_server_for_the_selected_sessions_only(state, fake, capsys):
