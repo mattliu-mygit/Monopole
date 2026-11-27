@@ -15,7 +15,7 @@
       { "id": "failed", "title": "Run failed", "needs_you": true, "order": 1 },
       { "id": "review", "title": "Review needed", "needs_you": true, "order": 2 },
       { "id": "running", "title": "Running", "needs_you": false, "order": 3 },
-      { "id": "done", "title": "Done", "needs_you": false, "order": 4, "folded": true }
+      { "id": "done", "title": "Done", "needs_you": false, "order": 4 }
     ],
     "item_actions": ["continue", "rerun", "delete"]
   },

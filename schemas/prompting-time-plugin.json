@@ -74,8 +74,7 @@
               "id": { "description": "What each item names as its group.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
               "title": { "type": "string", "pattern": "\\S" },
               "needs_you": { "description": "Whether the group's items wait on the user, which lists them under Needs you.", "type": "boolean" },
-              "order": { "description": "Where the group lists among the others, lowest first.", "type": "integer", "minimum": 0 },
-              "folded": { "description": "Whether the group's section starts folded.", "type": "boolean" }
+              "order": { "description": "Where the group lists among the others, lowest first.", "type": "integer", "minimum": 0 }
             }
           }
         },
