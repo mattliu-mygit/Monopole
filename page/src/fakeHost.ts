@@ -128,7 +128,7 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
       case "continue": {
         const id = item(args);
         runs = runs.map((card) =>
-          card.run_id === id ? { ...card, status: "judging", label: "Judging", dot: "running", progress: null, next_stage: null } : card,
+          card.run_id === id ? { ...card, status: "judging", label: "Judging", dot: "running", group: "running", progress: null, next_stage: null } : card,
         );
         changed("runs-changed");
         return { format: 1, run_id: id, status: "judging", route: `/runs/${id}` };

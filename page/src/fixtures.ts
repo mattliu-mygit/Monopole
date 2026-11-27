@@ -82,7 +82,7 @@ export function cards(): Card[] {
       status: "scoring",
       label: "Waiting to judge",
       dot: "attention",
-      group: "running",
+      group: "waiting",
       created_at: "2026-11-26T16:00:00+00:00",
       updated_at: "2026-11-26T16:05:00+00:00",
       title: "Speed up the session list",

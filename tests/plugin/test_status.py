@@ -91,11 +91,14 @@ def test_status_fits_prompting_times_schema_and_the_manifests_groups(state):
         "success",
     )
     scored = by_id["run-scored"]
+    # Waiting for Continue needs the user, so Prompting Time lists it under Needs you.
     assert (scored["group"], scored["dot"], scored["detail"]) == (
-        "running",
+        "waiting",
         "attention",
-        "Waiting to judge",
+        "Ready to judge — Continue to start",
     )
+    waiting = next(g for g in MANIFEST["status"]["groups"] if g["id"] == "waiting")
+    assert waiting["needs_you"] is True
     assert scored["actions"] == ["continue", "rerun"]
     # A waiting run isn't counted as running.
     assert printed["agent"] == {"words": "Running 1 run", "dot": "running"}

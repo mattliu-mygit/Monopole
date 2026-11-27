@@ -24,6 +24,11 @@ _ACTIVE = frozenset(_STAGES)
 # continue automatically. Reflection always runs on to complete.
 _CONTINUES_TO = {"scoring": "judging", "judging": "reflecting"}
 _WAITING_LABELS = {"judging": "Waiting to judge", "reflecting": "Waiting to reflect"}
+# Why a waiting run needs the user, as Prompting Time's Needs you lists it.
+WAITING_REASONS = {
+    "judging": "Ready to judge — Continue to start",
+    "reflecting": "Ready to reflect — Continue to start",
+}
 TITLE_LIMIT = 120
 DETAIL_LIMIT = 240
 
@@ -224,7 +229,7 @@ def card(row: sqlite3.Row) -> dict[str, Any]:
     if status == "created":
         label, dot, group = "Draft", "idle", None
     elif next_stage:
-        label, dot, group = _WAITING_LABELS[next_stage], "attention", "running"
+        label, dot, group = _WAITING_LABELS[next_stage], "attention", "waiting"
     elif status in _ACTIVE:
         label, dot, group = status.capitalize(), "running", "running"
         progress = one_line(row[f"{status}_progress_message"], DETAIL_LIMIT)

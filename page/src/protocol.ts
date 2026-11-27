@@ -67,7 +67,7 @@ export interface Card {
   status: "created" | "scoring" | "judging" | "reflecting" | "complete" | "failed" | "cancelled";
   label: string;
   dot: Dot;
-  group: "failed" | "review" | "running" | "done" | null;
+  group: "failed" | "review" | "waiting" | "running" | "done" | null;
   created_at: string;
   updated_at: string;
   title: string;

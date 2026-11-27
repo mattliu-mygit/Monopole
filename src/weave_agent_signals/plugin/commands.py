@@ -21,7 +21,14 @@ from urllib.parse import urlparse
 from weave_agent_signals.models import ConfigurationError
 from weave_agent_signals.plugin import keys, newrun, providers, server, signin, tools
 from weave_agent_signals.plugin.confirm import Refused, add_confirm_flags, confirmed
-from weave_agent_signals.plugin.runs import DETAIL_LIMIT, get_card, list_cards, one_line, run_detail
+from weave_agent_signals.plugin.runs import (
+    DETAIL_LIMIT,
+    WAITING_REASONS,
+    get_card,
+    list_cards,
+    one_line,
+    run_detail,
+)
 from weave_agent_signals.plugin.settings import (
     apply_settings,
     load_settings,
@@ -77,8 +84,8 @@ def watch_run_database(path: Path, stop: threading.Event, interval: float) -> No
 def _item_detail(card: dict[str, Any]) -> str | None:
     if card["failure"]:
         return one_line(card["failure"]["cause"], DETAIL_LIMIT)
-    if card["next_stage"]:
-        return card["label"]
+    if card["group"] == "waiting":
+        return WAITING_REASONS[card["next_stage"]]
     if card["group"] == "running":
         return card["progress"] or card["label"]
     parts = []
@@ -104,7 +111,7 @@ def status(path: Path, now: datetime | None = None) -> dict[str, Any]:
 
     cards, truncated = list_cards(path, STATUS_ITEM_LIMIT, drafts=False)
     found = providers.blockers(now)
-    running = sum(card["group"] == "running" and not card["next_stage"] for card in cards)
+    running = sum(card["group"] == "running" for card in cards)
     if running:
         words, dot = f"Running {running} run{'s' if running > 1 else ''}", "running"
     elif cards:
