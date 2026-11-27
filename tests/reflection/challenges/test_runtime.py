@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -303,3 +304,14 @@ def test_challenge_runtime_records_the_result_in_ces_when_given_a_session_factor
     result, _prepared, _fetched = _call_challenge_runner(tmp_path, monkeypatch, ces_factory=factory)
 
     assert result == ("challenge", factory)
+
+
+def test_runtime_names_a_runtime_file_that_is_missing(tmp_path):
+    missing = tmp_path / "auth.json"
+    document = _document(
+        tmp_path,
+        runtime_files=[{"source": str(missing), "target": "/root/.codex/auth.json"}],
+    )
+
+    with pytest.raises(ValueError, match=re.escape(str(missing))):
+        load_sandbox_runtime(document)

@@ -50,7 +50,7 @@ class RuntimeFileSource(BaseModel):
         if not source.is_absolute():
             raise ValueError("runtime file source must be an absolute host path")
         if source.is_symlink() or not source.is_file():
-            raise ValueError("runtime file source must be an existing non-symlink file")
+            raise ValueError(f"runtime file source {source} must be an existing non-symlink file")
         object.__setattr__(self, "source", source.resolve(strict=True))
         RuntimeFile(self.target, b"", self.mode)
         return self
