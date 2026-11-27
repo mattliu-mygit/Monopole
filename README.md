@@ -154,10 +154,26 @@ Then open [http://127.0.0.1:8787](http://127.0.0.1:8787).
 [Prompting Time](https://github.com/mattliu-mygit/prompting-time) can run Monopole as a
 plugin from this folder. `prompting-time-plugin.json` declares it: Prompting Time starts
 `bin/monopole-run`, which runs this server; lists runs that failed or wait for review under
-Needs you, from `bin/monopole status`; and shows the page in `page/`, which lists runs, shows
-one run, and checks provider sign-in through the plugin's actions. Delete there runs only after
-Prompting Time's confirmation. New runs and proposal reviews still happen in the web app at
-http://127.0.0.1:8787.
+Needs you, from `bin/monopole status`; and shows the page in `page/`, through the plugin's
+actions:
+
+- **Runs**: each run as a card, with Rerun, and Edit and rerun and Delete in its ⋯ menu. Rerun
+  starts a new run with the old run's sessions and settings, so turns added to those sessions
+  since join it; a judge that has left the catalog stops it with a message naming the judge.
+- **New run** (`/new`, or `/new?from=<run id>` for Edit and rerun): sessions, judges, proposal
+  writer and evaluator, and Continue automatically.
+- **Providers**: the last sign-in check, Sign in for Claude, Codex, and Devin, which runs the
+  CLI's own login and waits for the browser (starting `codex login` removes the current Codex
+  login, even if you cancel), and a field for the W&B and OpenAI keys, checked with the free
+  `GET /v1/models` before they're saved. The W&B key goes in the `api.wandb.ai` entry of
+  `~/.netrc`; the OpenAI key goes in the plugin's state folder, and the server reads it when it
+  next starts.
+- **Tools**: `score`, `backfill`, `monitor` (posting to the alert webhook in the plugin's
+  settings), and `analyze`'s subagent, judge-agreement, and segment tables.
+
+Rerun, New run, Delete, Sign in, Score, Backfill, and Check now run only after Prompting Time's
+confirmation. Rerun, New run, and their lists of sessions and models need Monopole's server to be
+running. Proposal reviews still happen in the web app at http://127.0.0.1:8787.
 
 To install the development folder:
 
@@ -174,10 +190,10 @@ To install the development folder:
    database if yours is not `~/.weave-agent-signals/runs.db`. Blank CES fields use the adapter's
    `~/.weave-agent-adapter/evaluations.json`. Restart the plugin to apply them.
 
-The plugin keeps its settings, the last provider check, and a file it rewrites when runs change in
-`$XDG_STATE_HOME/monopole` (default `~/.local/state/monopole`), which Prompting Time watches. Only
-one server may use a run database, so stop a `serve` you started yourself before Prompting Time
-starts Monopole on the same database.
+The plugin keeps its settings, the last provider check and sign-in, each tool's last run, the
+OpenAI key, and a file it rewrites when runs change in `$XDG_STATE_HOME/monopole` (default
+`~/.local/state/monopole`), which Prompting Time watches. Only one server may use a run database,
+so stop a `serve` you started yourself before Prompting Time starts Monopole on the same database.
 
 Page checks, from `page/`: `npm test`, `npm run typecheck`, and `npm run build`. `npm run dev` serves
 the page with a fake host at http://localhost:5176/dev/index.html.
