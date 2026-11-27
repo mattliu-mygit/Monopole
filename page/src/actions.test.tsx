@@ -59,6 +59,11 @@ describe("rerunning a run", () => {
     expect(checkbox(/^Session 01a1ad64-7d0/).checked).toBe(true);
     expect(checkbox(/^Review this stack of PRs/).checked).toBe(false);
     expect(checkbox("Continue automatically (judging calls the judge models)").checked).toBe(true);
+    // The chosen session's estimates arrive and the options say what fits; the old run's choices stay.
+    expect(await within(select("Judge 2")).findByRole("option", { name: "GPT-5.6 Sol · fits" })).toBeInTheDocument();
+    expect([select("Judge 1").value, select("Judge 2").value, select("Judge 3").value]).toEqual(["wandb:DeepSeek-V4.1-Flash", "codex:gpt-5.6-sol", ""]);
+    expect(select("Proposal writer").value).toBe("wandb:GLM-5.3");
+    expect(select("Evaluator").value).toBe("wandb:DeepSeek-V4.1-Flash");
 
     fireEvent.change(select("Judge 3"), "wandb:Kimi-K2.6");
     fireEvent.click(screen.getByRole("button", { name: "Start run" }));
@@ -83,11 +88,13 @@ describe("rerunning a run", () => {
     await waitFor(() => expect(host.calls()).toContainEqual(["run", "--item", "run-new4"]));
   });
 
-  it("starts a blank New run on the catalog's recommendations with no session chosen", async () => {
+  it("starts a blank New run on the web app's recommendations with no session chosen", async () => {
     renderWithFakeHost({ openOnReady: "/new" });
     expect(await screen.findByRole("heading", { name: "New run" })).toBeInTheDocument();
+    // The catalog's two recommended judges, and a third from another family, as the web app picks.
     expect(select("Judge 1").value).toBe("wandb:Kimi-K2.6");
-    expect(select("Judge 2").value).toBe("wandb:GLM-5.3");
+    expect(select("Judge 2").value).toBe("codex:gpt-5.6-sol");
+    expect(select("Judge 3").value).toBe("wandb:DeepSeek-V4.1-Flash");
     expect(select("Proposal writer").value).toBe("wandb:Kimi-K2.6");
     expect(select("Evaluator").value).toBe("wandb:GLM-5.3");
     expect(screen.getByRole("button", { name: "Start run" })).toBeDisabled();
@@ -110,9 +117,50 @@ describe("rerunning a run", () => {
 
     fireEvent.change(select("Judge 2"), "codex:gpt-5.6-sol");
     fireEvent.change(select("Evaluator"), "wandb:Kimi-K2.6");
+    expect(select("Judge 2").value).toBe("codex:gpt-5.6-sol");
     const hints = screen.getByRole("list", { name: "Hints about these models" });
     expect(within(hints).getByText(/^GPT-5\.6 Sol, as judge, does not fit the selected sessions \(.*model limit 64k\)\.$/)).toBeInTheDocument();
     expect(within(hints).getByText("The proposal writer and evaluator share the kimi model family.")).toBeInTheDocument();
+  });
+});
+
+describe("New run's recommendations follow the chosen sessions", () => {
+  const shown = () => ["Judge 1", "Judge 2", "Judge 3", "Proposal writer", "Evaluator"].map((label) => select(label).value);
+
+  it("recomputes the web app's fitting judges as the sessions change, and keeps showing what it will start", async () => {
+    const host = renderWithFakeHost({ openOnReady: "/new", confirm: () => true });
+    expect(await screen.findByRole("heading", { name: "New run" })).toBeInTheDocument();
+    expect(shown()).toEqual(["wandb:Kimi-K2.6", "codex:gpt-5.6-sol", "wandb:DeepSeek-V4.1-Flash", "wandb:Kimi-K2.6", "wandb:GLM-5.3"]);
+
+    // The large session doesn't fit GPT-5.6 Sol, so the panel takes the next family that fits.
+    fireEvent.click(checkbox(/^Review this stack of PRs/));
+    await waitFor(() => expect(shown()).toEqual(["wandb:Kimi-K2.6", "wandb:DeepSeek-V4.1-Flash", "wandb:GLM-5.3", "wandb:Kimi-K2.6", "wandb:GLM-5.3"]));
+    expect(within(select("Judge 2")).getByRole("option", { name: "GPT-5.6 Sol · does not fit" })).toBeInTheDocument();
+
+    // Another session, which every model fits: GPT-5.6 Sol is recommended again.
+    fireEvent.click(checkbox(/^Review this stack of PRs/));
+    fireEvent.click(checkbox(/^Session 01a1ad64-7d0/));
+    await waitFor(() => expect(within(select("Judge 2")).getByRole("option", { name: "GPT-5.6 Sol · fits" })).toBeInTheDocument());
+    expect(shown()).toEqual(["wandb:Kimi-K2.6", "codex:gpt-5.6-sol", "wandb:DeepSeek-V4.1-Flash", "wandb:Kimi-K2.6", "wandb:GLM-5.3"]);
+    expect(screen.queryByRole("list", { name: "Hints about these models" })).not.toBeInTheDocument();
+
+    // A model the user picks stays, even when a later selection doesn't fit it; a hint says so.
+    fireEvent.change(select("Judge 3"), "wandb:GLM-5.3");
+    fireEvent.click(checkbox(/^Review this stack of PRs/));
+    await waitFor(() => expect(within(select("Judge 2")).getByRole("option", { name: "GPT-5.6 Sol · does not fit" })).toBeInTheDocument());
+    expect(shown()).toEqual(["wandb:Kimi-K2.6", "codex:gpt-5.6-sol", "wandb:GLM-5.3", "wandb:Kimi-K2.6", "wandb:GLM-5.3"]);
+    expect(within(screen.getByRole("list", { name: "Hints about these models" })).getByText(/^GPT-5\.6 Sol, as judge, does not fit/)).toBeInTheDocument();
+
+    fireEvent.click(await enabled(() => screen.getByRole("button", { name: "Start run" })));
+    await waitFor(() => expect(host.setups).toHaveLength(1));
+    expect(host.setups[0]).toMatchObject({
+      config: {
+        judge_models: ["wandb:Kimi-K2.6", "codex:gpt-5.6-sol", "wandb:GLM-5.3"],
+        challenge_judge_models: ["wandb:Kimi-K2.6"],
+        proposal_model: "wandb:Kimi-K2.6",
+        proposal_evaluator_model: "wandb:GLM-5.3",
+      },
+    });
   });
 });
 

@@ -168,7 +168,9 @@ actions:
 - **New run** (`/new`, or `/new?from=<run id>` for Edit and rerun): sessions, judges, proposal
   writer and evaluator, and Continue automatically. As in the web app, each model says whether it
   fits the chosen sessions, and hints name a chosen model that doesn't and models that share a
-  family.
+  family. Until you pick a model, a blank New run's models follow the chosen sessions with the
+  web app's recommendation: the most diverse panel that fits them. Edit and rerun keeps the old
+  run's models.
 - **Providers**: the last sign-in check, Sign in for Claude, Codex, and Devin, which runs the
   CLI's own login and waits for the browser, or for Codex, a device-code sign-in that shows a link
   and a one-time code (starting either Codex login removes the current Codex login, even if you

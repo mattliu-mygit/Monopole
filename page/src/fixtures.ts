@@ -160,7 +160,9 @@ export function catalog(): Catalog {
         max_chunks: 40,
       },
       recommended_proposal_model: "wandb:Kimi-K2.6",
-      recommended_judges: ["wandb:Kimi-K2.6", "wandb:GLM-5.3"],
+      // GPT-5.6 Sol is recommended, as the real catalog recommends Codex, but the large session
+      // doesn't fit it.
+      recommended_judges: ["wandb:Kimi-K2.6", "codex:gpt-5.6-sol"],
       recommended_challenge_judges: ["wandb:Kimi-K2.6"],
       proposal_evaluator_preferences: ["wandb:GLM-5.3"],
     },

@@ -454,7 +454,9 @@ the run database or the plugin's own state changes.
   run** chooses sessions, judges, proposal writer and evaluator, and whether
   stages continue automatically, then starts scoring at once. It shows the web
   app's capacity and model-family hints, from the web app's own checks; they
-  warn and do not block.
+  warn and do not block. Until the user picks a model, a blank New run's models
+  follow the selection with the web app's recommendation, as the web app's run
+  setup does; Edit and rerun keeps the old run's models.
 - **Continue** starts the stage a run that does not continue automatically waits
   for: scoring, judging, or reflection. Its confirmation refuses when the server
   is not answering.

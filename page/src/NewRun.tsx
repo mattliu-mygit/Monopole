@@ -1,5 +1,6 @@
-import { createSignal, For, onSettled, Show } from "solid-js";
-import { Button, Checkbox, Select } from "@prompting-time/ui";
+import { createSignal, For, onSettled, Repeat, Show } from "solid-js";
+import { Button, Checkbox, Select, type SelectOption } from "@prompting-time/ui";
+import { initializeRunConfigState, transitionRunConfig } from "../../frontend/src/features/runs/runConfigState";
 import { capacitySessions, fitWords, runHints } from "./hints";
 import type { ModelDescriptor, SessionEstimates, SessionSummary } from "./protocol";
 import type { NewRunData, PageStore } from "./store";
@@ -12,8 +13,12 @@ const NONE = "";
  * automatically. Edit and rerun opens it at /new?from=<run id>, filled in with that run's
  * settings; a model that left the catalog is dropped and named. As the web app does, each model
  * option says whether it fits the selected sessions, and hints name a chosen model that doesn't
- * and models that share a family. Start run asks Prompting Time, which confirms first, and opens
- * the new run. The server checks the rest of the settings and its refusal shows here.
+ * and models that share a family. A blank New run starts on the web app's recommendations and,
+ * until the user picks a model, follows the selection: each time every selected session has its
+ * estimates, the models become the web app's most diverse panel that fits them
+ * (runConfigState.ts). Edit and rerun keeps the old run's models. Start run asks Prompting Time,
+ * which confirms first, and opens the new run. The server checks the rest of the settings and its
+ * refusal shows here.
  */
 export function NewRun(props: { store: PageStore }) {
   const store = props.store;
@@ -45,26 +50,60 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
   const known = new Set(models.available_models.map((model) => model.id));
   type Role = ModelDescriptor["supported_roles"][number];
   const withRole = (role: Role) => models.available_models.filter((model) => model.supported_roles.includes(role));
-  const options = (list: ModelDescriptor[], role: Role, blank?: string) => [
+  // Built once, so the select keeps its option elements and the shown choice: a select whose
+  // options were rebuilt would show its first option while the form still held another model.
+  // Each label reads the fit, so it changes in place as the estimates do.
+  const options = (role: Role, blank?: string): SelectOption[] => [
     ...(blank ? [{ value: NONE, label: blank }] : []),
-    ...list.map((model) => {
-      const fit = fitWords(catalog, model, role, sized());
-      return { value: model.id, label: fit ? `${model.label} · ${fit}` : model.label };
-    }),
+    ...withRole(role).map((model) => ({
+      value: model.id,
+      get label() {
+        const fit = fitWords(catalog, model, role, sized());
+        return fit ? `${model.label} · ${fit}` : model.label;
+      },
+    })),
   ];
-  const saved = from?.config ?? null;
-  const pick = (wanted: string | null | undefined, list: ModelDescriptor[]) =>
-    wanted && known.has(wanted) ? wanted : (list[0]?.id ?? NONE);
+  const firstJudgeOptions = options("judge");
+  const otherJudgeOptions = options("judge", "None");
+  const writerOptions = options("proposal_writer");
+  const evaluatorOptions = options("proposal_evaluator");
 
-  const startJudges = (saved?.judge_models ?? models.recommended_judges).filter((id) => known.has(id)).slice(0, MAX_JUDGES);
+  // The web app's starting recommendations, before any session is sized.
+  const blankState = initializeRunConfigState(models, catalog.rubrics, null);
+  const slots = (ids: string[]) => Array.from({ length: MAX_JUDGES }, (_, index) => ids[index] ?? NONE);
+
+  const saved = from?.config ?? null;
   const missing = saved
     ? [...saved.judge_models, saved.proposal_model, saved.proposal_evaluator_model].filter((id) => !known.has(id))
     : [];
+  const ifKnown = (wanted: string, fallback: string) => (known.has(wanted) ? wanted : fallback);
   const [chosen, setChosen] = createSignal<string[]>([...(from?.selection?.session_ids ?? [])]);
-  const [judges, setJudges] = createSignal<string[]>(Array.from({ length: MAX_JUDGES }, (_, index) => startJudges[index] ?? NONE));
-  const [writer, setWriter] = createSignal(pick(saved?.proposal_model ?? models.recommended_proposal_model, withRole("proposal_writer")));
-  const preferred = saved?.proposal_evaluator_model ?? models.proposal_evaluator_preferences.find((id) => known.has(id));
-  const [evaluator, setEvaluator] = createSignal(pick(preferred, withRole("proposal_evaluator")));
+  const [judges, setJudges] = createSignal<string[]>(
+    slots(saved ? saved.judge_models.filter((id) => known.has(id)) : blankState.judgeModels.value),
+  );
+  const [challenge, setChallenge] = createSignal<string[]>(
+    saved ? saved.challenge_judge_models.filter((id) => known.has(id)) : blankState.challengeJudgeModels.value,
+  );
+  const [writer, setWriter] = createSignal(
+    saved ? ifKnown(saved.proposal_model, blankState.proposalModel.value) : blankState.proposalModel.value,
+  );
+  const [evaluator, setEvaluator] = createSignal(
+    saved
+      ? ifKnown(saved.proposal_evaluator_model, blankState.proposalEvaluatorModel.value)
+      : blankState.proposalEvaluatorModel.value,
+  );
+  // As in the web app, the models follow the selection until the user picks one; Edit and rerun
+  // starts picked, so the old run's models stay.
+  let picked = saved !== null;
+  function follow(ids: string[], found: SessionEstimates) {
+    const fitted = capacitySessions(found, ids);
+    if (picked || ids.length === 0 || fitted.length !== ids.length) return;
+    const state = transitionRunConfig(blankState, { type: "use-recommended" }, models, fitted);
+    setJudges(slots(state.judgeModels.value));
+    setChallenge(state.challengeJudgeModels.value);
+    setWriter(state.proposalModel.value);
+    setEvaluator(state.proposalEvaluatorModel.value);
+  }
   const [autoRun, setAutoRun] = createSignal(from?.auto_run ?? false);
   const [starting, setStarting] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
@@ -81,15 +120,16 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
       return;
     }
     props.store.sessionEstimates(ids).then(
-      (found) => ask === asked && setEstimates(found),
+      (found) => {
+        if (ask !== asked) return;
+        setEstimates(found);
+        follow(ids, found);
+      },
       (failure) => ask === asked && setEstimateError(failure instanceof Error ? failure.message : String(failure)),
     );
   }
   const sized = () => capacitySessions(estimates(), chosen());
-  const challengeJudges = (judgeModels: string[]) => {
-    const challenge = (saved?.challenge_judge_models ?? models.recommended_challenge_judges).filter((id) => known.has(id));
-    return challenge.length ? challenge : judgeModels.slice(0, 1);
-  };
+  const challengeJudges = (judgeModels: string[]) => (challenge().length ? challenge() : judgeModels.slice(0, 1));
   const chosenJudges = () => [...new Set(judges().filter((id) => id !== NONE))];
   const hints = () =>
     runHints(
@@ -123,7 +163,10 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
     setChosen(ids);
     readEstimates(ids);
   };
-  const setJudge = (index: number, id: string) => setJudges((ids) => ids.map((other, at) => (at === index ? id : other)));
+  const setJudge = (index: number, id: string) => {
+    picked = true;
+    setJudges((ids) => ids.map((other, at) => (at === index ? id : other)));
+  };
 
   async function start() {
     const judgeModels = chosenJudges();
@@ -196,27 +239,33 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
       <div class="m-panel">
         <h3>Models</h3>
         <div class="m-grid">
-          <For each={judges()}>
-            {(id, index) => (
+          <Repeat count={MAX_JUDGES}>
+            {(index) => (
               <Select
-                label={`Judge ${index() + 1}`}
-                options={options(withRole("judge"), "judge", index() === 0 ? undefined : "None")}
-                value={id}
-                onChange={(event) => setJudge(index(), event.currentTarget.value)}
+                label={`Judge ${index + 1}`}
+                options={index === 0 ? firstJudgeOptions : otherJudgeOptions}
+                value={judges()[index]}
+                onChange={(event) => setJudge(index, event.currentTarget.value)}
               />
             )}
-          </For>
+          </Repeat>
           <Select
             label="Proposal writer"
-            options={options(withRole("proposal_writer"), "proposal_writer")}
+            options={writerOptions}
             value={writer()}
-            onChange={(event) => setWriter(event.currentTarget.value)}
+            onChange={(event) => {
+              picked = true;
+              setWriter(event.currentTarget.value);
+            }}
           />
           <Select
             label="Evaluator"
-            options={options(withRole("proposal_evaluator"), "proposal_evaluator")}
+            options={evaluatorOptions}
             value={evaluator()}
-            onChange={(event) => setEvaluator(event.currentTarget.value)}
+            onChange={(event) => {
+              picked = true;
+              setEvaluator(event.currentTarget.value);
+            }}
           />
         </div>
         <Show when={hints().length > 0}>
