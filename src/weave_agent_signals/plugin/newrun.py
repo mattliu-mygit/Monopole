@@ -92,7 +92,7 @@ def _starts(setup: dict[str, Any]) -> str:
     then = (
         "then judging and reflection follow without stopping, which call the judge models"
         if setup["auto_run"]
-        else "then it stops until you continue it in Monopole's web UI"
+        else "then it stops after each stage until you continue it"
     )
     return f"A new run: scoring starts now and writes Scores to CES; {then}."
 

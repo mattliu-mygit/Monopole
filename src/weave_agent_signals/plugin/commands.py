@@ -77,6 +77,8 @@ def watch_run_database(path: Path, stop: threading.Event, interval: float) -> No
 def _item_detail(card: dict[str, Any]) -> str | None:
     if card["failure"]:
         return one_line(card["failure"]["cause"], DETAIL_LIMIT)
+    if card["next_stage"]:
+        return card["label"]
     if card["group"] == "running":
         return card["progress"] or card["label"]
     parts = []
@@ -102,7 +104,7 @@ def status(path: Path, now: datetime | None = None) -> dict[str, Any]:
 
     cards, truncated = list_cards(path, STATUS_ITEM_LIMIT, drafts=False)
     found = providers.blockers(now)
-    running = sum(card["group"] == "running" for card in cards)
+    running = sum(card["group"] == "running" and not card["next_stage"] for card in cards)
     if running:
         words, dot = f"Running {running} run{'s' if running > 1 else ''}", "running"
     elif cards:
@@ -122,7 +124,11 @@ def status(path: Path, now: datetime | None = None) -> dict[str, Any]:
             "project": None,
             "updated_at": card["updated_at"],
             "route": f"/runs/{card['run_id']}",
-            "actions": ["rerun", "delete"] if card["deletable"] else ["rerun"],
+            "actions": [
+                *(["continue"] if card["next_stage"] else []),
+                "rerun",
+                *(["delete"] if card["deletable"] else []),
+            ],
         }
         for card in cards
     ]
@@ -175,6 +181,59 @@ def rerun(path: Path, run_id: str, settings: dict[str, Any], args: argparse.Name
         what = f"rerun {run_id}"
         if confirmed("rerun", text, print_only=args.print_only, expect=args.expect, what=what):
             _print_json(newrun.start_run(monopole, setup))
+
+
+def continue_request(path: Path, run_id: str, server_base: str) -> str:
+    """The text of the Continue request the user confirms: the run, its status, and the stage
+    it starts with what that stage calls or writes. A change to the run changes it."""
+
+    detail = run_detail(path, run_id)
+    if detail is None:
+        raise Refused(f"There is no run {run_id} in {path}.")
+    stage = detail["next_stage"]
+    if stage is None:
+        raise Refused(f"{run_id} is {detail['label']}, so it isn't waiting for Continue.")
+    if stage == "scoring":
+        then = (
+            "then judging and reflection follow without stopping, which call the judge models"
+            if detail["auto_run"]
+            else "then it waits for Continue again"
+        )
+        starts = f"Scoring, which writes Scores to CES; {then}."
+    elif stage == "judging":
+        judges = ", ".join(judge["label"] for judge in detail["judges"]) or "the run's judges"
+        starts = f"Judging, which calls the judge models: {judges}."
+    else:
+        models = detail["models"]
+        starts = (
+            f"Reflection, which calls the proposal writer ({models['proposal_writer'] or '?'}) "
+            f"and the evaluator ({models['proposal_evaluator'] or '?'})."
+        )
+    request = {
+        "action": "continue",
+        "run_id": run_id,
+        "title": detail["title"],
+        "status": detail["label"],
+        "starts": starts,
+        "server": server_base,
+    }
+    return json.dumps(request, indent=2, ensure_ascii=False) + "\n"
+
+
+def continue_run(
+    path: Path, run_id: str, settings: dict[str, Any], args: argparse.Namespace
+) -> None:
+    """Starts the stage a waiting run waits for, through the server's advance route, as
+    Continue in Monopole's web UI does."""
+
+    with server.open_server(settings["port"]) as monopole:
+        text = continue_request(path, run_id, monopole.base)
+        what = f"continue {run_id}"
+        if confirmed("continue", text, print_only=args.print_only, expect=args.expect, what=what):
+            status = monopole.call("POST", f"/api/runs/{run_id}/advance")["status"]
+            _print_json(
+                {"format": 1, "run_id": run_id, "status": status, "route": f"/runs/{run_id}"}
+            )
 
 
 def create_run(settings: dict[str, Any], args: argparse.Namespace) -> None:
@@ -273,6 +332,9 @@ def add_parser(subs: argparse._SubParsersAction) -> None:
     again = actions.add_parser("rerun", help="Start a new run with an old run's settings")
     again.add_argument("--item", required=True, metavar="RUN_ID")
     add_confirm_flags(again)
+    advance = actions.add_parser("continue", help="Start the stage a waiting run waits for")
+    advance.add_argument("--item", required=True, metavar="RUN_ID")
+    add_confirm_flags(advance)
     create = actions.add_parser("create-run", help="Start a new run from New run's settings")
     create.add_argument("setup", help='{"selection": ..., "config": ..., "auto_run": ...} as JSON')
     add_confirm_flags(create)
@@ -345,6 +407,8 @@ def _run(args: argparse.Namespace) -> int:
         delete(run_db_path(), args.item, print_only=args.print_only, expect=args.expect)
     elif action == "rerun":
         rerun(run_db_path(), args.item, settings, args)
+    elif action == "continue":
+        continue_run(run_db_path(), args.item, settings, args)
     elif action == "create-run":
         create_run(settings, args)
     elif action == "catalog":

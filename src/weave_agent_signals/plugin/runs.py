@@ -20,6 +20,10 @@ from weave_agent_signals.runs.store import RUN_DB_SCHEMA_VERSION, RunDatabaseSch
 
 _STAGES = ("scoring", "judging", "reflecting")
 _ACTIVE = frozenset(_STAGES)
+# The stage Continue starts from a run that finished `status` and waits, because it doesn't
+# continue automatically. Reflection always runs on to complete.
+_CONTINUES_TO = {"scoring": "judging", "judging": "reflecting"}
+_WAITING_LABELS = {"judging": "Waiting to judge", "reflecting": "Waiting to reflect"}
 TITLE_LIMIT = 120
 DETAIL_LIMIT = 240
 
@@ -41,7 +45,8 @@ def _stage_messages(stage: str) -> str:
 
 
 _CARD_COLUMNS = f"""
-    run_id, status, created_at, error,
+    run_id, status, created_at, error, auto_run,
+    data_selection IS NOT NULL AND run_config IS NOT NULL AS set_up,
     scoring_succeeded, judging_succeeded, reflecting_succeeded,
     coalesce(
         (SELECT max(at) FROM run_events WHERE run_events.run_id = runs.run_id), created_at
@@ -193,6 +198,19 @@ def _title(row: sqlite3.Row) -> str:
     return f"Run {row['run_id']}"
 
 
+def _next_stage(row: sqlite3.Row) -> str | None:
+    """The stage Continue starts, as the server's advance route would: scoring for a draft that
+    is set up, and the next stage for a run that finished scoring or judging without Continue
+    automatically. None when the run isn't waiting."""
+
+    status = row["status"]
+    if status == "created":
+        return "scoring" if row["set_up"] else None
+    if status in _CONTINUES_TO and row[f"{status}_succeeded"] and not row["auto_run"]:
+        return _CONTINUES_TO[status]
+    return None
+
+
 def card(row: sqlite3.Row) -> dict[str, Any]:
     """One run as the page's card and Prompting Time's item read it."""
 
@@ -202,8 +220,11 @@ def card(row: sqlite3.Row) -> dict[str, Any]:
     review = review_state(status, row["review_status"], row["reflection_reason"], baseline_won)
     failure = _failure(row, rubric_labels) if status == "failed" else None
     progress = None
+    next_stage = _next_stage(row)
     if status == "created":
         label, dot, group = "Draft", "idle", None
+    elif next_stage:
+        label, dot, group = _WAITING_LABELS[next_stage], "attention", "running"
     elif status in _ACTIVE:
         label, dot, group = status.capitalize(), "running", "running"
         progress = one_line(row[f"{status}_progress_message"], DETAIL_LIMIT)
@@ -234,6 +255,7 @@ def card(row: sqlite3.Row) -> dict[str, Any]:
         "review_state": review,
         "proposal": _proposal(row),
         "deletable": status not in _ACTIVE,
+        "next_stage": next_stage,
     }
 
 

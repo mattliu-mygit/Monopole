@@ -57,6 +57,8 @@ def test_status_fits_prompting_times_schema_and_the_manifests_groups(state):
         **reflected(challenge=None, review=None),
     )
     add_run(db, "run-draft", "created", "2026-11-05T23:00:00+00:00")
+    # Scored, and waits for Continue, since it doesn't continue automatically.
+    add_run(db, "run-scored", "scoring", "2026-11-05T18:00:00+00:00", **started(), auto_run=0)
 
     printed = status(db, NOW)
 
@@ -67,7 +69,7 @@ def test_status_fits_prompting_times_schema_and_the_manifests_groups(state):
     assert all(set(item["actions"]) <= allowed for item in printed["items"])
     by_id = {item["id"]: item for item in printed["items"]}
     # A draft is still being set up in the web UI, so Prompting Time does not list it.
-    assert set(by_id) == {"run-failed", "run-review", "run-judging", "run-done"}
+    assert set(by_id) == {"run-failed", "run-review", "run-judging", "run-done", "run-scored"}
     assert by_id["run-failed"]["detail"].startswith("Session Outcome Quality failed:")
     assert by_id["run-review"]["detail"] == (
         "A proposal waits for your review · predicted 0.35 vs 0.15 now · 2 ratings · mean 0.62"
@@ -88,6 +90,14 @@ def test_status_fits_prompting_times_schema_and_the_manifests_groups(state):
         ["rerun", "delete"],
         "success",
     )
+    scored = by_id["run-scored"]
+    assert (scored["group"], scored["dot"], scored["detail"]) == (
+        "running",
+        "attention",
+        "Waiting to judge",
+    )
+    assert scored["actions"] == ["continue", "rerun"]
+    # A waiting run isn't counted as running.
     assert printed["agent"] == {"words": "Running 1 run", "dot": "running"}
     assert printed["blockers"] == []
 

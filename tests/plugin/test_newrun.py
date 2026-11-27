@@ -193,7 +193,7 @@ def test_create_run_starts_new_runs_settings_after_the_confirmation(state, fake,
     _, fingerprint = _print(capsys, argv)
     request = json.loads((state_dir() / "create-run-request.json").read_text())
     assert request["sessions"] == ["s1", "s2"]
-    assert "stops until you continue it" in request["starts"]
+    assert "until you continue it" in request["starts"]
     assert fake.writes() == []
 
     assert main(argv + ["--expect", fingerprint]) == 0

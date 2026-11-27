@@ -17,7 +17,7 @@
       { "id": "running", "title": "Running", "needs_you": false, "order": 3 },
       { "id": "done", "title": "Done", "needs_you": false, "order": 4, "folded": true }
     ],
-    "item_actions": ["rerun", "delete"]
+    "item_actions": ["continue", "rerun", "delete"]
   },
   "settings": "schemas/plugin-settings.json",
   "actions": [
@@ -26,6 +26,7 @@
     { "name": "run", "title": "Show a run", "description": "Prints one run as JSON, given --item <run id>: its card, selection, settings, stages, rubric ratings, and models. Reads files only.", "command": ["bin/monopole", "run"], "confirm": false },
     { "name": "delete", "title": "Delete run", "description": "Deletes a run that is not running from Monopole's run database, with its saved judge calls and events. Its Scores in CES stay.", "command": ["bin/monopole", "delete"], "confirm": true },
     { "name": "rerun", "title": "Rerun", "description": "Starts a new run, given --item <run id>, with that run's sessions and settings under the current catalogs; turns added to those sessions since join it. Scoring starts at once and writes Scores to CES; with Continue automatically, judging calls the judge models. Refuses when a model or rubric left the catalog. Needs Monopole's server.", "command": ["bin/monopole", "rerun"], "confirm": true },
+    { "name": "continue", "title": "Continue", "description": "Starts the stage a run waits for, given --item <run id>: scoring for a draft that is set up, judging after scoring, or reflection after judging, for a run that doesn't continue automatically. Judging and reflection call the judge, proposal-writer, and evaluator models. Needs Monopole's server.", "command": ["bin/monopole", "continue"], "confirm": true },
     { "name": "create-run", "title": "Start a new run", "description": "Starts a new run from New run's settings, given as one JSON argument {selection, config, auto_run}. Scoring starts at once and writes Scores to CES. Needs Monopole's server.", "command": ["bin/monopole", "create-run"], "confirm": true },
     { "name": "catalog", "title": "Models and rubrics", "description": "Prints the models and rubrics a new run can choose, from Monopole's server. Reads only.", "command": ["bin/monopole", "catalog"], "confirm": false },
     { "name": "sessions", "title": "List sessions", "description": "Prints the sessions a new run can choose, given optional --since, --until, --timezone, and --limit, from Monopole's server. Reads CES only.", "command": ["bin/monopole", "sessions"], "confirm": false },
