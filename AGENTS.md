@@ -136,6 +136,9 @@ a CES or API error, and 1 on any other error.
   rebuilt request still has that fingerprint. Mark paid, CES-writing, and
   destructive actions confirm.
 - A refused action prints its reason to stderr and exits 1.
+- The page imports the web app's capacity check and run assessment from
+  `frontend/src/features/runs/` rather than copying them, and type-checks them
+  under its strict settings; keep those modules free of frontend-only imports.
 - Never run a real provider login command in tests; use fake CLIs on a temporary
   `PATH`. Starting a real `codex login` deletes the user's Codex login.
 

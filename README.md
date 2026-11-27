@@ -153,33 +153,40 @@ Then open [http://127.0.0.1:8787](http://127.0.0.1:8787).
 
 [Prompting Time](https://github.com/mattliu-mygit/prompting-time) can run Monopole as a
 plugin from this folder. `prompting-time-plugin.json` declares it: Prompting Time starts
-`bin/monopole-run`, which runs this server; lists runs that failed or wait for review under
-Needs you, from `bin/monopole status`; and shows the page in `page/`, through the plugin's
+`bin/monopole-run`, which runs this server; lists runs that failed, wait for review, or wait for
+Continue under Needs you, from `bin/monopole status`; and shows the page in `page/`, through the plugin's
 actions:
 
 - **Runs**: each run as a card, with Rerun, and Edit and rerun and Delete in its ⋯ menu. Rerun
   starts a new run with the old run's sessions and settings, so turns added to those sessions
   since join it; a judge that has left the catalog stops it with a message naming the judge. A
   run that waits between stages, because it doesn't continue automatically, says "Waiting to
-  judge" or "Waiting to reflect" and offers Continue on its card, its page, and its row in
-  Prompting Time; Continue starts that stage through the server, as the web app's Continue does.
+  judge" or "Waiting to reflect", is listed under Needs you as "Waiting for you", and offers
+  Continue on its card, its page, and its row in Prompting Time; Continue starts that stage
+  through the server, as the web app's Continue does, and its confirmation refuses at once when
+  the server isn't answering.
 - **New run** (`/new`, or `/new?from=<run id>` for Edit and rerun): sessions, judges, proposal
-  writer and evaluator, and Continue automatically.
+  writer and evaluator, and Continue automatically. As in the web app, each model says whether it
+  fits the chosen sessions, and hints name a chosen model that doesn't and models that share a
+  family.
 - **Providers**: the last sign-in check, Sign in for Claude, Codex, and Devin, which runs the
-  CLI's own login and waits for the browser (starting `codex login` removes the current Codex
-  login, even if you cancel), and a field for the W&B and OpenAI keys, checked with the free
-  `GET /v1/models` before they're saved. The W&B key goes in the `api.wandb.ai` entry of
-  `~/.netrc`; the OpenAI key goes in the plugin's state folder, and the server reads it when it
-  next starts.
+  CLI's own login and waits for the browser, or for Codex, a device-code sign-in that shows a link
+  and a one-time code (starting either Codex login removes the current Codex login, even if you
+  cancel), and a field for the W&B and OpenAI keys, checked with the free `GET /v1/models` before
+  they're saved. The W&B key goes in the `api.wandb.ai` entry of `~/.netrc`; the OpenAI key goes in
+  the plugin's state folder, and Monopole's server restarts to read it, unless a run is mid-stage.
+  Prompting Time passes an action only arguments, so the page hands the key to a `stage-key`
+  action that holds it in a mode-600 file and exits in about 0.2 s; `set-key` then checks and
+  saves it, so the key isn't in the process list while the check runs.
 - **Tools**: `score`, `backfill`, `monitor` (posting to the alert webhook in the plugin's
-  settings), and `analyze`'s subagent, judge-agreement, and segment tables.
+  settings), and `analyze`'s subagent, judge-agreement, and segment insights, shown as tables.
 
 Rerun, Continue, New run, Delete, Sign in, Score, Backfill, and Check now run only after Prompting
 Time's confirmation. Rerun, Continue, New run, and their lists of sessions and models need
 Monopole's server to be running. After you press one of the page's action buttons, the page
 disables them until 600 ms after the action's reply, and 600 ms more when Prompting Time opens
-another item in that time, so a second click can't act on the item Prompting Time moved on to; a
-sign-in or a tool holds them until it finishes. Proposal reviews still happen in the web app at
+another item in that time, so a second click can't act on the item Prompting Time moved on to. A
+sign-in or a tool holds them only after its reply; while it runs, only its own button waits. Proposal reviews still happen in the web app at
 http://127.0.0.1:8787.
 
 To install the development folder:

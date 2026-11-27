@@ -35,8 +35,8 @@ proposal preview. The local web product owns durable evaluation runs, proposal
 editing, promotion, and audit receipts.
 
 Monopole can also run as a Prompting Time plugin: Prompting Time starts the same
-server, lists failed runs, runs awaiting review, and provider blockers in its
-Needs you inbox, and hosts a page for runs, providers, and tools, while proposal
+server, lists failed runs, runs awaiting review or Continue, and provider
+blockers in its Needs you inbox, and hosts a page for runs, providers, and tools, while proposal
 review stays in the web app.
 
 The implementation follows those product boundaries. External trace access,

@@ -426,9 +426,9 @@ page points a run awaiting review there.
 Prompting Time reads Monopole's status to draw an agent row, saying whether runs
 are running, and to list work:
 
-- Runs that failed, and runs whose proposal waits for review, are Needs you
-  items. Running, waiting, and finished runs are reachable from Monopole's page
-  and Prompting Time's work search. Status covers the newest 50 runs that are not
+- Runs that failed, runs whose proposal waits for review, and runs that wait
+  for Continue between stages are Needs you items. Running and finished runs are
+  reachable from Monopole's page and Prompting Time's work search. Status covers the newest 50 runs that are not
   drafts.
 - A provider that the last check, within a day, found signed out, or a missing
   W&B key, which every run needs for CES, is a blocker. Blockers list first in
@@ -452,16 +452,20 @@ the run database or the plugin's own state changes.
   refuses, naming the cause, when a chosen model or rubric has left the catalog.
   **Edit and rerun** opens New run filled with the old run's settings. **New
   run** chooses sessions, judges, proposal writer and evaluator, and whether
-  stages continue automatically, then starts scoring at once.
+  stages continue automatically, then starts scoring at once. It shows the web
+  app's capacity and model-family hints, from the web app's own checks; they
+  warn and do not block.
 - **Continue** starts the stage a run that does not continue automatically waits
-  for: scoring, judging, or reflection.
+  for: scoring, judging, or reflection. Its confirmation refuses when the server
+  is not answering.
 - **Delete** removes a run that is not active, with its owned audit records,
   after confirmation. Its Scores in CES stay.
 - **Providers** shows the last sign-in check and offers Check, Sign in for the
-  Claude, Codex, and Devin CLIs, and fields for the W&B and OpenAI keys.
+  Claude, Codex, and Devin CLIs, Codex's device-code sign-in, and fields for the
+  W&B and OpenAI keys.
 - **Tools** runs deterministic scoring, a date-range backfill, and a regression
   check that posts to the configured alert webhook, and shows analysis's
-  subagent, judge-agreement, and segment tables.
+  subagent, judge-agreement, and segment insights as tables.
 
 Rerun, Continue, and New run, and the session and catalog lists New run needs,
 go through Monopole's running server, so they obey the same pinning and stage
@@ -479,7 +483,9 @@ rules as the web app.
   such as a run that started meanwhile. Reads and the free provider check need
   no confirmation and spend nothing.
 - After an action, the page keeps its action buttons disabled briefly, so a
-  second click cannot act on an item Prompting Time has moved on to.
+  second click cannot act on an item Prompting Time has moved on to. A sign-in
+  or a tool, which can run for minutes, disables only its own button while it
+  runs.
 - Sign in runs the provider's own CLI login command and waits, for at most ten
   minutes, for the user to finish in the browser; Monopole never handles the
   user's password. A code the browser shows is relayed to the waiting login.
@@ -487,5 +493,13 @@ rules as the web app.
 - A key is checked with the provider's free model list before it is saved,
   W&B's in `~/.netrc` and OpenAI's in the plugin's state folder. Keys are
   write-only: no action prints a saved key or returns it to the page.
+  Prompting Time passes actions only arguments, so a key is briefly visible in
+  the process list: the page hands it to an action that holds it in a file only
+  the user can read and exits, and a second action, given no key, checks and
+  saves it. Keeping it out entirely needs Prompting Time to pass secrets on
+  stdin.
+- Saving an OpenAI key restarts the plugin's own server, the one holding the
+  state folder's run lock, so it reads the key; it does not restart while a
+  run's stage executes, since the restarted server would fail that run.
 - The plugin's settings, last provider check and sign-in, tool runs, and OpenAI
   key live in its own state folder, apart from the disposable run database.
