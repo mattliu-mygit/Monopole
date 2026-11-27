@@ -1140,6 +1140,32 @@ def test_claude_timeout_envelope_is_retried_and_safely_described(tmp_path, monke
     assert secret not in str(activity)
 
 
+def test_claude_expired_login_is_described_as_authentication_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setattr(cli_backend, "_JUDGE_CWD", str(tmp_path / "sandbox"))
+    monkeypatch.setattr(cli_backend.time, "sleep", lambda _delay: None)
+    client = CliJudgeClient(provider="claude")
+    activity = []
+    client.set_activity(activity.append)
+    # What Claude Code prints when its stored OAuth login can't be refreshed.
+    failure = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": True,
+            "result": "Failed to authenticate: OAuth session expired and could not be refreshed",
+        }
+    )
+    monkeypatch.setattr(client, "_run_with_cancel", MagicMock(return_value=(failure, "", 1)))
+
+    with pytest.raises(RuntimeError) as caught:
+        client.chat_json(model="claude-sonnet-5", messages=_msgs())
+
+    assert caught.value._provider_error_message == "Provider authentication failed."
+    assert activity[-1]["provider_error_message"] == "Provider authentication failed."
+
+
 def test_claude_structured_output_exhaustion_retries_the_same_schema(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_backend, "_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(cli_backend, "_JUDGE_CODEX_HOME", str(tmp_path / "codex-home"))

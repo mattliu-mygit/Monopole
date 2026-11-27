@@ -177,7 +177,7 @@ def _canonical_provider_message(value: object) -> str | None:
         ),
         (
             "Provider authentication failed.",
-            ("authentication", "unauthorized", "invalid api key"),
+            ("authentication", "authenticate", "unauthorized", "invalid api key"),
         ),
     ):
         if any(pattern in lower for pattern in patterns):
