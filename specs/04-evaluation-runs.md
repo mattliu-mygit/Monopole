@@ -458,6 +458,10 @@ tab's header carries its actions as buttons and one ⋯ menu.
   and reflection's activity, proposals, evaluator reasons, A/B check, and
   rejected attempts. Reviewing and promoting a proposal stays in the web app,
   and the page does not recheck a pending review's managed files for drift.
+  Prompting Time reads only the first MiB of an action's output, so a run too
+  large for that, usually from up to 1,000 judging events or long A/B
+  transcripts, arrives with its longest texts and lists cut, newest events kept,
+  and the page says so and points to the web app.
 - **Trends** shows the web app's analysis, from the server's analysis route:
   recent score changes, every scorer's summary, scores by instruction
   configuration, and coaching. It reads CES, which can take minutes, so it reads

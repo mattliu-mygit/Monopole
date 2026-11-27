@@ -1,6 +1,7 @@
 import { fireEvent as dom, screen, waitFor, within } from "@testing-library/dom";
 import { flush } from "solid-js";
 import { describe, expect, it, vi } from "vitest";
+import * as fixtures from "./fixtures";
 import { renderWithFakeHost } from "./test/connect";
 
 // Solid applies updates in a microtask, so each event is followed by flush() to see its effect.
@@ -80,6 +81,17 @@ describe("Monopole's page with the fake host", () => {
     expect(screen.getByRole("heading", { name: /^Judging\s*·\s*Failed$/ })).toBeInTheDocument();
     // The Runs tab stays selected while one run is open.
     expect(screen.getByRole("button", { name: /^Runs/ })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("says a run Prompting Time cut off can't be read here, instead of failing on it", async () => {
+    // Prompting Time keeps only the first MiB of the output, which is no longer JSON.
+    renderWithFakeHost({ openOnReady: "/runs/run-failed01", runDetail: (card) => ({ ...fixtures.detail(card), error: "x".repeat(1_100_000) }) });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Monopole printed run-failed01 in a form the page can't read");
+  });
+
+  it("says when Monopole shortened a run to fit", async () => {
+    renderWithFakeHost({ openOnReady: "/runs/run-failed01", runDetail: (card) => ({ ...fixtures.detail(card), shortened: true }) });
+    expect(await screen.findByText(/too large to show whole here/)).toBeInTheDocument();
   });
 
   it("deletes a run from its ⋯ menu through Prompting Time's confirmation and goes back to the list", async () => {

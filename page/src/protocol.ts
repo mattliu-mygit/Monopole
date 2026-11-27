@@ -125,10 +125,13 @@ export interface RunConfig {
 }
 
 /** `run --item <id>`: the card, a summary of its stages, rubric ratings, and models
- * (src/weave_agent_signals/plugin/runs.py run_detail), and every field of the web UI's run, from the
- * serializer GET /api/runs/{id} uses (run_page). */
+ * (src/weave_agent_signals/plugin/runs.py run_detail), and the fields of the web UI's run, from the
+ * serializer GET /api/runs/{id} uses (run_page), fitted into the 1 MiB of output Prompting Time
+ * reads (fit_run_view): a finished stage's progress is null, the cohort has only its counts, and
+ * `shortened` says long texts and lists were cut. */
 export type RunDetail = Card &
   Run & {
+    shortened: boolean;
     stages: { stage: string; state: "done" | "running" | "failed" | "not_started"; message: string | null }[];
     rubrics: { rubric: string; label: string; conversation_id: string; rating: number | null; review_status: string }[];
     models: { proposal_writer: string | null; proposal_evaluator: string | null };

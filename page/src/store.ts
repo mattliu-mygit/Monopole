@@ -99,6 +99,14 @@ export type RunGroup = NonNullable<RunList["runs"][number]["group"]>;
 
 export type PageStore = ReturnType<typeof createPageStore>;
 
+/** The run in what `run --item` printed. Prompting Time hands the page any output that isn't whole
+ * JSON as text, such as output past the first MiB, which it doesn't keep. */
+export function runIn(printed: unknown, runId: string): RunDetail {
+  const run = typeof printed === "object" && printed !== null ? (printed as { run?: unknown }).run : undefined;
+  if (typeof run === "object" && run !== null && (run as { run_id?: unknown }).run_id === runId) return run as RunDetail;
+  throw new Error(`Monopole printed ${runId} in a form the page can't read; open it in Monopole's web UI.`);
+}
+
 /** How long the action buttons stay disabled after an action's reply, or after an open that arrives
  * in that time: long enough for Prompting Time to open the next item the action moved past. */
 export const HOLD_MS = 600;
@@ -205,7 +213,7 @@ export function createPageStore(link: HostLink) {
     const place = placeOf(asked);
     try {
       if (place.kind === "run") {
-        const shown = ((await call("run", ["--item", place.runId])) as { run: RunDetail }).run;
+        const shown = runIn(await call("run", ["--item", place.runId]), place.runId);
         if (route === asked)
           setState((s) => {
             // Reconciled into the shown run, so a fold the user opened stays open while the run
@@ -218,7 +226,7 @@ export function createPageStore(link: HostLink) {
         const [catalog, sessions, from] = await Promise.all([
           call("catalog") as Promise<Catalog>,
           call("sessions", ["--limit", "50"]) as Promise<SessionList>,
-          place.from ? (call("run", ["--item", place.from]) as Promise<{ run: RunDetail }>).then((r) => r.run) : null,
+          place.from ? call("run", ["--item", place.from]).then((printed) => runIn(printed, place.from!)) : null,
         ]);
         if (route === asked)
           setState((s) => {

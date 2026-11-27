@@ -25,6 +25,17 @@ export interface FakeHostOptions {
   openOnReady?: string;
   /** Keeps a sign-in waiting until `finishSignIn` or `sign-in-cancel`, as a real browser sign-in does. */
   holdSignIn?: boolean;
+  /** What run --item prints for a run instead of its fixture detail. */
+  runDetail?: (card: Card) => unknown;
+}
+
+/** Prompting Time keeps the first MiB of what an action prints, and hands the page output that
+ * isn't whole JSON as text. */
+const OUTPUT_BYTES = 1024 * 1024;
+
+function asPrinted(json: unknown): unknown {
+  const bytes = new TextEncoder().encode(typeof json === "string" ? json : JSON.stringify(json));
+  return bytes.length <= OUTPUT_BYTES ? json : new TextDecoder().decode(bytes.slice(0, OUTPUT_BYTES));
 }
 
 /** The actions prompting-time-plugin.json declares, and which of them need a confirmation. */
@@ -120,7 +131,7 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
         const id = item(args);
         const found = runs.find((card) => card.run_id === id);
         if (!found) throw new Error(`There is no run ${id}.`);
-        return { format: 1, run: fixtures.detail(found) };
+        return { format: 1, run: options.runDetail ? options.runDetail(found) : fixtures.detail(found) };
       }
       case "delete": {
         const id = item(args);
@@ -227,7 +238,7 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
         return;
       }
       run(message.action, message.args).then(
-        (json) => post({ type: "result", reply_to: message.id, json }),
+        (json) => post({ type: "result", reply_to: message.id, json: asPrinted(json) }),
         (error) =>
           post({
             type: "error",

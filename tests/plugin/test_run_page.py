@@ -14,7 +14,7 @@ from tests.interfaces.routes.test_runs import _config
 from tests.interfaces.routes.test_runs import route_context as route_context  # noqa: F401
 from weave_agent_signals.cli import main
 from weave_agent_signals.plugin import server
-from weave_agent_signals.plugin.runs import run_page
+from weave_agent_signals.plugin.runs import fit_run_view, run_page
 from weave_agent_signals.runs.events import RunEventDraft
 from weave_agent_signals.runs.store import RunDatabaseSchemaError, RunStore
 
@@ -77,6 +77,80 @@ def test_the_run_view_reads_without_writing(route_context, tmp_path, monkeypatch
     assert shown["run_id"] == run_id and shown["judging_plan"] is None
     assert watcher.execute("PRAGMA data_version").fetchone()[0] == before
     watcher.close()
+
+
+# Prompting Time keeps the first MiB of an action's output and passes the page anything that isn't
+# whole JSON as text.
+PROMPTING_TIME_OUTPUT_BYTES = 1024 * 1024
+
+
+def test_a_run_with_a_thousand_judging_events_prints_whole_json_prompting_time_can_read(  # noqa: F811
+    route_context, tmp_path, monkeypatch, capsys
+):
+    """Real judged runs carry up to 1,000 judging events, which GET /api/runs/{id} sends in both
+    judging_progress and judging_result once judging finishes, beside long reviews and A/B
+    transcripts. Printed whole, such a run passed 1 MiB and reached the page as cut-off text."""
+
+    client, service, models, rubrics = route_context
+    run_id = _judged_run(client, service, models, rubrics)
+    for index in range(1_100):
+        service.store.append_run_event(
+            run_id,
+            RunEventDraft(
+                stage="judging",
+                at=datetime(2026, 7, 14, 12, 2, tzinfo=UTC),
+                phase="window_completed",
+                message=f"Window {index} of 1100 completed for Verification with GPT-5.6 Sol",
+                details={
+                    "model": "codex:gpt-5.6-sol",
+                    "conversation_id": "01a2137f-5da5-7854-b96a-9235c08fb20b",
+                    "rubric": "judge.verification",
+                    "artifact_id": f"sha256:{index:064x}",
+                    "item_index": index,
+                    "item_total": 1_100,
+                    "elapsed_seconds": 12.5,
+                    "output_mode": "json_schema",
+                    "model_context_tokens": 400_000,
+                    "provider_error_message": "Provider returned 429: rate limited; retrying " * 4,
+                },
+            ),
+        )
+    full = run_page(tmp_path / "runs.db", run_id)
+    assert len(json.dumps({"format": 1, "run": full}).encode()) > PROMPTING_TIME_OUTPUT_BYTES
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("WEAVE_AGENT_SIGNALS_RUN_DB", str(tmp_path / "runs.db"))
+
+    assert main(["plugin", "run", "--item", run_id]) == 0
+
+    printed = capsys.readouterr().out
+    assert len(printed.encode()) <= PROMPTING_TIME_OUTPUT_BYTES
+    shown = json.loads(printed)["run"]
+    assert shown["run_id"] == run_id
+    # The page shows judging's result, so the identical progress isn't printed again.
+    assert shown["judging_progress"] is None
+    assert shown["judging_result"]["events"][-1]["message"].startswith("Window 1099 of 1100")
+
+
+def test_fitting_the_run_view_cuts_long_texts_and_keeps_the_newest_events():
+    run = {
+        "run_id": "run-1",
+        "turn_cohort": {"cohort_id": "c", "turn_count": 2, "turns": [{"trace_id": "t"}] * 2},
+        "scoring_progress": {"turn_details": []},
+        "scoring_result": {"turn_details": []},
+        "judging_progress": None,
+        "judging_result": {"events": [{"id": index} for index in range(1_000)]},
+        "reflecting_result": {"challenge": {"baseline": {"transcript": "x" * 2_000_000}}},
+    }
+
+    view = fit_run_view(run)
+
+    assert view["shortened"] is True
+    assert view["turn_cohort"] == {"cohort_id": "c", "turn_count": 2}
+    assert view["scoring_progress"] is None
+    assert [event["id"] for event in view["judging_result"]["events"]][-1] == 999
+    transcript = view["reflecting_result"]["challenge"]["baseline"]["transcript"]
+    assert len(transcript) < 20_000 and transcript.endswith("more characters)")
+    assert fit_run_view({"run_id": "run-2"}) == {"run_id": "run-2", "shortened": False}
 
 
 def test_a_read_only_store_refuses_writes_and_other_schemas(tmp_path):

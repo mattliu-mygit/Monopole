@@ -382,6 +382,7 @@ export function detail(card: Card): RunDetail {
   const configured = card.status !== "created";
   return {
     ...card,
+    shortened: false,
     current_stage_succeeded: !failed && card.group !== "running",
     auto_run: true,
     error: failed ? "1 rubric(s) failed and 0 were not evaluable" : null,

@@ -116,6 +116,9 @@ function RunBody(props: { store: PageStore; run: RunDetail }) {
             </section>
           )}
         </Show>
+        <Show when={run().shortened}>
+          <p class="m-hint">This run is too large to show whole here, so long texts and lists are cut. Monopole's web UI shows all of it.</p>
+        </Show>
         <Show when={run().review_state === "review-needed"}>
           <p class="m-hint">Review and promote the proposal in Monopole's web UI.</p>
         </Show>

@@ -24,6 +24,7 @@ from weave_agent_signals.plugin.confirm import Refused, add_confirm_flags, confi
 from weave_agent_signals.plugin.runs import (
     DETAIL_LIMIT,
     WAITING_REASONS,
+    fit_run_view,
     get_card,
     list_cards,
     one_line,
@@ -431,7 +432,10 @@ def _run(args: argparse.Namespace) -> int:
         detail = run_page(run_db_path(), args.item)
         if detail is None:
             raise Refused(f"There is no run {args.item}.")
-        _print_json({"format": 1, "run": detail})
+        view = fit_run_view(detail)
+        if view is None:
+            raise Refused(f"{args.item} is too large to show here; open it in Monopole's web UI.")
+        _print_json({"format": 1, "run": view})
     elif action == "delete":
         delete(run_db_path(), args.item, print_only=args.print_only, expect=args.expect)
     elif action == "rerun":
