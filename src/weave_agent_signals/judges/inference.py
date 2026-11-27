@@ -347,6 +347,30 @@ def _provider_error_detail(response: httpx.Response) -> Mapping[str, Any]:
     return detail if isinstance(detail, Mapping) else {}
 
 
+# Error codes a provider's HTTP 429 carries when the account has no credits or quota left, as
+# OpenAI's `insufficient_quota` does. Waiting can't fix these, so they aren't retried.
+_QUOTA_EXHAUSTED_CODES = frozenset(
+    {
+        "insufficient_quota",
+        "credit_balance_exhausted",
+        "billing_hard_limit_reached",
+        "billing_not_active",
+    }
+)
+QUOTA_EXHAUSTED_MESSAGE = (
+    "Provider credits or quota are exhausted; add credits or raise the limit, then run again."
+)
+
+
+def _quota_exhausted(response: httpx.Response) -> bool:
+    """Whether a 429 means the account is out of credits or quota, not a passing rate limit."""
+
+    if response.status_code != 429:
+        return False
+    detail = _provider_error_detail(response)
+    return any(detail.get(key) in _QUOTA_EXHAUSTED_CODES for key in ("code", "type"))
+
+
 def _http_schema_rejection_reason(error: httpx.HTTPStatusError) -> str | None:
     """Recognize only explicit client-side schema capability rejections."""
     response = error.response
@@ -652,7 +676,8 @@ class InferenceClient:
                     **({"output_mode": output_mode} if output_mode else {}),
                 }
             )
-            if resp.status_code == 429 and request_count < max_attempts:
+            quota_exhausted = _quota_exhausted(resp)
+            if resp.status_code == 429 and request_count < max_attempts and not quota_exhausted:
                 delay = base_delay * (2 ** (request_count - 1))
                 retry_after = resp.headers.get("retry-after")
                 if retry_after:
@@ -726,12 +751,13 @@ class InferenceClient:
                         "message": (
                             f"{model} failed after {request_count} provider attempts: "
                             f"HTTP {resp.status_code}"
+                            + (": credits or quota exhausted" if quota_exhausted else "")
                         ),
                         "model": model,
                         "request_attempt": request_count,
                         "max_attempts": max_attempts,
                         "elapsed_seconds": round(elapsed, 3),
-                        "error_category": "http_error",
+                        "error_category": "quota_exhausted" if quota_exhausted else "http_error",
                         "retry_reason": f"http_{resp.status_code}",
                         "provider_status": resp.status_code,
                     }
@@ -744,6 +770,8 @@ class InferenceClient:
                 detail = _provider_error_detail(resp)
                 for key in ("code", "message"):
                     setattr(error, f"_provider_error_{key}", _safe_provider_text(detail.get(key)))
+                if quota_exhausted:
+                    error._provider_error_message = QUOTA_EXHAUSTED_MESSAGE  # type: ignore[attr-defined]
                 raise
             try:
                 data = resp.json()

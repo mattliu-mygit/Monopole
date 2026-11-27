@@ -1188,3 +1188,61 @@ def test_http_exhaustion_retry_failure_preserves_first_response_audit(client, mo
         "completion_tokens": 4,
         "total_tokens": 104,
     }
+
+
+@pytest.mark.parametrize("code", ["insufficient_quota", "credit_balance_exhausted"])
+def test_http_429_for_exhausted_credits_is_not_retried(client, monkeypatch, code):
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    calls = 0
+    activity: list[dict] = []
+    client.set_activity(activity.append)
+
+    def fake_post(_path, *, json):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            429,
+            request=request,
+            json={
+                "error": {
+                    "message": "You exceeded your current quota, please check your plan.",
+                    "type": code,
+                    "param": None,
+                    "code": code,
+                }
+            },
+        )
+
+    monkeypatch.setattr(client._http, "post", fake_post)
+    monkeypatch.setattr(inference.time, "sleep", lambda _delay: pytest.fail("retried"))
+
+    with pytest.raises(httpx.HTTPStatusError) as captured:
+        client.chat_json(model="gpt-pinned", messages=_messages(), response_schema=_schema())
+
+    assert calls == 1
+    assert captured.value._provider_error_code == code
+    assert captured.value._provider_error_message == inference.QUOTA_EXHAUSTED_MESSAGE
+    assert activity[-1]["error_category"] == "quota_exhausted"
+
+
+def test_http_429_rate_limit_is_still_retried(client, monkeypatch):
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    responses = iter(
+        [
+            httpx.Response(
+                429,
+                request=request,
+                json={"error": {"message": "Rate limit reached", "code": "rate_limit_exceeded"}},
+            ),
+            httpx.Response(200, request=request, json=_completion('{"score":0.5}')),
+        ]
+    )
+    monkeypatch.setattr(client._http, "post", lambda _path, *, json: next(responses))
+    monkeypatch.setattr(inference.time, "sleep", lambda _delay: None)
+
+    parsed, response = client.chat_json(
+        model="gpt-pinned", messages=_messages(), response_schema=_schema()
+    )
+
+    assert parsed == {"score": 0.5}
+    assert response.transport_request_count == 2

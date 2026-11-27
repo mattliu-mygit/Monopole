@@ -163,6 +163,9 @@ def _terminal_progress_message(error: BaseException) -> str:
         if "credits are disabled" in lowered:
             role = "Proposal evaluator" if "evaluator" in lowered else "Reflection model"
             return f"{role} failed: CoreWeave Serverless Inference credits are disabled"
+        if "credits or quota exhausted" in lowered:
+            role = "Proposal evaluator" if "evaluator" in lowered else "Reflection model"
+            return f"{role} failed: provider credits or quota exhausted"
         if "timed out" in lowered or "invocation timeout" in lowered:
             return "Reflection model invocation timed out"
         http_status = re.search(r"\bhttp\s+(\d{3})\b", lowered)

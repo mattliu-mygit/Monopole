@@ -1309,3 +1309,24 @@ def test_stage_revalidates_pinned_policy_before_finalizing_persisted_result(stor
 
     assert changed_adapter.capture_calls == 0
     assert store.get(run.run_id).reflection_review is None
+
+
+def test_exhausted_credits_failure_names_credits_not_just_http_status():
+    import httpx
+
+    from weave_agent_signals.judges.inference import QUOTA_EXHAUSTED_MESSAGE
+    from weave_agent_signals.runs import reflection
+    from weave_agent_signals.runs.stages import reflection as stage
+
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    error = httpx.HTTPStatusError(
+        "429", request=request, response=httpx.Response(429, request=request)
+    )
+    error._provider_error_message = QUOTA_EXHAUSTED_MESSAGE
+    detail = reflection._actionable_failure(error, role="proposal evaluator")
+    terminal = ReflectionEvaluationError(f"Proposal evaluator failed: {detail}")
+
+    assert detail == "proposal evaluator credits or quota exhausted (HTTP 429)"
+    assert stage._terminal_progress_message(terminal) == (
+        "Proposal evaluator failed: provider credits or quota exhausted"
+    )

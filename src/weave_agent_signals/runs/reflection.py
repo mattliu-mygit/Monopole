@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from weave_agent_signals.judges.families import model_family
 from weave_agent_signals.judges.inference import (
+    QUOTA_EXHAUSTED_MESSAGE,
     ChatClient,
     InferenceCancelled,
     JsonSchemaSpec,
@@ -280,6 +281,8 @@ def _actionable_failure(error: BaseException, *, role: str) -> str:
     response = getattr(error, "response", None)
     status_code = getattr(response, "status_code", None)
     if isinstance(status_code, int):
+        if getattr(error, "_provider_error_message", None) == QUOTA_EXHAUSTED_MESSAGE:
+            return f"{role} credits or quota exhausted (HTTP {status_code})"
         return f"{role} transport returned HTTP {status_code}"
     if type(error).__name__ == "TimeoutExpired":
         return f"{role} invocation timed out"
