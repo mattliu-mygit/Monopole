@@ -1,8 +1,15 @@
 """API keys for W&B Inference and OpenAI, saved from Prompting Time.
 
-`set-key --item wandb|openai` takes the key from `--key` (Prompting Time gives actions no stdin)
-or from stdin, checks it with `GET /v1/models`, which spends nothing, and saves it only when the
-provider accepts it. Nothing prints or logs the key.
+Prompting Time gives an action only its arguments, no stdin or environment, so the page hands a key
+over in two calls that keep it out of the process list for all but a moment:
+
+1. `stage-key --item wandb|openai --key <key>` writes the key, unchecked, to
+   `<state folder>/staged-<provider>-key` (mode 600) and exits, about 0.2 s after it started.
+2. `set-key --item wandb|openai` takes that file, deleting it at once, checks the key with
+   `GET /v1/models`, which spends nothing, and saves it only when the provider accepts it.
+
+From a terminal, `set-key` with nothing staged reads the key from stdin instead. Nothing prints or
+logs the key. A real fix needs Prompting Time to pass a secret on stdin.
 
 - W&B goes where Monopole already reads it: the `api.wandb.ai` entry of `~/.netrc`. Only that
   entry changes; the file is rewritten whole through a temporary file with mode 600.
@@ -14,6 +21,7 @@ provider accepts it. Nothing prints or logs the key.
 
 from __future__ import annotations
 
+import getpass
 import os
 import re
 import sys
@@ -38,13 +46,38 @@ CHECK_TIMEOUT_SECONDS = 10
 _ENTRY_START = re.compile(r"(?m)(?<!\S)(machine|default|macdef)(?!\S)")
 
 
-def read_key(argument: str | None) -> str:
-    key = (argument if argument is not None else sys.stdin.read()).strip()
+def read_key(text: str) -> str:
+    key = text.strip()
     if not key:
         raise Refused("No key given; nothing saved.")
     if any(char.isspace() for char in key):
         raise Refused("A key has no spaces; nothing saved.")
     return key
+
+
+def _staged_path(provider: str) -> Path:
+    return state_dir() / f"staged-{provider}-key"
+
+
+def stage_key(provider: str, key: str) -> dict[str, Any]:
+    """Hold the key, unchecked, for the `set-key` call that follows."""
+
+    # mkstemp, under write_atomic, creates the file with mode 600.
+    write_atomic(_staged_path(provider), read_key(key) + "\n")
+    return {"format": 1, "staged": provider}
+
+
+def take_key(provider: str) -> str:
+    """The key `stage-key` held for `provider`, deleted now so it never outlives this call; with
+    none held, the key typed or piped on stdin."""
+
+    path = _staged_path(provider)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return read_key(getpass.getpass("Key: ") if sys.stdin.isatty() else sys.stdin.read())
+    path.unlink(missing_ok=True)
+    return read_key(text)
 
 
 def _check(provider: str, key: str, client: httpx.Client) -> None:

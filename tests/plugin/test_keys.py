@@ -64,10 +64,18 @@ def test_a_wandb_key_that_works_replaces_only_the_api_wandb_ai_entry(home, answe
     (home / ".netrc").write_text(NETRC)
     (home / ".netrc").chmod(0o644)
 
-    assert main(["plugin", "set-key", "--item", "wandb", "--key", "new-key-123"]) == 0
+    assert main(["plugin", "stage-key", "--item", "wandb", "--key", "new-key-123"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"format": 1, "staged": "wandb"}
+    staged = state_dir() / "staged-wandb-key"
+    assert stat.S_IMODE(os.stat(staged).st_mode) == 0o600
+    # stage-key only held the key; nothing was checked or saved yet.
+    assert answers[1] == [] and (home / ".netrc").read_text() == NETRC
+
+    assert main(["plugin", "set-key", "--item", "wandb"]) == 0
 
     out = capsys.readouterr().out
     assert "new-key-123" not in out
+    assert not staged.exists()
     assert json.loads(out)["saved"] == "Saved in the api.wandb.ai entry of ~/.netrc."
     text = (home / ".netrc").read_text()
     assert text == NETRC.replace(
@@ -102,18 +110,26 @@ def test_a_refused_key_saves_nothing(home, answers, capsys):
     (home / ".netrc").write_text(NETRC)
     answers[0]["api.inference.wandb.ai"] = 401
 
-    assert main(["plugin", "set-key", "--item", "wandb", "--key", "bad-key"]) == 1
+    assert main(["plugin", "stage-key", "--item", "wandb", "--key", "bad-key"]) == 0
+    assert main(["plugin", "set-key", "--item", "wandb"]) == 1
 
     err = capsys.readouterr().err
     assert "refused the key (HTTP 401); nothing saved" in err and "bad-key" not in err
     assert (home / ".netrc").read_text() == NETRC
+    # The held copy is gone even though the key was refused.
+    assert not (state_dir() / "staged-wandb-key").exists()
 
 
-def test_an_openai_key_goes_to_a_600_file_that_every_action_exports(home, answers, monkeypatch):
+def test_an_openai_key_goes_to_a_600_file_that_every_action_exports(
+    home, answers, monkeypatch, capsys
+):
     monkeypatch.setattr("sys.stdin", io.StringIO("sk-test-key\n"))
 
     assert main(["plugin", "set-key", "--item", "openai"]) == 0
 
+    assert json.loads(capsys.readouterr().out)["saved"] == (
+        "Saved in Monopole's state folder. Monopole's server uses it after it starts again."
+    )
     saved = state_dir() / "openai-key"
     assert saved.read_text() == "sk-test-key\n"
     assert stat.S_IMODE(os.stat(saved).st_mode) == 0o600
@@ -123,7 +139,12 @@ def test_an_openai_key_goes_to_a_600_file_that_every_action_exports(home, answer
     assert os.environ["OPENAI_API_KEY"] == "sk-test-key"
 
 
-def test_an_empty_key_or_one_with_spaces_is_refused(home, answers, capsys):
-    assert main(["plugin", "set-key", "--item", "openai", "--key", "  "]) == 1
-    assert main(["plugin", "set-key", "--item", "openai", "--key", "a b"]) == 1
+def test_an_empty_key_or_one_with_spaces_is_refused(home, answers, monkeypatch, capsys):
+    assert main(["plugin", "stage-key", "--item", "openai", "--key", "  "]) == 1
+    assert main(["plugin", "stage-key", "--item", "openai", "--key", "a b"]) == 1
+    assert not (state_dir() / "staged-openai-key").exists()
+    # Prompting Time gives set-key no stdin, so with nothing held it has no key.
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert main(["plugin", "set-key", "--item", "openai"]) == 1
+    assert "No key given" in capsys.readouterr().err
     assert answers[1] == []

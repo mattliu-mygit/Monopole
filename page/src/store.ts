@@ -288,9 +288,14 @@ export function createPageStore(link: HostLink) {
     },
     sendSignInCode: (provider: string, code: string) => call("sign-in-code", ["--item", provider, "--code", code]),
     cancelSignIn: (provider: string) => call("sign-in-cancel", ["--item", provider]),
-    /** Checks and saves a key; the page keeps no copy of it. */
+    /** Hands the key to stage-key, whose process exits at once, so the key is in the process list
+     * only briefly; then set-key, given no key, checks and saves the key stage-key held. The page
+     * keeps no copy of it. */
     setKey: async (provider: string, key: string) => {
-      const done = (await holding(() => call("set-key", ["--item", provider, "--key", key]))) as { saved: string; providers: ProviderCheck };
+      const done = (await holding(async () => {
+        await call("stage-key", ["--item", provider, "--key", key]);
+        return call("set-key", ["--item", provider]);
+      })) as { saved: string; providers: ProviderCheck };
       setState((s) => {
         s.providers = { ...done.providers, sign_in: s.providers?.sign_in ?? null };
       });

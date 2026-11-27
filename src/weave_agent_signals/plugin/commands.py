@@ -363,9 +363,13 @@ def add_parser(subs: argparse._SubParsersAction) -> None:
     code.add_argument("--code", required=True)
     stop = actions.add_parser("sign-in-cancel", help="Stop the waiting sign-in")
     stop.add_argument("--item", required=True, choices=sorted(signin.COMMANDS))
-    key = actions.add_parser("set-key", help="Check and save a W&B or OpenAI API key")
+    stage = actions.add_parser("stage-key", help="Hold an API key for the set-key that follows")
+    stage.add_argument("--item", required=True, choices=keys.KEY_PROVIDERS)
+    stage.add_argument("--key", required=True)
+    key = actions.add_parser(
+        "set-key", help="Check and save the held W&B or OpenAI API key, else one read from stdin"
+    )
     key.add_argument("--item", required=True, choices=keys.KEY_PROVIDERS)
-    key.add_argument("--key", help="The key; read from stdin when left out")
     score = actions.add_parser("score", help="Score recent turns, as `score` does")
     score.add_argument("--hours", type=int, choices=(24, 168), default=24)
     add_confirm_flags(score)
@@ -440,8 +444,10 @@ def _run(args: argparse.Namespace) -> int:
         _print_json(signin.send_code(args.item, args.code))
     elif action == "sign-in-cancel":
         _print_json(signin.cancel(args.item))
+    elif action == "stage-key":
+        _print_json(keys.stage_key(args.item, args.key))
     elif action == "set-key":
-        _print_json(keys.set_key(args.item, keys.read_key(args.key)))
+        _print_json(keys.set_key(args.item, keys.take_key(args.item)))
     elif action in ("score", "backfill", "monitor", "insights"):
         run_tool(args, settings)
     elif action == "tools":

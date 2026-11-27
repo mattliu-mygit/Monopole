@@ -165,7 +165,11 @@ describe("provider sign-in", () => {
     fireEvent.input(field, "sk-good");
     fireEvent.click(await enabled(() => screen.getByRole("button", { name: "Check and save" })));
     expect(await screen.findByText("Saved in Monopole's state folder.")).toBeInTheDocument();
-    expect(host.calls()).toContainEqual(["set-key", "--item", "openai", "--key", "sk-good"]);
+    // Only stage-key, which exits at once, gets the key; set-key, which checks it, doesn't.
+    expect(host.calls().slice(-2)).toEqual([
+      ["stage-key", "--item", "openai", "--key", "sk-good"],
+      ["set-key", "--item", "openai"],
+    ]);
     expect(document.body.innerHTML).not.toContain("sk-good");
     expect(within(screen.getByText("OpenAI").closest("li")!).getByText("Signed in")).toBeInTheDocument();
   });

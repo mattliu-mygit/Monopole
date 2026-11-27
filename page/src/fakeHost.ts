@@ -43,6 +43,7 @@ const DECLARED = new Set([
   "sign-in",
   "sign-in-code",
   "sign-in-cancel",
+  "stage-key",
   "set-key",
   "score",
   "backfill",
@@ -65,6 +66,8 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
   let providers: ProviderCheck = { format: 1, checked_at: null, providers: [] };
   let signIn: SignIn | null = null;
   let finishSignIn: ((state: SignIn["state"]) => void) | null = null;
+  /** The key stage-key holds for set-key, by provider, as <state>/staged-<provider>-key holds it. */
+  const staged = new Map<string, string>();
   const tools: Record<string, ToolRun> = {};
   /** Every message the page sent that fits the protocol, in order. */
   const received: PageMessage[] = [];
@@ -162,9 +165,16 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
       case "sign-in-cancel":
         finishSignIn?.("cancelled");
         return { format: 1, cancelling: true };
+      case "stage-key":
+        staged.set(item(args), flag(args, "--key"));
+        return { format: 1, staged: item(args) };
       case "set-key": {
         const provider = item(args);
-        if (flag(args, "--key") === "bad-key") throw new Error("https://api.openai.com/v1/models refused the key (HTTP 401); nothing saved.");
+        if (args.includes("--key")) throw new Error("set-key takes no --key; stage-key holds the key.");
+        const key = staged.get(provider);
+        staged.delete(provider);
+        if (!key) throw new Error("No key given; nothing saved.");
+        if (key === "bad-key") throw new Error("https://api.openai.com/v1/models refused the key (HTTP 401); nothing saved.");
         providers = fixtures.providerCheck();
         providers.providers = providers.providers.map((p) => (p.id === provider ? { ...p, state: "signed_in", detail: null } : p));
         return { format: 1, saved: "Saved in Monopole's state folder.", providers };

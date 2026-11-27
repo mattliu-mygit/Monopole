@@ -35,7 +35,8 @@
 //   sign-in* --item <cli>      runs claude, codex, or devin's login and waits for it to finish
 //   sign-in-code --item <cli> --code <code>   types a pasted code into the waiting sign-in
 //   sign-in-cancel --item <cli>               stops the waiting sign-in
-//   set-key --item wandb|openai --key <key>   checks a key with GET /v1/models, then saves it
+//   stage-key --item wandb|openai --key <key> holds a key for set-key, and exits at once
+//   set-key --item wandb|openai               checks the held key with GET /v1/models, then saves it
 //   score* --hours 24|168, backfill* --start <day> --end <day>, monitor*, insights --kind <kind>
 //   tools                      each tool's last run
 
