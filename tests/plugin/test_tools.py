@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -97,32 +98,72 @@ def test_monitor_posts_to_the_settings_webhook_and_keeps_its_state_in_the_state_
     assert ces[0].state_file == str(state_dir() / "monitor-state.json")
 
 
-def test_insights_only_read_and_need_no_confirmation(ces, monkeypatch, capsys):
-    def fake_analyze(args):
-        ces.append(args)
-        print("Judge agreement ...")
-        return 0
+def _reads(found: ces_commands.Insights, seen: list):
+    """Stands in for `analysis_reads`: records each insights request and answers `found`."""
 
-    monkeypatch.setattr(cli, "cmd_analyze", fake_analyze)
+    class Reads:
+        def insights(self, **asked):
+            seen.append(asked)
+            return found
+
+    @contextmanager
+    def analysis_reads(args):
+        seen.append(args)
+        yield Reads()
+
+    return analysis_reads
+
+
+def test_insights_only_read_need_no_confirmation_and_record_a_table(ces, monkeypatch, capsys):
+    judge = "weave_agent_signals.judge.session_outcome_quality"
+    # Six sessions both rated: the judge passes 4 of the 4 the reference passes, and fails both
+    # the reference fails.
+    joint = {(1.0, 0.8): 4, (0.0, 0.2): 2}
+    found = ces_commands.Insights(None, [(judge, "outcome.tests_passed", joint)], None)
+    monkeypatch.setattr(ces_commands, "analysis_reads", _reads(found, ces))
 
     assert main(["plugin", "insights", "--kind", "judges"]) == 0
 
-    assert json.loads(capsys.readouterr().out)["output"] == "Judge agreement ..."
-    args = ces[0]
-    assert (args.judges, args.subagents, args.segments, args.ab, args.coaching) == (
-        True,
-        False,
-        None,
-        False,
-        False,
-    )
+    printed = json.loads(capsys.readouterr().out)
+    args, asked = ces
+    assert args.limit == tools.FEED_LIMIT
+    assert asked == {"subagents": False, "judges": True, "segments": None}
+    # The text analyze prints stays, for when there is no table.
+    assert printed["output"].startswith("Judge agreement (sessions both Scorers rated;")
+    (table,) = printed["tables"]
+    assert table["title"] == "Judge agreement"
+    assert table["rows"] == [
+        [
+            judge,
+            "outcome.tests_passed",
+            "6",
+            "100% (61%–100%)",
+            "0.80",
+            "0.20",
+            table["rows"][0][6],
+            "yes",
+        ]
+    ]
+    assert table["rows"][0][6].startswith("+0.60 (")
+    assert tools.last_runs()["tools"]["insights"]["tables"] == printed["tables"]
+
+
+def test_an_insight_with_nothing_to_show_records_no_table(ces, monkeypatch, capsys):
+    found = ces_commands.Insights(None, None, {("v1", None): {}})
+    monkeypatch.setattr(ces_commands, "analysis_reads", _reads(found, ces))
+
+    assert main(["plugin", "insights", "--kind", "segments"]) == 0
+
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["tables"] == []
+    assert "No scored session has a dim.repo Score yet" in printed["output"]
 
 
 def test_a_failing_tool_is_recorded_as_failed_with_its_error(ces, monkeypatch, capsys):
     def broken(args):
         raise RuntimeError("CES answered 503")
 
-    monkeypatch.setattr(cli, "cmd_analyze", broken)
+    monkeypatch.setattr(ces_commands, "analysis_reads", broken)
 
     assert main(["plugin", "insights", "--kind", "segments"]) == 0
 

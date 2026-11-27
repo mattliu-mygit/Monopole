@@ -260,8 +260,8 @@ def run_tool(args: argparse.Namespace, settings: dict[str, Any]) -> None:
 
     action = args.plugin_action
     if action == "insights":
-        command, namespace = tools.insights_command(args.kind)
-        _print_json(tools.run(action, {"kind": args.kind}, command, namespace))
+        command, namespace, tables = tools.insights_command(args.kind)
+        _print_json(tools.run(action, {"kind": args.kind}, command, namespace, tables))
         return
     if action == "score":
         command, namespace = tools.score_command(args.hours)

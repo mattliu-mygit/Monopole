@@ -185,8 +185,17 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
         return recordTool("backfill", { start: flag(args, "--start"), end: args.includes("--end") ? flag(args, "--end") : null }, "Backfilled 40 scores.");
       case "monitor":
         return recordTool("monitor", {}, "No new significant regressions (0 already alerted, 2 tentative/low-confidence).");
-      case "insights":
-        return recordTool("insights", { kind: flag(args, "--kind") }, `Table for ${flag(args, "--kind")}`);
+      case "insights": {
+        const kind = flag(args, "--kind");
+        const run = recordTool("insights", { kind }, `Table for ${kind}`);
+        // Judge agreement has a table; the others show their text.
+        if (kind === "judges") {
+          run.tables = tools.insights.tables = [
+            { title: "Judge agreement", columns: ["Judge", "Reference", "Sessions"], rows: [["session_outcome_quality", "outcome.tests_passed", "6"]] },
+          ];
+        }
+        return run;
+      }
       case "tools":
         return { format: 1, tools };
       default:

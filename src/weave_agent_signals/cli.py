@@ -271,13 +271,19 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             found = reads.insights(
                 subagents=args.subagents, judges=args.judges, segments=args.segments
             )
-            if found.subagents is not None:
-                _print_subagents(found.subagents)
-            if found.judge_tables is not None:
-                _print_agreements([agreement(*table) for table in found.judge_tables])
-            if found.segments is not None:
-                _print_segments(args.segments, found.segments)
+            print_insights(found, args.segments)
     return 0
+
+
+def print_insights(found: ces_commands.Insights, segments_field: str | None) -> None:
+    """Print each insight `found` holds, as `analyze --subagents/--judges/--segments` does."""
+
+    if found.subagents is not None:
+        _print_subagents(found.subagents)
+    if found.judge_tables is not None:
+        _print_agreements([agreement(*table) for table in found.judge_tables])
+    if found.segments is not None:
+        _print_segments(segments_field, found.segments)
 
 
 def _print_score_analysis(

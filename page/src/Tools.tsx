@@ -1,8 +1,8 @@
-import { createSignal, Show } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 import type { JSX } from "@solidjs/web";
 import { Button, Select, StatusDot, Tabs, TextField } from "@prompting-time/ui";
 import { shortTime } from "./format";
-import type { ToolRun } from "./protocol";
+import type { ToolRun, ToolTable } from "./protocol";
 import type { PageStore } from "./store";
 
 const INSIGHTS = [
@@ -23,10 +23,36 @@ function LastRun(props: { run: ToolRun | undefined }) {
               ? `Running since ${shortTime(run().started_at)}`
               : `${run().state === "done" ? "Finished" : run().state === "failed" ? "Failed" : "Stopped"} ${shortTime(run().finished_at ?? run().started_at)}`}
           </p>
-          <Show when={run().output}>{(output) => <pre class="m-output">{output()}</pre>}</Show>
+          <Show when={run().tables?.length} fallback={<Show when={run().output}>{(output) => <pre class="m-output">{output()}</pre>}</Show>}>
+            <For each={run().tables!}>{(table) => <ResultTable table={table} />}</For>
+          </Show>
         </>
       )}
     </Show>
+  );
+}
+
+function ResultTable(props: { table: ToolTable }) {
+  return (
+    <div class="m-table-wrap">
+      <table class="m-table">
+        <caption>{props.table.title}</caption>
+        <thead>
+          <tr>
+            <For each={props.table.columns}>{(column) => <th scope="col">{column}</th>}</For>
+          </tr>
+        </thead>
+        <tbody>
+          <For each={props.table.rows}>
+            {(row) => (
+              <tr>
+                <For each={row}>{(cell) => <td>{cell}</td>}</For>
+              </tr>
+            )}
+          </For>
+        </tbody>
+      </table>
+    </div>
   );
 }
 

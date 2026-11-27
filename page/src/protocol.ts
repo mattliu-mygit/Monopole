@@ -177,7 +177,15 @@ export interface SessionList {
   truncated: boolean;
 }
 
-/** One tool's last run, from `tools` or the tool's own action. */
+/** One table of a tool's result, its cells already formatted. */
+export interface ToolTable {
+  title: string;
+  columns: string[];
+  rows: string[][];
+}
+
+/** One tool's last run, from `tools` or the tool's own action. The insights also carry their
+ * results as tables, empty when there is nothing to show; the page shows `output` then. */
 export interface ToolRun {
   state: "running" | "done" | "failed" | "stopped";
   args: Record<string, unknown>;
@@ -185,6 +193,7 @@ export interface ToolRun {
   finished_at: string | null;
   exit_code: number | null;
   output: string | null;
+  tables?: ToolTable[];
 }
 
 export interface ToolRuns {

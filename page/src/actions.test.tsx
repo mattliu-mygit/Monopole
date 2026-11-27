@@ -210,7 +210,15 @@ describe("Tools", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Judge agreement" }));
     fireEvent.click(await enabled(() => screen.getByRole("button", { name: "Read" })));
-    expect(await screen.findByText("Table for judges")).toBeInTheDocument();
+    // A result with a table shows the table instead of the text.
+    const table = await screen.findByRole("table", { name: "Judge agreement" });
+    expect(within(table).getByRole("columnheader", { name: "Reference" })).toBeInTheDocument();
+    expect(within(table).getByRole("cell", { name: "outcome.tests_passed" })).toBeInTheDocument();
+    expect(screen.queryByText("Table for judges")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Subagents" }));
+    fireEvent.click(await enabled(() => screen.getByRole("button", { name: "Read" })));
+    expect(await screen.findByText("Table for subagents")).toBeInTheDocument();
     expect(confirm).not.toHaveBeenCalledWith("insights", expect.anything());
   });
 });
