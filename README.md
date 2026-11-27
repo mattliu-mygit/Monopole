@@ -159,7 +159,10 @@ actions:
 
 - **Runs**: each run as a card, with Rerun, and Edit and rerun and Delete in its ⋯ menu. Rerun
   starts a new run with the old run's sessions and settings, so turns added to those sessions
-  since join it; a judge that has left the catalog stops it with a message naming the judge.
+  since join it; a judge that has left the catalog stops it with a message naming the judge. A
+  run that waits between stages, because it doesn't continue automatically, says "Waiting to
+  judge" or "Waiting to reflect" and offers Continue on its card, its page, and its row in
+  Prompting Time; Continue starts that stage through the server, as the web app's Continue does.
 - **New run** (`/new`, or `/new?from=<run id>` for Edit and rerun): sessions, judges, proposal
   writer and evaluator, and Continue automatically.
 - **Providers**: the last sign-in check, Sign in for Claude, Codex, and Devin, which runs the
@@ -171,9 +174,13 @@ actions:
 - **Tools**: `score`, `backfill`, `monitor` (posting to the alert webhook in the plugin's
   settings), and `analyze`'s subagent, judge-agreement, and segment tables.
 
-Rerun, New run, Delete, Sign in, Score, Backfill, and Check now run only after Prompting Time's
-confirmation. Rerun, New run, and their lists of sessions and models need Monopole's server to be
-running. Proposal reviews still happen in the web app at http://127.0.0.1:8787.
+Rerun, Continue, New run, Delete, Sign in, Score, Backfill, and Check now run only after Prompting
+Time's confirmation. Rerun, Continue, New run, and their lists of sessions and models need
+Monopole's server to be running. After you press one of the page's action buttons, the page
+disables them until 600 ms after the action's reply, and 600 ms more when Prompting Time opens
+another item in that time, so a second click can't act on the item Prompting Time moved on to; a
+sign-in or a tool holds them until it finishes. Proposal reviews still happen in the web app at
+http://127.0.0.1:8787.
 
 To install the development folder:
 
