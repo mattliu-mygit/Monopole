@@ -235,6 +235,8 @@ def continue_run(
 
     with server.open_server(settings["port"]) as monopole:
         text = continue_request(path, run_id, monopole.base)
+        if args.print_only:
+            monopole.check()
         what = f"continue {run_id}"
         if confirmed("continue", text, print_only=args.print_only, expect=args.expect, what=what):
             status = monopole.call("POST", f"/api/runs/{run_id}/advance")["status"]

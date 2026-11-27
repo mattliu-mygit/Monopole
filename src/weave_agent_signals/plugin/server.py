@@ -16,6 +16,8 @@ from weave_agent_signals.plugin.confirm import Refused
 
 # Listing sessions scans CES, which can take most of a minute on a large Dataset.
 REQUEST_TIMEOUT_SECONDS = 120
+# How long `check` waits for the server to answer a request that reads only its catalog.
+CHECK_TIMEOUT_SECONDS = 3
 
 
 class Server:
@@ -39,12 +41,16 @@ class Server:
         *,
         body: object = None,
         params: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> Any:
         """The route's JSON answer. A refusal carries the server's own message, such as
         "judge model codex:gpt-5 is unknown or unavailable"."""
 
+        options = {} if timeout is None else {"timeout": timeout}
         try:
-            response = self._client.request(method, f"{self.base}{path}", json=body, params=params)
+            response = self._client.request(
+                method, f"{self.base}{path}", json=body, params=params, **options
+            )
         except httpx.TransportError as exc:
             raise Refused(
                 f"Monopole's server isn't answering on {self.base} ({exc}). Start Monopole in "
@@ -56,6 +62,13 @@ class Server:
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         return self.call("GET", path, params=params)
+
+    def check(self) -> None:
+        """Refuses, saying the server isn't answering, unless it answers a catalog read within
+        CHECK_TIMEOUT_SECONDS; a preview runs this so the user isn't asked to confirm a request
+        that can't run."""
+
+        self.call("GET", "/api/rubrics", timeout=CHECK_TIMEOUT_SECONDS)
 
 
 def _message(response: httpx.Response) -> str:

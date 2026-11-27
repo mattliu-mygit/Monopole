@@ -25,6 +25,8 @@ def requests(monkeypatch, state):
         seen.append((request.method, request.url.path))
         if request.method == "POST" and request.url.path.endswith("/advance"):
             return httpx.Response(200, json={"run_id": "run-1", "status": "judging"})
+        if request.url.path == "/api/rubrics":
+            return httpx.Response(200, json={"catalog_version": "v1", "rubrics": []})
         return httpx.Response(404, json={"detail": "Not Found"})
 
     monkeypatch.setattr(
@@ -55,8 +57,8 @@ def test_continue_starts_judging_a_scored_run_through_the_servers_advance_route(
     assert request["starts"] == (
         "Judging, which calls the judge models: DeepSeek V4.1 Flash, GPT-5.6 Sol."
     )
-    # --print only read the run database.
-    assert requests == []
+    # --print read the run database and checked that the server answers.
+    assert requests == [("GET", "/api/rubrics")]
 
     assert main(["plugin", "continue", "--item", "run-1", "--expect", fingerprint]) == 0
 
@@ -66,10 +68,12 @@ def test_continue_starts_judging_a_scored_run_through_the_servers_advance_route(
         "status": "judging",
         "route": "/runs/run-1",
     }
-    assert requests == [("POST", "/api/runs/run-1/advance")]
+    assert requests[1:] == [("POST", "/api/runs/run-1/advance")]
 
 
-def test_continue_starts_reflection_after_judging_and_scoring_for_a_set_up_draft(state, capsys):
+def test_continue_starts_reflection_after_judging_and_scoring_for_a_set_up_draft(
+    state, requests, capsys
+):
     db = state / "runs.db"
     add_run(db, "run-1", "judging", CREATED_AT, **started(), **judged(), auto_run=0)
     columns = started()
@@ -123,13 +127,17 @@ def test_continue_refuses_when_the_run_changed_after_the_confirmation(state, req
     assert main(["plugin", "continue", "--item", "run-1", "--expect", fingerprint]) == 1
 
     assert "isn't waiting for Continue" in capsys.readouterr().err
-    assert requests == []
+    # Only the preview's check reached the server; nothing advanced.
+    assert requests == [("GET", "/api/rubrics")]
 
 
-def test_continue_says_when_the_server_is_not_running(state, monkeypatch, capsys):
+def test_continue_says_when_the_server_is_not_running(state, requests, monkeypatch, capsys):
     add_run(state / "runs.db", "run-1", "scoring", CREATED_AT, **started(), auto_run=0)
+    _, fingerprint = _print(capsys)
+    timeouts: list[object] = []
 
     def refuse(request):
+        timeouts.append(request.extensions["timeout"]["connect"])
         raise httpx.ConnectError("connection refused")
 
     monkeypatch.setattr(
@@ -137,10 +145,14 @@ def test_continue_says_when_the_server_is_not_running(state, monkeypatch, capsys
         "open_server",
         lambda port: server.Server(port, httpx.Client(transport=httpx.MockTransport(refuse))),
     )
-    _, fingerprint = _print(capsys)
 
-    assert main(["plugin", "continue", "--item", "run-1", "--expect", fingerprint]) == 1
-
+    # The preview refuses before Prompting Time asks the user to confirm, after a short wait.
+    assert main(["plugin", "continue", "--item", "run-1", "--print"]) == 1
     err = capsys.readouterr().err
     assert "Monopole's server isn't answering on http://127.0.0.1:8787" in err
     assert "Start Monopole in Prompting Time" in err
+    assert timeouts == [server.CHECK_TIMEOUT_SECONDS]
+
+    # A confirmed request whose server stopped meanwhile says the same.
+    assert main(["plugin", "continue", "--item", "run-1", "--expect", fingerprint]) == 1
+    assert "Monopole's server isn't answering" in capsys.readouterr().err
