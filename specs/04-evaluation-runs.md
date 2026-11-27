@@ -403,3 +403,89 @@ This separation keeps list polling cheap without weakening promotion safety.
 Runtime reads only schema epoch 11. The run database is disposable pre-release
 state, so a database from any other epoch fails closed with an error that names
 the file to delete; it is never migrated, reset, or adapted.
+
+## One server per run database
+
+A starting server treats every run its database shows as active as interrupted
+by a previous server and recovers or fails it. A second server on the same
+database would therefore fail runs the first is still executing, so only one
+server may use a run database: a server that cannot take the database's lock
+refuses to start and names the database. This holds however the server was
+started, from `serve` or by Prompting Time.
+
+## Prompting Time plugin
+
+Monopole can run as a [Prompting Time](https://github.com/mattliu-mygit/prompting-time)
+plugin, so its runs appear beside the user's other agent work instead of only
+in a separate web app. Prompting Time starts Monopole's server, at most one copy
+at a time. The web app remains the place for proposal review and promotion; the
+page points a run awaiting review there.
+
+### What Prompting Time shows
+
+Prompting Time reads Monopole's status to draw an agent row, saying whether runs
+are running, and to list work:
+
+- Runs that failed, and runs whose proposal waits for review, are Needs you
+  items. Running, waiting, and finished runs are reachable from Monopole's page
+  and Prompting Time's work search. Status covers the newest 50 runs that are not
+  drafts.
+- A provider that the last check, within a day, found signed out, or a missing
+  W&B key, which every run needs for CES, is a blocker. Blockers list first in
+  Needs you and open Providers. A missing OpenAI key or local CLI blocks
+  nothing, because only runs that choose those models need it.
+- A run's item offers Continue when the run waits between stages, Rerun, and
+  Delete when the run may be deleted.
+
+Opening an item or blocker shows Monopole's page in Prompting Time's main view,
+at that run or at Providers. Prompting Time and the page read again soon after
+the run database or the plugin's own state changes.
+
+### What the page offers
+
+- **Runs** lists the newest runs as compact cards with their sessions, judges,
+  mean rating, failure cause, and how a proposal's predicted evaluator score
+  compares with the current instructions. Run detail adds the selection,
+  settings, stages, rubric ratings, and models.
+- **Rerun** starts a new run with an old run's session selection and settings
+  under the current catalogs, so turns added to those sessions since join it. It
+  refuses, naming the cause, when a chosen model or rubric has left the catalog.
+  **Edit and rerun** opens New run filled with the old run's settings. **New
+  run** chooses sessions, judges, proposal writer and evaluator, and whether
+  stages continue automatically, then starts scoring at once.
+- **Continue** starts the stage a run that does not continue automatically waits
+  for: scoring, judging, or reflection.
+- **Delete** removes a run that is not active, with its owned audit records,
+  after confirmation. Its Scores in CES stay.
+- **Providers** shows the last sign-in check and offers Check, Sign in for the
+  Claude, Codex, and Devin CLIs, and fields for the W&B and OpenAI keys.
+- **Tools** runs deterministic scoring, a date-range backfill, and a regression
+  check that posts to the configured alert webhook, and shows analysis's
+  subagent, judge-agreement, and segment tables.
+
+Rerun, Continue, and New run, and the session and catalog lists New run needs,
+go through Monopole's running server, so they obey the same pinning and stage
+rules as the web app.
+
+### Trust boundaries
+
+- The page runs in a scripts-only sandbox with no network and no access to
+  Monopole's server. It can only ask Prompting Time to run actions the plugin's
+  manifest declares, which run as local commands.
+- Paid, CES-writing, and destructive actions (Rerun, Continue, New run, Delete,
+  Sign in, and the scoring, backfill, and regression tools) run only after the
+  user confirms a preview of the request in Prompting Time. The action rebuilds
+  the request and refuses when it no longer matches what the user confirmed,
+  such as a run that started meanwhile. Reads and the free provider check need
+  no confirmation and spend nothing.
+- After an action, the page keeps its action buttons disabled briefly, so a
+  second click cannot act on an item Prompting Time has moved on to.
+- Sign in runs the provider's own CLI login command and waits, for at most ten
+  minutes, for the user to finish in the browser; Monopole never handles the
+  user's password. A code the browser shows is relayed to the waiting login.
+  Starting Codex's login removes the current Codex login, even if cancelled.
+- A key is checked with the provider's free model list before it is saved,
+  W&B's in `~/.netrc` and OpenAI's in the plugin's state folder. Keys are
+  write-only: no action prints a saved key or returns it to the page.
+- The plugin's settings, last provider check and sign-in, tool runs, and OpenAI
+  key live in its own state folder, apart from the disposable run database.

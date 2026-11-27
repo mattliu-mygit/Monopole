@@ -34,6 +34,11 @@ The CLI provides direct scoring, judging, analysis, monitoring, inspection, and
 proposal preview. The local web product owns durable evaluation runs, proposal
 editing, promotion, and audit receipts.
 
+Monopole can also run as a Prompting Time plugin: Prompting Time starts the same
+server, lists failed runs, runs awaiting review, and provider blockers in its
+Needs you inbox, and hosts a page for runs, providers, and tools, while proposal
+review stays in the web app.
+
 The implementation follows those product boundaries. External trace access,
 evaluation, analysis, and the durable run lifecycle are separate backend areas;
 HTTP routes translate requests into them rather than owning their rules. The
@@ -109,6 +114,12 @@ are not.
 - The local API is unauthenticated, binds to loopback by default, and is
   intended for one trusted user. A non-loopback bind is an explicit exposure of
   that trust boundary.
+- Only one server may use a run database, because a starting server recovers
+  or fails every run the database shows as active.
+- The Prompting Time plugin page is sandboxed and acts only through the
+  plugin's declared actions. Paid, CES-writing, and destructive actions run only
+  after the user confirms the exact request, provider sign-in runs the
+  provider's own CLI login, and saved API keys are never shown again.
 - Judge and proposal subprocesses receive only the minimum runtime and stored
   credential locations. Unsupported local backends fail closed when equivalent
   confinement cannot be established.
