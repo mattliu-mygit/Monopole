@@ -60,6 +60,14 @@ npm run lint
 npm run build
 ```
 
+Run the Prompting Time plugin page's gates from `page/`, whose
+`@prompting-time/ui` dependency is a tarball a Prompting Time checkout builds:
+
+```bash
+npm test
+npm run build
+```
+
 Tests use synthetic spans and mocked HTTP. Prefer focused tests while iterating,
 then run all gates before declaring completion.
 
@@ -72,13 +80,15 @@ then run all gates before declaring completion.
 - [`specs/03-analysis-monitoring.md`](specs/03-analysis-monitoring.md) —
   comparable evidence, trends, coaching, and alerts
 - [`specs/04-evaluation-runs.md`](specs/04-evaluation-runs.md) — reproducible runs,
-  review, and promotion
+  review, promotion, and the Prompting Time plugin
 - `src/weave_agent_signals/` — CES I/O (`ces_client` for HTTP, `ces_sessions` for
   rebuilding sessions from Cases, `ces_queries` for EvaluationQueries),
   evaluation, analysis (`patterns`, with interval statistics in `stats`), CLI,
   and API
 - `src/weave_agent_signals/runs/` — durable run, reflection, review, and
   promotion lifecycle
+- `src/weave_agent_signals/plugin/` and `page/` — Monopole as a Prompting Time
+  plugin: its JSON actions and the page Prompting Time shows
 - `frontend/src/features/` — run and reflection product behavior
 - `tests/` and `frontend/tests/` — domain-organized backend and frontend tests
 
@@ -100,6 +110,8 @@ arguments and defaults.
 - `monitor` — deduplicated regression alerts
 - `reflect` — proposal preview only
 - `serve` — local API and built-SPA serving
+- `plugin` — the JSON actions Prompting Time runs, as
+  `prompting-time-plugin.json` declares them through `bin/monopole`
 
 Evaluation-run persistence, proposal editing, promotion, and receipts are web
 product behavior; standalone reflection does not mutate managed files.
@@ -107,6 +119,25 @@ product behavior; standalone reflection does not mutate managed files.
 Commands exit 2 on a configuration error (`ConfigurationError`: missing CES
 settings or credentials, an unknown model choice, a Dataset without `day`), 3 on
 a CES or API error, and 1 on any other error.
+
+## Prompting Time plugin
+
+- `prompting-time-plugin.json` must fit Prompting Time's manifest schema, which
+  rejects unknown keys. `schemas/prompting-time-*.json` are exact copies of
+  Prompting Time's schemas; recopy them rather than editing them.
+- Only one server may use a run database. The server holds a lock beside the
+  database, and `bin/monopole-run` allows one plugin server at a time.
+- Plugin state (settings, provider check and sign-in, tool runs, the OpenAI key,
+  and the `runs-changed` file Prompting Time watches) lives in
+  `$XDG_STATE_HOME/monopole`, default `~/.local/state/monopole`; tests point
+  `XDG_STATE_HOME` at a temporary folder.
+- An action marked `confirm: true` must accept `--print`, which only saves and
+  fingerprints its request, and `--expect <sha256>`, which runs only when the
+  rebuilt request still has that fingerprint. Mark paid, CES-writing, and
+  destructive actions confirm.
+- A refused action prints its reason to stderr and exits 1.
+- Never run a real provider login command in tests; use fake CLIs on a temporary
+  `PATH`. Starting a real `codex login` deletes the user's Codex login.
 
 ## Code conventions
 
