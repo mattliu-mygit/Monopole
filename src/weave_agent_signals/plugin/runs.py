@@ -278,6 +278,19 @@ def list_cards(path: Path, limit: int, *, drafts: bool = True) -> tuple[list[dic
     return [card(row) for row in rows[:limit]], len(rows) > limit
 
 
+def stage_running(path: Path) -> bool:
+    """Whether any run's stage is executing now, not waiting for Continue."""
+
+    with read_runs(path) as connection:
+        if connection is None:
+            return False
+        rows = connection.execute(
+            f"SELECT {_CARD_COLUMNS} FROM runs WHERE status IN ({', '.join('?' * len(_STAGES))})",
+            _STAGES,
+        ).fetchall()
+    return any(card(row)["group"] == "running" for row in rows)
+
+
 def get_card(path: Path, run_id: str) -> dict[str, Any] | None:
     with read_runs(path) as connection:
         if connection is None:

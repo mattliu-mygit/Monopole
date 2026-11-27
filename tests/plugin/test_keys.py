@@ -128,7 +128,8 @@ def test_an_openai_key_goes_to_a_600_file_that_every_action_exports(
     assert main(["plugin", "set-key", "--item", "openai"]) == 0
 
     assert json.loads(capsys.readouterr().out)["saved"] == (
-        "Saved in Monopole's state folder. Monopole's server uses it after it starts again."
+        "Saved in Monopole's state folder. "
+        "Monopole's server isn't running; it uses the key when it starts."
     )
     saved = state_dir() / "openai-key"
     assert saved.read_text() == "sk-test-key\n"

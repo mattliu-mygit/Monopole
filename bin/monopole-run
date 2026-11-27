@@ -30,11 +30,22 @@ fi
 echo "$$" > "$lock/pid.tmp" && mv "$lock/pid.tmp" "$lock/pid"
 
 server=""
+restart=""
 trap 'rm -rf "$lock"; [[ -z "$server" ]] || kill "$server" 2>/dev/null || true' EXIT
 trap 'exit 130' INT TERM HUP
+# SIGUSR1 restarts the server, which reads the plugin's settings and saved keys when it starts;
+# set-key sends it after saving an OpenAI key.
+trap 'restart=1; [[ -z "$server" ]] || kill "$server" 2>/dev/null || true' USR1
 
 # The server runs as a child, not through exec, so this process, whose command line names
-# monopole-run, keeps the lock for as long as the server runs.
-"$root/bin/monopole" serve &
-server=$!
-wait "$server"
+# monopole-run, keeps the lock for as long as the server runs. uv passes SIGTERM on to the
+# server and exits when it does.
+while true; do
+  restart=""
+  "$root/bin/monopole" serve &
+  server=$!
+  # wait returns early when a trapped signal arrives, so it waits again until the server is gone.
+  while wait "$server"; status=$?; kill -0 "$server" 2>/dev/null; do :; done
+  [[ -n "$restart" ]] || exit "$status"
+  echo "monopole-run: restarting Monopole's server" >&2
+done

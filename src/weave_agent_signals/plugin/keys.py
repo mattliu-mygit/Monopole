@@ -15,8 +15,8 @@ logs the key. A real fix needs Prompting Time to pass a secret on stdin.
   entry changes; the file is rewritten whole through a temporary file with mode 600.
   `WANDB_API_KEY`, when set, still wins over the file.
 - OpenAI goes to `<state folder>/openai-key` (mode 600). Every plugin action, including the start
-  command's server, exports it as OPENAI_API_KEY, over `.env` and the environment. The running
-  server reads it only when it starts again.
+  command's server, exports it as OPENAI_API_KEY, over `.env` and the environment. Saving it
+  restarts Monopole's server, unless a run is mid-stage, so the server reads it.
 """
 
 from __future__ import annotations
@@ -32,9 +32,9 @@ import httpx
 
 from weave_agent_signals import ces_commands
 from weave_agent_signals.judges.inference import INFERENCE_BASE, OPENAI_BASE
-from weave_agent_signals.plugin import providers
+from weave_agent_signals.plugin import providers, server
 from weave_agent_signals.plugin.confirm import Refused
-from weave_agent_signals.plugin.settings import state_dir, write_atomic
+from weave_agent_signals.plugin.settings import run_db_path, state_dir, write_atomic
 
 KEY_PROVIDERS = ("wandb", "openai")
 NETRC_MACHINE = "api.wandb.ai"
@@ -138,7 +138,7 @@ def _save_wandb(key: str) -> str:
 def _save_openai(key: str) -> str:
     write_atomic(state_dir() / OPENAI_KEY_FILE, key + "\n")
     os.chmod(state_dir() / OPENAI_KEY_FILE, 0o600)
-    return "Saved in Monopole's state folder. Monopole's server uses it after it starts again."
+    return f"Saved in Monopole's state folder. {server.restart_for_new_key(run_db_path())}"
 
 
 def set_key(provider: str, key: str, *, client: httpx.Client | None = None) -> dict[str, Any]:

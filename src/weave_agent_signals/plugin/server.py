@@ -8,11 +8,17 @@ half done when it next starts.
 
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from weave_agent_signals.plugin.confirm import Refused
+from weave_agent_signals.plugin.runs import stage_running
+from weave_agent_signals.plugin.settings import state_dir
 
 # Listing sessions scans CES, which can take most of a minute on a large Dataset.
 REQUEST_TIMEOUT_SECONDS = 120
@@ -90,3 +96,41 @@ def open_server(port: int) -> Server:
     """The server on `port`, from the plugin's settings. Tests replace this."""
 
     return Server(port)
+
+
+def lock_holder(state: Path) -> int | None:
+    """The process holding `<state>/run.lock`, from its `pid` file, when that process is alive
+    and still runs monopole-run: the rule monopole-run and Prompting Time apply, since a lock
+    outlives a `kill -9` and its process ID can later belong to any program."""
+
+    try:
+        pid = int((state / "run.lock" / "pid").read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    if pid <= 1:
+        return None
+    found = subprocess.run(
+        ["/bin/ps", "-o", "command=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return pid if "monopole-run" in found.stdout else None
+
+
+def restart_for_new_key(run_db: Path) -> str:
+    """Ask the monopole-run holding the state folder's lock to restart its server, which reads
+    saved keys when it starts, and say what happened. A restart would interrupt a run mid-stage,
+    which the new server fails, so then it only says a restart is needed. A run that starts
+    between the check and the restart is interrupted; the window is a few milliseconds."""
+
+    if stage_running(run_db):
+        return (
+            "A run is mid-stage, so Monopole's server wasn't restarted; restart Monopole in "
+            "Prompting Time after the current run so it uses the key."
+        )
+    pid = lock_holder(state_dir())
+    if pid is None:
+        return "Monopole's server isn't running; it uses the key when it starts."
+    os.kill(pid, signal.SIGUSR1)
+    return "Restarted Monopole's server so it uses the key."
