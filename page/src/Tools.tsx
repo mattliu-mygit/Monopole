@@ -61,15 +61,21 @@ export function Tools(props: { store: PageStore }) {
   const [start, setStart] = createSignal("");
   const [end, setEnd] = createSignal("");
   const [kind, setKind] = createSignal("subagents");
+  // The tools this page started that haven't replied yet, including while Prompting Time asks to
+  // confirm; a tool started elsewhere shows as running from its last run.
+  const [pending, setPending] = createSignal<string[]>([]);
   const last = (tool: string) => store.state.tools?.tools[tool];
-  const running = (tool: string) => last(tool)?.state === "running";
+  const running = (tool: string) => pending().includes(tool) || last(tool)?.state === "running";
 
   async function run(tool: string, args: string[]) {
     setErrors((all) => ({ ...all, [tool]: null }));
+    setPending((all) => [...all, tool]);
     try {
       await store.runTool(tool, args);
     } catch (failure) {
       setErrors((all) => ({ ...all, [tool]: failure instanceof Error ? failure.message : String(failure) }));
+    } finally {
+      setPending((all) => all.filter((other) => other !== tool));
     }
   }
 
@@ -99,7 +105,7 @@ export function Tools(props: { store: PageStore }) {
             onChange={(event) => setHours(event.currentTarget.value)}
           />
           <Button variant="primary" disabled={running("score") || store.held()} onClick={() => void run("score", ["--hours", hours()])}>
-            Score
+            {running("score") ? "Running…" : "Score"}
           </Button>
         </ToolCard>
         <ToolCard
@@ -125,7 +131,7 @@ export function Tools(props: { store: PageStore }) {
           run={last("monitor")}
         >
           <Button variant="primary" disabled={running("monitor") || store.held()} onClick={() => void run("monitor", [])}>
-            Check now
+            {running("monitor") ? "Running…" : "Check now"}
           </Button>
         </ToolCard>
       </div>
@@ -135,7 +141,7 @@ export function Tools(props: { store: PageStore }) {
             <p class="m-quiet">analyze's insight tables, read-only.</p>
             <div class="m-actions">
               <Button disabled={running("insights") || store.held()} onClick={() => void run("insights", ["--kind", kind()])}>
-                Read
+                {running("insights") ? "Reading…" : "Read"}
               </Button>
             </div>
             <Show when={errors().insights}>

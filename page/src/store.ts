@@ -178,8 +178,9 @@ export function createPageStore(link: HostLink) {
   // action button disabled. Prompting Time may open the next item in that time, and an open in that
   // time holds them HOLD_MS more, so a second click can't act on the item it opened. The plain
   // variables decide; the signal only draws, since the store applies a write at its next flush.
-  // A sign-in or a tool runs until it finishes, which can take minutes, and holds the buttons all
-  // that time; the sign-in's code and cancel buttons aren't held.
+  // A sign-in waits up to 10 minutes for the browser and a tool can run for minutes, so those hold
+  // the buttons only after their reply (`holdingAfter`); while they run, only their own button says
+  // so. The sign-in's code and cancel buttons aren't held.
   const [held, setHeld] = createSignal(false);
   let running = 0;
   let release: ReturnType<typeof setTimeout> | undefined;
@@ -199,6 +200,18 @@ export function createPageStore(link: HostLink) {
       return await work();
     } finally {
       if (--running === 0) holdFor(HOLD_MS);
+    }
+  }
+
+  async function holdingAfter<T>(work: () => Promise<T>): Promise<T> {
+    try {
+      return await work();
+    } finally {
+      // An action that holds while it runs starts the hold itself when it replies.
+      if (running === 0) {
+        setHeld(true);
+        holdFor(HOLD_MS);
+      }
     }
   }
 
@@ -280,7 +293,7 @@ export function createPageStore(link: HostLink) {
     /** Runs the provider's login, after Prompting Time's confirmation, until it finishes; then
      * shows the provider check the action ran after it. */
     signIn: async (provider: string) => {
-      const done = (await holding(() => call("sign-in", ["--item", provider]))) as { sign_in: ProviderCheck["sign_in"]; providers: ProviderCheck };
+      const done = (await holdingAfter(() => call("sign-in", ["--item", provider]))) as { sign_in: ProviderCheck["sign_in"]; providers: ProviderCheck };
       setState((s) => {
         s.providers = { ...done.providers, sign_in: done.sign_in };
       });
@@ -303,7 +316,7 @@ export function createPageStore(link: HostLink) {
     },
     /** Runs one of the Tools actions; the write tools confirm in Prompting Time first. */
     runTool: async (action: string, args: string[]) => {
-      const run = (await holding(() => call(action, args))) as ToolRun & { tool: string };
+      const run = (await holdingAfter(() => call(action, args))) as ToolRun & { tool: string };
       setState((s) => {
         s.tools = { format: 1, tools: { ...(s.tools?.tools ?? {}), [action]: run } };
       });

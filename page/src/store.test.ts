@@ -51,6 +51,30 @@ describe("the page store", () => {
     expect(held()).toBe(false);
   });
 
+  it("doesn't hold the buttons while a sign-in or a tool runs, only for HOLD_MS after its reply", async () => {
+    const { store, send, lastCall, held } = storeWithHost();
+    const signIn = store.signIn("claude");
+    const tool = store.runTool("backfill", ["--start", "2026-10-01"]);
+    expect(held()).toBe(false);
+
+    send({ type: "result", reply_to: lastCall("sign-in"), json: { sign_in: null, providers: { format: 1, checked_at: null, providers: [] } } });
+    await signIn;
+    expect(held()).toBe(true);
+    vi.advanceTimersByTime(HOLD_MS);
+    expect(held()).toBe(false);
+
+    // A short action that runs when the tool replies keeps holding until its own reply.
+    const rerun = store.rerun("run-1");
+    send({ type: "result", reply_to: lastCall("backfill"), json: { tool: "backfill", state: "done", args: {}, started_at: "x", finished_at: "y", exit_code: 0, output: "" } });
+    await tool;
+    vi.advanceTimersByTime(HOLD_MS);
+    expect(held()).toBe(true);
+    send({ type: "result", reply_to: lastCall("rerun"), json: { route: "/runs/run-2" } });
+    await rerun;
+    vi.advanceTimersByTime(HOLD_MS);
+    expect(held()).toBe(false);
+  });
+
   it("rejects a refusal with Monopole's stderr as the reason, and holds after it too", async () => {
     const { store, send, lastCall, held } = storeWithHost();
     const rerun = store.rerun("run-1");

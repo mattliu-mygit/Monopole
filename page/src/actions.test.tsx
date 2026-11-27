@@ -138,8 +138,11 @@ describe("provider sign-in", () => {
     fireEvent.click(await enabled(() => within(warning).getByRole("button", { name: "Start sign-in" })));
     await waitFor(() => expect(confirm).toHaveBeenCalledWith("sign-in", ["--item", "codex"]));
 
-    // While the browser sign-in waits: the fallback link and a field for a pasted code.
+    // While the browser sign-in waits: the fallback link and a field for a pasted code. The other
+    // buttons stay usable; only Sign in waits.
     const panel = await screen.findByRole("dialog", { name: "Signing in with codex login" });
+    expect(screen.getByRole("button", { name: "Check all" })).toBeEnabled();
+    expect(within(codex).getByRole("button", { name: "Sign in" })).toBeDisabled();
     expect(await within(panel).findByText("https://codex.example/sign-in")).toBeInTheDocument();
     fireEvent.input(within(panel).getByLabelText("Code from the browser, if it shows one"), "abc123");
     fireEvent.click(within(panel).getByRole("button", { name: "Submit code" }));
@@ -195,6 +198,15 @@ describe("Tools", () => {
 
     fireEvent.click(await enabled(() => screen.getByRole("button", { name: "Check now" })));
     await waitFor(() => expect(confirm).toHaveBeenCalledWith("monitor", []));
+
+    // While a tool runs, here waiting for its confirmation, only its own button waits.
+    let confirmMonitor: (yes: boolean) => void = () => {};
+    confirm.mockImplementationOnce((() => new Promise<boolean>((resolve) => (confirmMonitor = resolve))) as never);
+    fireEvent.click(await enabled(() => screen.getByRole("button", { name: "Check now" })));
+    expect(await screen.findByRole("button", { name: "Running…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Score" })).toBeEnabled();
+    confirmMonitor(true);
+    await enabled(() => screen.getByRole("button", { name: "Check now" }));
 
     fireEvent.click(screen.getByRole("tab", { name: "Judge agreement" }));
     fireEvent.click(await enabled(() => screen.getByRole("button", { name: "Read" })));
