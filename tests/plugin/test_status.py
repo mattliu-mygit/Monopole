@@ -81,10 +81,13 @@ def test_status_fits_prompting_times_schema_and_the_manifests_groups(state):
         "project": None,
         "updated_at": "2026-11-05T20:00:00+00:00",
         "route": "/runs/run-judging",
-        "actions": [],
+        "actions": ["rerun"],
     }
     assert by_id["run-judging"]["detail"] == "Judging 2 of 6 rubrics"
-    assert by_id["run-done"]["actions"] == ["delete"]
+    assert (by_id["run-done"]["actions"], by_id["run-done"]["dot"]) == (
+        ["rerun", "delete"],
+        "success",
+    )
     assert printed["agent"] == {"words": "Running 1 run", "dot": "running"}
     assert printed["blockers"] == []
 

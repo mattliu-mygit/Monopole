@@ -25,6 +25,11 @@
       "type": "integer",
       "minimum": 1
     },
+    "alert_webhook": {
+      "title": "Alert webhook",
+      "description": "An https:// URL, such as a Slack incoming webhook, that Tools' regression check posts new alerts to. Blank logs them only.",
+      "type": "string"
+    },
     "ces": {
       "title": "CES scope",
       "description": "Where Monopole reads sessions and writes Scores. Blank fields use the adapter's ~/.weave-agent-adapter/evaluations.json.",

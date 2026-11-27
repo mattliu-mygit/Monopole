@@ -60,6 +60,7 @@ def write_atomic(path: Path, text: str) -> None:
 def _defaults() -> dict[str, Any]:
     return {
         **{key: "" for key in _PATH_SETTINGS},
+        "alert_webhook": "",
         "port": DEFAULT_PORT,
         "ces": {key: "" for key in _CES_SETTINGS},
     }
@@ -89,6 +90,12 @@ def _merge(settings: dict[str, Any], changes: object, source: object) -> dict[st
         if key in _PATH_SETTINGS:
             if not isinstance(value, str):
                 raise ConfigurationError(f"{key} must be text")
+            merged[key] = value.strip()
+        elif key == "alert_webhook":
+            if not isinstance(value, str) or (
+                value.strip() and not value.strip().startswith("https://")
+            ):
+                raise ConfigurationError("alert_webhook must be blank or an https:// URL")
             merged[key] = value.strip()
         elif key == "port":
             if type(value) is not int or not 1 <= value <= 65535:

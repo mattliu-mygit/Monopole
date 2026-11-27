@@ -23,6 +23,7 @@ def test_get_settings_prints_blank_fields_and_the_default_port(state, capsys):
         "run_db": "",
         "target_registry": "",
         "sandbox_runtime": "",
+        "alert_webhook": "",
         "port": 8787,
         "ces": {"url": "", "scope_ref": "", "dataset_id": ""},
     }
@@ -74,3 +75,8 @@ def test_a_refused_setting_exits_2_with_the_reason(state, capsys):
 def test_serve_needs_the_registry_and_runtime(state, capsys):
     assert main(["plugin", "serve"]) == 2
     assert "needs a target registry and a sandbox runtime" in capsys.readouterr().err
+
+
+def test_the_alert_webhook_must_be_blank_or_https(state, capsys):
+    assert main(["plugin", "save-settings", json.dumps({"alert_webhook": "http://x"})]) == 2
+    assert "alert_webhook must be blank or an https:// URL" in capsys.readouterr().err

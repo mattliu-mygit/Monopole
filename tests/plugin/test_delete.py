@@ -66,7 +66,7 @@ def test_expect_refuses_when_the_run_changed_after_the_confirmation(state, capsy
 
     assert main(["plugin", "delete", "--item", "run-1", "--expect", fingerprint]) == 1
 
-    assert "changed after you confirmed; nothing deleted" in capsys.readouterr().err
+    assert "changed after you confirmed; nothing ran" in capsys.readouterr().err
     assert _runs(db) == ["run-1"]
 
 

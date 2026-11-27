@@ -95,7 +95,7 @@ def test_a_finished_run_without_a_pending_review_is_done(state):
 
     first, second = (get_card(db, run) for run in ("run-1", "run-2"))
 
-    assert (first["label"], first["dot"], first["group"]) == ("No change", "idle", "done")
+    assert (first["label"], first["dot"], first["group"]) == ("No change", "success", "done")
     assert first["proposal"]["check"] is None
     assert (second["label"], second["group"]) == ("Cancelled", "done")
 

@@ -1,15 +1,13 @@
 """`weave-agent-signals plugin <action>`: the commands `prompting-time-plugin.json` declares.
 
-Each prints JSON, except `delete`, which follows Prompting Time's confirmation convention:
-`--print` saves the request in the state folder and prints `fingerprint: <sha256>` of that file
-on its last line; `--expect <sha256>` deletes only when the same request still has that
-fingerprint, so a run that changed after the user confirmed is not deleted.
+Each prints JSON, except where an action marked `confirm: true` previews its request: those follow
+Prompting Time's confirmation convention (`confirm.py`), so `--print` changes nothing and
+`--expect <sha256>` runs only the request the user confirmed.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sqlite3
@@ -18,9 +16,11 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from weave_agent_signals.models import ConfigurationError
-from weave_agent_signals.plugin import providers
+from weave_agent_signals.plugin import keys, newrun, providers, server, signin, tools
+from weave_agent_signals.plugin.confirm import Refused, add_confirm_flags, confirmed
 from weave_agent_signals.plugin.runs import DETAIL_LIMIT, get_card, list_cards, one_line, run_detail
 from weave_agent_signals.plugin.settings import (
     apply_settings,
@@ -34,15 +34,10 @@ from weave_agent_signals.runs.store import RunStore
 
 STATUS_ITEM_LIMIT = 50
 RUNS_CHANGED_FILE = "runs-changed"
-DELETE_REQUEST_FILE = "delete-request.json"
 # How often the server looks for committed run changes. While a run writes progress, the page
 # and Prompting Time read again at most this often; a run-store commit callback would be
 # needed for anything faster.
 RUN_CHANGE_INTERVAL_SECONDS = 2.0
-
-
-class Refused(Exception):
-    """The action did nothing, for the reason in its message."""
 
 
 def _print_json(value: object) -> None:
@@ -127,7 +122,7 @@ def status(path: Path, now: datetime | None = None) -> dict[str, Any]:
             "project": None,
             "updated_at": card["updated_at"],
             "route": f"/runs/{card['run_id']}",
-            "actions": ["delete"] if card["deletable"] else [],
+            "actions": ["rerun", "delete"] if card["deletable"] else ["rerun"],
         }
         for card in cards
     ]
@@ -161,28 +156,69 @@ def delete_request(path: Path, run_id: str) -> str:
     return json.dumps(request, indent=2, ensure_ascii=False) + "\n"
 
 
-def _fingerprint(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()
-
-
 def delete(path: Path, run_id: str, *, print_only: bool, expect: str | None) -> None:
     text = delete_request(path, run_id)
-    request_file = state_dir() / DELETE_REQUEST_FILE
-    if print_only:
-        write_atomic(request_file, text)
-        print(f"Saved the request to delete {run_id} in {request_file}; nothing deleted yet.")
-        print(f"fingerprint: {_fingerprint(text)}")
+    if not confirmed("delete", text, print_only=print_only, expect=expect, what=f"delete {run_id}"):
         return
-    if expect != _fingerprint(text):
-        raise Refused(f"{run_id} changed after you confirmed; nothing deleted. Try again.")
     store = RunStore(path)
     try:
         store.delete(run_id)
     finally:
         store.close()
-    request_file.unlink(missing_ok=True)
     notify_runs_changed()
     print(f"Deleted {run_id}.")
+
+
+def rerun(path: Path, run_id: str, settings: dict[str, Any], args: argparse.Namespace) -> None:
+    with server.open_server(settings["port"]) as monopole:
+        text, setup = newrun.rerun_request(path, run_id, monopole)
+        what = f"rerun {run_id}"
+        if confirmed("rerun", text, print_only=args.print_only, expect=args.expect, what=what):
+            _print_json(newrun.start_run(monopole, setup))
+
+
+def create_run(settings: dict[str, Any], args: argparse.Namespace) -> None:
+    setup = newrun.parse_setup(args.setup)
+    with server.open_server(settings["port"]) as monopole:
+        text = newrun.create_request(setup, monopole)
+        what = "start a new run"
+        if confirmed("create-run", text, print_only=args.print_only, expect=args.expect, what=what):
+            _print_json(newrun.start_run(monopole, setup))
+
+
+def run_tool(args: argparse.Namespace, settings: dict[str, Any]) -> None:
+    """score, backfill, and monitor confirm first, since they write Scores or post alerts;
+    insights only reads."""
+
+    action = args.plugin_action
+    if action == "insights":
+        command, namespace = tools.insights_command(args.kind)
+        _print_json(tools.run(action, {"kind": args.kind}, command, namespace))
+        return
+    if action == "score":
+        command, namespace = tools.score_command(args.hours)
+        recorded = {"hours": args.hours}
+        writes = (
+            f"Deterministic Scores for turns from the last {args.hours} hours that lack them, "
+            "at most 100 turns"
+        )
+        extra: dict[str, Any] = {}
+    elif action == "backfill":
+        command, namespace = tools.backfill_command(args.start, args.end)
+        recorded = {"start": args.start, "end": args.end}
+        writes = "Every Scorer a turn, session, or subagent in the range lacks"
+        extra = {}
+    else:
+        webhook = settings["alert_webhook"]
+        command, namespace = tools.monitor_command(webhook)
+        recorded = {}
+        writes = "Nothing in CES; new alerts go to the log" + (
+            " and are posted to the webhook" if webhook else ""
+        )
+        extra = {"webhook_host": urlparse(webhook).netloc if webhook else None}
+    text = tools.request(action, recorded, writes, **extra)
+    if confirmed(action, text, print_only=args.print_only, expect=args.expect, what=action):
+        _print_json(tools.run(action, recorded, command, namespace))
 
 
 def serve(args: argparse.Namespace, settings: dict[str, Any]) -> int:
@@ -233,11 +269,44 @@ def add_parser(subs: argparse._SubParsersAction) -> None:
     run.add_argument("--item", required=True, metavar="RUN_ID")
     remove = actions.add_parser("delete", help="Delete a run after Prompting Time's confirmation")
     remove.add_argument("--item", required=True, metavar="RUN_ID")
-    mode = remove.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--print", action="store_true", dest="print_only")
-    mode.add_argument("--expect", metavar="FINGERPRINT")
-    actions.add_parser("providers", help="The last provider sign-in check")
+    add_confirm_flags(remove)
+    again = actions.add_parser("rerun", help="Start a new run with an old run's settings")
+    again.add_argument("--item", required=True, metavar="RUN_ID")
+    add_confirm_flags(again)
+    create = actions.add_parser("create-run", help="Start a new run from New run's settings")
+    create.add_argument("setup", help='{"selection": ..., "config": ..., "auto_run": ...} as JSON')
+    add_confirm_flags(create)
+    actions.add_parser("catalog", help="The models and rubrics a new run can choose")
+    listed = actions.add_parser("sessions", help="Sessions a new run can choose")
+    listed.add_argument("--since")
+    listed.add_argument("--until")
+    listed.add_argument("--timezone")
+    listed.add_argument("--limit", type=int, default=50)
+    actions.add_parser("providers", help="The last provider sign-in check and sign-in")
     actions.add_parser("check-providers", help="Check every provider's sign-in now")
+    login = actions.add_parser("sign-in", help="Run a provider CLI's login command")
+    login.add_argument("--item", required=True, choices=sorted(signin.COMMANDS))
+    add_confirm_flags(login)
+    code = actions.add_parser("sign-in-code", help="Type a pasted code into the waiting sign-in")
+    code.add_argument("--item", required=True, choices=sorted(signin.COMMANDS))
+    code.add_argument("--code", required=True)
+    stop = actions.add_parser("sign-in-cancel", help="Stop the waiting sign-in")
+    stop.add_argument("--item", required=True, choices=sorted(signin.COMMANDS))
+    key = actions.add_parser("set-key", help="Check and save a W&B or OpenAI API key")
+    key.add_argument("--item", required=True, choices=keys.KEY_PROVIDERS)
+    key.add_argument("--key", help="The key; read from stdin when left out")
+    score = actions.add_parser("score", help="Score recent turns, as `score` does")
+    score.add_argument("--hours", type=int, choices=(24, 168), default=24)
+    add_confirm_flags(score)
+    backfill = actions.add_parser("backfill", help="Score a date range, as `backfill` does")
+    backfill.add_argument("--start", required=True, metavar="YYYY-MM-DD")
+    backfill.add_argument("--end", metavar="YYYY-MM-DD", help="The last day included")
+    add_confirm_flags(backfill)
+    monitor = actions.add_parser("monitor", help="Check for regressions now, as `monitor` does")
+    add_confirm_flags(monitor)
+    insights = actions.add_parser("insights", help="One of analyze's insight tables")
+    insights.add_argument("--kind", required=True, choices=tools.INSIGHT_KINDS)
+    actions.add_parser("tools", help="Each tool's last run")
     actions.add_parser("get-settings", help="The plugin's settings")
     save = actions.add_parser("save-settings", help="Check and save changed settings")
     save.add_argument("changes", help="The changed settings as one JSON object")
@@ -258,6 +327,7 @@ def run_plugin_action(args: argparse.Namespace) -> int:
 def _run(args: argparse.Namespace) -> int:
     settings = load_settings()
     apply_settings(settings)
+    keys.apply_saved_keys()
     action = args.plugin_action
     if action == "status":
         _print_json(status(run_db_path()))
@@ -273,10 +343,36 @@ def _run(args: argparse.Namespace) -> int:
         _print_json({"format": 1, "run": detail})
     elif action == "delete":
         delete(run_db_path(), args.item, print_only=args.print_only, expect=args.expect)
+    elif action == "rerun":
+        rerun(run_db_path(), args.item, settings, args)
+    elif action == "create-run":
+        create_run(settings, args)
+    elif action == "catalog":
+        with server.open_server(settings["port"]) as monopole:
+            _print_json(newrun.catalog(monopole))
+    elif action == "sessions":
+        with server.open_server(settings["port"]) as monopole:
+            found = newrun.sessions(monopole, args.since, args.until, args.timezone, args.limit)
+            _print_json(found)
     elif action == "providers":
-        _print_json(providers.last_check())
+        _print_json({**providers.last_check(), "sign_in": signin.current()})
     elif action == "check-providers":
         _print_json(providers.check_providers())
+    elif action == "sign-in":
+        text = signin.sign_in_request(args.item)
+        what = f"sign in to {providers.PROVIDER_TITLES[args.item]}"
+        if confirmed("sign-in", text, print_only=args.print_only, expect=args.expect, what=what):
+            _print_json(signin.sign_in(args.item))
+    elif action == "sign-in-code":
+        _print_json(signin.send_code(args.item, args.code))
+    elif action == "sign-in-cancel":
+        _print_json(signin.cancel(args.item))
+    elif action == "set-key":
+        _print_json(keys.set_key(args.item, keys.read_key(args.key)))
+    elif action in ("score", "backfill", "monitor", "insights"):
+        run_tool(args, settings)
+    elif action == "tools":
+        _print_json(tools.last_runs())
     elif action == "get-settings":
         _print_json(settings)
     elif action == "save-settings":

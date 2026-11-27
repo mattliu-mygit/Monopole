@@ -17,16 +17,29 @@
       { "id": "running", "title": "Running", "needs_you": false, "order": 3 },
       { "id": "done", "title": "Done", "needs_you": false, "order": 4, "folded": true }
     ],
-    "item_actions": ["delete"]
+    "item_actions": ["rerun", "delete"]
   },
   "settings": "schemas/plugin-settings.json",
   "actions": [
     { "name": "status", "title": "Status", "description": "Prints Prompting Time's status format 2: whether runs are running, the providers a recent check found signed out, and the newest 50 runs that are not drafts. Reads files only.", "command": ["bin/monopole", "status"], "confirm": false },
     { "name": "runs", "title": "List runs", "description": "Prints the newest runs as JSON, with each run's session, judges, mean rating, failure cause, and how its proposal compared with the current instructions. Reads files only.", "command": ["bin/monopole", "runs"], "confirm": false },
-    { "name": "run", "title": "Show a run", "description": "Prints one run as JSON, given --item <run id>: its card, selection, stages, rubric ratings, and models. Reads files only.", "command": ["bin/monopole", "run"], "confirm": false },
+    { "name": "run", "title": "Show a run", "description": "Prints one run as JSON, given --item <run id>: its card, selection, settings, stages, rubric ratings, and models. Reads files only.", "command": ["bin/monopole", "run"], "confirm": false },
     { "name": "delete", "title": "Delete run", "description": "Deletes a run that is not running from Monopole's run database, with its saved judge calls and events. Its Scores in CES stay.", "command": ["bin/monopole", "delete"], "confirm": true },
-    { "name": "providers", "title": "Last provider check", "description": "Prints the last provider sign-in check as JSON. Reads files only.", "command": ["bin/monopole", "providers"], "confirm": false },
+    { "name": "rerun", "title": "Rerun", "description": "Starts a new run, given --item <run id>, with that run's sessions and settings under the current catalogs; turns added to those sessions since join it. Scoring starts at once and writes Scores to CES; with Continue automatically, judging calls the judge models. Refuses when a model or rubric left the catalog. Needs Monopole's server.", "command": ["bin/monopole", "rerun"], "confirm": true },
+    { "name": "create-run", "title": "Start a new run", "description": "Starts a new run from New run's settings, given as one JSON argument {selection, config, auto_run}. Scoring starts at once and writes Scores to CES. Needs Monopole's server.", "command": ["bin/monopole", "create-run"], "confirm": true },
+    { "name": "catalog", "title": "Models and rubrics", "description": "Prints the models and rubrics a new run can choose, from Monopole's server. Reads only.", "command": ["bin/monopole", "catalog"], "confirm": false },
+    { "name": "sessions", "title": "List sessions", "description": "Prints the sessions a new run can choose, given optional --since, --until, --timezone, and --limit, from Monopole's server. Reads CES only.", "command": ["bin/monopole", "sessions"], "confirm": false },
+    { "name": "providers", "title": "Last provider check", "description": "Prints the last provider sign-in check, and the last or waiting sign-in, as JSON. Reads files only.", "command": ["bin/monopole", "providers"], "confirm": false },
     { "name": "check-providers", "title": "Check providers", "description": "Checks whether Claude, Codex, and Devin are signed in with their status commands, and whether the W&B and OpenAI keys work with GET /models. Calls no model and spends nothing.", "command": ["bin/monopole", "check-providers"], "confirm": false },
+    { "name": "sign-in", "title": "Sign in", "description": "Runs the CLI's own login command, given --item claude, codex, or devin, and waits for the browser sign-in to finish, at most 10 min; then checks every provider again. Starting codex login removes the current Codex login, even if you cancel.", "command": ["bin/monopole", "sign-in"], "confirm": true },
+    { "name": "sign-in-code", "title": "Send sign-in code", "description": "Types a code pasted from the browser, given --item <provider> --code <code>, into the waiting sign-in.", "command": ["bin/monopole", "sign-in-code"], "confirm": false },
+    { "name": "sign-in-cancel", "title": "Cancel sign-in", "description": "Stops the waiting sign-in, given --item <provider>.", "command": ["bin/monopole", "sign-in-cancel"], "confirm": false },
+    { "name": "set-key", "title": "Save API key", "description": "Checks a W&B or OpenAI key, given --item wandb|openai and --key <key>, with the free GET /v1/models, then saves it: W&B in ~/.netrc's api.wandb.ai entry, OpenAI in Monopole's state folder. Never prints the key.", "command": ["bin/monopole", "set-key"], "confirm": false },
+    { "name": "score", "title": "Score recent sessions", "description": "Writes deterministic Scores to CES for turns from the last --hours 24 or 168 that lack them, as `weave-agent-signals score` does.", "command": ["bin/monopole", "score"], "confirm": true },
+    { "name": "backfill", "title": "Backfill a date range", "description": "Writes every Scorer a turn, session, or subagent from --start to --end (dates, inclusive) lacks to CES, as `weave-agent-signals backfill` does.", "command": ["bin/monopole", "backfill"], "confirm": true },
+    { "name": "monitor", "title": "Check for regressions", "description": "Checks for significant score regressions now, as `weave-agent-signals monitor` does, and posts new alerts to the webhook in settings, if any.", "command": ["bin/monopole", "monitor"], "confirm": true },
+    { "name": "insights", "title": "Insight table", "description": "Prints one of analyze's insight tables, given --kind subagents, judges, or segments. Reads CES only.", "command": ["bin/monopole", "insights"], "confirm": false },
+    { "name": "tools", "title": "Last tool runs", "description": "Prints each tool's last run and whether it is still running. Reads files only.", "command": ["bin/monopole", "tools"], "confirm": false },
     { "name": "get-settings", "title": "Read settings", "description": "Prints the settings as JSON.", "command": ["bin/monopole", "get-settings"], "confirm": false },
     { "name": "save-settings", "title": "Save settings", "description": "Checks the changed settings and saves them in Monopole's state folder.", "command": ["bin/monopole", "save-settings"], "confirm": false }
   ]

@@ -33,6 +33,7 @@ def test_the_settings_schema_names_only_the_settings_the_plugin_saves():
         "sandbox_runtime",
         "run_db",
         "port",
+        "alert_webhook",
         "ces",
     }
     assert set(schema["properties"]["ces"]["properties"]) == {"url", "scope_ref", "dataset_id"}

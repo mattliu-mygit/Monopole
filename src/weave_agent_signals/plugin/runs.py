@@ -214,7 +214,7 @@ def card(row: sqlite3.Row) -> dict[str, Any]:
     elif review == "review-needed":
         label, dot, group = "Review needed", "attention", "review"
     else:
-        label, dot, group = _REVIEW_LABELS.get(review, "Complete"), "idle", "done"
+        label, dot, group = _REVIEW_LABELS.get(review, "Complete"), "success", "done"
     return {
         "run_id": row["run_id"],
         "status": status,
@@ -262,7 +262,7 @@ def get_card(path: Path, run_id: str) -> dict[str, Any] | None:
 
 
 _DETAIL_COLUMNS = f"""
-    data_selection,
+    data_selection, run_config, auto_run,
     json((SELECT json_group_object(json_extract(value, '$.id'), json_extract(value, '$.label'))
         FROM json_each(effective_config, '$.rubrics'))) AS rubric_labels,
     json_extract(effective_config, '$.models.proposal_writer.label') AS proposal_writer,
@@ -305,6 +305,9 @@ def run_detail(path: Path, run_id: str) -> dict[str, Any] | None:
     return {
         **found,
         "selection": json.loads(row["data_selection"]) if row["data_selection"] else None,
+        # What the run asked for, which Edit and rerun fills New run with.
+        "config": json.loads(row["run_config"]) if row["run_config"] else None,
+        "auto_run": bool(row["auto_run"]),
         "stages": stages,
         "rubrics": [
             {**review, "label": rubric_labels.get(review["rubric"], review["rubric"])}

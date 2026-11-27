@@ -34,7 +34,7 @@ def test_the_json_actions_print_what_the_page_reads(state, capsys):
     assert [run["run_id"] for run in listed["runs"]] == ["run-1"]
     assert shown["run"]["run_id"] == "run-1" and len(shown["run"]["stages"]) == 3
     assert printed["format"] == 2 and printed["items"][0]["group"] == "failed"
-    assert last == {"format": 1, "checked_at": None, "providers": []}
+    assert last == {"format": 1, "checked_at": None, "providers": [], "sign_in": None}
 
 
 def test_a_missing_run_exits_1_with_one_line_on_stderr(state, capsys):
