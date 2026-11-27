@@ -1,5 +1,6 @@
 import * as fixtures from "./fixtures";
 import {
+  CallError,
   PROTOCOL_VERSION,
   readPageMessage,
   type Card,
@@ -33,6 +34,7 @@ const DECLARED = new Set([
   "run",
   "delete",
   "rerun",
+  "continue",
   "create-run",
   "catalog",
   "sessions",
@@ -50,7 +52,13 @@ const DECLARED = new Set([
   "get-settings",
   "save-settings",
 ]);
-const CONFIRM = new Set(["delete", "rerun", "create-run", "sign-in", "score", "backfill", "monitor"]);
+const CONFIRM = new Set(["delete", "rerun", "continue", "create-run", "sign-in", "score", "backfill", "monitor"]);
+
+/** A refusal at a confirm action's --print, as Prompting Time reports it: Monopole printed reason
+ * on stderr and exited 1, and the confirmation showed it. */
+function refusal(reason: string): CallError {
+  return new CallError(reason, { stage: "preview", exit_code: 1, stderr: `${reason}\n` });
+}
 
 export function createFakeHost(send: (message: HostMessage) => void, options: FakeHostOptions = {}) {
   let runs: Card[] = fixtures.cards();
@@ -92,12 +100,13 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
       if (args.some((arg) => arg === "--print" || arg === "--expect")) {
         throw new Error(`${action} asks to confirm first, so Prompting Time adds --print and --expect itself.`);
       }
-      if (action === "delete") {
+      if (action === "delete" || action === "continue") {
         const found = runs.find((card) => card.run_id === item(args));
-        if (!found) throw new Error(`There is no run ${item(args)}.`);
-        if (!found.deletable) throw new Error(`${found.run_id} is ${found.status}; cancel it in Monopole before deleting it.`);
+        if (!found) throw refusal(`There is no run ${item(args)}.`);
+        if (action === "delete" && !found.deletable) throw refusal(`${found.run_id} is ${found.status}; cancel it in Monopole before deleting it.`);
+        if (action === "continue" && !found.next_stage) throw refusal(`${found.run_id} is ${found.label}, so it isn't waiting for Continue.`);
       }
-      if (!(await options.confirm?.(action, args))) throw new Error("Nothing ran: the confirmation was cancelled.");
+      if (!(await options.confirm?.(action, args))) throw new CallError("Nothing ran: the confirmation was cancelled.", { stage: "cancelled" });
     }
     switch (action) {
       case "runs":
@@ -116,6 +125,14 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
       }
       case "rerun":
         return startRun();
+      case "continue": {
+        const id = item(args);
+        runs = runs.map((card) =>
+          card.run_id === id ? { ...card, status: "judging", label: "Judging", dot: "running", progress: null, next_stage: null } : card,
+        );
+        changed("runs-changed");
+        return { format: 1, run_id: id, status: "judging", route: `/runs/${id}` };
+      }
       case "create-run":
         setups.push(JSON.parse(args[0]));
         return startRun();
@@ -182,7 +199,13 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
       }
       run(message.action, message.args).then(
         (json) => post({ type: "result", reply_to: message.id, json }),
-        (error) => post({ type: "error", reply_to: message.id, message: error instanceof Error ? error.message : String(error) }),
+        (error) =>
+          post({
+            type: "error",
+            reply_to: message.id,
+            message: error instanceof Error ? error.message : String(error),
+            ...(error instanceof CallError ? error.failure : {}),
+          }),
       );
     },
     open: (route: string) => post({ type: "open", route }),

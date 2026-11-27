@@ -183,7 +183,7 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
           checked={autoRun()}
           onChange={(event) => setAutoRun(event.currentTarget.checked)}
         />
-        <Button variant="primary" onClick={start} disabled={starting() || chosen().length === 0 || judges()[0] === NONE}>
+        <Button variant="primary" onClick={start} disabled={starting() || props.store.held() || chosen().length === 0 || judges()[0] === NONE}>
           {starting() ? "Starting…" : "Start run"}
         </Button>
       </div>

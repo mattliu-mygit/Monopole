@@ -11,6 +11,18 @@ const fireEvent = {
   change: (element: Element, value: string) => (dom.change(element, { target: { value } }), flush()),
 };
 
+// After an action, the page holds the action buttons disabled for HOLD_MS, so a test waits for the
+// next button it presses to be enabled.
+const enabled = (find: () => HTMLElement) =>
+  waitFor(
+    () => {
+      const button = find();
+      expect(button).toBeEnabled();
+      return button;
+    },
+    { timeout: 2_000 },
+  );
+
 const select = (label: string) => screen.getByLabelText(label) as HTMLSelectElement;
 const checkbox = (name: string | RegExp) => screen.getByRole("checkbox", { name }) as HTMLInputElement;
 
@@ -20,7 +32,7 @@ describe("rerunning a run", () => {
     const host = renderWithFakeHost({ confirm });
     fireEvent.click(await screen.findByRole("button", { name: "Rerun run-review01" }));
     await waitFor(() => expect(confirm).toHaveBeenCalledWith("rerun", ["--item", "run-review01"]));
-    await waitFor(() => expect(host.calls()).toContainEqual(["run", "--item", "run-new3"]));
+    await waitFor(() => expect(host.calls()).toContainEqual(["run", "--item", "run-new4"]));
     expect(await screen.findByRole("button", { name: "Edit and rerun" })).toBeInTheDocument();
   });
 
@@ -68,7 +80,7 @@ describe("rerunning a run", () => {
       auto_run: true,
     });
     expect(confirm).toHaveBeenCalledWith("create-run", [JSON.stringify(host.setups[0])]);
-    await waitFor(() => expect(host.calls()).toContainEqual(["run", "--item", "run-new3"]));
+    await waitFor(() => expect(host.calls()).toContainEqual(["run", "--item", "run-new4"]));
   });
 
   it("starts a blank New run on the catalog's recommendations with no session chosen", async () => {
@@ -84,20 +96,46 @@ describe("rerunning a run", () => {
   });
 });
 
+describe("continuing a waiting run", () => {
+  it("continues a card's waiting run through Prompting Time's confirmation and opens it", async () => {
+    const confirm = vi.fn(() => true);
+    const host = renderWithFakeHost({ confirm });
+    // Only a run that waits between stages offers Continue.
+    expect(await screen.findByRole("button", { name: "Continue run-waiting1" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue run-running1" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue run-waiting1" }));
+    await waitFor(() => expect(confirm).toHaveBeenCalledWith("continue", ["--item", "run-waiting1"]));
+    await waitFor(() => expect(host.calls()).toContainEqual(["run", "--item", "run-waiting1"]));
+    expect(await screen.findByRole("heading", { name: "Speed up the session list" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+  });
+
+  it("offers Continue on the run page and holds the action buttons after it", async () => {
+    renderWithFakeHost({ confirm: () => false, openOnReady: "/runs/run-waiting1" });
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Nothing ran: the confirmation was cancelled.");
+    // The reply came back, and the buttons still wait, so a second click can't land on another item.
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Rerun" })).toBeDisabled();
+    await enabled(() => screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByRole("button", { name: "Rerun" })).toBeEnabled();
+  });
+});
+
 describe("provider sign-in", () => {
   it("warns before Codex's sign-in starts, and starts it only from the warning", async () => {
     const confirm = vi.fn(() => true);
     const host = renderWithFakeHost({ confirm, openOnReady: "/providers", holdSignIn: true });
     fireEvent.click(await screen.findByRole("button", { name: "Check all" }));
     const codex = (await screen.findByText("Codex")).closest("li")!;
-    fireEvent.click(within(codex).getByRole("button", { name: "Sign in" }));
+    fireEvent.click(await enabled(() => within(codex).getByRole("button", { name: "Sign in" })));
 
     const warning = screen.getByRole("dialog", { name: "Sign in to Codex" });
     expect(within(warning).getByText(CODEX_WARNING)).toBeInTheDocument();
     expect(CODEX_WARNING).toBe("Starting sign-in removes the current Codex login, even if you cancel.");
     expect(host.calls().some(([action]) => action === "sign-in")).toBe(false);
 
-    fireEvent.click(within(warning).getByRole("button", { name: "Start sign-in" }));
+    fireEvent.click(await enabled(() => within(warning).getByRole("button", { name: "Start sign-in" })));
     await waitFor(() => expect(confirm).toHaveBeenCalledWith("sign-in", ["--item", "codex"]));
 
     // While the browser sign-in waits: the fallback link and a field for a pasted code.
@@ -121,11 +159,11 @@ describe("provider sign-in", () => {
     expect(field.type).toBe("password");
 
     fireEvent.input(field, "bad-key");
-    fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
+    fireEvent.click(await enabled(() => screen.getByRole("button", { name: "Check and save" })));
     expect(await screen.findByText(/refused the key \(HTTP 401\); nothing saved/)).toBeInTheDocument();
 
     fireEvent.input(field, "sk-good");
-    fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
+    fireEvent.click(await enabled(() => screen.getByRole("button", { name: "Check and save" })));
     expect(await screen.findByText("Saved in Monopole's state folder.")).toBeInTheDocument();
     expect(host.calls()).toContainEqual(["set-key", "--item", "openai", "--key", "sk-good"]);
     expect(document.body.innerHTML).not.toContain("sk-good");
@@ -148,14 +186,14 @@ describe("Tools", () => {
     expect(screen.getByRole("button", { name: "Backfill" })).toBeDisabled();
     fireEvent.input(screen.getByLabelText("Start"), "2026-10-01");
     fireEvent.input(screen.getByLabelText("End"), "2026-10-31");
-    fireEvent.click(screen.getByRole("button", { name: "Backfill" }));
+    fireEvent.click(await enabled(() => screen.getByRole("button", { name: "Backfill" })));
     await waitFor(() => expect(confirm).toHaveBeenCalledWith("backfill", ["--start", "2026-10-01", "--end", "2026-10-31"]));
 
-    fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+    fireEvent.click(await enabled(() => screen.getByRole("button", { name: "Check now" })));
     await waitFor(() => expect(confirm).toHaveBeenCalledWith("monitor", []));
 
     fireEvent.click(screen.getByRole("tab", { name: "Judge agreement" }));
-    fireEvent.click(screen.getByRole("button", { name: "Read" }));
+    fireEvent.click(await enabled(() => screen.getByRole("button", { name: "Read" })));
     expect(await screen.findByText("Table for judges")).toBeInTheDocument();
     expect(confirm).not.toHaveBeenCalledWith("insights", expect.anything());
   });

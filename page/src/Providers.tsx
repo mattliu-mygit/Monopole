@@ -71,7 +71,7 @@ export function Providers(props: { store: PageStore }) {
             {store.state.providers?.checked_at ? `Checked ${shortTime(store.state.providers.checked_at)}` : "Not checked yet"}
           </div>
         </div>
-        <Button variant="primary" onClick={() => void store.checkProviders()} disabled={store.state.checking}>
+        <Button variant="primary" onClick={() => void store.checkProviders()} disabled={store.state.checking || store.held()}>
           {store.state.checking ? "Checking…" : "Check all"}
         </Button>
       </header>
@@ -97,7 +97,7 @@ export function Providers(props: { store: PageStore }) {
                   <Show when={provider.detail}>{(detail) => <span class="m-quiet">{detail()}</span>}</Show>
                   <Show when={CLIS.has(provider.id) && provider.state !== "not_installed" && (provider.state !== "signed_in" || provider.id === "codex")}>
                     <Button
-                      disabled={waiting() !== null}
+                      disabled={waiting() !== null || store.held()}
                       onClick={() => (provider.id === "codex" ? setAsking("codex") : void signIn(provider.id))}
                     >
                       {provider.state === "signed_in" ? "Sign in again" : "Sign in"}
@@ -118,7 +118,7 @@ export function Providers(props: { store: PageStore }) {
           <p class="m-warning">{CODEX_WARNING}</p>
           <p class="m-quiet">Monopole runs {COMMANDS.codex}; it finishes when the browser returns to localhost:1455.</p>
           <div class="m-actions">
-            <Button variant="primary" onClick={() => void signIn("codex")}>
+            <Button variant="primary" onClick={() => void signIn("codex")} disabled={store.held()}>
               Start sign-in
             </Button>
             <Button onClick={() => setAsking(null)}>Cancel</Button>
@@ -246,7 +246,7 @@ function KeyPanel(props: { store: PageStore; provider: Provider; onDone: (saved:
         )}
       </Show>
       <div class="m-actions">
-        <Button variant="primary" onClick={save} disabled={saving() || !key().trim()}>
+        <Button variant="primary" onClick={save} disabled={saving() || props.store.held() || !key().trim()}>
           {saving() ? "Checking…" : "Check and save"}
         </Button>
         <Button onClick={props.onCancel}>Cancel</Button>

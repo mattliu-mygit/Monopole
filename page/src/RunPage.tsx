@@ -10,8 +10,8 @@ const STAGE_WORDS = { done: "Done", running: "Running", failed: "Failed", not_st
 
 /**
  * One run: its status and why it failed, its stages, its rubric ratings, its judges and models,
- * and its proposal, with Rerun, Edit and rerun, and Delete. Rerun and Delete ask Prompting Time,
- * which confirms with the user first.
+ * and its proposal, with Continue while it waits between stages, Rerun, Edit and rerun, and
+ * Delete. Continue, Rerun, and Delete ask Prompting Time, which confirms with the user first.
  */
 export function RunPage(props: { store: PageStore; runId: string }) {
   const store = props.store;
@@ -54,13 +54,18 @@ function RunBody(props: { store: PageStore; run: RunDetail }) {
           <StatusDot status={run().dot} />
           {run().label}
         </span>
-        <Button onClick={busyWhile(actions.rerun)} disabled={busy()}>
+        <Show when={run().next_stage}>
+          <Button variant="primary" onClick={busyWhile(actions.continueRun)} disabled={busy() || actions.held()}>
+            Continue
+          </Button>
+        </Show>
+        <Button onClick={busyWhile(actions.rerun)} disabled={busy() || actions.held()}>
           Rerun
         </Button>
         <Button onClick={() => actions.editAndRerun(run().run_id)}>Edit and rerun</Button>
         <Button
           onClick={busyWhile(actions.remove)}
-          disabled={!run().deletable || busy()}
+          disabled={!run().deletable || busy() || actions.held()}
           title={run().deletable ? undefined : "A running run can't be deleted"}
         >
           Delete run

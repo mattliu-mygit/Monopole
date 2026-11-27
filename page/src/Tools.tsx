@@ -98,7 +98,7 @@ export function Tools(props: { store: PageStore }) {
             value={hours()}
             onChange={(event) => setHours(event.currentTarget.value)}
           />
-          <Button variant="primary" disabled={running("score")} onClick={() => void run("score", ["--hours", hours()])}>
+          <Button variant="primary" disabled={running("score") || store.held()} onClick={() => void run("score", ["--hours", hours()])}>
             Score
           </Button>
         </ToolCard>
@@ -112,7 +112,7 @@ export function Tools(props: { store: PageStore }) {
           <TextField label="End" placeholder="2026-10-31" value={end()} onInput={(event) => setEnd(event.currentTarget.value)} />
           <Button
             variant="primary"
-            disabled={running("backfill") || !start().trim()}
+            disabled={running("backfill") || store.held() || !start().trim()}
             onClick={() => void run("backfill", ["--start", start().trim(), ...(end().trim() ? ["--end", end().trim()] : [])])}
           >
             {running("backfill") ? "Running…" : "Backfill"}
@@ -124,7 +124,7 @@ export function Tools(props: { store: PageStore }) {
           error={errors().monitor ?? null}
           run={last("monitor")}
         >
-          <Button variant="primary" disabled={running("monitor")} onClick={() => void run("monitor", [])}>
+          <Button variant="primary" disabled={running("monitor") || store.held()} onClick={() => void run("monitor", [])}>
             Check now
           </Button>
         </ToolCard>
@@ -134,7 +134,7 @@ export function Tools(props: { store: PageStore }) {
           <div class="m-section">
             <p class="m-quiet">analyze's insight tables, read-only.</p>
             <div class="m-actions">
-              <Button disabled={running("insights")} onClick={() => void run("insights", ["--kind", kind()])}>
+              <Button disabled={running("insights") || store.held()} onClick={() => void run("insights", ["--kind", kind()])}>
                 Read
               </Button>
             </div>

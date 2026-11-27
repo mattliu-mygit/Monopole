@@ -1,5 +1,6 @@
-import { createStore } from "solid-js";
+import { createSignal, createStore } from "solid-js";
 import {
+  CallError,
   PROTOCOL_VERSION,
   readHostMessage,
   type Catalog,
@@ -82,6 +83,10 @@ export interface PageState {
 }
 
 export type PageStore = ReturnType<typeof createPageStore>;
+
+/** How long the action buttons stay disabled after an action's reply, or after an open that arrives
+ * in that time: long enough for Prompting Time to open the next item the action moved past. */
+export const HOLD_MS = 600;
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -169,7 +174,36 @@ export function createPageStore(link: HostLink) {
     }
   }
 
+  // While an action the user pressed runs, and for HOLD_MS after its reply, the page holds every
+  // action button disabled. Prompting Time may open the next item in that time, and an open in that
+  // time holds them HOLD_MS more, so a second click can't act on the item it opened. The plain
+  // variables decide; the signal only draws, since the store applies a write at its next flush.
+  // A sign-in or a tool runs until it finishes, which can take minutes, and holds the buttons all
+  // that time; the sign-in's code and cancel buttons aren't held.
+  const [held, setHeld] = createSignal(false);
+  let running = 0;
+  let release: ReturnType<typeof setTimeout> | undefined;
+  function holdFor(ms: number) {
+    clearTimeout(release);
+    release = setTimeout(() => {
+      release = undefined;
+      setHeld(false);
+    }, ms);
+  }
+  async function holding<T>(work: () => Promise<T>): Promise<T> {
+    running++;
+    clearTimeout(release);
+    release = undefined;
+    setHeld(true);
+    try {
+      return await work();
+    } finally {
+      if (--running === 0) holdFor(HOLD_MS);
+    }
+  }
+
   function open(next: string) {
+    if (release !== undefined) holdFor(HOLD_MS);
     if (next !== route) {
       route = next;
       setState((s) => {
@@ -199,7 +233,10 @@ export function createPageStore(link: HostLink) {
         const request = host.reply_to === undefined ? undefined : waiting.get(host.reply_to);
         if (!request) return;
         waiting.delete(host.reply_to!);
-        if (host.type === "error") request.reject(new Error(host.message));
+        // Monopole writes a refusal's reason on stderr; the page shows it, or the host's message
+        // when there is none.
+        if (host.type === "error")
+          request.reject(new CallError(host.stderr?.trim() || host.message, { stage: host.stage, exit_code: host.exit_code, stderr: host.stderr }));
         else request.resolve(host.json);
         break;
       }
@@ -215,27 +252,35 @@ export function createPageStore(link: HostLink) {
       void read();
     },
     open,
+    /** Whether the action buttons are disabled: while an action runs, and for HOLD_MS after. */
+    held,
     /** Asks Prompting Time to delete the run, which it does only after the user confirms. Resolves
      * when the run is gone; rejects with the host's message, such as a cancelled confirmation. */
     deleteRun: async (runId: string) => {
-      await call("delete", ["--item", runId]);
+      await holding(() => call("delete", ["--item", runId]));
       open("/");
     },
     /** Asks Prompting Time to rerun the run with the same settings, which it does only after the
      * user confirms, and opens the new run. */
     rerun: async (runId: string) => {
-      const started = (await call("rerun", ["--item", runId])) as { route: string };
+      const started = (await holding(() => call("rerun", ["--item", runId]))) as { route: string };
       open(started.route);
+    },
+    /** Asks Prompting Time to start the stage the waiting run waits for, which it does only after
+     * the user confirms, since judging and reflection call paid models, and shows the run. */
+    continueRun: async (runId: string) => {
+      const advanced = (await holding(() => call("continue", ["--item", runId]))) as { route: string };
+      open(advanced.route);
     },
     /** Starts New run's settings after Prompting Time's confirmation, and opens the new run. */
     startRun: async (setup: RunSetup) => {
-      const started = (await call("create-run", [JSON.stringify(setup)])) as { route: string };
+      const started = (await holding(() => call("create-run", [JSON.stringify(setup)]))) as { route: string };
       open(started.route);
     },
     /** Runs the provider's login, after Prompting Time's confirmation, until it finishes; then
      * shows the provider check the action ran after it. */
     signIn: async (provider: string) => {
-      const done = (await call("sign-in", ["--item", provider])) as { sign_in: ProviderCheck["sign_in"]; providers: ProviderCheck };
+      const done = (await holding(() => call("sign-in", ["--item", provider]))) as { sign_in: ProviderCheck["sign_in"]; providers: ProviderCheck };
       setState((s) => {
         s.providers = { ...done.providers, sign_in: done.sign_in };
       });
@@ -245,7 +290,7 @@ export function createPageStore(link: HostLink) {
     cancelSignIn: (provider: string) => call("sign-in-cancel", ["--item", provider]),
     /** Checks and saves a key; the page keeps no copy of it. */
     setKey: async (provider: string, key: string) => {
-      const done = (await call("set-key", ["--item", provider, "--key", key])) as { saved: string; providers: ProviderCheck };
+      const done = (await holding(() => call("set-key", ["--item", provider, "--key", key]))) as { saved: string; providers: ProviderCheck };
       setState((s) => {
         s.providers = { ...done.providers, sign_in: s.providers?.sign_in ?? null };
       });
@@ -253,7 +298,7 @@ export function createPageStore(link: HostLink) {
     },
     /** Runs one of the Tools actions; the write tools confirm in Prompting Time first. */
     runTool: async (action: string, args: string[]) => {
-      const run = (await call(action, args)) as ToolRun & { tool: string };
+      const run = (await holding(() => call(action, args))) as ToolRun & { tool: string };
       setState((s) => {
         s.tools = { format: 1, tools: { ...(s.tools?.tools ?? {}), [action]: run } };
       });
@@ -265,7 +310,7 @@ export function createPageStore(link: HostLink) {
         s.checking = true;
       });
       try {
-        const providers = (await call("check-providers")) as ProviderCheck;
+        const providers = (await holding(() => call("check-providers"))) as ProviderCheck;
         setState((s) => {
           s.providers = { ...providers, sign_in: s.providers?.sign_in ?? null };
           s.loadError = null;
@@ -280,6 +325,9 @@ export function createPageStore(link: HostLink) {
         });
       }
     },
-    dispose: stop,
+    dispose: () => {
+      stop();
+      clearTimeout(release);
+    },
   };
 }

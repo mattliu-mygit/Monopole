@@ -12,7 +12,12 @@
 //                              Prompting Time, which adds --print and --expect itself.
 // Host -> page:
 //   result {reply_to, json}    What the action printed: JSON when it printed JSON, else the text.
-//   error {reply_to?, message} The action failed or was refused, or the user cancelled the confirmation.
+//   error {reply_to?, message, stage?, exit_code?, stderr?}
+//                              The action failed or was refused, or the user cancelled the confirmation.
+//                              stage says how far the call got: cancelled, preview (the --print of a
+//                              confirm action refused), or run; absent when Prompting Time refused the
+//                              call itself. When Monopole's command refused, exit_code (null on a
+//                              signal) and stderr, where it wrote its reason, say how.
 //   open {route}               The user opened an item or blocker of `status`: /runs/<run id> or /providers.
 //   changed {files}            Files changed in Monopole's state folder, such as runs-changed, or null.
 //
@@ -21,6 +26,7 @@
 //   run --item <run id>        one run's detail, with the settings Edit and rerun fills in
 //   delete* --item <run id>    deletes a run
 //   rerun* --item <run id>     starts a new run with that run's sessions and settings
+//   continue* --item <run id>  starts the stage a waiting run waits for (Card.next_stage)
 //   create-run* <setup JSON>   starts a new run from New run's {selection, config, auto_run}
 //   catalog                    the models and rubrics a new run can choose
 //   sessions [--limit n]       the newest sessions a new run can choose
@@ -75,6 +81,8 @@ export interface Card {
   review_state: string;
   proposal: Proposal | null;
   deletable: boolean;
+  /** The stage Continue starts for a run that waits between stages, or null when it doesn't wait. */
+  next_stage: "scoring" | "judging" | "reflecting" | null;
 }
 
 export interface RunList {
@@ -187,9 +195,23 @@ export type PageMessage =
   | { version: typeof PROTOCOL_VERSION; type: "ready" }
   | { version: typeof PROTOCOL_VERSION; type: "call"; id: number; action: string; args: string[] };
 
+/** How far a failed call got, and when Monopole's command refused, its exit code and stderr. */
+export type ActionFailure = { stage?: "cancelled" | "preview" | "run"; exit_code?: number | null; stderr?: string };
+
+/** A failed call as the page's promises reject with it: Monopole's reason from its stderr when it
+ * refused, else the host's message, and what else the host said. */
+export class CallError extends Error {
+  constructor(
+    message: string,
+    readonly failure: ActionFailure = {},
+  ) {
+    super(message);
+  }
+}
+
 export type HostUpdate =
   | { type: "result"; reply_to: number; json: unknown }
-  | { type: "error"; reply_to?: number; message: string }
+  | ({ type: "error"; reply_to?: number; message: string } & ActionFailure)
   | { type: "open"; route: string }
   | { type: "changed"; files: string[] | null };
 
@@ -212,9 +234,12 @@ export function readHostMessage(data: unknown): HostMessage | null {
     case "result":
       return hasKeys(data, ["version", "type", "reply_to", "json"]) && Number.isSafeInteger(data.reply_to) ? (data as HostMessage) : null;
     case "error":
-      return hasKeys(data, ["version", "type", "message"], ["reply_to"]) &&
+      return hasKeys(data, ["version", "type", "message"], ["reply_to", "stage", "exit_code", "stderr"]) &&
         typeof data.message === "string" &&
-        (data.reply_to === undefined || Number.isSafeInteger(data.reply_to))
+        (data.reply_to === undefined || Number.isSafeInteger(data.reply_to)) &&
+        (data.stage === undefined || data.stage === "cancelled" || data.stage === "preview" || data.stage === "run") &&
+        (data.exit_code === undefined || data.exit_code === null || Number.isSafeInteger(data.exit_code)) &&
+        (data.stderr === undefined || typeof data.stderr === "string")
         ? (data as HostMessage)
         : null;
     case "open":

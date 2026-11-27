@@ -5,8 +5,9 @@ import type { Card } from "./protocol";
 import { ProposalRow } from "./ProposalRow";
 import type { PageStore } from "./store";
 
-/** What a run card and the run page can do with a run: Rerun with the same settings, open New run
- * filled in with them, and delete. Rerun and Delete confirm in Prompting Time first. */
+/** What a run card and the run page can do with a run: Continue a run that waits between stages,
+ * Rerun with the same settings, open New run filled in with them, and delete; Continue, Rerun, and
+ * Delete confirm in Prompting Time first, and `held` says when their buttons wait. */
 export function runActions(store: PageStore, setError: (error: string | null) => void) {
   const attempt = (work: () => Promise<unknown>) => async () => {
     setError(null);
@@ -17,6 +18,8 @@ export function runActions(store: PageStore, setError: (error: string | null) =>
     }
   };
   return {
+    held: store.held,
+    continueRun: (runId: string) => attempt(() => store.continueRun(runId))(),
     rerun: (runId: string) => attempt(() => store.rerun(runId))(),
     editAndRerun: (runId: string) => store.open(`/new?from=${encodeURIComponent(runId)}`),
     remove: (runId: string) => attempt(() => store.deleteRun(runId))(),
@@ -27,8 +30,8 @@ export function runActions(store: PageStore, setError: (error: string | null) =>
  * The runs, newest first, as tight cards in one column: the session's first prompt, the run ID,
  * time, and turns, the judges and mean rating, and for a run that reached reflection, a Proposal
  * row. A failed run's status is a button that opens its cause in a popover; only a click opens it,
- * and a click elsewhere or Esc closes it. Each card has Rerun, and Edit and rerun and Delete in its
- * ⋯ menu.
+ * and a click elsewhere or Esc closes it. Each card has Rerun, Continue when the run waits between
+ * stages, and Edit and rerun and Delete in its ⋯ menu.
  */
 export function RunList(props: { store: PageStore }) {
   const [openRun, setOpenRun] = createSignal<string | null>(null);
@@ -97,7 +100,7 @@ function RunCard(props: {
   const card = () => props.card;
   const menu = () => [
     { value: "edit", label: "Edit and rerun" },
-    { value: "delete", label: "Delete", disabled: !card().deletable },
+    { value: "delete", label: "Delete", disabled: !card().deletable || props.actions.held() },
   ];
   const popoverId = () => `cause-${card().run_id}`;
   return (
@@ -153,7 +156,9 @@ function RunCard(props: {
                     <dd class="m-mono">{card().run_id}</dd>
                   </dl>
                   <div class="m-actions">
-                    <Button onClick={() => props.actions.rerun(card().run_id)}>Rerun</Button>
+                    <Button onClick={() => props.actions.rerun(card().run_id)} disabled={props.actions.held()}>
+                      Rerun
+                    </Button>
                     <Button onClick={() => props.actions.editAndRerun(card().run_id)}>Edit and rerun</Button>
                     <Button onClick={props.onOpenRun}>Open run</Button>
                   </div>
@@ -162,7 +167,17 @@ function RunCard(props: {
             </>
           )}
         </Show>
-        <Button onClick={() => props.actions.rerun(card().run_id)} aria-label={`Rerun ${card().run_id}`}>
+        <Show when={card().next_stage}>
+          <Button
+            variant="primary"
+            onClick={() => props.actions.continueRun(card().run_id)}
+            disabled={props.actions.held()}
+            aria-label={`Continue ${card().run_id}`}
+          >
+            Continue
+          </Button>
+        </Show>
+        <Button onClick={() => props.actions.rerun(card().run_id)} disabled={props.actions.held()} aria-label={`Rerun ${card().run_id}`}>
           Rerun
         </Button>
         <Menu

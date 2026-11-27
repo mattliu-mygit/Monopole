@@ -18,6 +18,7 @@ const base = {
   review_state: "none",
   proposal: null,
   deletable: true,
+  next_stage: null,
 } satisfies Partial<Card>;
 
 export function cards(): Card[] {
@@ -74,6 +75,20 @@ export function cards(): Card[] {
       title: "Fix the flaky login test",
       progress: "Judging 2 of 6 rubrics",
       deletable: false,
+    },
+    {
+      ...base,
+      run_id: "run-waiting1",
+      status: "scoring",
+      label: "Waiting to judge",
+      dot: "attention",
+      group: "running",
+      created_at: "2026-11-26T16:00:00+00:00",
+      updated_at: "2026-11-26T16:05:00+00:00",
+      title: "Speed up the session list",
+      progress: "Scoring complete: 12 scores written.",
+      deletable: false,
+      next_stage: "judging",
     },
   ];
 }
