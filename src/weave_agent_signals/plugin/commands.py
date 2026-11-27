@@ -353,6 +353,10 @@ def add_parser(subs: argparse._SubParsersAction) -> None:
     listed.add_argument("--until")
     listed.add_argument("--timezone")
     listed.add_argument("--limit", type=int, default=50)
+    sizes = actions.add_parser(
+        "session-estimates", help="Judging token estimates for the sessions New run selects"
+    )
+    sizes.add_argument("session_ids", nargs="+", metavar="SESSION_ID")
     actions.add_parser("providers", help="The last provider sign-in check and sign-in")
     actions.add_parser("check-providers", help="Check every provider's sign-in now")
     login = actions.add_parser("sign-in", help="Run a provider CLI's login command")
@@ -436,6 +440,9 @@ def _run(args: argparse.Namespace) -> int:
         with server.open_server(settings["port"]) as monopole:
             found = newrun.sessions(monopole, args.since, args.until, args.timezone, args.limit)
             _print_json(found)
+    elif action == "session-estimates":
+        with server.open_server(settings["port"]) as monopole:
+            _print_json(newrun.session_estimates(monopole, args.session_ids))
     elif action == "providers":
         _print_json({**providers.last_check(), "sign_in": signin.current()})
     elif action == "check-providers":

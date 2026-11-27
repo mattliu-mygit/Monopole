@@ -39,6 +39,14 @@ def sessions(
     return server.get("/api/sessions", {key: value for key, value in params.items() if value})
 
 
+def session_estimates(server: Server, session_ids: list[str]) -> dict[str, Any]:
+    """Each named session's judging token estimates by token counter, which New run's capacity
+    hints read, as the web app's run setup asks for them; a session CES doesn't know is left
+    out."""
+
+    return server.call("POST", "/api/sessions/estimates", body={"session_ids": session_ids})
+
+
 def _old_run(path: Path, run_id: str) -> sqlite3.Row:
     with read_runs(path) as connection:
         row = None

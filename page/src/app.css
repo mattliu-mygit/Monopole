@@ -388,3 +388,8 @@ ul {
   font-size: var(--s-size-lg);
   letter-spacing: 0.08em;
 }
+
+.m-hints {
+  margin: var(--s-space-8) 0 0;
+  padding-inline-start: var(--s-space-12);
+}

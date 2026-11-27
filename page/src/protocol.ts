@@ -30,6 +30,7 @@
 //   create-run* <setup JSON>   starts a new run from New run's {selection, config, auto_run}
 //   catalog                    the models and rubrics a new run can choose
 //   sessions [--limit n]       the newest sessions a new run can choose
+//   session-estimates <id>...  the selected sessions' judging token estimates, for capacity hints
 //   providers                  the last provider sign-in check, and the last or waiting sign-in
 //   check-providers            checks every provider now and prints the result
 //   sign-in* --item <cli> [--device-auth]   runs claude, codex, or devin's login and waits for it to
@@ -40,6 +41,10 @@
 //   set-key --item wandb|openai               checks the held key with GET /v1/models, then saves it
 //   score* --hours 24|168, backfill* --start <day> --end <day>, monitor*, insights --kind <kind>
 //   tools                      each tool's last run
+
+import type { ModelCatalog, ModelDescriptor, RubricCatalog, SessionEstimates } from "../../frontend/src/types";
+
+export type { ModelDescriptor, SessionEstimates };
 
 export const PROTOCOL_VERSION = 2;
 
@@ -146,25 +151,11 @@ export interface ProviderCheck {
   sign_in?: SignIn | null;
 }
 
-export interface CatalogModel {
-  id: string;
-  label: string;
-  provider: string;
-  supported_roles: string[];
-}
-
-/** `catalog`: the server's model and rubric catalogs, with only the fields the page reads. */
+/** `catalog`: the server's model and rubric catalogs, as the web app reads them. */
 export interface Catalog {
   format: 1;
-  models: {
-    catalog_version: string;
-    available_models: CatalogModel[];
-    recommended_proposal_model: string | null;
-    recommended_judges: string[];
-    recommended_challenge_judges: string[];
-    proposal_evaluator_preferences: string[];
-  };
-  rubrics: { catalog_version: string; rubrics: { id: string; label: string }[] };
+  models: ModelCatalog;
+  rubrics: RubricCatalog;
 }
 
 export interface SessionSummary {

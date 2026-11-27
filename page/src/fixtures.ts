@@ -1,4 +1,4 @@
-import type { Card, Catalog, ProviderCheck, RunDetail, SessionList } from "./protocol";
+import type { Card, Catalog, ModelDescriptor, ProviderCheck, RunDetail, SessionEstimates, SessionList } from "./protocol";
 
 // Invented runs in the shapes `bin/monopole runs` and `run` print, for development and tests.
 
@@ -122,26 +122,66 @@ export function detail(card: Card): RunDetail {
   };
 }
 
-const model = (id: string, label: string, provider: string, roles: string[]) => ({ id, label, provider, supported_roles: roles });
+type Role = ModelDescriptor["supported_roles"][number];
+const model = (id: string, label: string, provider: string, family: string, roles: Role[], maxInput = 200_000): ModelDescriptor => ({
+  id,
+  label,
+  provider,
+  provider_model: id.split(":")[1],
+  family,
+  supported_roles: roles,
+  max_input_tokens: maxInput,
+  token_counter: "utf8_bytes_div_3",
+  window_budget_tokens: Math.round(maxInput * 0.6),
+  merge_budget_tokens: 20_000,
+  question_budget_tokens: 4_000,
+  whole_budget_tokens: null,
+});
 
 export function catalog(): Catalog {
-  const all = ["judge", "proposal_writer", "proposal_evaluator"];
+  const all: Role[] = ["judge", "proposal_writer", "proposal_evaluator"];
   return {
     format: 1,
     models: {
       catalog_version: "models-2",
       available_models: [
-        model("wandb:DeepSeek-V4.1-Flash", "DeepSeek V4.1 Flash", "wandb", all),
-        model("codex:gpt-5.6-sol", "GPT-5.6 Sol", "codex", ["judge"]),
-        model("wandb:GLM-5.3", "GLM 5.3", "wandb", all),
-        model("wandb:Kimi-K2.6", "Kimi K2.6", "wandb", all),
+        model("wandb:DeepSeek-V4.1-Flash", "DeepSeek V4.1 Flash", "wandb", "deepseek", all),
+        // A small context, which the large session doesn't fit.
+        model("codex:gpt-5.6-sol", "GPT-5.6 Sol", "codex", "openai", ["judge"], 64_000),
+        model("wandb:GLM-5.3", "GLM 5.3", "wandb", "glm", all),
+        model("wandb:Kimi-K2.6", "Kimi K2.6", "wandb", "kimi", all),
       ],
+      judging_context: {
+        contract_version: "4",
+        large_model_threshold_tokens: 200000,
+        digest_max_tokens: 1_000,
+        finding_max_tokens: 10_000,
+        overlap_turns: 1,
+        max_chunks: 40,
+      },
       recommended_proposal_model: "wandb:Kimi-K2.6",
       recommended_judges: ["wandb:Kimi-K2.6", "wandb:GLM-5.3"],
       recommended_challenge_judges: ["wandb:Kimi-K2.6"],
       proposal_evaluator_preferences: ["wandb:GLM-5.3"],
     },
-    rubrics: { catalog_version: "rubrics-2", rubrics: [{ id: "judge.verification", label: "Verification Discipline" }] },
+    rubrics: {
+      catalog_version: "rubrics-2",
+      rubrics: [
+        { id: "judge.verification", label: "Verification Discipline", version: "1", content_digest: "sha256:0", evaluation_unit: "session", pass_threshold: 0.7 },
+      ],
+    },
+  };
+}
+
+/** Judging token estimates for the two sessions: the review stack has one turn larger than GPT-5.6
+ * Sol's whole context. */
+export function sessionEstimates(): SessionEstimates {
+  const estimate = (turns: number[]) => ({
+    utf8_bytes_div_3: { turn_tokens: turns, largest_turn_tokens: Math.max(...turns), total_tokens: turns.reduce((a, b) => a + b, 0) },
+  });
+  return {
+    "conv-review-stack": estimate([20_000, 90_000, 15_000]),
+    "01a1ad64-7d00-75f7-b10f-e2e0471fdf58": estimate([4_000, 6_000]),
   };
 }
 

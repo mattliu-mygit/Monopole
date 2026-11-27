@@ -94,6 +94,26 @@ describe("rerunning a run", () => {
     fireEvent.click(checkbox(/^Review this stack of PRs/));
     expect(screen.getByRole("button", { name: "Start run" })).toBeEnabled();
   });
+
+  it("says, as the web app does, which models fit the chosen sessions and which share a family", async () => {
+    const host = renderWithFakeHost({ openOnReady: "/new" });
+    expect(await screen.findByRole("heading", { name: "New run" })).toBeInTheDocument();
+    // Nothing is chosen, so nothing is estimated and no option says whether it fits.
+    expect(host.calls().some(([action]) => action === "session-estimates")).toBe(false);
+    expect(within(select("Judge 2")).getByRole("option", { name: "GPT-5.6 Sol" })).toBeInTheDocument();
+
+    fireEvent.click(checkbox(/^Review this stack of PRs/));
+    await waitFor(() => expect(host.calls()).toContainEqual(["session-estimates", "conv-review-stack"]));
+    // One of the session's turns is larger than GPT-5.6 Sol's whole context.
+    expect(await within(select("Judge 2")).findByRole("option", { name: "GPT-5.6 Sol · does not fit" })).toBeInTheDocument();
+    expect(within(select("Judge 2")).getByRole("option", { name: "GLM 5.3 · fits" })).toBeInTheDocument();
+
+    fireEvent.change(select("Judge 2"), "codex:gpt-5.6-sol");
+    fireEvent.change(select("Evaluator"), "wandb:Kimi-K2.6");
+    const hints = screen.getByRole("list", { name: "Hints about these models" });
+    expect(within(hints).getByText(/^GPT-5\.6 Sol, as judge, does not fit the selected sessions \(.*model limit 64k\)\.$/)).toBeInTheDocument();
+    expect(within(hints).getByText("The proposal writer and evaluator share the kimi model family.")).toBeInTheDocument();
+  });
 });
 
 describe("continuing a waiting run", () => {

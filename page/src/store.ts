@@ -9,6 +9,7 @@ import {
   type RunDetail,
   type RunList,
   type Selection,
+  type SessionEstimates,
   type SessionList,
   type ToolRun,
   type ToolRuns,
@@ -300,6 +301,8 @@ export function createPageStore(link: HostLink) {
       });
       return done.sign_in;
     },
+    /** The selected sessions' judging token estimates, which New run's capacity hints read. */
+    sessionEstimates: (ids: string[]) => call("session-estimates", ids) as Promise<SessionEstimates>,
     sendSignInCode: (provider: string, code: string) => call("sign-in-code", ["--item", provider, "--code", code]),
     cancelSignIn: (provider: string) => call("sign-in-cancel", ["--item", provider]),
     /** Hands the key to stage-key, whose process exits at once, so the key is in the process list

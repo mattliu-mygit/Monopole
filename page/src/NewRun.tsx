@@ -1,6 +1,7 @@
-import { createSignal, For, Show } from "solid-js";
+import { createSignal, For, onSettled, Show } from "solid-js";
 import { Button, Checkbox, Select } from "@prompting-time/ui";
-import type { CatalogModel, SessionSummary } from "./protocol";
+import { capacitySessions, fitWords, runHints } from "./hints";
+import type { ModelDescriptor, SessionEstimates, SessionSummary } from "./protocol";
 import type { NewRunData, PageStore } from "./store";
 
 const MAX_JUDGES = 3;
@@ -9,9 +10,10 @@ const NONE = "";
 /**
  * New run: sessions, up to three judges, the proposal writer and evaluator, and Continue
  * automatically. Edit and rerun opens it at /new?from=<run id>, filled in with that run's
- * settings; a model that left the catalog is dropped and named. Start run asks Prompting Time,
- * which confirms first, and opens the new run. The server checks the rest of the settings and its
- * refusal shows here.
+ * settings; a model that left the catalog is dropped and named. As the web app does, each model
+ * option says whether it fits the selected sessions, and hints name a chosen model that doesn't
+ * and models that share a family. Start run asks Prompting Time, which confirms first, and opens
+ * the new run. The server checks the rest of the settings and its refusal shows here.
  */
 export function NewRun(props: { store: PageStore }) {
   const store = props.store;
@@ -41,13 +43,17 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
   const { catalog, sessions, from } = props.data;
   const models = catalog.models;
   const known = new Set(models.available_models.map((model) => model.id));
-  const withRole = (role: string) => models.available_models.filter((model) => model.supported_roles.includes(role));
-  const options = (list: CatalogModel[], blank?: string) => [
+  type Role = ModelDescriptor["supported_roles"][number];
+  const withRole = (role: Role) => models.available_models.filter((model) => model.supported_roles.includes(role));
+  const options = (list: ModelDescriptor[], role: Role, blank?: string) => [
     ...(blank ? [{ value: NONE, label: blank }] : []),
-    ...list.map((model) => ({ value: model.id, label: model.label })),
+    ...list.map((model) => {
+      const fit = fitWords(catalog, model, role, sized());
+      return { value: model.id, label: fit ? `${model.label} · ${fit}` : model.label };
+    }),
   ];
   const saved = from?.config ?? null;
-  const pick = (wanted: string | null | undefined, list: CatalogModel[]) =>
+  const pick = (wanted: string | null | undefined, list: ModelDescriptor[]) =>
     wanted && known.has(wanted) ? wanted : (list[0]?.id ?? NONE);
 
   const startJudges = (saved?.judge_models ?? models.recommended_judges).filter((id) => known.has(id)).slice(0, MAX_JUDGES);
@@ -62,6 +68,47 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
   const [autoRun, setAutoRun] = createSignal(from?.auto_run ?? false);
   const [starting, setStarting] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  // The chosen sessions' judging token estimates; each change of sessions asks again, and only the
+  // newest answer counts.
+  const [estimates, setEstimates] = createSignal<SessionEstimates | null>(null);
+  const [estimateError, setEstimateError] = createSignal<string | null>(null);
+  let asked = 0;
+  function readEstimates(ids: string[]) {
+    const ask = ++asked;
+    setEstimateError(null);
+    if (ids.length === 0) {
+      setEstimates(null);
+      return;
+    }
+    props.store.sessionEstimates(ids).then(
+      (found) => ask === asked && setEstimates(found),
+      (failure) => ask === asked && setEstimateError(failure instanceof Error ? failure.message : String(failure)),
+    );
+  }
+  const sized = () => capacitySessions(estimates(), chosen());
+  const challengeJudges = (judgeModels: string[]) => {
+    const challenge = (saved?.challenge_judge_models ?? models.recommended_challenge_judges).filter((id) => known.has(id));
+    return challenge.length ? challenge : judgeModels.slice(0, 1);
+  };
+  const chosenJudges = () => [...new Set(judges().filter((id) => id !== NONE))];
+  const hints = () =>
+    runHints(
+      catalog,
+      {
+        judges: chosenJudges(),
+        challengeJudges: challengeJudges(chosenJudges()),
+        writer: writer(),
+        evaluator: evaluator(),
+        rubrics: saved?.rubrics ?? [],
+        candidateBudget: saved?.candidate_budget ?? 3,
+        force: saved?.force ?? false,
+      },
+      sized(),
+    );
+  // Solid allows no writes while the component renders, so the first read starts once it settles.
+  onSettled(() => {
+    readEstimates(chosen());
+  });
 
   // A session the old run used that the newest 50 leave out still shows, so it can stay chosen.
   const listed = new Set(sessions.sessions.map((session) => session.conversation_id));
@@ -71,12 +118,15 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
       .map((id) => ({ conversation_id: id, turn_count: 0, last_activity: null, input_preview: null })),
     ...sessions.sessions,
   ];
-  const toggle = (id: string) => setChosen((ids) => (ids.includes(id) ? ids.filter((other) => other !== id) : [...ids, id]));
+  const toggle = (id: string) => {
+    const ids = chosen().includes(id) ? chosen().filter((other) => other !== id) : [...chosen(), id];
+    setChosen(ids);
+    readEstimates(ids);
+  };
   const setJudge = (index: number, id: string) => setJudges((ids) => ids.map((other, at) => (at === index ? id : other)));
 
   async function start() {
-    const judgeModels = [...new Set(judges().filter((id) => id !== NONE))];
-    const challenge = (saved?.challenge_judge_models ?? models.recommended_challenge_judges).filter((id) => known.has(id));
+    const judgeModels = chosenJudges();
     setStarting(true);
     setError(null);
     try {
@@ -91,7 +141,7 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
           model_catalog_version: models.catalog_version,
           rubric_catalog_version: catalog.rubrics.catalog_version,
           judge_models: judgeModels,
-          challenge_judge_models: challenge.length ? challenge : judgeModels.slice(0, 1),
+          challenge_judge_models: challengeJudges(judgeModels),
           proposal_model: writer(),
           proposal_evaluator_model: evaluator(),
           rubrics: saved?.rubrics ?? [],
@@ -150,7 +200,7 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
             {(id, index) => (
               <Select
                 label={`Judge ${index() + 1}`}
-                options={options(withRole("judge"), index() === 0 ? undefined : "None")}
+                options={options(withRole("judge"), "judge", index() === 0 ? undefined : "None")}
                 value={id}
                 onChange={(event) => setJudge(index(), event.currentTarget.value)}
               />
@@ -158,17 +208,23 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
           </For>
           <Select
             label="Proposal writer"
-            options={options(withRole("proposal_writer"))}
+            options={options(withRole("proposal_writer"), "proposal_writer")}
             value={writer()}
             onChange={(event) => setWriter(event.currentTarget.value)}
           />
           <Select
             label="Evaluator"
-            options={options(withRole("proposal_evaluator"))}
+            options={options(withRole("proposal_evaluator"), "proposal_evaluator")}
             value={evaluator()}
             onChange={(event) => setEvaluator(event.currentTarget.value)}
           />
         </div>
+        <Show when={hints().length > 0}>
+          <ul class="m-hints" aria-label="Hints about these models">
+            <For each={hints()}>{(hint) => <li class="m-warning">{hint}</li>}</For>
+          </ul>
+        </Show>
+        <Show when={estimateError()}>{(text) => <p class="m-quiet">Couldn't read the sessions' sizes, so fits aren't shown: {text()}</p>}</Show>
       </div>
       <Show when={error()}>
         {(text) => (

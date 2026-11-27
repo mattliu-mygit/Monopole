@@ -47,6 +47,14 @@ class FakeServer:
             return httpx.Response(200, json={"catalog_version": "rubrics-2", "rubrics": rubrics})
         if route == ("GET", "/api/sessions"):
             return httpx.Response(200, json={"sessions": [], "params": dict(request.url.params)})
+        if route == ("POST", "/api/sessions/estimates"):
+            estimate = {
+                "turn_tokens": [900, 1200],
+                "largest_turn_tokens": 1200,
+                "total_tokens": 2100,
+            }
+            known = [sid for sid in body["session_ids"] if sid == SESSION]
+            return httpx.Response(200, json={sid: {"utf8_bytes_div_3": estimate} for sid in known})
         if route == ("POST", "/api/runs"):
             return httpx.Response(200, json={"run_id": "run-new", "status": "created"})
         if route == ("PUT", "/api/runs/run-new/config") and self.refuse_config:
@@ -225,3 +233,21 @@ def test_catalog_sessions_and_run_detail_give_new_run_what_it_fills_in(state, fa
     assert listed["params"] == {"since": "2026-11-01", "limit": "20"}
     assert (shown["config"], shown["auto_run"]) == (CONFIG, False)
     assert shown["selection"]["session_ids"] == [SESSION]
+
+
+def test_session_estimates_ask_the_server_for_the_selected_sessions_only(state, fake, capsys):
+    assert main(["plugin", "session-estimates", SESSION, "conv-unknown"]) == 0
+
+    printed = json.loads(capsys.readouterr().out)
+    assert printed == {
+        SESSION: {
+            "utf8_bytes_div_3": {
+                "turn_tokens": [900, 1200],
+                "largest_turn_tokens": 1200,
+                "total_tokens": 2100,
+            }
+        }
+    }
+    assert fake.requests == [
+        ("POST", "/api/sessions/estimates", {"session_ids": [SESSION, "conv-unknown"]})
+    ]

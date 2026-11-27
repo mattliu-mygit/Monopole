@@ -53,7 +53,7 @@ function estimateSession(
   windowBudget: number,
   session: SessionTokens,
   policy: ContextPolicy,
-): Required<ModelCapacityEstimate> {
+): { fits: boolean; estimatedRequestTokens: number; estimatedChunks: number } {
   const tokens = session.judging_token_estimates[model.token_counter]
   const baseReserve = capacityReserve(model.max_input_tokens)
   let chunks = 1

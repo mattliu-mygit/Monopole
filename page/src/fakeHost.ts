@@ -38,6 +38,7 @@ const DECLARED = new Set([
   "create-run",
   "catalog",
   "sessions",
+  "session-estimates",
   "providers",
   "check-providers",
   "sign-in",
@@ -143,6 +144,10 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
         return fixtures.catalog();
       case "sessions":
         return fixtures.sessions();
+      case "session-estimates": {
+        const all = fixtures.sessionEstimates();
+        return Object.fromEntries(args.filter((id) => id in all).map((id) => [id, all[id]]));
+      }
       case "providers":
         return { ...providers, sign_in: signIn };
       case "check-providers":
