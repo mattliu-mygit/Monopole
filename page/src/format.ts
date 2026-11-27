@@ -1,4 +1,4 @@
-import type { Card, Proposal, ProviderState } from "./protocol";
+import type { Card, Proposal, ProviderCheck, ProviderState, RunList } from "./protocol";
 
 const TIME = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
@@ -55,3 +55,18 @@ export const PROVIDER_WORDS: Record<ProviderState, string> = {
   not_installed: "Not installed",
   unknown: "Couldn't tell",
 };
+
+/** Monopole's status line, as Prompting Time's status shows it: how many runs are running, else
+ * when the newest run that isn't a draft started. */
+export function statusLine(list: RunList | null): string {
+  if (!list) return "Reading runs…";
+  const running = list.runs.filter((card) => card.group === "running").length;
+  if (running) return `Running ${running} run${running > 1 ? "s" : ""}`;
+  const newest = list.runs.find((card) => card.group !== null);
+  return newest ? `Idle · last run ${shortTime(newest.created_at)}` : "Idle · no runs yet";
+}
+
+/** Whether a provider stops runs: a CLI that is signed out, or no W&B key, which every run needs
+ * for CES. A missing OpenAI key stops only runs that pick OpenAI models. */
+export const blocking = (provider: ProviderCheck["providers"][number]) =>
+  provider.state === "signed_out" || (provider.state === "no_key" && provider.id === "wandb");

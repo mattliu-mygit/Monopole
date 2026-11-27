@@ -155,16 +155,24 @@ Then open [http://127.0.0.1:8787](http://127.0.0.1:8787).
 plugin from this folder. `prompting-time-plugin.json` declares it: Prompting Time starts
 `bin/monopole-run`, which runs this server; lists runs that failed, wait for review, or wait for
 Continue under Needs you, from `bin/monopole status`; and shows the page in `page/`, through the plugin's
-actions:
+actions. The page draws its own tab sidebar, since Prompting Time folds its sidebar while a plugin
+page is open:
 
-- **Runs**: each run as a card, with Rerun, and Edit and rerun and Delete in its ⋯ menu. Rerun
+- **Runs**: each run as a card, with a search over titles, run IDs, and judges and a filter per
+  status group; each card's ⋯ menu opens, continues, reruns, edits and reruns, or deletes it. A
+  run's page shows each stage in the detail the web app's run page does: scoring's turns, judging's
+  activity, failed reviews and their cause, pinned windows, and each judge's attempt, and
+  reflection's proposals and A/B check. Rerun
   starts a new run with the old run's sessions and settings, so turns added to those sessions
   since join it; a judge that has left the catalog stops it with a message naming the judge. A
   run that waits between stages, because it doesn't continue automatically, says "Waiting to
   judge" or "Waiting to reflect", is listed under Needs you as "Waiting for you", and offers
-  Continue on its card, its page, and its row in Prompting Time; Continue starts that stage
+  Continue in its card's menu, on its page, and on its row in Prompting Time; Continue starts that stage
   through the server, as the web app's Continue does, and its confirmation refuses at once when
   the server isn't answering.
+- **Trends** (`/trends`): the web app's analysis (recent score changes, every scorer's summary,
+  scores by instruction configuration, and coaching), read from CES through the server when the
+  tab first opens and on Read again.
 - **New run** (`/new`, or `/new?from=<run id>` for Edit and rerun): sessions, judges, proposal
   writer and evaluator, and Continue automatically. As in the web app, each model says whether it
   fits the chosen sessions, and hints name a chosen model that doesn't and models that share a
@@ -184,7 +192,7 @@ actions:
   settings), and `analyze`'s subagent, judge-agreement, and segment insights, shown as tables.
 
 Rerun, Continue, New run, Delete, Sign in, Score, Backfill, and Check now run only after Prompting
-Time's confirmation. Rerun, Continue, New run, and their lists of sessions and models need
+Time's confirmation. Rerun, Continue, New run, their lists of sessions and models, and Trends need
 Monopole's server to be running. After you press one of the page's action buttons, the page
 disables them until 600 ms after the action's reply, and 600 ms more when Prompting Time opens
 another item in that time, so a second click can't act on the item Prompting Time moved on to. A

@@ -443,10 +443,25 @@ the run database or the plugin's own state changes.
 
 ### What the page offers
 
+Prompting Time folds its own sidebar while a plugin page is open, so the page
+draws Monopole's own tab sidebar (Runs, Trends, New run, Providers, Tools) with
+Monopole's status line, the run count, and how many providers stop runs. Each
+tab's header carries its actions as buttons and one ⋯ menu.
+
 - **Runs** lists the newest runs as compact cards with their sessions, judges,
   mean rating, failure cause, and how a proposal's predicted evaluator score
-  compares with the current instructions. Run detail adds the selection,
-  settings, stages, rubric ratings, and models.
+  compares with the current instructions, with a search over titles, run IDs,
+  and judges and a filter per status group. Run detail shows what the web app's
+  run page shows, from the same serializer: why the run stopped, its pinned
+  sessions and settings, scoring's turns and Scores, judging's activity, failed
+  reviews with their cause, pinned sliding windows, and each judge's attempt,
+  and reflection's activity, proposals, evaluator reasons, A/B check, and
+  rejected attempts. Reviewing and promoting a proposal stays in the web app,
+  and the page does not recheck a pending review's managed files for drift.
+- **Trends** shows the web app's analysis, from the server's analysis route:
+  recent score changes, every scorer's summary, scores by instruction
+  configuration, and coaching. It reads CES, which can take minutes, so it reads
+  when Trends first opens and on Read again rather than on every change.
 - **Rerun** starts a new run with an old run's session selection and settings
   under the current catalogs, so turns added to those sessions since join it. It
   refuses, naming the cause, when a chosen model or rubric has left the catalog.
@@ -469,8 +484,8 @@ the run database or the plugin's own state changes.
   check that posts to the configured alert webhook, and shows analysis's
   subagent, judge-agreement, and segment insights as tables.
 
-Rerun, Continue, and New run, and the session and catalog lists New run needs,
-go through Monopole's running server, so they obey the same pinning and stage
+Rerun, Continue, and New run, the session and catalog lists New run needs, and
+Trends go through Monopole's running server, so they obey the same pinning and stage
 rules as the web app.
 
 ### Trust boundaries

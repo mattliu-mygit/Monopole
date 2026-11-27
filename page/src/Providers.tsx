@@ -1,7 +1,8 @@
 import { createSignal, For, Show } from "solid-js";
 import { Button, StatusDot, TextField, type Status } from "@prompting-time/ui";
-import { PROVIDER_WORDS, shortTime } from "./format";
+import { blocking, PROVIDER_WORDS, shortTime } from "./format";
 import type { ProviderCheck, SignIn } from "./protocol";
+import { PageHeader } from "./PageHeader";
 import type { PageStore } from "./store";
 
 type Provider = ProviderCheck["providers"][number];
@@ -12,13 +13,10 @@ const COMMANDS: Record<string, string> = { claude: "claude auth login", codex: "
 const DEVICE_COMMAND = "codex login --device-auth";
 export const CODEX_WARNING = "Starting sign-in removes the current Codex login, even if you cancel.";
 
-/** Red for a provider that stops runs, green for one that works, no color otherwise. A missing
- * W&B key stops every run, since CES needs it; a missing OpenAI key stops only runs that pick
- * OpenAI models. */
+/** Red for a provider that stops runs, green for one that works, no color otherwise. */
 function dotFor(provider: Provider): Status {
   if (provider.state === "signed_in") return "success";
-  if (provider.state === "signed_out" || (provider.state === "no_key" && provider.id === "wandb")) return "error";
-  return "idle";
+  return blocking(provider) ? "error" : "idle";
 }
 
 const SIGN_IN_WORDS: Record<SignIn["state"], string> = {
@@ -66,18 +64,18 @@ export function Providers(props: { store: PageStore }) {
   };
 
   return (
-    <section class="m-providers">
-      <header class="m-run-header">
-        <div class="m-run-title">
-          <h2>Providers</h2>
-          <div class="m-meta">
-            {store.state.providers?.checked_at ? `Checked ${shortTime(store.state.providers.checked_at)}` : "Not checked yet"}
-          </div>
-        </div>
+    <section class="m-tab m-providers">
+      <PageHeader
+        title="Providers"
+        meta={store.state.providers?.checked_at ? `Checked ${shortTime(store.state.providers.checked_at)}` : "Not checked yet"}
+        menu={[{ value: "refresh", label: "Read again" }]}
+        onMenu={() => store.refresh()}
+      >
         <Button variant="primary" onClick={() => void store.checkProviders()} disabled={store.state.checking || store.held()}>
-          {store.state.checking ? "Checking…" : "Check all"}
+          {store.state.checking ? "Checking…" : "Check providers"}
         </Button>
-      </header>
+      </PageHeader>
+      <div class="m-column">
       <Show when={store.state.loadError ?? error()}>
         {(text) => (
           <p class="m-error" role="alert">
@@ -165,6 +163,7 @@ export function Providers(props: { store: PageStore }) {
         )}
       </Show>
       <p class="m-hint">Checks run each CLI's status command and ask W&B and OpenAI to list models; they call no model.</p>
+      </div>
     </section>
   );
 }

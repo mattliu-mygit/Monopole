@@ -9,6 +9,7 @@ const fireEvent = {
   click: (element: Element) => (dom.click(element), flush()),
   input: (element: Element, value: string) => (dom.input(element, { target: { value } }), flush()),
   change: (element: Element, value: string) => (dom.change(element, { target: { value } }), flush()),
+  keyDown: (element: Element | Document, init: object) => (dom.keyDown(element, init), flush()),
 };
 
 // After an action, the page holds the action buttons disabled for HOLD_MS, so a test waits for the
@@ -30,7 +31,8 @@ describe("rerunning a run", () => {
   it("reruns a card's run through Prompting Time's confirmation and opens the new run", async () => {
     const confirm = vi.fn(() => true);
     const host = renderWithFakeHost({ confirm });
-    fireEvent.click(await screen.findByRole("button", { name: "Rerun run-review01" }));
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for run-review01" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rerun" }));
     await waitFor(() => expect(confirm).toHaveBeenCalledWith("rerun", ["--item", "run-review01"]));
     await waitFor(() => expect(host.calls()).toContainEqual(["run", "--item", "run-new4"]));
     expect(await screen.findByRole("button", { name: "Edit and rerun" })).toBeInTheDocument();
@@ -50,6 +52,7 @@ describe("rerunning a run", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Edit and rerun" }));
 
     expect(await screen.findByText("from run-failed01's settings")).toBeInTheDocument();
+    await screen.findByLabelText("Judge 1");
     expect(host.calls()).toEqual(expect.arrayContaining([["catalog"], ["sessions", "--limit", "50"]]));
     expect(select("Judge 1").value).toBe("wandb:DeepSeek-V4.1-Flash");
     expect(select("Judge 2").value).toBe("codex:gpt-5.6-sol");
@@ -90,7 +93,7 @@ describe("rerunning a run", () => {
 
   it("starts a blank New run on the web app's recommendations with no session chosen", async () => {
     renderWithFakeHost({ openOnReady: "/new" });
-    expect(await screen.findByRole("heading", { name: "New run" })).toBeInTheDocument();
+    await screen.findByLabelText("Judge 1");
     // The catalog's two recommended judges, and a third from another family, as the web app picks.
     expect(select("Judge 1").value).toBe("wandb:Kimi-K2.6");
     expect(select("Judge 2").value).toBe("codex:gpt-5.6-sol");
@@ -104,7 +107,7 @@ describe("rerunning a run", () => {
 
   it("says, as the web app does, which models fit the chosen sessions and which share a family", async () => {
     const host = renderWithFakeHost({ openOnReady: "/new" });
-    expect(await screen.findByRole("heading", { name: "New run" })).toBeInTheDocument();
+    await screen.findByLabelText("Judge 1");
     // Nothing is chosen, so nothing is estimated and no option says whether it fits.
     expect(host.calls().some(([action]) => action === "session-estimates")).toBe(false);
     expect(within(select("Judge 2")).getByRole("option", { name: "GPT-5.6 Sol" })).toBeInTheDocument();
@@ -129,7 +132,7 @@ describe("New run's recommendations follow the chosen sessions", () => {
 
   it("recomputes the web app's fitting judges as the sessions change, and keeps showing what it will start", async () => {
     const host = renderWithFakeHost({ openOnReady: "/new", confirm: () => true });
-    expect(await screen.findByRole("heading", { name: "New run" })).toBeInTheDocument();
+    await screen.findByLabelText("Judge 1");
     expect(shown()).toEqual(["wandb:Kimi-K2.6", "codex:gpt-5.6-sol", "wandb:DeepSeek-V4.1-Flash", "wandb:Kimi-K2.6", "wandb:GLM-5.3"]);
 
     // The large session doesn't fit GPT-5.6 Sol, so the panel takes the next family that fits.
@@ -168,10 +171,12 @@ describe("continuing a waiting run", () => {
   it("continues a card's waiting run through Prompting Time's confirmation and opens it", async () => {
     const confirm = vi.fn(() => true);
     const host = renderWithFakeHost({ confirm });
-    // Only a run that waits between stages offers Continue.
-    expect(await screen.findByRole("button", { name: "Continue run-waiting1" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Continue run-running1" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Continue run-waiting1" }));
+    // Only a run that waits between stages offers Continue in its ⋯ menu.
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for run-running1" }));
+    expect(screen.queryByRole("menuitem", { name: "Continue" })).not.toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "More actions for run-waiting1" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Continue" }));
     await waitFor(() => expect(confirm).toHaveBeenCalledWith("continue", ["--item", "run-waiting1"]));
     await waitFor(() => expect(host.calls()).toContainEqual(["run", "--item", "run-waiting1"]));
     expect(await screen.findByRole("heading", { name: "Speed up the session list" })).toBeInTheDocument();
@@ -194,7 +199,7 @@ describe("provider sign-in", () => {
   it("warns before Codex's sign-in starts, and starts it only from the warning", async () => {
     const confirm = vi.fn(() => true);
     const host = renderWithFakeHost({ confirm, openOnReady: "/providers", holdSignIn: true });
-    fireEvent.click(await screen.findByRole("button", { name: "Check all" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Check providers" }));
     const codex = (await screen.findByText("Codex")).closest("li")!;
     fireEvent.click(await enabled(() => within(codex).getByRole("button", { name: "Sign in" })));
 
@@ -209,7 +214,7 @@ describe("provider sign-in", () => {
     // While the browser sign-in waits: the fallback link and a field for a pasted code. The other
     // buttons stay usable; only Sign in waits.
     const panel = await screen.findByRole("dialog", { name: "Signing in with codex login" });
-    expect(screen.getByRole("button", { name: "Check all" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Check providers" })).toBeEnabled();
     expect(within(codex).getByRole("button", { name: "Sign in" })).toBeDisabled();
     expect(await within(panel).findByText("https://codex.example/sign-in")).toBeInTheDocument();
     fireEvent.input(within(panel).getByLabelText("Code from the browser, if it shows one"), "abc123");
@@ -224,7 +229,7 @@ describe("provider sign-in", () => {
   it("signs in to Codex with a device code, showing the link and the code", async () => {
     const confirm = vi.fn(() => true);
     const host = renderWithFakeHost({ confirm, openOnReady: "/providers", holdSignIn: true });
-    fireEvent.click(await screen.findByRole("button", { name: "Check all" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Check providers" }));
     const codex = (await screen.findByText("Codex")).closest("li")!;
     fireEvent.click(await enabled(() => within(codex).getByRole("button", { name: "Sign in" })));
 
@@ -243,7 +248,7 @@ describe("provider sign-in", () => {
 
   it("checks and saves a key and never shows it", async () => {
     const host = renderWithFakeHost({ openOnReady: "/providers" });
-    fireEvent.click(await screen.findByRole("button", { name: "Check all" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Check providers" }));
     const openai = (await screen.findByText("OpenAI")).closest("li")!;
     fireEvent.click(within(openai).getByRole("button", { name: "Add key" }));
     const field = screen.getByLabelText("API key") as HTMLInputElement;

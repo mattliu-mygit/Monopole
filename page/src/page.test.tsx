@@ -15,11 +15,11 @@ const statusButton = async () =>
   within(await card("Session 01a1ad64-7d0")).getByRole("button", { name: /Failed at judging/ });
 
 describe("Monopole's page with the fake host", () => {
-  it("lists the runs as cards, read with one call of the runs action after ready", async () => {
+  it("lists the runs as cards, read with the runs action after ready, with the last provider check for the sidebar", async () => {
     const host = renderWithFakeHost();
     const review = await card("Lets pause after scoring editing the skill copies");
     expect(host.received[0]).toEqual({ version: 2, type: "ready" });
-    expect(host.calls()).toEqual([["runs"]]);
+    expect(host.calls()).toEqual([["runs"], ["providers"]]);
     expect(within(review).getByText("Review needed")).toBeInTheDocument();
     expect(within(review).getByText(/run-review01 · .* · 114 turns/)).toBeInTheDocument();
     expect(within(review).getByText("DeepSeek V4.1 Flash, GPT-5.6 Sol")).toBeInTheDocument();
@@ -77,14 +77,16 @@ describe("Monopole's page with the fake host", () => {
     expect(await screen.findByRole("heading", { name: "Session 01a1ad64-7d0" })).toBeInTheDocument();
     expect(host.calls()).toContainEqual(["run", "--item", "run-failed01"]);
     expect(screen.getByRole("heading", { name: "Stopped at Session Outcome Quality" })).toBeInTheDocument();
-    expect(screen.getByText("Judging").closest("li")).toHaveTextContent(/^Judging · Failed · Session Outcome/);
-    expect(screen.getByText("Verification Discipline · 0.75")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^Judging\s*·\s*Failed$/ })).toBeInTheDocument();
+    // The Runs tab stays selected while one run is open.
+    expect(screen.getByRole("button", { name: /^Runs/ })).toHaveAttribute("aria-current", "page");
   });
 
-  it("deletes a run through Prompting Time's confirmation and goes back to the list", async () => {
+  it("deletes a run from its ⋯ menu through Prompting Time's confirmation and goes back to the list", async () => {
     const confirm = vi.fn(() => true);
     const host = renderWithFakeHost({ confirm, openOnReady: "/runs/run-failed01" });
-    fireEvent.click(await screen.findByRole("button", { name: "Delete run" }));
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for run-failed01" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete run" }));
     await waitFor(() => expect(confirm).toHaveBeenCalledWith("delete", ["--item", "run-failed01"]));
     // The page passes only the item; Prompting Time adds --print and --expect.
     expect(host.calls()).toContainEqual(["delete", "--item", "run-failed01"]);
@@ -94,27 +96,29 @@ describe("Monopole's page with the fake host", () => {
 
   it("shows a cancelled confirmation and keeps the run", async () => {
     renderWithFakeHost({ confirm: () => false, openOnReady: "/runs/run-failed01" });
-    fireEvent.click(await screen.findByRole("button", { name: "Delete run" }));
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for run-failed01" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete run" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("the confirmation was cancelled");
     expect(screen.getByRole("heading", { name: "Session 01a1ad64-7d0" })).toBeInTheDocument();
   });
 
   it("can't delete a running run", async () => {
     renderWithFakeHost({ openOnReady: "/runs/run-running1" });
-    expect(await screen.findByRole("button", { name: "Delete run" })).toBeDisabled();
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for run-running1" }));
+    expect(await screen.findByRole("menuitem", { name: "Delete run" })).toHaveAttribute("aria-disabled", "true");
   });
 
   it("reads again when Prompting Time says the state folder changed", async () => {
     const host = renderWithFakeHost();
     await card("Fix the flaky login test");
     host.changed(["runs-changed"]);
-    await waitFor(() => expect(host.calls()).toEqual([["runs"], ["runs"]]));
+    await waitFor(() => expect(host.calls()).toEqual([["runs"], ["providers"], ["runs"], ["providers"]]));
   });
 
   it("checks every provider from the providers page", async () => {
     const host = renderWithFakeHost({ openOnReady: "/providers" });
     expect(await screen.findByText("Not checked yet")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Check all" }));
+    fireEvent.click(screen.getByRole("button", { name: "Check providers" }));
     expect(await screen.findByText("Codex")).toBeInTheDocument();
     expect(host.calls()).toContainEqual(["check-providers"]);
     const codex = screen.getByText("Codex").closest("li")!;

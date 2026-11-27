@@ -1,9 +1,10 @@
 import { createSignal, For, onSettled, Show } from "solid-js";
 import { Button, EllipsisIcon, Menu, StatusDot } from "@prompting-time/ui";
 import { meta, ratings } from "./format";
+import { PageHeader } from "./PageHeader";
 import type { Card } from "./protocol";
 import { ProposalRow } from "./ProposalRow";
-import type { PageStore } from "./store";
+import type { PageStore, RunGroup } from "./store";
 
 /** What a run card and the run page can do with a run: Continue a run that waits between stages,
  * Rerun with the same settings, open New run filled in with them, and delete; Continue, Rerun, and
@@ -26,17 +27,40 @@ export function runActions(store: PageStore, setError: (error: string | null) =>
   };
 }
 
+/** The status-group filters, in the order the list's chips show them. */
+export const GROUPS: { group: RunGroup; label: string }[] = [
+  { group: "failed", label: "Failed" },
+  { group: "waiting", label: "Waiting for you" },
+  { group: "review", label: "Review needed" },
+  { group: "running", label: "Running" },
+  { group: "done", label: "Done" },
+];
+
+/** Whether the card's title, run ID, or a judge's name contains the search text, ignoring case. */
+export function matches(card: Card, query: string): boolean {
+  const wanted = query.trim().toLowerCase();
+  if (!wanted) return true;
+  return [card.title, card.run_id, ...card.judges.map((judge) => judge.label)].some((text) => text.toLowerCase().includes(wanted));
+}
+
 /**
- * The runs, newest first, as tight cards in one column: the session's first prompt, the run ID,
+ * The runs, newest first, with a search over title, run ID, and judge, and a chip per status group
+ * with its count. Each run is a tight card in one column: the session's first prompt, the run ID,
  * time, and turns, the judges and mean rating, and for a run that reached reflection, a Proposal
  * row. A failed run's status is a button that opens its cause in a popover; only a click opens it,
- * and a click elsewhere or Esc closes it. Each card has Rerun, Continue when the run waits between
- * stages, and Edit and rerun and Delete in its ⋯ menu.
+ * and a click elsewhere or Esc closes it. Each card's ⋯ menu opens, continues, reruns, edits and
+ * reruns, or deletes it.
  */
 export function RunList(props: { store: PageStore }) {
+  const store = props.store;
   const [openRun, setOpenRun] = createSignal<string | null>(null);
   const [actionError, setActionError] = createSignal<string | null>(null);
-  const actions = runActions(props.store, setActionError);
+  const actions = runActions(store, setActionError);
+  const runs = () => store.state.runs?.runs ?? [];
+  const searched = () => runs().filter((card) => matches(card, store.state.runQuery));
+  const shown = () => searched().filter((card) => store.state.runGroup === null || card.group === store.state.runGroup);
+  const count = (group: RunGroup) => searched().filter((card) => card.group === group).length;
+  const setGroup = (group: RunGroup | null) => store.filterRuns(store.state.runQuery, group);
 
   onSettled(() => {
     const onClick = (event: MouseEvent) => {
@@ -55,38 +79,97 @@ export function RunList(props: { store: PageStore }) {
   });
 
   return (
-    <Show
-      when={props.store.state.runs}
-      fallback={<p class="m-hint" role="status">Reading runs…</p>}
-    >
-      {(list) => (
-        <Show when={list().runs.length > 0} fallback={<p class="m-hint">No runs yet. Start one from New run.</p>}>
-          <Show when={actionError()}>
-            {(error) => (
-              <p class="m-error" role="alert">
-                {error()}
-              </p>
-            )}
-          </Show>
-          <ul class="m-runs" aria-label="Runs">
-            <For each={list().runs}>
-              {(card) => (
-                <RunCard
-                  card={card}
-                  open={openRun() === card.run_id}
-                  onToggle={() => setOpenRun(openRun() === card.run_id ? null : card.run_id)}
-                  onOpenRun={() => props.store.open(`/runs/${encodeURIComponent(card.run_id)}`)}
-                  actions={actions}
-                />
+    <section class="m-tab">
+      <PageHeader
+        title="Runs"
+        menu={[{ value: "refresh", label: "Read again" }]}
+        onMenu={() => store.refresh()}
+      >
+        <Button variant="primary" onClick={() => store.open("/new")}>
+          New run
+        </Button>
+        <Button onClick={() => void store.checkProviders()} disabled={store.state.checking || store.held()}>
+          {store.state.checking ? "Checking…" : "Check providers"}
+        </Button>
+      </PageHeader>
+      <div class="m-column">
+        <div class="m-toolbar">
+          <input
+            class="m-search"
+            type="search"
+            aria-label="Search runs"
+            placeholder="Search titles, run IDs, judges…"
+            value={store.state.runQuery}
+            onInput={(event) => store.filterRuns(event.currentTarget.value, store.state.runGroup)}
+          />
+          <div class="m-chips" role="group" aria-label="Filter by status">
+            <button type="button" class="m-chip" aria-pressed={store.state.runGroup === null ? "true" : "false"} onClick={() => setGroup(null)}>
+              All · {searched().length}
+            </button>
+            <For each={GROUPS}>
+              {(item) => (
+                <button
+                  type="button"
+                  class="m-chip"
+                  aria-pressed={store.state.runGroup === item.group ? "true" : "false"}
+                  onClick={() => setGroup(store.state.runGroup === item.group ? null : item.group)}
+                >
+                  {item.label} · {count(item.group)}
+                </button>
               )}
             </For>
-          </ul>
-          <Show when={list().truncated}>
-            <p class="m-hint">Older runs are left out.</p>
-          </Show>
+          </div>
+        </div>
+        <Show when={store.state.loadError}>
+          {(error) => (
+            <p class="m-error" role="alert">
+              {error()}
+            </p>
+          )}
         </Show>
-      )}
-    </Show>
+        <Show when={actionError()}>
+          {(error) => (
+            <p class="m-error" role="alert">
+              {error()}
+            </p>
+          )}
+        </Show>
+        <Show when={store.state.runs} fallback={<p class="m-hint" role="status">Reading runs…</p>}>
+          {(list) => (
+            <Show when={list().runs.length > 0} fallback={<p class="m-hint">No runs yet. Start one from New run.</p>}>
+              <Show
+                when={shown().length > 0}
+                fallback={
+                  <p class="m-hint">
+                    No runs match.{" "}
+                    <button type="button" class="m-link" onClick={() => store.filterRuns("", null)}>
+                      Clear the search and filter
+                    </button>
+                  </p>
+                }
+              >
+                <ul class="m-runs" aria-label="Runs">
+                  <For each={shown()}>
+                    {(card) => (
+                      <RunCard
+                        card={card}
+                        open={openRun() === card.run_id}
+                        onToggle={() => setOpenRun(openRun() === card.run_id ? null : card.run_id)}
+                        onOpenRun={() => store.open(`/runs/${encodeURIComponent(card.run_id)}`)}
+                        actions={actions}
+                      />
+                    )}
+                  </For>
+                </ul>
+              </Show>
+              <Show when={list().truncated}>
+                <p class="m-hint">Older runs are left out.</p>
+              </Show>
+            </Show>
+          )}
+        </Show>
+      </div>
+    </section>
   );
 }
 
@@ -99,9 +182,20 @@ function RunCard(props: {
 }) {
   const card = () => props.card;
   const menu = () => [
+    { value: "open", label: "Open" },
+    ...(card().next_stage ? [{ value: "continue", label: "Continue", disabled: props.actions.held() }] : []),
+    { value: "rerun", label: "Rerun", disabled: props.actions.held() },
     { value: "edit", label: "Edit and rerun" },
     { value: "delete", label: "Delete", disabled: !card().deletable || props.actions.held() },
   ];
+  const onMenu = (value: string) => {
+    const id = card().run_id;
+    if (value === "open") props.onOpenRun();
+    else if (value === "continue") void props.actions.continueRun(id);
+    else if (value === "rerun") void props.actions.rerun(id);
+    else if (value === "edit") props.actions.editAndRerun(id);
+    else void props.actions.remove(id);
+  };
   const popoverId = () => `cause-${card().run_id}`;
   return (
     <li class="m-card" data-group={card().group ?? "draft"}>
@@ -167,25 +261,7 @@ function RunCard(props: {
             </>
           )}
         </Show>
-        <Show when={card().next_stage}>
-          <Button
-            variant="primary"
-            onClick={() => props.actions.continueRun(card().run_id)}
-            disabled={props.actions.held()}
-            aria-label={`Continue ${card().run_id}`}
-          >
-            Continue
-          </Button>
-        </Show>
-        <Button onClick={() => props.actions.rerun(card().run_id)} disabled={props.actions.held()} aria-label={`Rerun ${card().run_id}`}>
-          Rerun
-        </Button>
-        <Menu
-          label={`More actions for ${card().run_id}`}
-          icon={<EllipsisIcon />}
-          items={menu()}
-          onSelect={(value) => (value === "edit" ? props.actions.editAndRerun(card().run_id) : props.actions.remove(card().run_id))}
-        />
+        <Menu label={`More actions for ${card().run_id}`} icon={<EllipsisIcon />} items={menu()} onSelect={onMenu} />
       </div>
     </li>
   );

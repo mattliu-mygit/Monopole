@@ -37,6 +37,7 @@ const DECLARED = new Set([
   "continue",
   "create-run",
   "catalog",
+  "trends",
   "sessions",
   "session-estimates",
   "providers",
@@ -142,6 +143,8 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
         return startRun();
       case "catalog":
         return fixtures.catalog();
+      case "trends":
+        return fixtures.analysis();
       case "sessions":
         return fixtures.sessions();
       case "session-estimates": {

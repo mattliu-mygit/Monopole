@@ -3,6 +3,7 @@ import type { JSX } from "@solidjs/web";
 import { Button, Select, StatusDot, Tabs, TextField } from "@prompting-time/ui";
 import { shortTime } from "./format";
 import type { ToolRun, ToolTable } from "./protocol";
+import { PageHeader } from "./PageHeader";
 import type { PageStore } from "./store";
 
 const INSIGHTS = [
@@ -106,12 +107,14 @@ export function Tools(props: { store: PageStore }) {
   }
 
   return (
-    <section class="m-tools">
-      <header class="m-run-header">
-        <div class="m-run-title">
-          <h2>Tools</h2>
-        </div>
-      </header>
+    <section class="m-tab m-tools">
+      <PageHeader
+        title="Tools"
+        meta="Score, backfill, check for regressions, and read insight tables"
+        menu={[{ value: "refresh", label: "Read again" }]}
+        onMenu={() => store.refresh()}
+      />
+      <div class="m-column">
       <Show when={store.state.loadError}>
         {(text) => (
           <p class="m-error" role="alert">
@@ -180,6 +183,7 @@ export function Tools(props: { store: PageStore }) {
             <LastRun run={last("insights")?.args.kind === kind() ? last("insights") : undefined} />
           </div>
         </Tabs>
+      </div>
       </div>
     </section>
   );

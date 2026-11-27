@@ -23,7 +23,9 @@
 //
 // The actions the page calls (bin/monopole <action>); those marked * confirm first:
 //   runs                       the newest runs, as cards
-//   run --item <run id>        one run's detail, with the settings Edit and rerun fills in
+//   run --item <run id>        one run's detail: the card, and the web UI's run with each stage's
+//                              evidence and the settings Edit and rerun fills in
+//   trends                     the web UI's analysis: score summaries, trends, A/B leaderboard, coaching
 //   delete* --item <run id>    deletes a run
 //   rerun* --item <run id>     starts a new run with that run's sessions and settings
 //   continue* --item <run id>  starts the stage a waiting run waits for (Card.next_stage)
@@ -42,9 +44,12 @@
 //   score* --hours 24|168, backfill* --start <day> --end <day>, monitor*, insights --kind <kind>
 //   tools                      each tool's last run
 
-import type { ModelCatalog, ModelDescriptor, RubricCatalog, SessionEstimates } from "../../frontend/src/types";
+import type { AnalysisResponse, ModelCatalog, ModelDescriptor, RubricCatalog, Run, SessionEstimates } from "../../frontend/src/types";
 
 export type { ModelDescriptor, SessionEstimates };
+
+/** `trends`: the web UI's analysis, from the server's GET /api/analyze. */
+export type Analysis = AnalysisResponse;
 
 export const PROTOCOL_VERSION = 2;
 
@@ -98,7 +103,7 @@ export interface RunList {
   truncated: boolean;
 }
 
-/** `run --item <id>`: the card plus what the run page shows. */
+/** The sessions a new run reads, as create-run takes them. */
 export interface Selection {
   session_ids: string[];
   since: string | null;
@@ -119,15 +124,15 @@ export interface RunConfig {
   force: boolean;
 }
 
-export interface RunDetail extends Card {
-  selection: Selection | null;
-  config: RunConfig | null;
-  auto_run: boolean;
-  stages: { stage: string; state: "done" | "running" | "failed" | "not_started"; message: string | null }[];
-  rubrics: { rubric: string; label: string; conversation_id: string; rating: number | null; review_status: string }[];
-  models: { proposal_writer: string | null; proposal_evaluator: string | null };
-  error: string | null;
-}
+/** `run --item <id>`: the card, a summary of its stages, rubric ratings, and models
+ * (src/weave_agent_signals/plugin/runs.py run_detail), and every field of the web UI's run, from the
+ * serializer GET /api/runs/{id} uses (run_page). */
+export type RunDetail = Card &
+  Run & {
+    stages: { stage: string; state: "done" | "running" | "failed" | "not_started"; message: string | null }[];
+    rubrics: { rubric: string; label: string; conversation_id: string; rating: number | null; review_status: string }[];
+    models: { proposal_writer: string | null; proposal_evaluator: string | null };
+  };
 
 export type ProviderState = "signed_in" | "signed_out" | "no_key" | "not_installed" | "unknown";
 

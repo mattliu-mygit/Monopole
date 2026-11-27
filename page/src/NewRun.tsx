@@ -3,6 +3,7 @@ import { Button, Checkbox, Select, type SelectOption } from "@prompting-time/ui"
 import { initializeRunConfigState, transitionRunConfig } from "../../frontend/src/features/runs/runConfigState";
 import { capacitySessions, fitWords, runHints } from "./hints";
 import type { ModelDescriptor, SessionEstimates, SessionSummary } from "./protocol";
+import { PageHeader } from "./PageHeader";
 import type { NewRunData, PageStore } from "./store";
 
 const MAX_JUDGES = 3;
@@ -22,21 +23,36 @@ const NONE = "";
  */
 export function NewRun(props: { store: PageStore }) {
   const store = props.store;
+  const from = () => {
+    const place = store.place();
+    return place.kind === "new" ? place.from : null;
+  };
+  const menu = () => [{ value: "refresh", label: "Read sessions again" }, ...(from() ? [{ value: "blank", label: "Start from blank settings" }] : [])];
   return (
-    <Show
-      when={store.state.newRun}
-      fallback={
-        <Show when={store.state.loadError} fallback={<p class="m-hint" role="status">Reading sessions and models…</p>}>
-          {(error) => (
-            <p class="m-error" role="alert">
-              {error()}
-            </p>
-          )}
+    <section class="m-tab">
+      <PageHeader
+        title="New run"
+        meta={from() ? `from ${from()}'s settings` : "Choose sessions and models"}
+        menu={menu()}
+        onMenu={(value) => (value === "blank" ? store.open("/new") : store.refresh())}
+      />
+      <div class="m-column">
+        <Show
+          when={store.state.newRun}
+          fallback={
+            <Show when={store.state.loadError} fallback={<p class="m-hint" role="status">Reading sessions and models…</p>}>
+              {(error) => (
+                <p class="m-error" role="alert">
+                  {error()}
+                </p>
+              )}
+            </Show>
+          }
+        >
+          {(data) => <NewRunForm store={store} data={data()} />}
         </Show>
-      }
-    >
-      {(data) => <NewRunForm store={store} data={data()} />}
-    </Show>
+      </div>
+    </section>
   );
 }
 
@@ -72,12 +88,12 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
   const blankState = initializeRunConfigState(models, catalog.rubrics, null);
   const slots = (ids: string[]) => Array.from({ length: MAX_JUDGES }, (_, index) => ids[index] ?? NONE);
 
-  const saved = from?.config ?? null;
+  const saved = from?.run_config ?? null;
   const missing = saved
     ? [...saved.judge_models, saved.proposal_model, saved.proposal_evaluator_model].filter((id) => !known.has(id))
     : [];
   const ifKnown = (wanted: string, fallback: string) => (known.has(wanted) ? wanted : fallback);
-  const [chosen, setChosen] = createSignal<string[]>([...(from?.selection?.session_ids ?? [])]);
+  const [chosen, setChosen] = createSignal<string[]>([...(from?.data_selection?.session_ids ?? [])]);
   const [judges, setJudges] = createSignal<string[]>(
     slots(saved ? saved.judge_models.filter((id) => known.has(id)) : blankState.judgeModels.value),
   );
@@ -153,7 +169,7 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
   // A session the old run used that the newest 50 leave out still shows, so it can stay chosen.
   const listed = new Set(sessions.sessions.map((session) => session.conversation_id));
   const rows: SessionSummary[] = [
-    ...(from?.selection?.session_ids ?? [])
+    ...(from?.data_selection?.session_ids ?? [])
       .filter((id) => !listed.has(id))
       .map((id) => ({ conversation_id: id, turn_count: 0, last_activity: null, input_preview: null })),
     ...sessions.sessions,
@@ -176,9 +192,9 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
       await props.store.startRun({
         selection: {
           session_ids: chosen(),
-          since: from?.selection?.since ?? null,
-          until: from?.selection?.until ?? null,
-          timezone: from?.selection?.timezone ?? null,
+          since: from?.data_selection?.since ?? null,
+          until: from?.data_selection?.until ?? null,
+          timezone: from?.data_selection?.timezone ?? null,
         },
         config: {
           model_catalog_version: models.catalog_version,
@@ -201,13 +217,7 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
   }
 
   return (
-    <section class="m-new-run">
-      <header class="m-run-header">
-        <div class="m-run-title">
-          <h2>New run</h2>
-          <Show when={from}>{(run) => <div class="m-meta">from {run().run_id}'s settings</div>}</Show>
-        </div>
-      </header>
+    <div class="m-new-run">
       <Show when={missing.length > 0}>
         <p class="m-warning" role="status">
           No longer in the catalog: {missing.join(", ")}. Choose another.
@@ -292,6 +302,6 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
           {starting() ? "Starting…" : "Start run"}
         </Button>
       </div>
-    </section>
+    </div>
   );
 }

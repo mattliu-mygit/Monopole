@@ -1,8 +1,9 @@
-import { createSignal, createStore } from "solid-js";
+import { createSignal, createStore, reconcile } from "solid-js";
 import {
   CallError,
   PROTOCOL_VERSION,
   readHostMessage,
+  type Analysis,
   type Catalog,
   type ProviderCheck,
   type RunConfig,
@@ -37,11 +38,12 @@ export function parentLink(): HostLink {
   };
 }
 
-/** What a route shows: the run list, one run, New run (blank, or filled in from the run in
+/** What a route shows: the run list, one run, Trends, New run (blank, or filled in from the run in
  * `?from=`), the provider checks, or Tools. Any other route shows the list. */
 export type Place =
   | { kind: "runs" }
   | { kind: "run"; runId: string }
+  | { kind: "trends" }
   | { kind: "new"; from: string | null }
   | { kind: "providers" }
   | { kind: "tools" };
@@ -49,6 +51,7 @@ export type Place =
 export function placeOf(route: string): Place {
   if (route === "/providers") return { kind: "providers" };
   if (route === "/tools") return { kind: "tools" };
+  if (route === "/trends") return { kind: "trends" };
   const fresh = /^\/new(?:\?from=([^&]+))?$/.exec(route);
   if (fresh) return { kind: "new", from: fresh[1] ? decodeURIComponent(fresh[1]) : null };
   const match = /^\/runs\/([^/]+)$/.exec(route);
@@ -71,17 +74,28 @@ export interface RunSetup {
 
 export interface PageState {
   route: string;
+  /** The newest runs, which the list and the tab sidebar's count and status line read. */
   runs: RunList | null;
   /** The open run, or null while it is read. */
   run: RunDetail | null;
   providers: ProviderCheck | null;
   newRun: NewRunData | null;
   tools: ToolRuns | null;
+  /** The web UI's analysis, kept across tabs since it takes up to minutes to read, and when it was read. */
+  trends: Analysis | null;
+  trendsReadAt: string | null;
+  /** Whether trends reads now. */
+  readingTrends: boolean;
   /** Why the last read failed, or null. */
   loadError: string | null;
   /** Whether check-providers runs now. */
   checking: boolean;
+  /** The run list's search text and status-group filter, kept while the user opens a run. */
+  runQuery: string;
+  runGroup: RunGroup | null;
 }
+
+export type RunGroup = NonNullable<RunList["runs"][number]["group"]>;
 
 export type PageStore = ReturnType<typeof createPageStore>;
 
@@ -105,8 +119,13 @@ export function createPageStore(link: HostLink) {
     providers: null,
     newRun: null,
     tools: null,
+    trends: null,
+    trendsReadAt: null,
+    readingTrends: false,
     loadError: null,
     checking: false,
+    runQuery: "",
+    runGroup: null,
   });
   const waiting = new Map<number, { resolve: (json: unknown) => void; reject: (error: Error) => void }>();
   let lastId = 0;
@@ -122,23 +141,77 @@ export function createPageStore(link: HostLink) {
     });
   }
 
-  /** Reads what the route shows; a read that lands after the route changed is dropped. */
-  async function read() {
+  const failed = (asked: string, error: unknown) => {
+    if (route === asked)
+      setState((s) => {
+        s.loadError = message(error);
+      });
+  };
+
+  /** Reads the runs and the last provider check, which the tab sidebar counts on every tab and
+   * the run list and Providers show. Both read files only. */
+  function readSidebar() {
+    const asked = route;
+    const reads = [
+      (call("runs") as Promise<RunList>).then(
+        (runs) =>
+          setState((s) => {
+            // Reconciled, so cards that didn't change keep their elements and an open ⋯ menu
+            // or popover stays open when the runs are read again.
+            if (s.runs) reconcile(runs, "run_id")(s.runs);
+            else s.runs = runs;
+            if (placeOf(route).kind === "runs") s.loadError = null;
+          }),
+        (error) => placeOf(asked).kind === "runs" && failed(asked, error),
+      ),
+      (call("providers") as Promise<ProviderCheck>).then(
+        (providers) =>
+          setState((s) => {
+            s.providers = providers;
+          }),
+        (error) => placeOf(asked).kind === "providers" && failed(asked, error),
+      ),
+    ];
+    return Promise.all(reads);
+  }
+
+  /** Reads Trends: the server's analysis, which reads CES and can take minutes, so it is read when
+   * Trends first opens and on Read again, not on every change. */
+  async function readTrends() {
+    const asked = route;
+    setState((s) => {
+      s.readingTrends = true;
+    });
+    try {
+      const trends = (await call("trends")) as Analysis;
+      setState((s) => {
+        s.trends = trends;
+        s.trendsReadAt = new Date().toISOString();
+        if (placeOf(route).kind === "trends") s.loadError = null;
+      });
+    } catch (error) {
+      failed(asked, error);
+    } finally {
+      setState((s) => {
+        s.readingTrends = false;
+      });
+    }
+  }
+
+  /** Reads what the route shows besides the sidebar; a read that lands after the route changed is
+   * dropped. */
+  async function readPlace() {
     const asked = route;
     const place = placeOf(asked);
     try {
-      if (place.kind === "runs") {
-        const runs = (await call("runs")) as RunList;
-        if (route === asked)
-          setState((s) => {
-            s.runs = runs;
-            s.loadError = null;
-          });
-      } else if (place.kind === "run") {
+      if (place.kind === "run") {
         const shown = ((await call("run", ["--item", place.runId])) as { run: RunDetail }).run;
         if (route === asked)
           setState((s) => {
-            s.run = shown;
+            // Reconciled into the shown run, so a fold the user opened stays open while the run
+            // writes progress and the page reads it again.
+            if (s.run?.run_id === shown.run_id) reconcile(shown, "id")(s.run);
+            else s.run = shown;
             s.loadError = null;
           });
       } else if (place.kind === "new") {
@@ -159,20 +232,18 @@ export function createPageStore(link: HostLink) {
             s.tools = tools;
             s.loadError = null;
           });
-      } else {
-        const providers = (await call("providers")) as ProviderCheck;
-        if (route === asked)
-          setState((s) => {
-            s.providers = providers;
-            s.loadError = null;
-          });
       }
     } catch (error) {
-      if (route === asked)
-        setState((s) => {
-          s.loadError = message(error);
-        });
+      failed(asked, error);
     }
+  }
+
+  /** Reads the sidebar and what the route shows. Trends reads only when it has nothing yet. */
+  function read() {
+    void readSidebar();
+    if (placeOf(route).kind === "trends") {
+      if (!state.trends && !state.readingTrends) void readTrends();
+    } else void readPlace();
   }
 
   // While an action the user pressed runs, and for HOLD_MS after its reply, the page holds every
@@ -227,7 +298,7 @@ export function createPageStore(link: HostLink) {
         s.loadError = null;
       });
     }
-    void read();
+    read();
   }
 
   const stop = link.listen((data) => {
@@ -238,9 +309,10 @@ export function createPageStore(link: HostLink) {
         open(host.route);
         break;
       case "changed":
-        // New run reads CES through the server, too slow to repeat each time a run writes
-        // progress; it reads once when it opens.
-        if (placeOf(route).kind !== "new") void read();
+        // New run and Trends read CES through the server, too slow to repeat each time a run
+        // writes progress; they read when they open and on Read again.
+        void readSidebar();
+        if (placeOf(route).kind !== "new" && placeOf(route).kind !== "trends") void readPlace();
         break;
       case "result":
       case "error": {
@@ -263,9 +335,21 @@ export function createPageStore(link: HostLink) {
     /** Tells the host the page listens, and reads the run list it starts on. */
     ready: () => {
       link.post({ version: PROTOCOL_VERSION, type: "ready" });
-      void read();
+      read();
     },
     open,
+    /** Sets the run list's search text and status-group filter. */
+    filterRuns: (query: string, group: RunGroup | null) =>
+      setState((s) => {
+        s.runQuery = query;
+        s.runGroup = group;
+      }),
+    /** Reads the open tab again, including Trends and New run, which changes don't reread. */
+    refresh: () => {
+      void readSidebar();
+      if (placeOf(route).kind === "trends") void readTrends();
+      else void readPlace();
+    },
     /** Whether the action buttons are disabled: while an action runs, and for HOLD_MS after. */
     held,
     /** Asks Prompting Time to delete the run, which it does only after the user confirms. Resolves
