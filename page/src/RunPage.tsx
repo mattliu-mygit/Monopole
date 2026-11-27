@@ -3,13 +3,15 @@ import { Button, StatusDot } from "@prompting-time/ui";
 import { meta, ratings, score } from "./format";
 import type { RunDetail } from "./protocol";
 import { ProposalRow } from "./ProposalRow";
+import { runActions } from "./RunList";
 import type { PageStore } from "./store";
 
 const STAGE_WORDS = { done: "Done", running: "Running", failed: "Failed", not_started: "Not started" } as const;
 
 /**
- * One run, read-only: its status and why it failed, its stages, its rubric ratings, its judges and
- * models, and its proposal. Delete asks Prompting Time, which confirms with the user first.
+ * One run: its status and why it failed, its stages, its rubric ratings, its judges and models,
+ * and its proposal, with Rerun, Edit and rerun, and Delete. Rerun and Delete ask Prompting Time,
+ * which confirms with the user first.
  */
 export function RunPage(props: { store: PageStore; runId: string }) {
   const store = props.store;
@@ -29,20 +31,17 @@ export function RunPage(props: { store: PageStore; runId: string }) {
 
 function RunBody(props: { store: PageStore; run: RunDetail }) {
   const run = () => props.run;
-  const [deleting, setDeleting] = createSignal(false);
-  const [deleteError, setDeleteError] = createSignal<string | null>(null);
-
-  async function remove() {
-    setDeleting(true);
-    setDeleteError(null);
+  const [busy, setBusy] = createSignal(false);
+  const [actionError, setActionError] = createSignal<string | null>(null);
+  const actions = runActions(props.store, setActionError);
+  const busyWhile = (work: (runId: string) => Promise<void>) => async () => {
+    setBusy(true);
     try {
-      await props.store.deleteRun(run().run_id);
-    } catch (error) {
-      setDeleteError(error instanceof Error ? error.message : String(error));
+      await work(run().run_id);
     } finally {
-      setDeleting(false);
+      setBusy(false);
     }
-  }
+  };
 
   return (
     <article class="m-run">
@@ -55,11 +54,19 @@ function RunBody(props: { store: PageStore; run: RunDetail }) {
           <StatusDot status={run().dot} />
           {run().label}
         </span>
-        <Button onClick={remove} disabled={!run().deletable || deleting()} title={run().deletable ? undefined : "A running run can't be deleted"}>
+        <Button onClick={busyWhile(actions.rerun)} disabled={busy()}>
+          Rerun
+        </Button>
+        <Button onClick={() => actions.editAndRerun(run().run_id)}>Edit and rerun</Button>
+        <Button
+          onClick={busyWhile(actions.remove)}
+          disabled={!run().deletable || busy()}
+          title={run().deletable ? undefined : "A running run can't be deleted"}
+        >
           Delete run
         </Button>
       </header>
-      <Show when={deleteError()}>{(error) => <p class="m-error" role="alert">{error()}</p>}</Show>
+      <Show when={actionError()}>{(error) => <p class="m-error" role="alert">{error()}</p>}</Show>
       <Show when={run().failure}>
         {(failure) => (
           <section class="m-section">
@@ -71,7 +78,7 @@ function RunBody(props: { store: PageStore; run: RunDetail }) {
       <Show when={run().review_state === "review-needed"}>
         <p class="m-hint">Review and promote the proposal in Monopole's web UI.</p>
       </Show>
-      <Show when={run().proposal}>{(proposal) => <ProposalRow proposal={proposal()} />}</Show>
+      <Show when={run().proposal}>{(proposal) => <ProposalRow proposal={proposal()} note />}</Show>
       <section class="m-section">
         <h3>Stages</h3>
         <ul class="m-list">

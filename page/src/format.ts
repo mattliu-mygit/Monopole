@@ -21,13 +21,31 @@ export function meta(card: Card): string {
 export const ratings = (card: Card) =>
   card.mean_score === null ? null : `${card.rated} rating${card.rated === 1 ? "" : "s"} · mean ${score(card.mean_score)}`;
 
-/** What the A/B check in the sandbox found, in a few words. */
-export function checkWords(check: Proposal["check"]): string {
-  if (!check) return "no A/B check";
-  if (check.status !== "complete") return `A/B check ${check.status.replace(/_/g, " ")}`;
-  if (check.winner === "baseline") return "the current instructions won";
-  if (check.winner === "candidate") return "the proposal won";
-  return "the A/B check tied";
+const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
+
+/**
+ * What the run kept and why, for the first line of the Proposal row. A run recommends a proposal
+ * only when the A/B check in the sandbox finished and the proposal won; when the current
+ * instructions win, tie, or the check is incomplete, it keeps them, whatever the evaluator
+ * predicted, and an incomplete check keeps them only "for now".
+ */
+export function proposalOutcome(p: Proposal): { kept: string; reason: string } {
+  const check = p.check;
+  if (p.recommended) {
+    return { kept: "Proposal recommended", reason: "A/B check finished: the proposal won." };
+  }
+  if (p.proposed === null) return { kept: "Current kept", reason: "No valid proposal." };
+  if (!check) {
+    const beat = p.change !== null && p.change > 0;
+    return { kept: "Current kept", reason: beat ? "No A/B check ran." : "No A/B check: no proposal beat the current score." };
+  }
+  if (check.status !== "complete") {
+    const status = check.status.replace(/_/g, " ");
+    return { kept: "Current kept for now", reason: sentence(`A/B check ${status}${check.reason ? `: ${check.reason}` : ""}`) };
+  }
+  if (check.winner === "baseline") return { kept: "Current kept", reason: "A/B check finished: the current instructions won." };
+  if (check.winner === "candidate") return { kept: "Current kept", reason: "A/B check finished: the proposal won, but it isn't recommended." };
+  return { kept: "Current kept", reason: "A/B check finished: a tie, so the current instructions stay." };
 }
 
 export const PROVIDER_WORDS: Record<ProviderState, string> = {

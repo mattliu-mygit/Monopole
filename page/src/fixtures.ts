@@ -1,4 +1,4 @@
-import type { Card, ProviderCheck, RunDetail } from "./protocol";
+import type { Card, Catalog, ProviderCheck, RunDetail, SessionList } from "./protocol";
 
 // Invented runs in the shapes `bin/monopole runs` and `run` print, for development and tests.
 
@@ -91,7 +91,53 @@ export function detail(card: Card): RunDetail {
       { rubric: "judge.verification", label: "Verification Discipline", conversation_id: "c1", rating: 0.75, review_status: "complete" },
     ],
     models: { proposal_writer: "GLM 5.3", proposal_evaluator: "DeepSeek V4.1 Flash" },
+    config: {
+      model_catalog_version: "models-1",
+      rubric_catalog_version: "rubrics-1",
+      judge_models: judges.map((judge) => judge.id),
+      challenge_judge_models: [judges[0].id],
+      proposal_model: "wandb:GLM-5.3",
+      proposal_evaluator_model: judges[0].id,
+      rubrics: [],
+      candidate_budget: 3,
+      force: false,
+    },
+    auto_run: true,
     error: null,
+  };
+}
+
+const model = (id: string, label: string, provider: string, roles: string[]) => ({ id, label, provider, supported_roles: roles });
+
+export function catalog(): Catalog {
+  const all = ["judge", "proposal_writer", "proposal_evaluator"];
+  return {
+    format: 1,
+    models: {
+      catalog_version: "models-2",
+      available_models: [
+        model("wandb:DeepSeek-V4.1-Flash", "DeepSeek V4.1 Flash", "wandb", all),
+        model("codex:gpt-5.6-sol", "GPT-5.6 Sol", "codex", ["judge"]),
+        model("wandb:GLM-5.3", "GLM 5.3", "wandb", all),
+        model("wandb:Kimi-K2.6", "Kimi K2.6", "wandb", all),
+      ],
+      recommended_proposal_model: "wandb:Kimi-K2.6",
+      recommended_judges: ["wandb:Kimi-K2.6", "wandb:GLM-5.3"],
+      recommended_challenge_judges: ["wandb:Kimi-K2.6"],
+      proposal_evaluator_preferences: ["wandb:GLM-5.3"],
+    },
+    rubrics: { catalog_version: "rubrics-2", rubrics: [{ id: "judge.verification", label: "Verification Discipline" }] },
+  };
+}
+
+export function sessions(): SessionList {
+  return {
+    sessions: [
+      { conversation_id: "conv-review-stack", turn_count: 114, last_activity: "2026-11-26T16:00:00+00:00", input_preview: "Review this stack of PRs" },
+      { conversation_id: "01a1ad64-7d00-75f7-b10f-e2e0471fdf58", turn_count: 351, last_activity: "2026-11-05T22:00:00+00:00", input_preview: null },
+    ],
+    total: 2,
+    truncated: false,
   };
 }
 

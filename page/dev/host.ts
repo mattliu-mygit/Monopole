@@ -11,7 +11,7 @@ document.body.append(frame);
 
 const route = new URLSearchParams(location.search).get("route") ?? undefined;
 const host = createFakeHost((message) => frame.contentWindow?.postMessage(message, "*"), {
-  confirm: (runId) => window.confirm(`Delete ${runId}?`),
+  confirm: (action, args) => window.confirm(`Run ${action} ${args.join(" ")}?`),
   openOnReady: route,
 });
 window.addEventListener("message", (event) => {

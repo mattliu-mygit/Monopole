@@ -1,5 +1,17 @@
 import { createStore } from "solid-js";
-import { PROTOCOL_VERSION, readHostMessage, type ProviderCheck, type RunDetail, type RunList } from "./protocol";
+import {
+  PROTOCOL_VERSION,
+  readHostMessage,
+  type Catalog,
+  type ProviderCheck,
+  type RunConfig,
+  type RunDetail,
+  type RunList,
+  type Selection,
+  type SessionList,
+  type ToolRun,
+  type ToolRuns,
+} from "./protocol";
 
 /** How the page reaches its host: in Prompting Time, the parent window; in tests, the fake host. */
 export interface HostLink {
@@ -23,13 +35,36 @@ export function parentLink(): HostLink {
   };
 }
 
-/** What a route shows: the run list, one run, or the provider checks. Any other route shows the list. */
-export type Place = { kind: "runs" } | { kind: "run"; runId: string } | { kind: "providers" };
+/** What a route shows: the run list, one run, New run (blank, or filled in from the run in
+ * `?from=`), the provider checks, or Tools. Any other route shows the list. */
+export type Place =
+  | { kind: "runs" }
+  | { kind: "run"; runId: string }
+  | { kind: "new"; from: string | null }
+  | { kind: "providers" }
+  | { kind: "tools" };
 
 export function placeOf(route: string): Place {
   if (route === "/providers") return { kind: "providers" };
+  if (route === "/tools") return { kind: "tools" };
+  const fresh = /^\/new(?:\?from=([^&]+))?$/.exec(route);
+  if (fresh) return { kind: "new", from: fresh[1] ? decodeURIComponent(fresh[1]) : null };
   const match = /^\/runs\/([^/]+)$/.exec(route);
   return match ? { kind: "run", runId: decodeURIComponent(match[1]) } : { kind: "runs" };
+}
+
+/** What New run reads before it shows its form. */
+export interface NewRunData {
+  catalog: Catalog;
+  sessions: SessionList;
+  /** The run Edit and rerun started from. */
+  from: RunDetail | null;
+}
+
+export interface RunSetup {
+  selection: Selection;
+  config: RunConfig;
+  auto_run: boolean;
 }
 
 export interface PageState {
@@ -38,6 +73,8 @@ export interface PageState {
   /** The open run, or null while it is read. */
   run: RunDetail | null;
   providers: ProviderCheck | null;
+  newRun: NewRunData | null;
+  tools: ToolRuns | null;
   /** Why the last read failed, or null. */
   loadError: string | null;
   /** Whether check-providers runs now. */
@@ -60,6 +97,8 @@ export function createPageStore(link: HostLink) {
     runs: null,
     run: null,
     providers: null,
+    newRun: null,
+    tools: null,
     loadError: null,
     checking: false,
   });
@@ -96,6 +135,24 @@ export function createPageStore(link: HostLink) {
             s.run = shown;
             s.loadError = null;
           });
+      } else if (place.kind === "new") {
+        const [catalog, sessions, from] = await Promise.all([
+          call("catalog") as Promise<Catalog>,
+          call("sessions", ["--limit", "50"]) as Promise<SessionList>,
+          place.from ? (call("run", ["--item", place.from]) as Promise<{ run: RunDetail }>).then((r) => r.run) : null,
+        ]);
+        if (route === asked)
+          setState((s) => {
+            s.newRun = { catalog, sessions, from };
+            s.loadError = null;
+          });
+      } else if (place.kind === "tools") {
+        const tools = (await call("tools")) as ToolRuns;
+        if (route === asked)
+          setState((s) => {
+            s.tools = tools;
+            s.loadError = null;
+          });
       } else {
         const providers = (await call("providers")) as ProviderCheck;
         if (route === asked)
@@ -118,6 +175,7 @@ export function createPageStore(link: HostLink) {
       setState((s) => {
         s.route = next;
         s.run = null;
+        s.newRun = null;
         s.loadError = null;
       });
     }
@@ -132,7 +190,9 @@ export function createPageStore(link: HostLink) {
         open(host.route);
         break;
       case "changed":
-        void read();
+        // New run reads CES through the server, too slow to repeat each time a run writes
+        // progress; it reads once when it opens.
+        if (placeOf(route).kind !== "new") void read();
         break;
       case "result":
       case "error": {
@@ -161,6 +221,44 @@ export function createPageStore(link: HostLink) {
       await call("delete", ["--item", runId]);
       open("/");
     },
+    /** Asks Prompting Time to rerun the run with the same settings, which it does only after the
+     * user confirms, and opens the new run. */
+    rerun: async (runId: string) => {
+      const started = (await call("rerun", ["--item", runId])) as { route: string };
+      open(started.route);
+    },
+    /** Starts New run's settings after Prompting Time's confirmation, and opens the new run. */
+    startRun: async (setup: RunSetup) => {
+      const started = (await call("create-run", [JSON.stringify(setup)])) as { route: string };
+      open(started.route);
+    },
+    /** Runs the provider's login, after Prompting Time's confirmation, until it finishes; then
+     * shows the provider check the action ran after it. */
+    signIn: async (provider: string) => {
+      const done = (await call("sign-in", ["--item", provider])) as { sign_in: ProviderCheck["sign_in"]; providers: ProviderCheck };
+      setState((s) => {
+        s.providers = { ...done.providers, sign_in: done.sign_in };
+      });
+      return done.sign_in;
+    },
+    sendSignInCode: (provider: string, code: string) => call("sign-in-code", ["--item", provider, "--code", code]),
+    cancelSignIn: (provider: string) => call("sign-in-cancel", ["--item", provider]),
+    /** Checks and saves a key; the page keeps no copy of it. */
+    setKey: async (provider: string, key: string) => {
+      const done = (await call("set-key", ["--item", provider, "--key", key])) as { saved: string; providers: ProviderCheck };
+      setState((s) => {
+        s.providers = { ...done.providers, sign_in: s.providers?.sign_in ?? null };
+      });
+      return done.saved;
+    },
+    /** Runs one of the Tools actions; the write tools confirm in Prompting Time first. */
+    runTool: async (action: string, args: string[]) => {
+      const run = (await call(action, args)) as ToolRun & { tool: string };
+      setState((s) => {
+        s.tools = { format: 1, tools: { ...(s.tools?.tools ?? {}), [action]: run } };
+      });
+      return run;
+    },
     /** Checks every provider now and shows the result. */
     checkProviders: async () => {
       setState((s) => {
@@ -169,7 +267,7 @@ export function createPageStore(link: HostLink) {
       try {
         const providers = (await call("check-providers")) as ProviderCheck;
         setState((s) => {
-          s.providers = providers;
+          s.providers = { ...providers, sign_in: s.providers?.sign_in ?? null };
           s.loadError = null;
         });
       } catch (error) {

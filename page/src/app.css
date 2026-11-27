@@ -123,6 +123,7 @@ ul {
 .m-card-side {
   display: flex;
   align-items: flex-start;
+  gap: var(--s-space-4);
 }
 
 .m-status {
@@ -182,14 +183,26 @@ ul {
 
 .m-proposal {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  gap: 2px;
   margin-block-start: var(--s-space-4);
   padding-block-start: var(--s-space-4);
   border-block-start: 1px dashed var(--s-border-muted);
   color: var(--s-text-secondary);
   font-size: var(--s-size-xs);
+}
+
+.m-proposal-outcome,
+.m-proposal-scores {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.m-proposal-scores {
+  color: var(--s-text-muted);
+  font-size: 10px;
 }
 
 .m-label {
@@ -222,21 +235,10 @@ ul {
   background: var(--s-text);
 }
 
-.m-chip {
-  padding: 0 var(--s-space-4);
-  border: 1px solid var(--s-border-muted);
-}
-
-.m-note {
-  flex: 1;
-  min-inline-size: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .m-run,
-.m-providers {
+.m-providers,
+.m-new-run,
+.m-tools {
   display: flex;
   flex-direction: column;
   gap: var(--s-space-8);
@@ -288,4 +290,66 @@ ul {
 
 .m-popover .pt-button {
   align-self: flex-start;
+}
+
+.m-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-space-4);
+}
+
+.m-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-space-4);
+  padding: var(--s-space-8);
+  border: 1px solid var(--s-border-muted);
+  background: var(--s-surface);
+  font-size: var(--s-size-sm);
+}
+
+.m-panel h3 {
+  font-size: var(--s-size-sm);
+  font-weight: var(--s-weight-medium);
+}
+
+.m-warning {
+  color: var(--s-warning);
+}
+
+.m-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-block-size: 320px;
+  overflow: auto;
+}
+
+.m-choices label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.m-choices label > span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--s-space-8);
+}
+
+.m-output {
+  max-block-size: 360px;
+  overflow: auto;
+  margin: 0;
+  font-family: var(--s-font-mono);
+  font-size: var(--s-size-xs);
+  white-space: pre-wrap;
 }

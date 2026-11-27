@@ -30,13 +30,16 @@ describe("Monopole's page with the fake host", () => {
   it("shows how the proposal compared with the current instructions", async () => {
     renderWithFakeHost();
     const row = within(await card("Lets pause after scoring editing the skill copies")).getByLabelText("Proposal");
-    expect(row).toHaveTextContent("current0.15");
-    expect(row).toHaveTextContent("proposed0.35");
-    expect(within(row).getByText("+0.20")).toBeInTheDocument();
-    expect(within(row).getByText("predicted by the evaluator · best of 3")).toBeInTheDocument();
-    expect(within(row).getByText("A/B check incomplete")).toHaveAttribute("title", "Sandbox preflight failed");
-    expect(within(row).getByText("Current kept")).toBeInTheDocument();
-    expect(within(row).getByText("· Targets outcome.command and outcome.test.")).toBeInTheDocument();
+    // Option B: what was kept and why first, the predicted scores on a smaller second line.
+    const [outcome, scores] = Array.from(row.children);
+    expect(within(outcome as HTMLElement).getByText("Current kept for now")).toBeInTheDocument();
+    expect(within(outcome as HTMLElement).getByText("· A/B check incomplete: Sandbox preflight failed.")).toBeInTheDocument();
+    expect(scores).toHaveTextContent("current0.15");
+    expect(scores).toHaveTextContent("proposed0.35");
+    expect(within(scores as HTMLElement).getByText("+0.20")).toBeInTheDocument();
+    expect(within(scores as HTMLElement).getByText("predicted by the evaluator · best of 3")).toBeInTheDocument();
+    // The evaluator's note shows on the run's own page, not on the card.
+    expect(within(row).queryByText("Targets outcome.command and outcome.test.")).not.toBeInTheDocument();
   });
 
   it("opens a failed run's cause only on a click, and closes it on a click outside or Esc", async () => {
@@ -82,7 +85,7 @@ describe("Monopole's page with the fake host", () => {
     const confirm = vi.fn(() => true);
     const host = renderWithFakeHost({ confirm, openOnReady: "/runs/run-failed01" });
     fireEvent.click(await screen.findByRole("button", { name: "Delete run" }));
-    await waitFor(() => expect(confirm).toHaveBeenCalledWith("run-failed01"));
+    await waitFor(() => expect(confirm).toHaveBeenCalledWith("delete", ["--item", "run-failed01"]));
     // The page passes only the item; Prompting Time adds --print and --expect.
     expect(host.calls()).toContainEqual(["delete", "--item", "run-failed01"]);
     await screen.findByText("Lets pause after scoring editing the skill copies");

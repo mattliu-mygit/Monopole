@@ -16,12 +16,22 @@
 //   open {route}               The user opened an item or blocker of `status`: /runs/<run id> or /providers.
 //   changed {files}            Files changed in Monopole's state folder, such as runs-changed, or null.
 //
-// The actions the page calls (bin/monopole <action>):
+// The actions the page calls (bin/monopole <action>); those marked * confirm first:
 //   runs                       the newest runs, as cards
-//   run --item <run id>        one run's detail
-//   delete --item <run id>     deletes a run after Prompting Time's confirmation
-//   providers                  the last provider sign-in check
+//   run --item <run id>        one run's detail, with the settings Edit and rerun fills in
+//   delete* --item <run id>    deletes a run
+//   rerun* --item <run id>     starts a new run with that run's sessions and settings
+//   create-run* <setup JSON>   starts a new run from New run's {selection, config, auto_run}
+//   catalog                    the models and rubrics a new run can choose
+//   sessions [--limit n]       the newest sessions a new run can choose
+//   providers                  the last provider sign-in check, and the last or waiting sign-in
 //   check-providers            checks every provider now and prints the result
+//   sign-in* --item <cli>      runs claude, codex, or devin's login and waits for it to finish
+//   sign-in-code --item <cli> --code <code>   types a pasted code into the waiting sign-in
+//   sign-in-cancel --item <cli>               stops the waiting sign-in
+//   set-key --item wandb|openai --key <key>   checks a key with GET /v1/models, then saves it
+//   score* --hours 24|168, backfill* --start <day> --end <day>, monitor*, insights --kind <kind>
+//   tools                      each tool's last run
 
 export const PROTOCOL_VERSION = 2;
 
@@ -74,8 +84,30 @@ export interface RunList {
 }
 
 /** `run --item <id>`: the card plus what the run page shows. */
+export interface Selection {
+  session_ids: string[];
+  since: string | null;
+  until: string | null;
+  timezone: string | null;
+}
+
+/** What a run asked for: src/weave_agent_signals/run_config.py RunConfig. */
+export interface RunConfig {
+  model_catalog_version: string;
+  rubric_catalog_version: string;
+  judge_models: string[];
+  challenge_judge_models: string[];
+  proposal_model: string;
+  proposal_evaluator_model: string;
+  rubrics: string[];
+  candidate_budget: number;
+  force: boolean;
+}
+
 export interface RunDetail extends Card {
-  selection: { session_ids: string[]; since: string | null; until: string | null; timezone: string | null } | null;
+  selection: Selection | null;
+  config: RunConfig | null;
+  auto_run: boolean;
   stages: { stage: string; state: "done" | "running" | "failed" | "not_started"; message: string | null }[];
   rubrics: { rubric: string; label: string; conversation_id: string; rating: number | null; review_status: string }[];
   models: { proposal_writer: string | null; proposal_evaluator: string | null };
@@ -84,10 +116,71 @@ export interface RunDetail extends Card {
 
 export type ProviderState = "signed_in" | "signed_out" | "no_key" | "not_installed" | "unknown";
 
+/** A sign-in the sign-in action runs or ran; `link` is the CLI's fallback sign-in link. */
+export interface SignIn {
+  provider: string;
+  state: "waiting" | "signed_in" | "failed" | "timed_out" | "cancelled" | "stopped";
+  started_at: string;
+  link: string | null;
+  asks_for_code: boolean;
+  message: string | null;
+}
+
 export interface ProviderCheck {
   format: 1;
   checked_at: string | null;
   providers: { id: string; title: string; state: ProviderState; detail: string | null }[];
+  /** `providers` prints the last sign-in; `check-providers` leaves it out. */
+  sign_in?: SignIn | null;
+}
+
+export interface CatalogModel {
+  id: string;
+  label: string;
+  provider: string;
+  supported_roles: string[];
+}
+
+/** `catalog`: the server's model and rubric catalogs, with only the fields the page reads. */
+export interface Catalog {
+  format: 1;
+  models: {
+    catalog_version: string;
+    available_models: CatalogModel[];
+    recommended_proposal_model: string | null;
+    recommended_judges: string[];
+    recommended_challenge_judges: string[];
+    proposal_evaluator_preferences: string[];
+  };
+  rubrics: { catalog_version: string; rubrics: { id: string; label: string }[] };
+}
+
+export interface SessionSummary {
+  conversation_id: string;
+  turn_count: number;
+  last_activity: string | null;
+  input_preview: string | null;
+}
+
+export interface SessionList {
+  sessions: SessionSummary[];
+  total: number;
+  truncated: boolean;
+}
+
+/** One tool's last run, from `tools` or the tool's own action. */
+export interface ToolRun {
+  state: "running" | "done" | "failed" | "stopped";
+  args: Record<string, unknown>;
+  started_at: string;
+  finished_at: string | null;
+  exit_code: number | null;
+  output: string | null;
+}
+
+export interface ToolRuns {
+  format: 1;
+  tools: Partial<Record<string, ToolRun>>;
 }
 
 export type PageMessage =
