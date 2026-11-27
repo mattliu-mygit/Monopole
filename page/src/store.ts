@@ -12,6 +12,7 @@ import {
   type Selection,
   type SessionEstimates,
   type SessionList,
+  type Settings,
   type ToolRun,
   type ToolRuns,
 } from "./protocol";
@@ -39,18 +40,20 @@ export function parentLink(): HostLink {
 }
 
 /** What a route shows: the run list, one run, Trends, New run (blank, or filled in from the run in
- * `?from=`), the provider checks, or Tools. Any other route shows the list. */
+ * `?from=`), the provider checks, Tools, or Settings. Any other route shows the list. */
 export type Place =
   | { kind: "runs" }
   | { kind: "run"; runId: string }
   | { kind: "trends" }
   | { kind: "new"; from: string | null }
   | { kind: "providers" }
-  | { kind: "tools" };
+  | { kind: "tools" }
+  | { kind: "settings" };
 
 export function placeOf(route: string): Place {
   if (route === "/providers") return { kind: "providers" };
   if (route === "/tools") return { kind: "tools" };
+  if (route === "/settings") return { kind: "settings" };
   if (route === "/trends") return { kind: "trends" };
   const fresh = /^\/new(?:\?from=([^&]+))?$/.exec(route);
   if (fresh) return { kind: "new", from: fresh[1] ? decodeURIComponent(fresh[1]) : null };
@@ -81,6 +84,9 @@ export interface PageState {
   providers: ProviderCheck | null;
   newRun: NewRunData | null;
   tools: ToolRuns | null;
+  /** The plugin's settings as get-settings prints them, the values Prompting Time's own Settings
+   * tab shows. */
+  settings: Settings | null;
   /** The web UI's analysis, kept across tabs since it takes up to minutes to read, and when it was read. */
   trends: Analysis | null;
   trendsReadAt: string | null;
@@ -93,6 +99,8 @@ export interface PageState {
   /** The run list's search text and status-group filter, kept while the user opens a run. */
   runQuery: string;
   runGroup: RunGroup | null;
+  /** The run j and k selected in the list, kept while the user opens it. */
+  runSelected: string | null;
 }
 
 export type RunGroup = NonNullable<RunList["runs"][number]["group"]>;
@@ -127,6 +135,7 @@ export function createPageStore(link: HostLink) {
     providers: null,
     newRun: null,
     tools: null,
+    settings: null,
     trends: null,
     trendsReadAt: null,
     readingTrends: false,
@@ -134,6 +143,7 @@ export function createPageStore(link: HostLink) {
     checking: false,
     runQuery: "",
     runGroup: null,
+    runSelected: null,
   });
   const waiting = new Map<number, { resolve: (json: unknown) => void; reject: (error: Error) => void }>();
   let lastId = 0;
@@ -233,6 +243,13 @@ export function createPageStore(link: HostLink) {
             s.newRun = { catalog, sessions, from };
             s.loadError = null;
           });
+      } else if (place.kind === "settings") {
+        const settings = await readSettings();
+        if (route === asked)
+          setState((s) => {
+            s.settings = settings;
+            s.loadError = null;
+          });
       } else if (place.kind === "tools") {
         const tools = (await call("tools")) as ToolRuns;
         if (route === asked)
@@ -244,6 +261,12 @@ export function createPageStore(link: HostLink) {
     } catch (error) {
       failed(asked, error);
     }
+  }
+
+  async function readSettings(): Promise<Settings> {
+    const settings = await call("get-settings");
+    if (typeof settings !== "object" || settings === null || Array.isArray(settings)) throw new Error("Monopole didn't print its settings as JSON.");
+    return settings as Settings;
   }
 
   /** Reads the sidebar and what the route shows. Trends reads only when it has nothing yet. */
@@ -352,6 +375,10 @@ export function createPageStore(link: HostLink) {
         s.runQuery = query;
         s.runGroup = group;
       }),
+    selectRun: (runId: string | null) =>
+      setState((s) => {
+        s.runSelected = runId;
+      }),
     /** Reads the open tab again, including Trends and New run, which changes don't reread. */
     refresh: () => {
       void readSidebar();
@@ -417,6 +444,15 @@ export function createPageStore(link: HostLink) {
         s.tools = { format: 1, tools: { ...(s.tools?.tools ?? {}), [action]: run } };
       });
       return run;
+    },
+    /** Saves the changed settings with save-settings, as Prompting Time's Settings tab does, and
+     * shows what Monopole saved. Rejects with Monopole's reason when it refuses a value. */
+    saveSettings: async (changes: Settings) => {
+      await call("save-settings", [JSON.stringify(changes)]);
+      const settings = await readSettings();
+      setState((s) => {
+        s.settings = settings;
+      });
     },
     /** Checks every provider now and shows the result. */
     checkProviders: async () => {

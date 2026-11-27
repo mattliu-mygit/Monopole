@@ -551,3 +551,15 @@ export function providerCheck(): ProviderCheck {
     ],
   };
 }
+
+/** What get-settings prints with nothing saved but a target registry. */
+export function settings(): Record<string, unknown> {
+  return {
+    run_db: "",
+    target_registry: "/Users/me/registry.json",
+    sandbox_runtime: "",
+    alert_webhook: "",
+    port: 8787,
+    ces: { url: "", scope_ref: "", dataset_id: "" },
+  };
+}

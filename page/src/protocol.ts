@@ -137,6 +137,10 @@ export type RunDetail = Card &
     models: { proposal_writer: string | null; proposal_evaluator: string | null };
   };
 
+/** What get-settings prints and save-settings takes (only the changed fields), described by
+ * schemas/plugin-settings.json. */
+export type Settings = Record<string, unknown>;
+
 export type ProviderState = "signed_in" | "signed_out" | "no_key" | "not_installed" | "unknown";
 
 /** A sign-in the sign-in action runs or ran; `link` is the CLI's fallback sign-in link, or for a

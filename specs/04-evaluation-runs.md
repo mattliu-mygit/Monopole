@@ -444,14 +444,17 @@ the run database or the plugin's own state changes.
 ### What the page offers
 
 Prompting Time folds its own sidebar while a plugin page is open, so the page
-draws Monopole's own tab sidebar (Runs, Trends, New run, Providers, Tools) with
+draws Monopole's own tab sidebar (Runs, Trends, New run, Providers, Tools,
+Settings) with
 Monopole's status line, the run count, and how many providers stop runs. Each
 tab's header carries its actions as buttons and one ⋯ menu.
 
 - **Runs** lists the newest runs as compact cards with their sessions, judges,
   mean rating, failure cause, and how a proposal's predicted evaluator score
   compares with the current instructions, with a search over titles, run IDs,
-  and judges and a filter per status group. Run detail shows what the web app's
+  and judges and a filter per status group. As in Whooper's review list, j and
+  k select the next and previous run and Enter opens it; Esc closes a popover
+  or menu. Run detail shows what the web app's
   run page shows, from the same serializer: why the run stopped, its pinned
   sessions and settings, scoring's turns and Scores, judging's activity, failed
   reviews with their cause, pinned sliding windows, and each judge's attempt,
@@ -487,6 +490,13 @@ tab's header carries its actions as buttons and one ⋯ menu.
 - **Tools** runs deterministic scoring, a date-range backfill, and a regression
   check that posts to the configured alert webhook, and shows analysis's
   subagent, judge-agreement, and segment insights as tables.
+- **Settings** edits the same settings as Prompting Time's own Settings tab for
+  Monopole: the same schema, read with `get-settings` and saved with
+  `save-settings`, which checks them; a refusal shows under the field it names.
+  The server reads every setting but the alert webhook when it starts, so after
+  changing one the page says to restart Monopole. Monopole's prerequisites
+  don't depend on settings, so a save here can't change what Prompting Time
+  checks.
 
 Rerun, Continue, and New run, the session and catalog lists New run needs, and
 Trends go through Monopole's running server, so they obey the same pinning and stage

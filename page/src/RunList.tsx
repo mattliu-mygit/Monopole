@@ -1,4 +1,4 @@
-import { createSignal, For, onSettled, Show } from "solid-js";
+import { createSignal, For, onSettled, Show, untrack } from "solid-js";
 import { Button, EllipsisIcon, Menu, StatusDot } from "@prompting-time/ui";
 import { meta, ratings } from "./format";
 import { PageHeader } from "./PageHeader";
@@ -43,6 +43,9 @@ export function matches(card: Card, query: string): boolean {
   return [card.title, card.run_id, ...card.judges.map((judge) => judge.label)].some((text) => text.toLowerCase().includes(wanted));
 }
 
+const typing = (event: KeyboardEvent) =>
+  event.target instanceof HTMLElement && (event.target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName));
+
 /**
  * The runs, newest first, with a search over title, run ID, and judge, and a chip per status group
  * with its count. Each run is a tight card in one column: the session's first prompt, the run ID,
@@ -50,6 +53,11 @@ export function matches(card: Card, query: string): boolean {
  * row. A failed run's status is a button that opens its cause in a popover; only a click opens it,
  * and a click elsewhere or Esc closes it. Each card's ⋯ menu opens, continues, reruns, edits and
  * reruns, or deletes it.
+ *
+ * As in Whooper's review list, j and k select the next and previous run, from the first or the last
+ * and around, and move the focus to its title; Enter opens it, also once the focus left the list,
+ * as after coming back from the run. Not while typing, with a modifier, or while a popover, menu,
+ * or dialog is open, where Esc closes it.
  */
 export function RunList(props: { store: PageStore }) {
   const store = props.store;
@@ -61,6 +69,7 @@ export function RunList(props: { store: PageStore }) {
   const shown = () => searched().filter((card) => store.state.runGroup === null || card.group === store.state.runGroup);
   const count = (group: RunGroup) => searched().filter((card) => card.group === group).length;
   const setGroup = (group: RunGroup | null) => store.filterRuns(store.state.runQuery, group);
+  let cardList: HTMLUListElement | undefined;
 
   onSettled(() => {
     const onClick = (event: MouseEvent) => {
@@ -69,6 +78,26 @@ export function RunList(props: { store: PageStore }) {
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpenRun(null);
+      if (event.defaultPrevented || typing(event) || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.key !== "j" && event.key !== "k" && event.key !== "Enter") return;
+      if ([...document.querySelectorAll('[role="dialog"], [role="alertdialog"], [role="menu"]:not([hidden])')].some((element) => element.checkVisibility?.() ?? true)) return;
+      const cards = untrack(shown);
+      const now = cards.findIndex((card) => card.run_id === untrack(() => store.state.runSelected));
+      if (event.key === "Enter") {
+        // A focused button, the selected run's title among them, takes Enter itself.
+        if (now < 0 || (document.activeElement && document.activeElement !== document.body)) return;
+        event.preventDefault();
+        store.open(`/runs/${encodeURIComponent(cards[now].run_id)}`);
+        return;
+      }
+      if (cards.length === 0) return;
+      event.preventDefault();
+      const by = event.key === "j" ? 1 : -1;
+      const next = cards[now < 0 ? (by > 0 ? 0 : cards.length - 1) : (now + by + cards.length) % cards.length];
+      store.selectRun(next.run_id);
+      const title = cardList?.querySelector<HTMLButtonElement>(`[data-run="${CSS.escape(next.run_id)}"] .m-title`);
+      title?.focus();
+      title?.scrollIntoView?.({ block: "nearest" });
     };
     document.addEventListener("click", onClick);
     document.addEventListener("keydown", onKey);
@@ -148,12 +177,13 @@ export function RunList(props: { store: PageStore }) {
                   </p>
                 }
               >
-                <ul class="m-runs" aria-label="Runs">
+                <ul class="m-runs" aria-label="Runs" ref={(element: HTMLUListElement) => { cardList = element; }}>
                   <For each={shown()}>
                     {(card) => (
                       <RunCard
                         card={card}
                         open={openRun() === card.run_id}
+                        selected={store.state.runSelected === card.run_id}
                         onToggle={() => setOpenRun(openRun() === card.run_id ? null : card.run_id)}
                         onOpenRun={() => store.open(`/runs/${encodeURIComponent(card.run_id)}`)}
                         actions={actions}
@@ -176,6 +206,7 @@ export function RunList(props: { store: PageStore }) {
 function RunCard(props: {
   card: Card;
   open: boolean;
+  selected: boolean;
   onToggle: () => void;
   onOpenRun: () => void;
   actions: ReturnType<typeof runActions>;
@@ -198,7 +229,7 @@ function RunCard(props: {
   };
   const popoverId = () => `cause-${card().run_id}`;
   return (
-    <li class="m-card" data-group={card().group ?? "draft"}>
+    <li class="m-card" data-group={card().group ?? "draft"} data-run={card().run_id} data-selected={props.selected ? "" : undefined}>
       <div class="m-card-body">
         <button type="button" class="m-title" onClick={props.onOpenRun}>
           {card().title}

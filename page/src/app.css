@@ -258,6 +258,11 @@ ol {
   background: var(--s-surface);
 }
 
+/* The run j and k selected, which keeps its mark while the focus is elsewhere. */
+.m-card[data-selected] {
+  box-shadow: inset 2px 0 0 var(--s-border-interactive);
+}
+
 .m-card-body {
   display: flex;
   flex-direction: column;
@@ -761,4 +766,21 @@ ol {
 .m-column > .m-stage:first-child {
   padding-block-start: 0;
   border-block-start: 0;
+}
+
+/* Settings: Monopole's fields, one column, with the save buttons at the end. */
+.m-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-space-16);
+  max-inline-size: 640px;
+}
+
+.m-settings-form legend {
+  font-size: var(--s-size-sm);
+  font-weight: var(--s-weight-semibold);
+}
+
+.m-settings-form > .m-actions {
+  justify-content: flex-end;
 }

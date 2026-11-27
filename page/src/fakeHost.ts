@@ -76,6 +76,7 @@ function refusal(reason: string): CallError {
 
 export function createFakeHost(send: (message: HostMessage) => void, options: FakeHostOptions = {}) {
   let runs: Card[] = fixtures.cards();
+  let settings: Record<string, unknown> = fixtures.settings();
   let providers: ProviderCheck = { format: 1, checked_at: null, providers: [] };
   let signIn: SignIn | null = null;
   let finishSignIn: ((state: SignIn["state"]) => void) | null = null;
@@ -219,6 +220,21 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
       }
       case "tools":
         return { format: 1, tools };
+      case "get-settings":
+        return settings;
+      case "save-settings": {
+        // Two of the checks src/weave_agent_signals/plugin/settings.py makes, refused as it does.
+        const changes = JSON.parse(args[0]) as Record<string, unknown>;
+        const refuse = (reason: string) => new CallError(reason, { stage: "run", exit_code: 2, stderr: `Configuration error: ${reason}\n` });
+        if ("port" in changes && !(Number.isInteger(changes.port) && (changes.port as number) >= 1 && (changes.port as number) <= 65535))
+          throw refuse("port must be a whole number from 1 to 65535");
+        if (typeof changes.alert_webhook === "string" && changes.alert_webhook && !changes.alert_webhook.startsWith("https://"))
+          throw refuse("alert_webhook must be blank or an https:// URL");
+        const ces = { ...(settings.ces as object), ...(changes.ces as object | undefined) };
+        settings = { ...settings, ...changes, ces };
+        changed("settings.json");
+        return settings;
+      }
       default:
         throw new Error(`The fake host does not run ${action}.`);
     }

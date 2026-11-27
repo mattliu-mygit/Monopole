@@ -4,6 +4,7 @@ import { NewRun } from "./NewRun";
 import { Providers } from "./Providers";
 import { RunList } from "./RunList";
 import { RunPage } from "./run/RunPage";
+import { Settings } from "./Settings";
 import type { PageStore } from "./store";
 import { Tools } from "./Tools";
 import { Trends } from "./Trends";
@@ -11,7 +12,8 @@ import { Trends } from "./Trends";
 /**
  * The page's views, by route, with Monopole's own tab sidebar, since Prompting Time folds its
  * sidebar while a plugin page is open: the run list at / (and one run at /runs/<id>), Trends at
- * /trends, New run at /new (and /new?from=<id> for Edit and rerun), /providers, and /tools.
+ * /trends, New run at /new (and /new?from=<id> for Edit and rerun), /providers, /tools, and
+ * /settings.
  * Prompting Time's `open {route}` selects the tab.
  */
 export function App(props: { store: PageStore }) {
@@ -28,6 +30,7 @@ export function App(props: { store: PageStore }) {
     { kind: "new", route: "/new", label: "New run", count: "" },
     { kind: "providers", route: "/providers", label: "Providers", count: signedOut() ? `${signedOut()} signed out` : "" },
     { kind: "tools", route: "/tools", label: "Tools", count: "" },
+    { kind: "settings", route: "/settings", label: "Settings", count: "" },
   ];
   const current = (tab: string) => kind() === tab || (tab === "runs" && kind() === "run");
   return (
@@ -64,6 +67,9 @@ export function App(props: { store: PageStore }) {
           </Match>
           <Match when={kind() === "tools"}>
             <Tools store={store} />
+          </Match>
+          <Match when={kind() === "settings"}>
+            <Settings store={store} />
           </Match>
           <Match when={true}>
             <RunList store={store} />

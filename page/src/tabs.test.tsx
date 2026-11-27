@@ -180,3 +180,77 @@ describe("Trends", () => {
     await waitFor(() => expect(trendReads()).toBe(2));
   });
 });
+
+describe("the Settings tab", () => {
+  it("shows get-settings in the schema's fields and saves only the changed ones with save-settings", async () => {
+    const host = renderWithFakeHost({ openOnReady: "/settings" });
+    const registry = await screen.findByRole("textbox", { name: "Target registry" });
+    expect(registry).toHaveValue("/Users/me/registry.json");
+    expect(tab(/^Settings/)).toHaveAttribute("aria-current", "page");
+
+    fireEvent.input(screen.getByRole("textbox", { name: "Alert webhook" }), "https://hooks.example/x");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Saved.")).toBeInTheDocument();
+    expect(host.calls()).toContainEqual(["save-settings", '{"alert_webhook":"https://hooks.example/x"}']);
+
+    fireEvent.input(screen.getByRole("textbox", { name: "Dataset ID" }), "dataset-2");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText(/restart Monopole in Prompting Time/)).toBeInTheDocument();
+    expect(host.calls()).toContainEqual(["save-settings", '{"ces":{"dataset_id":"dataset-2"}}']);
+    expect(screen.getByRole("textbox", { name: "Dataset ID" })).toHaveValue("dataset-2");
+  });
+
+  it("shows Monopole's refusal under the field it names", async () => {
+    renderWithFakeHost({ openOnReady: "/settings" });
+    const port = await screen.findByRole("spinbutton", { name: "Web UI port" });
+    fireEvent.input(port, "0");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(port).toHaveAccessibleDescription(/port must be a whole number from 1 to 65535/));
+    expect(port).toHaveAttribute("aria-invalid", "true");
+    expect(screen.queryByText("Saved.")).not.toBeInTheDocument();
+  });
+});
+
+describe("the run list's keys", () => {
+  const key = (k: string, target: Element = document.activeElement ?? document.body) => (dom.keyDown(target, { key: k }), flush());
+  const selected = () => document.querySelector(".m-card[data-selected] .m-title")?.textContent;
+
+  it("selects runs with j and k, around the ends, and opens the selected one with Enter", async () => {
+    const host = renderWithFakeHost();
+    await screen.findByText("Lets pause after scoring editing the skill copies");
+    const all = titles();
+    key("j", document.body);
+    expect(selected()).toBe(all[0]);
+    expect(document.activeElement?.textContent).toBe(all[0]);
+    key("j");
+    expect(selected()).toBe(all[1]);
+    key("k");
+    key("k");
+    expect(selected()).toBe(all.at(-1));
+
+    // Typing in the search moves nothing.
+    key("j", screen.getByRole("searchbox", { name: "Search runs" }));
+    expect(selected()).toBe(all.at(-1));
+
+    // Enter opens the selected run once the focus left the list, as after coming back from it.
+    (document.activeElement as HTMLElement).blur();
+    key("Enter", document.body);
+    await waitFor(() => expect(host.calls().some((call) => call[0] === "run")).toBe(true));
+  });
+
+  it("closes a failure popover with Esc, and j and k wait while it is open", async () => {
+    renderWithFakeHost();
+    await screen.findByText("Lets pause after scoring editing the skill copies");
+    fireEvent.click(screen.getByRole("button", { name: /^Failed at judging/ }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    key("j", document.body);
+    expect(selected()).toBeUndefined();
+    key("Escape", document.body);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions for run-failed01" }));
+    const menu = await screen.findByRole("menu");
+    key("Escape", menu);
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+  });
+});
