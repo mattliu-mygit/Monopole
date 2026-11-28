@@ -529,8 +529,8 @@ rules as the web app.
   Prompting Time passes actions only arguments, so a key is briefly visible in
   the process list: the page hands it to an action that holds it in a file only
   the user can read and exits, and a second action, given no key, checks and
-  saves it. Keeping it out entirely needs Prompting Time to pass secrets on
-  stdin.
+  saves it. A held key the page abandons is deleted after five minutes, never
+  used. Keeping it out entirely needs Prompting Time to pass secrets on stdin.
 - Saving an OpenAI key restarts the plugin's own server, the one holding the
   state folder's run lock, so it reads the key; it does not restart while a
   run's stage executes, since the restarted server would fail that run.

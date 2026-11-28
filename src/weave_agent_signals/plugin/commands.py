@@ -422,6 +422,7 @@ def _run(args: argparse.Namespace) -> int:
     keys.apply_saved_keys()
     action = args.plugin_action
     if action == "status":
+        keys.discard_stale_staged_keys()
         _print_json(status(run_db_path()))
     elif action == "runs":
         if args.limit < 1:

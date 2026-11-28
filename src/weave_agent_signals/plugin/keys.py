@@ -8,11 +8,13 @@ over in two calls that keep it out of the process list for all but a moment:
 2. `set-key --item wandb|openai` takes that file, deleting it at once, checks the key with
    `GET /v1/models`, which spends nothing, and saves it only when the provider accepts it.
 
-From a terminal, `set-key` with nothing staged reads the key from stdin instead. Nothing prints or
-logs the key. A real fix needs Prompting Time to pass a secret on stdin.
+A held key older than five minutes, left by a hand-off the page abandoned, is deleted by the next
+`set-key` or `status` and never used. From a terminal, `set-key` with nothing staged reads the key
+from stdin instead. Nothing prints or logs the key. A real fix needs Prompting Time to pass a
+secret on stdin.
 
 - W&B goes where Monopole already reads it: the `api.wandb.ai` entry of `~/.netrc`. Only that
-  entry changes; the file is rewritten whole through a temporary file with mode 600.
+  entry's password changes; the file is rewritten whole through a temporary file with mode 600.
   `WANDB_API_KEY`, when set, still wins over the file.
 - OpenAI goes to `<state folder>/openai-key` (mode 600). Every plugin action, including the start
   command's server, exports it as OPENAI_API_KEY, over `.env` and the environment. Saving it
@@ -25,6 +27,7 @@ import getpass
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -40,10 +43,17 @@ KEY_PROVIDERS = ("wandb", "openai")
 NETRC_MACHINE = "api.wandb.ai"
 OPENAI_KEY_FILE = "openai-key"
 CHECK_TIMEOUT_SECONDS = 10
+# A held key older than this belongs to a hand-off the page abandoned; the next `set-key` or
+# `status` deletes it.
+STAGED_KEY_MAX_AGE_SECONDS = 300
 
-# Where an entry of ~/.netrc starts: `machine <host>`, `default`, or a `macdef` macro, whose body
-# runs to the next blank line.
-_ENTRY_START = re.compile(r"(?m)(?<!\S)(machine|default|macdef)(?!\S)")
+# How Python's netrc module, which Monopole and wandb read ~/.netrc with, reads the file: tokens
+# split on whitespace; `machine`, `default`, and `macdef` start an entry only in keyword position,
+# never as the value of `login` (or `user`), `account`, or `password`; a `#` in keyword position
+# comments out the rest of its line; and a macro's body runs from the line after its name to the
+# next blank line.
+_TOKEN = re.compile(r"\S+")
+_VALUE_KEYWORDS = frozenset({"login", "user", "account", "password"})
 
 
 def read_key(text: str) -> str:
@@ -60,17 +70,30 @@ def _staged_path(provider: str) -> Path:
 
 
 def stage_key(provider: str, key: str) -> dict[str, Any]:
-    """Hold the key, unchecked, for the `set-key` call that follows."""
+    """Hold the key, unchecked, for the `set-key` call that follows, replacing any key held
+    before."""
 
     # mkstemp, under write_atomic, creates the file with mode 600.
     write_atomic(_staged_path(provider), read_key(key) + "\n")
     return {"format": 1, "staged": provider}
 
 
-def take_key(provider: str) -> str:
-    """The key `stage-key` held for `provider`, deleted now so it never outlives this call; with
-    none held, the key typed or piped on stdin."""
+def discard_stale_staged_keys() -> None:
+    """Delete every held key older than STAGED_KEY_MAX_AGE_SECONDS."""
 
+    for path in state_dir().glob("staged-*-key"):
+        try:
+            if time.time() - path.stat().st_mtime > STAGED_KEY_MAX_AGE_SECONDS:
+                path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def take_key(provider: str) -> str:
+    """The key `stage-key` held for `provider` within STAGED_KEY_MAX_AGE_SECONDS, deleted now so
+    it never outlives this call; with none held, the key typed or piped on stdin."""
+
+    discard_stale_staged_keys()
     path = _staged_path(provider)
     try:
         text = path.read_text(encoding="utf-8")
@@ -100,31 +123,70 @@ def _check(provider: str, key: str, client: httpx.Client) -> None:
         raise Refused(f"GET {url} answered HTTP {response.status_code}; nothing saved.")
 
 
-def netrc_with_key(text: str, machine: str, password: str) -> str:
-    """`text` with `machine`'s entry holding `password`, keeping its login (else "user") and
-    every other entry byte for byte. Appends the entry when the file has none."""
+_Pair = tuple[re.Match[str], re.Match[str] | None]
 
-    starts = []
-    for match in _ENTRY_START.finditer(text):
-        if starts and starts[-1][0] == "macdef":
-            body_end = text.find("\n\n", starts[-1][1])
-            if body_end != -1 and match.start() < body_end:
-                continue
-        starts.append((match.group(1), match.start()))
-    for index, (kind, start) in enumerate(starts):
-        if kind != "machine":
-            continue
-        end = starts[index + 1][1] if index + 1 < len(starts) else len(text)
-        tokens = text[start:end].split()
-        if len(tokens) < 2 or tokens[1] != machine:
-            continue
-        values = dict(zip(tokens[2::2], tokens[3::2]))
-        login = values.get("login", "user")
-        trailing = text[start:end][len(text[start:end].rstrip()) :] or "\n"
-        entry = f"machine {machine}\n  login {login}\n  password {password}{trailing}"
-        return text[:start] + entry + text[end:]
-    separator = "" if not text or text.endswith("\n") else "\n"
-    return f"{text}{separator}machine {machine}\n  login user\n  password {password}\n"
+
+def _netrc_entries(text: str) -> list[list[_Pair]]:
+    """Each `machine` or `default` entry of a ~/.netrc's text as (keyword, value) token pairs,
+    starting with `machine` and its host, or `default` and None."""
+
+    entries: list[list[_Pair]] = []
+    pending: re.Match[str] | None = None
+    position = 0
+    while match := _TOKEN.search(text, position):
+        position = match.end()
+        token = match.group()
+        if pending is not None:
+            if entries:
+                entries[-1].append((pending, match))
+            pending = None
+        elif token.startswith("#"):
+            line_end = text.find("\n", match.start())
+            position = len(text) if line_end == -1 else line_end
+        elif token == "macdef":
+            name = _TOKEN.search(text, position)
+            name_line_end = text.find("\n", name.end()) if name else -1
+            body_end = -1 if name_line_end == -1 else text.find("\n\n", name_line_end)
+            position = len(text) if body_end == -1 else body_end + 2
+        elif token in ("machine", "default"):
+            entries.append([])
+            if token == "machine":
+                pending = match
+            else:
+                entries[-1].append((match, None))
+        elif token in _VALUE_KEYWORDS:
+            pending = match
+        elif entries:
+            entries[-1].append((match, None))
+    if pending is not None and entries:
+        entries[-1].append((pending, None))
+    return entries
+
+
+def netrc_with_key(text: str, machine: str, password: str) -> str:
+    """`text` with `machine`'s entry holding `password`: only the password's value changes, and
+    every other byte, including the entry's other tokens and comments, stays. With several
+    entries for `machine`, the last, which netrc readers use, changes. An entry without a password
+    gets one, and a login "user" when it has none; a file without the entry gets it appended."""
+
+    found = [
+        entry
+        for entry in _netrc_entries(text)
+        if entry[0][0].group() == "machine" and entry[0][1] and entry[0][1].group() == machine
+    ]
+    if not found:
+        separator = "" if not text or text.endswith("\n") else "\n"
+        return f"{text}{separator}machine {machine}\n  login user\n  password {password}\n"
+    entry = found[-1]
+    for keyword, value in entry:
+        if keyword.group() == "password":
+            if value is None:
+                return f"{text[: keyword.end()]} {password}{text[keyword.end() :]}"
+            return text[: value.start()] + password + text[value.end() :]
+    keywords = {keyword.group() for keyword, _ in entry}
+    login = "" if keywords & {"login", "user"} else " login user"
+    end = max((value or keyword).end() for keyword, value in entry)
+    return f"{text[:end]}{login} password {password}{text[end:]}"
 
 
 def _save_wandb(key: str) -> str:

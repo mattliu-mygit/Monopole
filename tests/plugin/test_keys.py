@@ -7,6 +7,7 @@ import json
 import netrc
 import os
 import stat
+import time
 
 import httpx
 import pytest
@@ -78,10 +79,7 @@ def test_a_wandb_key_that_works_replaces_only_the_api_wandb_ai_entry(home, answe
     assert not staged.exists()
     assert json.loads(out)["saved"] == "Saved in the api.wandb.ai entry of ~/.netrc."
     text = (home / ".netrc").read_text()
-    assert text == NETRC.replace(
-        "machine api.wandb.ai login matt password old-key\n",
-        "machine api.wandb.ai\n  login matt\n  password new-key-123\n",
-    )
+    assert text == NETRC.replace("password old-key", "password new-key-123")
     parsed = netrc.netrc(str(home / ".netrc"))
     assert parsed.authenticators("api.wandb.ai") == ("matt", "", "new-key-123")
     assert parsed.authenticators("github.com") == ("octocat", "", "gh-token")
@@ -149,3 +147,55 @@ def test_an_empty_key_or_one_with_spaces_is_refused(home, answers, monkeypatch, 
     assert main(["plugin", "set-key", "--item", "openai"]) == 1
     assert "No key given" in capsys.readouterr().err
     assert answers[1] == []
+
+
+def test_a_new_wandb_key_changes_only_the_password_and_keeps_tokens_and_comments():
+    text = (
+        "# machine api.wandb.ai login old password commented-out\n"
+        "machine example.com login machine password api.wandb.ai\n"
+        "machine api.wandb.ai\n"
+        "  # personal key\n"
+        "  login matt\n"
+        "  account team\n"
+        "  password old-key # rotated monthly\n"
+        "machine github.com login a password b\n"
+    )
+
+    updated = keys.netrc_with_key(text, "api.wandb.ai", "new-key")
+
+    assert updated == text.replace("password old-key", "password new-key")
+
+
+def test_a_wandb_entry_without_a_password_or_login_gets_them_in_place():
+    assert (
+        keys.netrc_with_key("machine api.wandb.ai login matt\nmachine b\n", "api.wandb.ai", "k")
+        == "machine api.wandb.ai login matt password k\nmachine b\n"
+    )
+    assert keys.netrc_with_key("machine api.wandb.ai", "api.wandb.ai", "k") == (
+        "machine api.wandb.ai login user password k"
+    )
+
+
+def test_set_key_and_status_delete_a_held_key_the_page_abandoned(
+    home, answers, monkeypatch, capsys
+):
+    monkeypatch.setattr(keys.providers, "blockers", lambda now=None: [])
+    assert main(["plugin", "stage-key", "--item", "openai", "--key", "sk-old"]) == 0
+    assert main(["plugin", "stage-key", "--item", "wandb", "--key", "old-wandb"]) == 0
+    old = time.time() - keys.STAGED_KEY_MAX_AGE_SECONDS - 1
+    for provider in ("openai", "wandb"):
+        os.utime(state_dir() / f"staged-{provider}-key", (old, old))
+    capsys.readouterr()
+
+    # Prompting Time gives set-key no stdin, so with the stale key gone it has no key.
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert main(["plugin", "set-key", "--item", "openai"]) == 1
+    assert "No key given" in capsys.readouterr().err
+    assert answers[1] == []
+    assert not list(state_dir().glob("staged-*-key"))
+
+    assert main(["plugin", "stage-key", "--item", "wandb", "--key", "old-wandb"]) == 0
+    os.utime(state_dir() / "staged-wandb-key", (old, old))
+    assert main(["plugin", "stage-key", "--item", "openai", "--key", "sk-fresh"]) == 0
+    assert main(["plugin", "status"]) == 0
+    assert [path.name for path in state_dir().glob("staged-*-key")] == ["staged-openai-key"]
