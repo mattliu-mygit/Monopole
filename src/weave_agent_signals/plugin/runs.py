@@ -362,19 +362,19 @@ def run_detail(path: Path, run_id: str) -> dict[str, Any] | None:
     }
 
 
-# Prompting Time keeps only the first MiB (1,048,576 bytes) of what an action prints, and hands
-# the page any output that isn't whole JSON as text, so the run view prints in fewer bytes than
-# that, with room for the `{"format": 1, "run": ...}` around it.
+# Prompting Time passes a page at most 8 MiB of what an action prints, and none of it when the
+# output is larger. The run view stays at about 1 MB, which also keeps the page quick to parse it,
+# with room for the `{"format": 1, "run": ...}` around it.
 RUN_VIEW_BYTES = 1_000_000
 # The longest text and list each try at fitting keeps, from most to least.
 _SHORTENINGS = ((16_384, 512), (4_096, 128), (1_024, 32), (256, 8))
 
 
-def _printed_bytes(value: object) -> int:
+def printed_bytes(value: object) -> int:
     return len(json.dumps(value, ensure_ascii=False).encode())
 
 
-def _shorten(value: Any, text_limit: int, list_limit: int, key: str | None = None) -> Any:
+def shorten(value: Any, text_limit: int, list_limit: int, key: str | None = None) -> Any:
     """`value` with every text cut to `text_limit` characters and every list to `list_limit`
     items: the newest events, which come last, and the first items of any other list."""
 
@@ -382,9 +382,9 @@ def _shorten(value: Any, text_limit: int, list_limit: int, key: str | None = Non
         return f"{value[:text_limit]}… ({len(value) - text_limit:,} more characters)"
     if isinstance(value, list):
         kept = value[-list_limit:] if key == "events" else value[:list_limit]
-        return [_shorten(item, text_limit, list_limit) for item in kept]
+        return [shorten(item, text_limit, list_limit) for item in kept]
     if isinstance(value, dict):
-        return {name: _shorten(item, text_limit, list_limit, name) for name, item in value.items()}
+        return {name: shorten(item, text_limit, list_limit, name) for name, item in value.items()}
     return value
 
 
@@ -403,11 +403,11 @@ def fit_run_view(run: dict[str, Any]) -> dict[str, Any] | None:
         view["turn_cohort"] = {
             key: value for key, value in cohort.items() if key not in ("turns", "sessions")
         }
-    if _printed_bytes(view) <= RUN_VIEW_BYTES:
+    if printed_bytes(view) <= RUN_VIEW_BYTES:
         return view
     for text_limit, list_limit in _SHORTENINGS:
-        shortened = {**_shorten(view, text_limit, list_limit), "shortened": True}
-        if _printed_bytes(shortened) <= RUN_VIEW_BYTES:
+        shortened = {**shorten(view, text_limit, list_limit), "shortened": True}
+        if printed_bytes(shortened) <= RUN_VIEW_BYTES:
             return shortened
     return None
 

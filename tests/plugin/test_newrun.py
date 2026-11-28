@@ -9,7 +9,7 @@ import pytest
 
 from tests.plugin.fixtures import JUDGES, SESSION, add_run, started
 from weave_agent_signals.cli import main
-from weave_agent_signals.plugin import server
+from weave_agent_signals.plugin import newrun, server
 from weave_agent_signals.plugin.settings import state_dir
 
 CONFIG = {
@@ -229,6 +229,44 @@ def test_catalog_and_sessions_give_new_run_its_choices(state, fake, capsys):
     assert found["models"]["catalog_version"] == "models-2"
     assert found["rubrics"]["catalog_version"] == "rubrics-2"
     assert listed["params"] == {"since": "2026-11-01", "limit": "20"}
+    assert listed["shortened"] is False
+
+
+def test_sessions_fit_long_prompts_and_evidence_into_what_prompting_time_reads(
+    state, monkeypatch, capsys
+):
+    reason = "The tests failed again. " * 50
+    evidence = {
+        "signal": "outcome.tests_passed",
+        "version": "v1",
+        "rating": 0.0,
+        "reason": reason,
+        "turn_id": "turn-1",
+        "turn_started_at": "2026-11-05T22:00:00+00:00",
+    }
+    session = {"conversation_id": SESSION, "input_preview": "Fix it " * 3_000}
+    listed = {
+        "sessions": [{**session, "signal_evidence": [evidence] * 80}] * 100,
+        "total": 100,
+        "truncated": False,
+        "limit": 100,
+    }
+    assert len(json.dumps(listed)) > 8 * 1024 * 1024
+    client = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=listed)))
+    monkeypatch.setattr(server, "open_server", lambda port: server.Server(port, client))
+
+    assert main(["plugin", "sessions", "--limit", "100"]) == 0
+
+    out = capsys.readouterr().out
+    assert len(out.encode()) <= newrun.SESSIONS_BYTES + 1
+    printed = json.loads(out)
+    assert printed["shortened"] is True and printed["total"] == 100
+    assert len(printed["sessions"]) == 100
+    first = printed["sessions"][0]
+    assert first["input_preview"].startswith("Fix it Fix it")
+    assert len(first["input_preview"]) < 300
+    assert 0 < len(first["signal_evidence"]) < 80
+    assert len(first["signal_evidence"][0]["reason"]) < 300
 
 
 def test_session_estimates_ask_the_server_for_the_selected_sessions_only(state, fake, capsys):

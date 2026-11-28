@@ -535,6 +535,7 @@ export function sessions(): SessionList {
     ],
     total: 2,
     truncated: false,
+    shortened: false,
   };
 }
 

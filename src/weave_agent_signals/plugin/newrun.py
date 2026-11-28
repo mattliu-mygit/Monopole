@@ -16,10 +16,16 @@ from pathlib import Path
 from typing import Any
 
 from weave_agent_signals.plugin.confirm import Refused
-from weave_agent_signals.plugin.runs import read_runs
+from weave_agent_signals.plugin.runs import DETAIL_LIMIT, printed_bytes, read_runs, shorten
 from weave_agent_signals.plugin.server import Server
 
 _SETUP_KEYS = {"selection", "config", "auto_run"}
+# The most `sessions` prints, well under the 8 MiB Prompting Time passes a page. Up to 100
+# sessions each carry their first prompt and the reason of every low turn Score, either of which
+# can be long; the page shows only the prompt, as a title.
+SESSIONS_BYTES = 1_000_000
+# The most signal evidence each session keeps, from most to least, while fitting.
+_EVIDENCE_LIMITS = (1_000, 32, 8, 0)
 
 
 def catalog(server: Server) -> dict[str, Any]:
@@ -36,7 +42,25 @@ def sessions(
     server: Server, since: str | None, until: str | None, timezone: str | None, limit: int
 ) -> dict[str, Any]:
     params = {"since": since, "until": until, "timezone": timezone, "limit": limit}
-    return server.get("/api/sessions", {key: value for key, value in params.items() if value})
+    found = server.get("/api/sessions", {key: value for key, value in params.items() if value})
+    fitted = fit_sessions(found)
+    if fitted is None:
+        raise Refused("The session list is too large to show here; list fewer sessions.")
+    return fitted
+
+
+def fit_sessions(found: dict[str, Any]) -> dict[str, Any] | None:
+    """The server's session list in at most SESSIONS_BYTES: every session's texts, such as its
+    first prompt and its evidence reasons, cut to DETAIL_LIMIT characters, and its signal
+    evidence to the fewest items that fit. `shortened` says whether anything was cut. None when
+    even no evidence doesn't fit."""
+
+    for evidence_limit in _EVIDENCE_LIMITS:
+        fitted = [shorten(item, DETAIL_LIMIT, evidence_limit) for item in found["sessions"]]
+        view = {**found, "sessions": fitted, "shortened": fitted != found["sessions"]}
+        if printed_bytes(view) <= SESSIONS_BYTES:
+            return view
+    return None
 
 
 def session_estimates(server: Server, session_ids: list[str]) -> dict[str, Any]:

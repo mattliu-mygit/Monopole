@@ -174,6 +174,7 @@ export interface SessionSummary {
   conversation_id: string;
   turn_count: number;
   last_activity: string | null;
+  /** The first prompt, cut to 240 characters. */
   input_preview: string | null;
 }
 
@@ -181,6 +182,8 @@ export interface SessionList {
   sessions: SessionSummary[];
   total: number;
   truncated: boolean;
+  /** Whether a session's texts or evidence were cut to fit what Prompting Time reads. */
+  shortened: boolean;
 }
 
 /** One table of a tool's result, its cells already formatted. */
