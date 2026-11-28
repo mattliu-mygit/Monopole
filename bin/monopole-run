@@ -6,7 +6,8 @@
 # Only one copy runs at a time: monopole-run holds the lock <state>/run.lock, with its process ID in
 # run.lock/pid, where <state> is $XDG_STATE_HOME/monopole (default ~/.local/state/monopole). Prompting
 # Time reads that file to tell a copy started elsewhere from its own. A lock whose process is gone,
-# or is now another program, is stale and is taken over.
+# or is now another program, is stale and is taken over; exiting removes the lock only while it
+# still names this copy.
 set -uo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -14,14 +15,31 @@ state="${XDG_STATE_HOME:-$HOME/.local/state}/monopole"
 lock="$state/run.lock"
 mkdir -p "$state"
 
+# The process ID in the lock's pid file, or nothing.
+lock_pid() { cat "$lock/pid" 2>/dev/null || true; }
+
+# Whether process $1 is alive and runs monopole-run: a word of its command line, `bash
+# <path>/monopole-run`, ends in exactly monopole-run.
+runs_monopole_run() {
+  [[ -n "$1" ]] && ps -o command= -p "$1" 2>/dev/null | tr -s ' \t' '\n\n' | grep -E '(^|/)monopole-run$' >/dev/null
+}
+
 # mkdir is atomic, so of two copies started at once only one gets the lock.
 if ! mkdir "$lock" 2>/dev/null; then
-  holder="$(cat "$lock/pid" 2>/dev/null || true)"
-  if [[ -n "$holder" ]] && ps -o command= -p "$holder" 2>/dev/null | grep -q monopole-run; then
+  # A copy that has just made the lock writes its process ID a moment later.
+  holder="$(lock_pid)"
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [[ -z "$holder" ]] || break
+    sleep 0.05
+    holder="$(lock_pid)"
+  done
+  if runs_monopole_run "$holder"; then
     echo "monopole-run: process $holder is already running Monopole; see $lock/pid" >&2
     exit 1
   fi
-  rm -rf "$lock"
+  # The lock is stale. Remove it only if it still names that process, so a copy that took it
+  # over meanwhile keeps it.
+  [[ "$(lock_pid)" != "$holder" ]] || rm -rf "$lock"
   if ! mkdir "$lock" 2>/dev/null; then
     echo "monopole-run: another copy took $lock first" >&2
     exit 1
@@ -31,7 +49,8 @@ echo "$$" > "$lock/pid.tmp" && mv "$lock/pid.tmp" "$lock/pid"
 
 server=""
 restart=""
-trap 'rm -rf "$lock"; [[ -z "$server" ]] || kill "$server" 2>/dev/null || true' EXIT
+# Exiting releases the lock only while it still names this process.
+trap '[[ "$(lock_pid)" != "$$" ]] || rm -rf "$lock"; [[ -z "$server" ]] || kill "$server" 2>/dev/null || true' EXIT
 trap 'exit 130' INT TERM HUP
 # SIGUSR1 restarts the server, which reads the plugin's settings and saved keys when it starts;
 # set-key sends it after saving an OpenAI key.

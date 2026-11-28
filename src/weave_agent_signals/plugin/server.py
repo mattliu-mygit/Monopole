@@ -100,8 +100,9 @@ def open_server(port: int) -> Server:
 
 def lock_holder(state: Path) -> int | None:
     """The process holding `<state>/run.lock`, from its `pid` file, when that process is alive
-    and still runs monopole-run: the rule monopole-run and Prompting Time apply, since a lock
-    outlives a `kill -9` and its process ID can later belong to any program."""
+    and still runs monopole-run: a word of its command line ends in exactly `monopole-run`, the
+    rule monopole-run applies too, since a lock outlives a `kill -9` and its process ID can later
+    belong to any program."""
 
     try:
         pid = int((state / "run.lock" / "pid").read_text(encoding="utf-8").strip())
@@ -115,7 +116,10 @@ def lock_holder(state: Path) -> int | None:
         text=True,
         check=False,
     )
-    return pid if "monopole-run" in found.stdout else None
+    # Its command line is `bash <path>/monopole-run`, whose path may hold spaces; a program whose
+    # words only contain the name, such as `monopole-run-helper`, doesn't hold the lock.
+    names = {Path(word).name for word in found.stdout.split()}
+    return pid if "monopole-run" in names else None
 
 
 def restart_for_new_key(run_db: Path) -> str:

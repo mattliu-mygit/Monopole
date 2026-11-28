@@ -40,20 +40,41 @@ def _log_lines(log: Path) -> list[str]:
     return log.read_text().split("\n")[:-1] if log.exists() else []
 
 
-def test_monopole_run_restarts_its_server_on_sigusr1_and_keeps_the_lock(tmp_path):
+def _start_monopole_run(tmp_path: Path) -> subprocess.Popen:
+    """bin/monopole-run, copied beside the fake server, with its state under `tmp_path`."""
+
     folder = tmp_path / "plugin" / "bin"
-    folder.mkdir(parents=True)
-    shutil.copy(ROOT / "bin" / "monopole-run", folder / "monopole-run")
-    (folder / "monopole").write_text(FAKE_SERVER)
-    (folder / "monopole").chmod(0o755)
-    log = tmp_path / "server.log"
+    if not folder.exists():
+        folder.mkdir(parents=True)
+        shutil.copy(ROOT / "bin" / "monopole-run", folder / "monopole-run")
+        (folder / "monopole").write_text(FAKE_SERVER)
+        (folder / "monopole").chmod(0o755)
     environment = {
         "PATH": os.environ["PATH"],
         "HOME": str(tmp_path),
         "XDG_STATE_HOME": str(tmp_path / "state"),
-        "SERVER_LOG": str(log),
+        "SERVER_LOG": str(tmp_path / "server.log"),
     }
-    run = subprocess.Popen(["bash", str(folder / "monopole-run")], env=environment)
+    return subprocess.Popen(
+        ["bash", str(folder / "monopole-run")], env=environment, stderr=subprocess.PIPE, text=True
+    )
+
+
+def _lock_pid(lock: Path) -> str:
+    try:
+        return (lock / "pid").read_text().strip()
+    except FileNotFoundError:
+        return ""
+
+
+def _stop(run: subprocess.Popen) -> None:
+    run.terminate()
+    run.wait(10)
+
+
+def test_monopole_run_restarts_its_server_on_sigusr1_and_keeps_the_lock(tmp_path):
+    log = tmp_path / "server.log"
+    run = _start_monopole_run(tmp_path)
     try:
         lock_pid = tmp_path / "state" / "monopole" / "run.lock" / "pid"
         _wait_for(lambda: len(_log_lines(log)) == 1 and lock_pid.exists())
@@ -69,11 +90,49 @@ def test_monopole_run_restarts_its_server_on_sigusr1_and_keeps_the_lock(tmp_path
         assert run.poll() is None
         assert lock_pid.read_text().strip() == str(run.pid)
     finally:
-        run.terminate()
-        run.wait(10)
+        _stop(run)
     # monopole-run's exit stops the server; the fake logs it after its current sleep.
     _wait_for(lambda: _log_lines(log)[-1] == f"stop {second}")
     assert not lock_pid.parent.exists()
+
+
+def test_a_second_monopole_run_leaves_the_running_copys_lock_alone(tmp_path):
+    lock = tmp_path / "state" / "monopole" / "run.lock"
+    first = _start_monopole_run(tmp_path)
+    try:
+        _wait_for(lambda: _lock_pid(lock) == str(first.pid))
+        second = _start_monopole_run(tmp_path)
+        assert second.wait(10) == 1
+        assert f"process {first.pid} is already running Monopole" in second.stderr.read()
+        assert _lock_pid(lock) == str(first.pid)
+    finally:
+        _stop(first)
+
+
+def test_monopole_run_takes_over_a_lock_whose_process_is_gone(tmp_path):
+    gone = subprocess.Popen(["true"])
+    gone.wait()
+    lock = tmp_path / "state" / "monopole" / "run.lock"
+    lock.mkdir(parents=True)
+    (lock / "pid").write_text(f"{gone.pid}\n")
+    run = _start_monopole_run(tmp_path)
+    try:
+        _wait_for(lambda: _lock_pid(lock) == str(run.pid))
+    finally:
+        _stop(run)
+    assert not lock.exists()
+
+
+def test_monopole_run_exiting_keeps_a_lock_another_copy_took_over(tmp_path):
+    lock = tmp_path / "state" / "monopole" / "run.lock"
+    run = _start_monopole_run(tmp_path)
+    try:
+        _wait_for(lambda: _lock_pid(lock))
+        # As if another copy found this one's lock stale and took it.
+        (lock / "pid").write_text(f"{os.getpid()}\n")
+    finally:
+        _stop(run)
+    assert (lock / "pid").read_text().strip() == str(os.getpid())
 
 
 def test_lock_holder_ignores_a_pid_file_naming_another_program(state):
@@ -82,6 +141,18 @@ def test_lock_holder_ignores_a_pid_file_naming_another_program(state):
     (lock / "pid").write_text(f"{os.getpid()}\n")
 
     assert server.lock_holder(state_dir()) is None
+
+
+def test_lock_holder_ignores_a_program_whose_command_only_contains_monopole_run(state):
+    lock = state_dir() / "run.lock"
+    lock.mkdir(parents=True)
+    other = subprocess.Popen(["bash", "-c", "sleep 30", "monopole-run-helper"])
+    try:
+        (lock / "pid").write_text(f"{other.pid}\n")
+        assert server.lock_holder(state_dir()) is None
+    finally:
+        other.kill()
+        other.wait()
 
 
 @pytest.fixture
