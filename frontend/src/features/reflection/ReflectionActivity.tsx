@@ -1,18 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ReflectingProgress } from '../../types'
-
-function durationLabel(start: string, endMs: number): string | null {
-  const startMs = Date.parse(start)
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null
-
-  const totalSeconds = Math.max(0, Math.floor((endMs - startMs) / 1000))
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = totalSeconds % 60
-  if (hours > 0) return `${hours}h ${minutes}m`
-  if (minutes > 0) return `${minutes}m ${seconds}s`
-  return `${seconds}s`
-}
+import { durationLabel } from '../runs/runFormat'
 
 function eventTimeLabel(start: string, at: string): string {
   const label = durationLabel(start, Date.parse(at))

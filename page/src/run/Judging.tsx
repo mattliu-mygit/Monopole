@@ -8,10 +8,8 @@ import type {
   ReviewAttempt,
 } from "../../../frontend/src/types";
 import { Activity } from "./Activity";
+import { DEBUG_EVENT_PHASES } from "../../../frontend/src/features/runs/runFormat";
 import { fixed, plural, turnRanges, usageText, words } from "./words";
-
-// Each attempt to reach a provider; the activity hides them until "Show debug events".
-const DEBUG_PHASES = new Set(["judging_started", "session_started", "transport_attempt_started", "transport_attempt_completed", "schema_recovery_reused"]);
 
 type Event = JudgingProgress["events"][number];
 
@@ -328,7 +326,7 @@ export function Judging(props: {
         events={state()?.events ?? []}
         facts={eventFacts}
         detail={(event) => <EventDetail event={event} />}
-        debug={DEBUG_PHASES}
+        debug={DEBUG_EVENT_PHASES}
       />
       <div class="m-progress" role="progressbar" aria-label="Rubrics reviewed" aria-valuemin={0} aria-valuemax={planned()} aria-valuenow={state()?.rubrics_completed ?? 0}>
         <i style={{ width: `${planned() ? Math.round(Math.min(1, (state()?.rubrics_completed ?? 0) / planned()) * 100) : 0}%` }} />

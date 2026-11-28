@@ -8,52 +8,12 @@ import type {
   ReviewAttempt,
   InferenceStepAudit,
 } from '../../types'
-
-const DEBUG_EVENT_PHASES = new Set([
-  'judging_started',
-  'session_started',
-  'transport_attempt_started',
-  'transport_attempt_completed',
-  'schema_recovery_reused',
-])
+import { DEBUG_EVENT_PHASES, durationLabel, turnRanges, usageText, words } from './runFormat'
 
 export interface JudgingProgressProps {
   plan: JudgingPlan | null
   progress: JudgingProgressData | null
   result: JudgingResult | null
-}
-
-function words(value: string): string {
-  return value.replaceAll('_', ' ')
-}
-
-/** Turn positions as readable ranges, such as "turns 1–39, 41" or "turn 114". */
-function turnRanges(positions: number[]): string {
-  const sorted = [...positions].sort((left, right) => left - right)
-  const ranges: string[] = []
-  for (let start = 0; start < sorted.length;) {
-    let end = start
-    while (end + 1 < sorted.length && sorted[end + 1] === sorted[end] + 1) end += 1
-    ranges.push(end === start ? `${sorted[start]}` : `${sorted[start]}–${sorted[end]}`)
-    start = end + 1
-  }
-  return `${sorted.length === 1 ? 'turn' : 'turns'} ${ranges.join(', ')}`
-}
-
-function usageText(usage: Record<string, unknown>): string {
-  return Object.entries(usage).map(([key, value]) => `${words(key)} ${String(value)}`).join(' · ') || '—'
-}
-
-function durationLabel(start: string, endMs: number): string | null {
-  const startMs = Date.parse(start)
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null
-  const totalSeconds = Math.max(0, Math.floor((endMs - startMs) / 1_000))
-  const hours = Math.floor(totalSeconds / 3_600)
-  const minutes = Math.floor((totalSeconds % 3_600) / 60)
-  const seconds = totalSeconds % 60
-  if (hours > 0) return `${hours}h ${minutes}m`
-  if (minutes > 0) return `${minutes}m ${seconds}s`
-  return `${seconds}s`
 }
 
 function eventTimeLabel(start: string, at: string): string {
