@@ -29,6 +29,9 @@
 //   delete* --item <run id>    deletes a run
 //   rerun* --item <run id>     starts a new run with that run's sessions and settings
 //   continue* --item <run id>  starts the stage a waiting run waits for (Card.next_stage)
+//                              These three take --item more than once for the runs checked in
+//                              the list, confirmed once together; rerun and continue then print
+//                              a Batch, delete still a line of text.
 //   create-run* <setup JSON>   starts a new run from New run's {selection, config, auto_run}
 //   catalog                    the models and rubrics a new run can choose
 //   sessions [--limit n]       the newest sessions a new run can choose
@@ -95,6 +98,13 @@ export interface Card {
   deletable: boolean;
   /** The stage Continue starts for a run that waits between stages, or null when it doesn't wait. */
   next_stage: "scoring" | "judging" | "reflecting" | null;
+}
+
+/** What rerun and continue print given several --item: each run's result, or why the server
+ * refused it. A request whose every run was refused fails instead. */
+export interface Batch {
+  format: 1;
+  results: ({ item: string; result: unknown } | { item: string; error: string })[];
 }
 
 export interface RunList {

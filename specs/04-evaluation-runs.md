@@ -454,7 +454,13 @@ tab's header carries its actions as buttons and one ⋯ menu.
   compares with the current instructions, with a search over titles, run IDs,
   and judges and a filter per status group. As in Whooper's review list, j and
   k select the next and previous run and Enter opens it; Esc closes a popover
-  or menu. Run detail shows what the web app's
+  or menu. Runs can be checked (x, Shift+click for a range, ⌘A for every run
+  the search and filter show, Esc to clear; a new search or filter clears
+  them) for one action on all of them: Rerun, Continue when all wait, and
+  Delete when all may be deleted, each confirmed once for every checked run,
+  with a notice of what happened to each; and, for exactly two, a comparison of
+  their rubric ratings, mean rating, and proposals' predicted current and
+  proposed scores. Run detail shows what the web app's
   run page shows, from the same serializer: why the run stopped, its pinned
   sessions and settings, scoring's turns and Scores, judging's activity, failed
   reviews with their cause, pinned sliding windows, and each judge's attempt,
@@ -484,6 +490,11 @@ tab's header carries its actions as buttons and one ⋯ menu.
   is not answering.
 - **Delete** removes a run that is not active, with its owned audit records,
   after confirmation. Its Scores in CES stay.
+- Delete, Rerun, and Continue take several runs in one request whose single
+  preview and fingerprint cover all of them, so a change to any run asks
+  again. Delete refuses the whole request when any run can't be deleted;
+  Rerun and Continue go on past a run the server refuses and report each
+  run's result, failing only when every run was refused.
 - **Providers** shows the last sign-in check and offers Check, Sign in for the
   Claude, Codex, and Devin CLIs, Codex's device-code sign-in, and fields for the
   W&B and OpenAI keys.

@@ -1,4 +1,5 @@
 import { For, Match, Switch } from "solid-js";
+import { Compare } from "./Compare";
 import { blocking, statusLine } from "./format";
 import { NewRun } from "./NewRun";
 import { Providers } from "./Providers";
@@ -11,7 +12,8 @@ import { Trends } from "./Trends";
 
 /**
  * The page's views, by route, with Monopole's own tab sidebar, since Prompting Time folds its
- * sidebar while a plugin page is open: the run list at / (and one run at /runs/<id>), Trends at
+ * sidebar while a plugin page is open: the run list at / (one run at /runs/<id>, and two checked
+ * runs side by side at /compare/<id>/<id>), Trends at
  * /trends, New run at /new (and /new?from=<id> for Edit and rerun), /providers, /tools, and
  * /settings.
  * Prompting Time's `open {route}` selects the tab.
@@ -32,7 +34,11 @@ export function App(props: { store: PageStore }) {
     { kind: "tools", route: "/tools", label: "Tools", count: "" },
     { kind: "settings", route: "/settings", label: "Settings", count: "" },
   ];
-  const current = (tab: string) => kind() === tab || (tab === "runs" && kind() === "run");
+  const comparing = () => {
+    const place = store.place();
+    return place.kind === "compare" ? place.runIds : null;
+  };
+  const current = (tab: string) => kind() === tab || (tab === "runs" && (kind() === "run" || kind() === "compare"));
   return (
     <div class="m-page">
       <aside class="m-side">
@@ -55,6 +61,9 @@ export function App(props: { store: PageStore }) {
         <Switch>
           <Match when={runId()} keyed>
             {(id: string) => <RunPage store={store} runId={id} />}
+          </Match>
+          <Match when={comparing()} keyed>
+            {(runIds: [string, string]) => <Compare store={store} runIds={runIds} />}
           </Match>
           <Match when={kind() === "trends"}>
             <Trends store={store} />

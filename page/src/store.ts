@@ -4,6 +4,7 @@ import {
   PROTOCOL_VERSION,
   readHostMessage,
   type Analysis,
+  type Batch,
   type Catalog,
   type ProviderCheck,
   type RunConfig,
@@ -39,11 +40,13 @@ export function parentLink(): HostLink {
   };
 }
 
-/** What a route shows: the run list, one run, Trends, New run (blank, or filled in from the run in
- * `?from=`), the provider checks, Tools, or Settings. Any other route shows the list. */
+/** What a route shows: the run list, one run, two runs side by side, Trends, New run (blank, or
+ * filled in from the run in `?from=`), the provider checks, Tools, or Settings. Any other route
+ * shows the list. */
 export type Place =
   | { kind: "runs" }
   | { kind: "run"; runId: string }
+  | { kind: "compare"; runIds: [string, string] }
   | { kind: "trends" }
   | { kind: "new"; from: string | null }
   | { kind: "providers" }
@@ -57,6 +60,8 @@ export function placeOf(route: string): Place {
   if (route === "/trends") return { kind: "trends" };
   const fresh = /^\/new(?:\?from=([^&]+))?$/.exec(route);
   if (fresh) return { kind: "new", from: fresh[1] ? decodeURIComponent(fresh[1]) : null };
+  const pair = /^\/compare\/([^/]+)\/([^/]+)$/.exec(route);
+  if (pair) return { kind: "compare", runIds: [decodeURIComponent(pair[1]), decodeURIComponent(pair[2])] };
   const match = /^\/runs\/([^/]+)$/.exec(route);
   return match ? { kind: "run", runId: decodeURIComponent(match[1]) } : { kind: "runs" };
 }
@@ -81,6 +86,8 @@ export interface PageState {
   runs: RunList | null;
   /** The open run, or null while it is read. */
   run: RunDetail | null;
+  /** The two runs Compare shows, or null while they are read. */
+  compare: [RunDetail, RunDetail] | null;
   providers: ProviderCheck | null;
   newRun: NewRunData | null;
   tools: ToolRuns | null;
@@ -101,6 +108,17 @@ export interface PageState {
   runGroup: RunGroup | null;
   /** The run j and k selected in the list, kept while the user opens it. */
   runSelected: string | null;
+  /** The runs checked in the list for an action on all of them; a new search or filter clears it. */
+  runChecked: string[];
+}
+
+/** The actions the run list runs on every checked run. */
+export type BatchAction = "delete" | "rerun" | "continue";
+
+/** How a batch action went: the runs it acted on, and the runs the server refused, with why. */
+export interface BatchOutcome {
+  done: string[];
+  failed: { item: string; error: string }[];
 }
 
 export type RunGroup = NonNullable<RunList["runs"][number]["group"]>;
@@ -144,6 +162,8 @@ export function createPageStore(link: HostLink) {
     runQuery: "",
     runGroup: null,
     runSelected: null,
+    runChecked: [],
+    compare: null,
   });
   const waiting = new Map<number, { resolve: (json: unknown) => void; reject: (error: Error) => void }>();
   let lastId = 0;
@@ -230,6 +250,13 @@ export function createPageStore(link: HostLink) {
             // writes progress and the page reads it again.
             if (s.run?.run_id === shown.run_id) reconcile(shown, "id")(s.run);
             else s.run = shown;
+            s.loadError = null;
+          });
+      } else if (place.kind === "compare") {
+        const shown = await Promise.all(place.runIds.map((id) => call("run", ["--item", id]).then((printed) => runIn(printed, id))));
+        if (route === asked)
+          setState((s) => {
+            s.compare = [shown[0], shown[1]];
             s.loadError = null;
           });
       } else if (place.kind === "new") {
@@ -325,6 +352,7 @@ export function createPageStore(link: HostLink) {
       setState((s) => {
         s.route = next;
         s.run = null;
+        s.compare = null;
         s.newRun = null;
         s.loadError = null;
       });
@@ -369,11 +397,17 @@ export function createPageStore(link: HostLink) {
       read();
     },
     open,
-    /** Sets the run list's search text and status-group filter. */
+    /** Sets the run list's search text and status-group filter, and clears the checked runs, so
+     * an action never reaches a checked run the list no longer shows. */
     filterRuns: (query: string, group: RunGroup | null) =>
       setState((s) => {
         s.runQuery = query;
         s.runGroup = group;
+        s.runChecked = [];
+      }),
+    checkRuns: (runIds: string[]) =>
+      setState((s) => {
+        s.runChecked = runIds;
       }),
     selectRun: (runId: string | null) =>
       setState((s) => {
@@ -398,6 +432,20 @@ export function createPageStore(link: HostLink) {
     rerun: async (runId: string) => {
       const started = (await holding(() => call("rerun", ["--item", runId]))) as { route: string };
       open(started.route);
+    },
+    /** Asks Prompting Time to run the action on every run in runIds, which it does after one
+     * confirmation covering them all, and says which runs it acted on and which the server
+     * refused. Rejects as one run's action does, such as for a cancelled confirmation. */
+    runBatch: async (action: BatchAction, runIds: string[]): Promise<BatchOutcome> => {
+      const printed = await holding(() => call(action, runIds.flatMap((id) => ["--item", id])));
+      // One run prints what its single action prints, and delete prints text; a refusal rejected.
+      if (runIds.length === 1 || action === "delete") return { done: runIds, failed: [] };
+      const outcome: BatchOutcome = { done: [], failed: [] };
+      for (const result of (printed as Batch).results) {
+        if ("error" in result) outcome.failed.push(result);
+        else outcome.done.push(result.item);
+      }
+      return outcome;
     },
     /** Asks Prompting Time to start the stage the waiting run waits for, which it does only after
      * the user confirms, since judging and reflection call paid models, and shows the run. */

@@ -15,7 +15,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from weave_agent_signals.plugin.confirm import Refused
+from weave_agent_signals.plugin.confirm import Refused, request_text
 from weave_agent_signals.plugin.runs import DETAIL_LIMIT, printed_bytes, read_runs, shorten
 from weave_agent_signals.plugin.server import Server
 
@@ -129,8 +129,8 @@ def _starts(setup: dict[str, Any]) -> str:
     return f"A new run: scoring starts now and writes Scores to CES; {then}."
 
 
-def _request(action: str, setup: dict[str, Any], server: Server, **extra: Any) -> str:
-    request = {
+def _request(action: str, setup: dict[str, Any], server: Server, **extra: Any) -> dict[str, Any]:
+    return {
         "action": action,
         **extra,
         "sessions": list(setup["selection"]["session_ids"]),
@@ -140,16 +140,15 @@ def _request(action: str, setup: dict[str, Any], server: Server, **extra: Any) -
         "server": server.base,
         "setup": setup,
     }
-    return json.dumps(request, indent=2, ensure_ascii=False) + "\n"
 
 
-def rerun_setup(path: Path, run_id: str, server: Server) -> dict[str, Any]:
-    """The old run's selection, configuration under the current catalog versions, and
-    auto-run. Refuses when a model or rubric it used is no longer in the catalog."""
+def rerun_setup(path: Path, run_id: str, found: dict[str, Any]) -> dict[str, Any]:
+    """The old run's selection, configuration under the current catalog versions in `found`
+    (what `catalog` returns), and auto-run. Refuses when a model or rubric it used is no longer
+    in the catalog."""
 
     row = _old_run(path, run_id)
     config = json.loads(row["run_config"])
-    found = catalog(server)
     missing = _missing(config, found, _labels(row["models"]))
     if missing:
         raise Refused(
@@ -166,8 +165,13 @@ def rerun_setup(path: Path, run_id: str, server: Server) -> dict[str, Any]:
     }
 
 
-def rerun_request(path: Path, run_id: str, server: Server) -> tuple[str, dict[str, Any]]:
-    setup = rerun_setup(path, run_id, server)
+def rerun_request(
+    path: Path, run_id: str, server: Server, found: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The rerun request the user confirms, and the setup it starts, under the catalogs in
+    `found`."""
+
+    setup = rerun_setup(path, run_id, found)
     return _request("rerun", setup, server, from_run=run_id), setup
 
 
@@ -190,7 +194,7 @@ def parse_setup(text: str) -> dict[str, Any]:
 
 
 def create_request(setup: dict[str, Any], server: Server) -> str:
-    return _request("create-run", setup, server)
+    return request_text("create-run", [_request("create-run", setup, server)])
 
 
 def start_run(server: Server, setup: dict[str, Any]) -> dict[str, Any]:

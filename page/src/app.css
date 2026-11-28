@@ -784,3 +784,50 @@ ol {
 .m-settings-form > .m-actions {
   justify-content: flex-end;
 }
+
+/* Checked runs: the card's checkbox, the bar of actions for all of them, and the notice after. */
+.m-card:has(> .m-check) {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.m-check {
+  margin-block-start: 3px;
+  cursor: pointer;
+}
+
+.m-card[data-checked] {
+  border-color: var(--s-border-interactive);
+}
+
+.m-batch,
+.m-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-space-8);
+}
+
+.m-batch {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  padding: var(--s-space-8) var(--s-space-12);
+  border: 1px solid var(--s-border-muted);
+  border-radius: 8px;
+  background: var(--s-surface);
+}
+
+.m-batch strong {
+  margin-inline-end: var(--s-space-8);
+  font-weight: var(--s-weight-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.m-batch .m-link {
+  margin-inline-start: auto;
+  color: var(--s-text-secondary);
+}
+
+.m-notice {
+  color: var(--s-text-secondary);
+}

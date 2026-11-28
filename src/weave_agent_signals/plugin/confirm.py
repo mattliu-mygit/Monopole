@@ -9,6 +9,8 @@ fingerprint, so a request that changed after the user confirmed does not run.
 from __future__ import annotations
 
 import hashlib
+import json
+from typing import Any
 
 from weave_agent_signals.plugin.settings import state_dir, write_atomic
 
@@ -19,6 +21,14 @@ class Refused(Exception):
 
 def fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def request_text(action: str, requests: list[dict[str, Any]]) -> str:
+    """The text the user confirms: one item's request, or for several items one request listing
+    each, so a single fingerprint covers them all and a change to any of them changes it."""
+
+    request = requests[0] if len(requests) == 1 else {"action": action, "runs": requests}
+    return json.dumps(request, indent=2, ensure_ascii=False) + "\n"
 
 
 def confirmed(action: str, text: str, *, print_only: bool, expect: str | None, what: str) -> bool:

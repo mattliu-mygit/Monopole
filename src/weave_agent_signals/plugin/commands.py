@@ -13,6 +13,7 @@ import os
 import sqlite3
 import sys
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,12 @@ from urllib.parse import urlparse
 
 from weave_agent_signals.models import ConfigurationError
 from weave_agent_signals.plugin import keys, newrun, providers, server, signin, tools
-from weave_agent_signals.plugin.confirm import Refused, add_confirm_flags, confirmed
+from weave_agent_signals.plugin.confirm import (
+    Refused,
+    add_confirm_flags,
+    confirmed,
+    request_text,
+)
 from weave_agent_signals.plugin.runs import (
     DETAIL_LIMIT,
     WAITING_REASONS,
@@ -153,9 +159,40 @@ def status(path: Path, now: datetime | None = None) -> dict[str, Any]:
     }
 
 
-def delete_request(path: Path, run_id: str) -> str:
-    """The text of the delete request the user confirms. It holds only what decides the
-    request, so its fingerprint changes when the run does."""
+def _what(action: str, run_ids: list[str]) -> str:
+    """The request's name in messages: "delete run-1", or "delete 3 runs"."""
+
+    return f"{action} {run_ids[0]}" if len(run_ids) == 1 else f"{action} {len(run_ids)} runs"
+
+
+def distinct_items(items: list[str]) -> list[str]:
+    """The run IDs given as `--item`, each at most once, in the order given."""
+
+    for item in items:
+        if items.count(item) > 1:
+            raise Refused(f"--item {item} is given more than once; nothing ran.")
+    return items
+
+
+def each_run(run_ids: list[str], act: Callable[[str], dict[str, Any]]) -> dict[str, Any]:
+    """Runs `act(run_id)` for each run the user confirmed together, going on past a run the
+    server refuses, and prints what happened to each: `{"item", "result"}` or `{"item",
+    "error"}`. Refuses, with every reason, when every run was refused."""
+
+    results: list[dict[str, Any]] = []
+    for run_id in run_ids:
+        try:
+            results.append({"item": run_id, "result": act(run_id)})
+        except Refused as refusal:
+            results.append({"item": run_id, "error": str(refusal)})
+    if all("error" in result for result in results):
+        raise Refused("; ".join(f"{result['item']}: {result['error']}" for result in results))
+    return {"format": 1, "results": results}
+
+
+def delete_request(path: Path, run_id: str) -> dict[str, Any]:
+    """The delete request the user confirms. It holds only what decides the request, so its
+    fingerprint changes when the run does."""
 
     card = get_card(path, run_id)
     if card is None:
@@ -171,33 +208,50 @@ def delete_request(path: Path, run_id: str) -> str:
         "run_database": str(path),
         "deletes": "The run, its saved judge calls, and its events. Its Scores in CES stay.",
     }
-    return json.dumps(request, indent=2, ensure_ascii=False) + "\n"
+    return request
 
 
-def delete(path: Path, run_id: str, *, print_only: bool, expect: str | None) -> None:
-    text = delete_request(path, run_id)
-    if not confirmed("delete", text, print_only=print_only, expect=expect, what=f"delete {run_id}"):
+def delete(path: Path, run_ids: list[str], *, print_only: bool, expect: str | None) -> None:
+    """Deletes the runs after one confirmation covering all of them; any run that can't be
+    deleted refuses the whole request before anything is saved."""
+
+    text = request_text("delete", [delete_request(path, run_id) for run_id in run_ids])
+    what = _what("delete", run_ids)
+    if not confirmed("delete", text, print_only=print_only, expect=expect, what=what):
         return
     store = RunStore(path)
     try:
-        store.delete(run_id)
+        for run_id in run_ids:
+            store.delete(run_id)
     finally:
         store.close()
     notify_runs_changed()
-    print(f"Deleted {run_id}.")
+    print(f"Deleted {', '.join(run_ids)}.")
 
 
-def rerun(path: Path, run_id: str, settings: dict[str, Any], args: argparse.Namespace) -> None:
+def rerun(
+    path: Path, run_ids: list[str], settings: dict[str, Any], args: argparse.Namespace
+) -> None:
+    """Starts a new run per old run after one confirmation covering all of them. One run
+    prints what `start_run` does; several print each one's result or refusal."""
+
     with server.open_server(settings["port"]) as monopole:
-        text, setup = newrun.rerun_request(path, run_id, monopole)
-        what = f"rerun {run_id}"
-        if confirmed("rerun", text, print_only=args.print_only, expect=args.expect, what=what):
-            _print_json(newrun.start_run(monopole, setup))
+        found = newrun.catalog(monopole)
+        built = {run_id: newrun.rerun_request(path, run_id, monopole, found) for run_id in run_ids}
+        text = request_text("rerun", [request for request, _ in built.values()])
+        what = _what("rerun", run_ids)
+        if not confirmed("rerun", text, print_only=args.print_only, expect=args.expect, what=what):
+            return
+
+        def start(run_id: str) -> dict[str, Any]:
+            return newrun.start_run(monopole, built[run_id][1])
+
+        _print_json(start(run_ids[0]) if len(run_ids) == 1 else each_run(run_ids, start))
 
 
-def continue_request(path: Path, run_id: str, server_base: str) -> str:
-    """The text of the Continue request the user confirms: the run, its status, and the stage
-    it starts with what that stage calls or writes. A change to the run changes it."""
+def continue_request(path: Path, run_id: str, server_base: str) -> dict[str, Any]:
+    """The Continue request the user confirms: the run, its status, and the stage it starts
+    with what that stage calls or writes. A change to the run changes it."""
 
     detail = run_detail(path, run_id)
     if detail is None:
@@ -229,25 +283,32 @@ def continue_request(path: Path, run_id: str, server_base: str) -> str:
         "starts": starts,
         "server": server_base,
     }
-    return json.dumps(request, indent=2, ensure_ascii=False) + "\n"
+    return request
 
 
 def continue_run(
-    path: Path, run_id: str, settings: dict[str, Any], args: argparse.Namespace
+    path: Path, run_ids: list[str], settings: dict[str, Any], args: argparse.Namespace
 ) -> None:
-    """Starts the stage a waiting run waits for, through the server's advance route, as
-    Continue in Monopole's web UI does."""
+    """Starts the stage each waiting run waits for, through the server's advance route, as
+    Continue in Monopole's web UI does, after one confirmation covering all of them. One run
+    prints its new status; several print each one's result or refusal."""
 
     with server.open_server(settings["port"]) as monopole:
-        text = continue_request(path, run_id, monopole.base)
+        requests = [continue_request(path, run_id, monopole.base) for run_id in run_ids]
+        text = request_text("continue", requests)
         if args.print_only:
             monopole.check()
-        what = f"continue {run_id}"
-        if confirmed("continue", text, print_only=args.print_only, expect=args.expect, what=what):
+        what = _what("continue", run_ids)
+        if not confirmed(
+            "continue", text, print_only=args.print_only, expect=args.expect, what=what
+        ):
+            return
+
+        def advance(run_id: str) -> dict[str, Any]:
             status = monopole.call("POST", f"/api/runs/{run_id}/advance")["status"]
-            _print_json(
-                {"format": 1, "run_id": run_id, "status": status, "route": f"/runs/{run_id}"}
-            )
+            return {"format": 1, "run_id": run_id, "status": status, "route": f"/runs/{run_id}"}
+
+        _print_json(advance(run_ids[0]) if len(run_ids) == 1 else each_run(run_ids, advance))
 
 
 def create_run(settings: dict[str, Any], args: argparse.Namespace) -> None:
@@ -340,15 +401,13 @@ def add_parser(subs: argparse._SubParsersAction) -> None:
     runs.add_argument("--limit", type=int, default=100)
     run = actions.add_parser("run", help="One run's detail")
     run.add_argument("--item", required=True, metavar="RUN_ID")
-    remove = actions.add_parser("delete", help="Delete a run after Prompting Time's confirmation")
-    remove.add_argument("--item", required=True, metavar="RUN_ID")
-    add_confirm_flags(remove)
-    again = actions.add_parser("rerun", help="Start a new run with an old run's settings")
-    again.add_argument("--item", required=True, metavar="RUN_ID")
-    add_confirm_flags(again)
-    advance = actions.add_parser("continue", help="Start the stage a waiting run waits for")
-    advance.add_argument("--item", required=True, metavar="RUN_ID")
-    add_confirm_flags(advance)
+    # Delete, Rerun, and Continue take one or more --item; several confirm once, together.
+    remove = actions.add_parser("delete", help="Delete runs after Prompting Time's confirmation")
+    again = actions.add_parser("rerun", help="Start new runs with old runs' settings")
+    advance = actions.add_parser("continue", help="Start the stage each waiting run waits for")
+    for batch in (remove, again, advance):
+        batch.add_argument("--item", required=True, action="append", metavar="RUN_ID")
+        add_confirm_flags(batch)
     create = actions.add_parser("create-run", help="Start a new run from New run's settings")
     create.add_argument("setup", help='{"selection": ..., "config": ..., "auto_run": ...} as JSON')
     add_confirm_flags(create)
@@ -438,11 +497,12 @@ def _run(args: argparse.Namespace) -> int:
             raise Refused(f"{args.item} is too large to show here; open it in Monopole's web UI.")
         _print_json({"format": 1, "run": view})
     elif action == "delete":
-        delete(run_db_path(), args.item, print_only=args.print_only, expect=args.expect)
+        run_ids = distinct_items(args.item)
+        delete(run_db_path(), run_ids, print_only=args.print_only, expect=args.expect)
     elif action == "rerun":
-        rerun(run_db_path(), args.item, settings, args)
+        rerun(run_db_path(), distinct_items(args.item), settings, args)
     elif action == "continue":
-        continue_run(run_db_path(), args.item, settings, args)
+        continue_run(run_db_path(), distinct_items(args.item), settings, args)
     elif action == "create-run":
         create_run(settings, args)
     elif action == "catalog":

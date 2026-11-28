@@ -4,7 +4,7 @@ import { meta, ratings } from "./format";
 import { PageHeader } from "./PageHeader";
 import type { Card } from "./protocol";
 import { ProposalRow } from "./ProposalRow";
-import type { PageStore, RunGroup } from "./store";
+import type { BatchAction, BatchOutcome, PageStore, RunGroup } from "./store";
 
 /** What a run card and the run page can do with a run: Continue a run that waits between stages,
  * Rerun with the same settings, open New run filled in with them, and delete; Continue, Rerun, and
@@ -43,8 +43,25 @@ export function matches(card: Card, query: string): boolean {
   return [card.title, card.run_id, ...card.judges.map((judge) => judge.label)].some((text) => text.toLowerCase().includes(wanted));
 }
 
+// A focused checkbox, such as a card's after a click, still lets the list's keys work.
 const typing = (event: KeyboardEvent) =>
-  event.target instanceof HTMLElement && (event.target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName));
+  event.target instanceof HTMLElement &&
+  (event.target.isContentEditable ||
+    ["TEXTAREA", "SELECT"].includes(event.target.tagName) ||
+    (event.target instanceof HTMLInputElement && event.target.type !== "checkbox"));
+
+const layerOpen = () =>
+  [...document.querySelectorAll('[role="dialog"], [role="alertdialog"], [role="menu"]:not([hidden])')].some((element) => element.checkVisibility?.() ?? true);
+
+const runs = (n: number) => `${n} run${n === 1 ? "" : "s"}`;
+
+/** The notice after a batch action: what it did, then each run the server refused and why. */
+export function batchNotice(action: BatchAction, outcome: BatchOutcome): string {
+  const n = outcome.done.length;
+  const did = action === "delete" ? `Deleted ${runs(n)}.` : action === "rerun" ? `Started ${n} rerun${n === 1 ? "" : "s"}.` : `Continued ${runs(n)}.`;
+  if (outcome.failed.length === 0) return did;
+  return `${did} ${outcome.failed.length} failed: ${outcome.failed.map((failure) => `${failure.item}: ${failure.error}`).join("; ")}`;
+}
 
 /**
  * The runs, newest first, with a search over title, run ID, and judge, and a chip per status group
@@ -56,8 +73,16 @@ const typing = (event: KeyboardEvent) =>
  *
  * As in Whooper's review list, j and k select the next and previous run, from the first or the last
  * and around, and move the focus to its title; Enter opens it, also once the focus left the list,
- * as after coming back from the run. Not while typing, with a modifier, or while a popover, menu,
- * or dialog is open, where Esc closes it.
+ * as after coming back from the run. A click on a card outside its controls selects it too. Not
+ * while typing, with a modifier, or while a popover, menu, or dialog is open, where Esc closes it.
+ *
+ * Runs can be checked for one action on all of them. The selected card shows its checkbox, and
+ * every card does once any is checked; Shift+click checks or clears the range from the last box
+ * clicked, x checks or clears the selected run, ⌘A checks every run the search and filter show,
+ * and Esc clears them. A bar then says how many are checked and offers what applies to all of
+ * them: Compare for exactly two, Rerun, Continue when all wait, and Delete when all may be
+ * deleted. Rerun, Continue, and Delete confirm once in Prompting Time for all of them, and a
+ * notice says what happened to each.
  */
 export function RunList(props: { store: PageStore }) {
   const store = props.store;
@@ -69,7 +94,43 @@ export function RunList(props: { store: PageStore }) {
   const shown = () => searched().filter((card) => store.state.runGroup === null || card.group === store.state.runGroup);
   const count = (group: RunGroup) => searched().filter((card) => card.group === group).length;
   const setGroup = (group: RunGroup | null) => store.filterRuns(store.state.runQuery, group);
+  // Only shown runs count, so a run deleted meanwhile drops out.
+  const checked = () => shown().filter((card) => store.state.runChecked.includes(card.run_id));
+  const isChecked = (runId: string) => store.state.runChecked.includes(runId);
+  const [notice, setNotice] = createSignal<string | null>(null);
+  // The last run whose box was clicked or toggled with x, where a Shift+click's range starts.
+  let anchor: string | null = null;
   let cardList: HTMLUListElement | undefined;
+
+  const setChecked = (runIds: string[], on: boolean) => {
+    const now = untrack(() => store.state.runChecked);
+    store.checkRuns(on ? [...now, ...runIds.filter((id) => !now.includes(id))] : now.filter((id) => !runIds.includes(id)));
+  };
+  const toggle = (runId: string, range: boolean) => {
+    const cards = untrack(shown).map((card) => card.run_id);
+    const on = !untrack(() => isChecked(runId));
+    const from = range && anchor !== null ? cards.indexOf(anchor) : -1;
+    const to = cards.indexOf(runId);
+    setChecked(from < 0 ? [runId] : cards.slice(Math.min(from, to), Math.max(from, to) + 1), on);
+    anchor = runId;
+  };
+  const batch = async (action: BatchAction) => {
+    const runIds = checked().map((card) => card.run_id);
+    setActionError(null);
+    setNotice(null);
+    try {
+      const outcome = await store.runBatch(action, runIds);
+      // The runs the server refused stay checked, to try again.
+      store.checkRuns(outcome.failed.map((failure) => failure.item));
+      setNotice(batchNotice(action, outcome));
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    }
+  };
+  const compare = () => {
+    const [a, b] = checked();
+    store.open(`/compare/${encodeURIComponent(a.run_id)}/${encodeURIComponent(b.run_id)}`);
+  };
 
   onSettled(() => {
     const onClick = (event: MouseEvent) => {
@@ -77,12 +138,33 @@ export function RunList(props: { store: PageStore }) {
       if (!target?.closest(".m-popover, .m-status-button")) setOpenRun(null);
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpenRun(null);
-      if (event.defaultPrevented || typing(event) || event.metaKey || event.ctrlKey || event.altKey) return;
-      if (event.key !== "j" && event.key !== "k" && event.key !== "Enter") return;
-      if ([...document.querySelectorAll('[role="dialog"], [role="alertdialog"], [role="menu"]:not([hidden])')].some((element) => element.checkVisibility?.() ?? true)) return;
+      if (event.key === "Escape") {
+        // Esc closes the innermost thing: an open popover or menu first, then the checks.
+        if (untrack(openRun) !== null) setOpenRun(null);
+        else if (!event.defaultPrevented && !typing(event) && !layerOpen() && untrack(() => store.state.runChecked.length) > 0) {
+          event.preventDefault();
+          store.checkRuns([]);
+        }
+        return;
+      }
+      if (event.defaultPrevented || typing(event) || event.altKey) return;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a" && !event.shiftKey) {
+        if (layerOpen()) return;
+        event.preventDefault();
+        store.checkRuns(untrack(shown).map((card) => card.run_id));
+        return;
+      }
+      if (event.metaKey || event.ctrlKey) return;
+      if (event.key !== "j" && event.key !== "k" && event.key !== "Enter" && event.key !== "x") return;
+      if (layerOpen()) return;
       const cards = untrack(shown);
       const now = cards.findIndex((card) => card.run_id === untrack(() => store.state.runSelected));
+      if (event.key === "x") {
+        if (now < 0) return;
+        event.preventDefault();
+        toggle(cards[now].run_id, false);
+        return;
+      }
       if (event.key === "Enter") {
         // A focused button, the selected run's title among them, takes Enter itself.
         if (now < 0 || (document.activeElement && document.activeElement !== document.body)) return;
@@ -111,8 +193,11 @@ export function RunList(props: { store: PageStore }) {
     <section class="m-tab">
       <PageHeader
         title="Runs"
-        menu={[{ value: "refresh", label: "Read again" }]}
-        onMenu={() => store.refresh()}
+        menu={[
+          { value: "check-all", label: "Check every run shown · ⌘A" },
+          { value: "refresh", label: "Read again" },
+        ]}
+        onMenu={(value) => (value === "check-all" ? store.checkRuns(shown().map((card) => card.run_id)) : store.refresh())}
       >
         <Button variant="primary" onClick={() => store.open("/new")}>
           New run
@@ -163,6 +248,40 @@ export function RunList(props: { store: PageStore }) {
             </p>
           )}
         </Show>
+        <Show when={notice()}>
+          {(text) => (
+            <p class="m-notice" role="status">
+              <span>{text()}</span>
+              <button type="button" class="m-link" onClick={() => setNotice(null)}>
+                Dismiss
+              </button>
+            </p>
+          )}
+        </Show>
+        <Show when={checked().length > 0}>
+          <div class="m-batch" role="toolbar" aria-label="Checked runs">
+            <strong>{checked().length} selected</strong>
+            <Show when={checked().length === 2}>
+              <Button onClick={compare}>Compare</Button>
+            </Show>
+            <Button onClick={() => void batch("rerun")} disabled={store.held()}>
+              Rerun
+            </Button>
+            <Show when={checked().every((card) => card.next_stage)}>
+              <Button onClick={() => void batch("continue")} disabled={store.held()}>
+                Continue
+              </Button>
+            </Show>
+            <Show when={checked().every((card) => card.deletable)}>
+              <Button onClick={() => void batch("delete")} disabled={store.held()}>
+                Delete
+              </Button>
+            </Show>
+            <button type="button" class="m-link" onClick={() => store.checkRuns([])}>
+              Clear · Esc
+            </button>
+          </div>
+        </Show>
         <Show when={store.state.runs} fallback={<p class="m-hint" role="status">Reading runs…</p>}>
           {(list) => (
             <Show when={list().runs.length > 0} fallback={<p class="m-hint">No runs yet. Start one from New run.</p>}>
@@ -184,6 +303,10 @@ export function RunList(props: { store: PageStore }) {
                         card={card}
                         open={openRun() === card.run_id}
                         selected={store.state.runSelected === card.run_id}
+                        checkable={store.state.runSelected === card.run_id || store.state.runChecked.length > 0}
+                        checked={isChecked(card.run_id)}
+                        onCheck={(range) => toggle(card.run_id, range)}
+                        onSelect={() => store.selectRun(card.run_id)}
                         onToggle={() => setOpenRun(openRun() === card.run_id ? null : card.run_id)}
                         onOpenRun={() => store.open(`/runs/${encodeURIComponent(card.run_id)}`)}
                         actions={actions}
@@ -207,6 +330,12 @@ function RunCard(props: {
   card: Card;
   open: boolean;
   selected: boolean;
+  /** Whether the card shows its checkbox, and whether it is checked. */
+  checkable: boolean;
+  checked: boolean;
+  /** Checks or clears the run; `range` for Shift+click. */
+  onCheck: (range: boolean) => void;
+  onSelect: () => void;
   onToggle: () => void;
   onOpenRun: () => void;
   actions: ReturnType<typeof runActions>;
@@ -229,7 +358,29 @@ function RunCard(props: {
   };
   const popoverId = () => `cause-${card().run_id}`;
   return (
-    <li class="m-card" data-group={card().group ?? "draft"} data-run={card().run_id} data-selected={props.selected ? "" : undefined}>
+    <li
+      class="m-card"
+      data-group={card().group ?? "draft"}
+      data-run={card().run_id}
+      data-selected={props.selected ? "" : undefined}
+      data-checked={props.checked ? "" : undefined}
+      onClick={(event) => {
+        if (!(event.target as Element).closest("button, input, a, [role='menu'], .m-popover")) props.onSelect();
+      }}
+    >
+      <Show when={props.checkable}>
+        <input
+          type="checkbox"
+          class="m-check"
+          aria-label={`Check ${card().run_id}`}
+          checked={props.checked}
+          onClick={(event) => {
+            // The list's state decides; the box only draws it.
+            event.preventDefault();
+            props.onCheck(event.shiftKey);
+          }}
+        />
+      </Show>
       <div class="m-card-body">
         <button type="button" class="m-title" onClick={props.onOpenRun}>
           {card().title}

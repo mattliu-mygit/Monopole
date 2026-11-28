@@ -27,6 +27,8 @@ export interface FakeHostOptions {
   holdSignIn?: boolean;
   /** What run --item prints for a run instead of its fixture detail. */
   runDetail?: (card: Card) => unknown;
+  /** Why Monopole's server refuses to rerun or continue a run, by run ID, once confirmed. */
+  serverRefuses?: Record<string, string>;
 }
 
 /** Prompting Time keeps the first MiB of what an action prints, and hands the page output that
@@ -97,6 +99,22 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
     return args[at + 1];
   }
   const item = (args: string[]) => flag(args, "--item");
+  /** Every --item, as delete, rerun, and continue take them for the runs checked in the list. */
+  const items = (args: string[]) => args.flatMap((arg, at) => (arg === "--item" && args[at + 1] ? [args[at + 1]] : []));
+
+  /** Runs `act` on each run as Monopole does for several --item: going on past a run the server
+   * refuses, printing each one's result or error, and failing when every run was refused. */
+  function each(ids: string[], act: (id: string) => unknown): unknown {
+    const results = ids.map((id) => {
+      const reason = options.serverRefuses?.[id];
+      return reason ? { item: id, error: reason } : { item: id, result: act(id) };
+    });
+    if (results.every((result) => "error" in result)) {
+      const reason = results.map((result) => `${result.item}: ${(result as { error: string }).error}`).join("; ");
+      throw new CallError(reason, { stage: "run", exit_code: 1, stderr: `${reason}\n` });
+    }
+    return ids.length === 1 && "result" in results[0] ? results[0].result : { format: 1, results };
+  }
 
   function startRun(): { format: 1; run_id: string; status: string; route: string } {
     const run_id = `run-new${runs.length}`;
@@ -118,10 +136,12 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
         throw new Error(`${action} asks to confirm first, so Prompting Time adds --print and --expect itself.`);
       }
       if (action === "delete" || action === "continue") {
-        const found = runs.find((card) => card.run_id === item(args));
-        if (!found) throw refusal(`There is no run ${item(args)}.`);
-        if (action === "delete" && !found.deletable) throw refusal(`${found.run_id} is ${found.status}; cancel it in Monopole before deleting it.`);
-        if (action === "continue" && !found.next_stage) throw refusal(`${found.run_id} is ${found.label}, so it isn't waiting for Continue.`);
+        for (const id of items(args)) {
+          const found = runs.find((card) => card.run_id === id);
+          if (!found) throw refusal(`There is no run ${id}.`);
+          if (action === "delete" && !found.deletable) throw refusal(`${found.run_id} is ${found.status}; cancel it in Monopole before deleting it.`);
+          if (action === "continue" && !found.next_stage) throw refusal(`${found.run_id} is ${found.label}, so it isn't waiting for Continue.`);
+        }
       }
       if (!(await options.confirm?.(action, args))) throw new CallError("Nothing ran: the confirmation was cancelled.", { stage: "cancelled" });
     }
@@ -135,21 +155,21 @@ export function createFakeHost(send: (message: HostMessage) => void, options: Fa
         return { format: 1, run: options.runDetail ? options.runDetail(found) : fixtures.detail(found) };
       }
       case "delete": {
-        const id = item(args);
-        runs = runs.filter((card) => card.run_id !== id);
+        const ids = items(args);
+        runs = runs.filter((card) => !ids.includes(card.run_id));
         changed("runs-changed");
-        return `Deleted ${id}.`;
+        return `Deleted ${ids.join(", ")}.`;
       }
       case "rerun":
-        return startRun();
-      case "continue": {
-        const id = item(args);
-        runs = runs.map((card) =>
-          card.run_id === id ? { ...card, status: "judging", label: "Judging", dot: "running", group: "running", progress: null, next_stage: null } : card,
-        );
-        changed("runs-changed");
-        return { format: 1, run_id: id, status: "judging", route: `/runs/${id}` };
-      }
+        return each(items(args), () => startRun());
+      case "continue":
+        return each(items(args), (id) => {
+          runs = runs.map((card) =>
+            card.run_id === id ? { ...card, status: "judging", label: "Judging", dot: "running", group: "running", progress: null, next_stage: null } : card,
+          );
+          changed("runs-changed");
+          return { format: 1, run_id: id, status: "judging", route: `/runs/${id}` };
+        });
       case "create-run":
         setups.push(JSON.parse(args[0]));
         return startRun();
