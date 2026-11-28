@@ -5,6 +5,8 @@ import sqlite3
 import threading
 import time
 
+import pytest
+
 from tests.plugin.fixtures import add_run, failed_judging, started
 from weave_agent_signals.cli import main
 from weave_agent_signals.plugin.commands import watch_run_database
@@ -76,3 +78,23 @@ def test_reads_leave_the_database_unchanged(state, capsys):
 
     assert connection.execute("PRAGMA data_version").fetchone()[0] == before
     connection.close()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["plugin", "monitor", "--exp", "abc"],
+        ["plugin", "monitor", "--pri"],
+        ["plugin", "delete", "--item", "run-1", "--pri"],
+        ["plugin", "run", "--ite", "run-1"],
+        ["plugin", "--he"],
+    ],
+)
+def test_abbreviated_flags_are_refused(state, capsys, argv):
+    # Prompting Time blocks only the full --print and --expect spellings, so an abbreviation
+    # must not reach them.
+    with pytest.raises(SystemExit) as exited:
+        main(argv)
+
+    assert exited.value.code == 2
+    assert "usage:" in capsys.readouterr().err

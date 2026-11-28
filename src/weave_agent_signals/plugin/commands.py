@@ -393,8 +393,12 @@ def serve(args: argparse.Namespace, settings: dict[str, Any]) -> int:
 
 
 def add_parser(subs: argparse._SubParsersAction) -> None:
+    # Prompting Time blocks only the full --print and --expect spellings, so no plugin parser
+    # may accept an abbreviation such as --exp or --pri.
     parser = subs.add_parser(
-        "plugin", help="Actions Prompting Time runs for the Monopole plugin (JSON output)"
+        "plugin",
+        help="Actions Prompting Time runs for the Monopole plugin (JSON output)",
+        allow_abbrev=False,
     )
     actions = parser.add_subparsers(dest="plugin_action", required=True)
     actions.add_parser("status", help="Prompting Time status format 2")
@@ -463,6 +467,8 @@ def add_parser(subs: argparse._SubParsersAction) -> None:
     save = actions.add_parser("save-settings", help="Check and save changed settings")
     save.add_argument("changes", help="The changed settings as one JSON object")
     actions.add_parser("serve", help="Monopole's server, configured by the plugin's settings")
+    for action_parser in actions.choices.values():
+        action_parser.allow_abbrev = False
 
 
 # Prompting Time's exit code for a confirmed request that changed: it previews again and asks.
