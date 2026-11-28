@@ -26,7 +26,7 @@ from typing import Any
 from weave_agent_signals import ces_commands
 from weave_agent_signals.patterns import agreement, segment_gaps, subagent_gaps
 from weave_agent_signals.plugin.confirm import Refused
-from weave_agent_signals.plugin.settings import state_dir, write_atomic
+from weave_agent_signals.plugin.settings import process_alive, state_dir, write_atomic
 from weave_agent_signals.stats import excludes_zero
 
 TOOLS_FILE = "tools.json"
@@ -41,18 +41,6 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _alive(pid: object) -> bool:
-    if not isinstance(pid, int) or pid <= 1:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def last_runs() -> dict[str, Any]:
     """Each tool's last run. A run whose process is gone without finishing reads as stopped."""
 
@@ -61,7 +49,7 @@ def last_runs() -> dict[str, Any]:
     except (OSError, ValueError):
         tools = {}
     for entry in tools.values():
-        if entry.get("state") == "running" and not _alive(entry.get("pid")):
+        if entry.get("state") == "running" and not process_alive(entry.get("pid")):
             entry.update(state="stopped", output="The tool stopped without finishing.")
     return {"format": 1, "tools": tools}
 

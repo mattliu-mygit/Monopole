@@ -34,6 +34,20 @@ _CES_SETTINGS = {
 }
 
 
+def process_alive(pid: object) -> bool:
+    """Whether `pid`, as a state file recorded it, names a running process."""
+
+    if not isinstance(pid, int) or pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def state_dir() -> Path:
     """`$XDG_STATE_HOME/monopole`, else `~/.local/state/monopole`: the folder Prompting Time
     watches and passes XDG_STATE_HOME for."""

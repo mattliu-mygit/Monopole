@@ -36,7 +36,7 @@ from typing import Any
 from weave_agent_signals.plugin import providers
 from weave_agent_signals.plugin.confirm import Refused
 from weave_agent_signals.plugin.runs import DETAIL_LIMIT, one_line
-from weave_agent_signals.plugin.settings import state_dir, write_atomic
+from weave_agent_signals.plugin.settings import process_alive, state_dir, write_atomic
 
 # Codex's device code lasts 15 minutes; a browser sign-in normally takes under one.
 SIGN_IN_TIMEOUT_SECONDS = 600
@@ -67,18 +67,6 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _alive(pid: object) -> bool:
-    if not isinstance(pid, int) or pid <= 1:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def _provider(provider: str, device_auth: bool = False) -> list[str]:
     if provider not in COMMANDS:
         raise Refused(f"Monopole signs in to {', '.join(COMMANDS)} only, not {provider}.")
@@ -97,7 +85,7 @@ def current() -> dict[str, Any] | None:
         found = json.loads((state_dir() / STATE_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if found.get("state") == "waiting" and not _alive(found.get("pid")):
+    if found.get("state") == "waiting" and not process_alive(found.get("pid")):
         found = {**found, "state": "stopped", "message": "The sign-in stopped without finishing."}
     return found
 
