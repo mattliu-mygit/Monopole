@@ -98,12 +98,12 @@ _CARD_COLUMNS = f"""
 
 @contextmanager
 def read_runs(path: Path) -> Iterator[sqlite3.Connection | None]:
-    """A connection to the run database for reads, or None when no server has created it yet."""
+    """A read-only connection to the run database, or None when no server has created it yet."""
 
     if not path.exists():
         yield None
         return
-    connection = sqlite3.connect(path)
+    connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
     try:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=5000")
@@ -325,9 +325,14 @@ def run_detail(path: Path, run_id: str) -> dict[str, Any] | None:
     if found is None:
         return None
     with read_runs(path) as connection:
-        row = connection.execute(
-            f"SELECT {_DETAIL_COLUMNS} FROM runs WHERE run_id = ?", (run_id,)
-        ).fetchone()
+        row = None
+        if connection is not None:
+            row = connection.execute(
+                f"SELECT {_DETAIL_COLUMNS} FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+    # The run was deleted after its card was read.
+    if row is None:
+        return None
     rubric_labels = json.loads(row["rubric_labels"] or "{}")
     failed_stage = _failed_stage(row) if row["status"] == "failed" else None
     stages = []

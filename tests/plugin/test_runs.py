@@ -5,7 +5,8 @@ import sqlite3
 import pytest
 
 from tests.plugin.fixtures import add_run, failed_judging, judged, reflected, started
-from weave_agent_signals.plugin.runs import get_card, list_cards, run_detail
+from weave_agent_signals.plugin import runs
+from weave_agent_signals.plugin.runs import get_card, list_cards, read_runs, run_detail
 from weave_agent_signals.runs.store import RunDatabaseSchemaError
 
 
@@ -165,6 +166,32 @@ def test_run_detail_adds_stages_rubrics_and_models(state):
         "proposal_evaluator": "DeepSeek V4.1 Flash",
     }
     assert run_detail(db, "run-missing") is None
+
+
+def test_run_detail_of_a_run_deleted_while_it_reads_is_none(state, monkeypatch):
+    db = state / "runs.db"
+    add_run(db, "run-1", "failed", "2026-11-05T22:00:56+00:00", **started(), **failed_judging())
+
+    def card_then_delete(path, run_id):
+        found = get_card(path, run_id)
+        connection = sqlite3.connect(path)
+        connection.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+        connection.commit()
+        connection.close()
+        return found
+
+    monkeypatch.setattr(runs, "get_card", card_then_delete)
+
+    assert run_detail(db, "run-1") is None
+
+
+def test_reads_open_the_run_database_read_only(state):
+    db = state / "runs.db"
+    add_run(db, "run-1", "failed", "2026-11-05T22:00:56+00:00", **started(), **failed_judging())
+
+    with read_runs(db) as connection, pytest.raises(sqlite3.OperationalError, match="readonly"):
+        connection.execute("DELETE FROM runs")
+    assert get_card(db, "run-1") is not None
 
 
 def test_no_database_yet_means_no_runs_and_creates_nothing(tmp_path):
