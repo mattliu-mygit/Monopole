@@ -61,7 +61,7 @@ npm run build
 ```
 
 Run the Prompting Time plugin page's gates from `page/`, whose
-`@prompting-time/ui` dependency is a tarball a Prompting Time checkout builds:
+`@prompting-time/ui` dependency is the npm package Prompting Time publishes:
 
 ```bash
 npm test

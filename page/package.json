@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@prompting-time/ui": "file:../../repos/prompting-time-followups/packages/ui/prompting-time-ui-0.1.0.tgz",
+    "@prompting-time/ui": "0.1.0",
     "@solidjs/web": "2.0.1",
     "solid-js": "2.0.1"
   },

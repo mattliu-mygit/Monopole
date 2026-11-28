@@ -202,8 +202,8 @@ http://127.0.0.1:8787.
 To install the development folder:
 
 1. Install [uv](https://docs.astral.sh/uv/), the plugin's one required program.
-2. Build the page. Its `@prompting-time/ui` dependency is the tarball a Prompting Time checkout
-   builds with `scripts/pack-ui.sh`, at the path `page/package.json` names:
+2. Build the page. Its `@prompting-time/ui` dependency is Prompting Time's npm package, pinned to an
+   exact version in `page/package.json`:
 
    ```bash
    cd page && npm ci && npm run build
