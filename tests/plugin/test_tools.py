@@ -184,3 +184,26 @@ def test_a_running_tool_is_not_started_twice_and_a_dead_one_reads_as_stopped(ces
     assert "insights is already running" in capsys.readouterr().err
     assert main(["plugin", "tools"]) == 0
     assert json.loads(capsys.readouterr().out)["tools"]["score"]["state"] == "stopped"
+
+
+def test_monitor_asks_again_when_the_webhook_changed_after_the_confirmation(
+    ces, monkeypatch, capsys
+):
+    monkeypatch.setattr(cli, "cmd_monitor", lambda args: ces.append(args) or 0)
+    main(["plugin", "save-settings", json.dumps({"alert_webhook": "https://hooks.example/abc"})])
+    fingerprint = _fingerprint(capsys, ["plugin", "monitor"])
+    main(["plugin", "save-settings", json.dumps({"alert_webhook": "https://other.example/x"})])
+    capsys.readouterr()
+
+    assert main(["plugin", "monitor", "--expect", fingerprint]) == 13
+
+    assert "monitor changed after you confirmed; nothing ran" in capsys.readouterr().err
+    assert ces == []
+
+
+def test_other_refusals_of_a_confirmed_request_still_exit_1(ces, capsys):
+    argv = ["plugin", "backfill", "--start", "2026-10-31", "--end", "2026-10-01"]
+
+    assert main(argv + ["--expect", "0" * 64]) == 1
+
+    assert "--end must be on or after --start" in capsys.readouterr().err

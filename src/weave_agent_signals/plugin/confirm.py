@@ -3,7 +3,9 @@
 `--print` saves the request in `<state folder>/<action>-request.json`, names that file in its
 output, and prints `fingerprint: <sha256>` of it on its last line; nothing else happens.
 `--expect <sha256>` runs only when the request, built again from what is current, still has that
-fingerprint, so a request that changed after the user confirmed does not run.
+fingerprint, so a request that changed after the user confirmed does not run; the action then exits
+13, and Prompting Time previews the new request and asks again. The saved file only shows the
+request: a later preview may replace it, so `--expect` never reads it.
 """
 
 from __future__ import annotations
@@ -17,6 +19,10 @@ from weave_agent_signals.plugin.settings import state_dir, write_atomic
 
 class Refused(Exception):
     """The action did nothing, for the reason in its message."""
+
+
+class RequestChanged(Refused):
+    """The request built now has another fingerprint than the one the user confirmed."""
 
 
 def fingerprint(text: str) -> str:
@@ -43,7 +49,7 @@ def confirmed(action: str, text: str, *, print_only: bool, expect: str | None, w
         print(f"fingerprint: {fingerprint(text)}")
         return False
     if expect != fingerprint(text):
-        raise Refused(f"The request to {what} changed after you confirmed; nothing ran. Try again.")
+        raise RequestChanged(f"The request to {what} changed after you confirmed; nothing ran.")
     # The file only showed the request; the run rebuilt it, so the file is no longer needed.
     request_file.unlink(missing_ok=True)
     return True

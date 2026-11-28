@@ -23,6 +23,7 @@ from weave_agent_signals.models import ConfigurationError
 from weave_agent_signals.plugin import keys, newrun, providers, server, signin, tools
 from weave_agent_signals.plugin.confirm import (
     Refused,
+    RequestChanged,
     add_confirm_flags,
     confirmed,
     request_text,
@@ -464,15 +465,19 @@ def add_parser(subs: argparse._SubParsersAction) -> None:
     actions.add_parser("serve", help="Monopole's server, configured by the plugin's settings")
 
 
+# Prompting Time's exit code for a confirmed request that changed: it previews again and asks.
+REQUEST_CHANGED_EXIT = 13
+
+
 def run_plugin_action(args: argparse.Namespace) -> int:
     """Runs one plugin action. A refusal prints its reason on stderr, which Prompting Time
-    shows, and exits 1."""
+    shows, and exits 1, or 13 when the request changed after the user confirmed it."""
 
     try:
         return _run(args)
     except Refused as refusal:
         print(refusal, file=sys.stderr)
-        return 1
+        return REQUEST_CHANGED_EXIT if isinstance(refusal, RequestChanged) else 1
 
 
 def _run(args: argparse.Namespace) -> int:

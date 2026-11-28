@@ -523,8 +523,10 @@ rules as the web app.
 - Paid, CES-writing, and destructive actions (Rerun, Continue, New run, Delete,
   Sign in, and the scoring, backfill, and regression tools) run only after the
   user confirms a preview of the request in Prompting Time. The action rebuilds
-  the request and refuses when it no longer matches what the user confirmed,
-  such as a run that started meanwhile. Reads and the free provider check need
+  the request and refuses when it no longer matches what the user confirmed;
+  Prompting Time then shows the new request and asks again. A request that
+  can no longer be made, such as deleting a run that started meanwhile,
+  refuses with its reason. Reads and the free provider check need
   no confirmation and spend nothing.
 - After an action, the page keeps its action buttons disabled briefly, so a
   second click cannot act on an item Prompting Time has moved on to. A sign-in

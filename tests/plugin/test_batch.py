@@ -73,7 +73,7 @@ def test_one_fingerprint_covers_every_run_so_a_change_to_any_refuses_all(state, 
             "UPDATE runs SET reflection_review = '{\"status\": \"pending\"}' WHERE run_id = 'run-2'"
         )
 
-    assert main(["plugin", "delete", *_items("run-1", "run-2"), "--expect", fingerprint]) == 1
+    assert main(["plugin", "delete", *_items("run-1", "run-2"), "--expect", fingerprint]) == 13
 
     assert "delete 2 runs changed after you confirmed; nothing ran" in capsys.readouterr().err
     assert _runs(db) == ["run-1", "run-2"]

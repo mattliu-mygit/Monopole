@@ -133,9 +133,10 @@ a CES or API error, and 1 on any other error.
   `XDG_STATE_HOME` at a temporary folder.
 - An action marked `confirm: true` must accept `--print`, which only saves and
   fingerprints its request, and `--expect <sha256>`, which runs only when the
-  rebuilt request still has that fingerprint. Mark paid, CES-writing, and
-  destructive actions confirm.
-- A refused action prints its reason to stderr and exits 1.
+  request rebuilt now, never the saved file, still has that fingerprint. Mark
+  paid, CES-writing, and destructive actions confirm.
+- A refused action prints its reason to stderr and exits 1, or 13 when a
+  confirmed request changed, so Prompting Time previews it again and asks.
 - The page imports the web app's capacity check and run assessment from
   `frontend/src/features/runs/` rather than copying them, and type-checks them
   under its strict settings; keep those modules free of frontend-only imports.

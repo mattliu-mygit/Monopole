@@ -64,10 +64,26 @@ def test_expect_refuses_when_the_run_changed_after_the_confirmation(state, capsy
     connection.commit()
     connection.close()
 
-    assert main(["plugin", "delete", "--item", "run-1", "--expect", fingerprint]) == 1
+    # Exit 13 tells Prompting Time to preview the new request and ask again.
+    assert main(["plugin", "delete", "--item", "run-1", "--expect", fingerprint]) == 13
 
     assert "changed after you confirmed; nothing ran" in capsys.readouterr().err
     assert _runs(db) == ["run-1"]
+
+
+def test_expect_checks_the_rebuilt_request_not_the_file_a_later_preview_replaced(state, capsys):
+    # A bulk delete previews each run in turn, so run-2's preview replaces run-1's file before
+    # Prompting Time runs run-1 with run-1's fingerprint.
+    db = state / "runs.db"
+    add_run(db, "run-1", "failed", "2026-11-05T22:00:00+00:00", **started())
+    add_run(db, "run-2", "failed", "2026-11-05T22:00:00+00:00", **started())
+    _, fingerprint = _print(capsys)
+    assert main(["plugin", "delete", "--item", "run-2", "--print"]) == 0
+    assert '"run_id": "run-2"' in (state_dir() / "delete-request.json").read_text()
+
+    assert main(["plugin", "delete", "--item", "run-1", "--expect", fingerprint]) == 0
+
+    assert _runs(db) == ["run-2"]
 
 
 def test_a_running_or_missing_run_is_refused_before_anything_is_saved(state, capsys):
