@@ -1,0 +1,45 @@
+# When a version tag such as v0.1.0 is pushed, builds Monopole's release archive, the plugin's files
+# plus the built page and web app, with scripts/build-release, and attaches it and its SHA-256 to
+# the tag's GitHub release, which Prompting Time installs from. The repo tracks no build output.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.12.0
+
+      # A file: package, such as a local @prompting-time/ui tarball, isn't on this runner.
+      - name: Check that the page's and web app's packages come from npm
+        run: |
+          for package in page/package.json frontend/package.json; do
+            jq -e '[(.dependencies // {})[], (.devDependencies // {})[]] | all(startswith("file:") | not)' "$package" > /dev/null || {
+              echo "$package installs a local package; switch it to a published version first"
+              exit 1
+            }
+          done
+
+      - name: Build the archive
+        run: scripts/build-release "$GITHUB_REF_NAME"
+
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Monopole $version" --generate-notes \
+            "release/monopole-$version.tar.gz" "release/monopole-$version.tar.gz.sha256"

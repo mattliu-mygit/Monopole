@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Builds Monopole's release archive, which Prompting Time installs, pinned by its tag and SHA-256, so
+# the user's Mac needs no Node, only uv:
+#
+#   scripts/build-release [<tag>]
+#
+# It writes release/monopole-<version>.tar.gz, where <version> is prompting-time-plugin.json's, and
+# release/monopole-<version>.tar.gz.sha256 beside it, as shasum -a 256 prints it. The archive holds
+# one folder, monopole-<version>/, as Prompting Time requires: what HEAD tracks of the files the
+# plugin runs from (the manifest, bin/, src/, schemas/, and pyproject.toml, uv.lock, README.md, and
+# LICENSE, which uv needs to build the package), plus two builds, which npm ci and npm run build make:
+# page/dist, the plugin's page, and frontend/dist, the web app that bin/monopole-run's server serves
+# at its port, where proposals are reviewed. Those folders must have no changes git sees, so the
+# builds and files are HEAD's. With a tag, as .github/workflows/release.yml passes it, the tag must
+# be v<version>.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+version="$(jq -r .version prompting-time-plugin.json)"
+entry="$(jq -r .page.entry prompting-time-plugin.json)"
+if (($# > 0)) && [[ "$1" != "v$version" ]]; then
+  echo "build-release: the tag $1 is not v$version, the version in prompting-time-plugin.json" >&2
+  exit 1
+fi
+files=(prompting-time-plugin.json bin src schemas pyproject.toml uv.lock README.md LICENSE)
+if [[ -n "$(git status --porcelain -- "${files[@]}" page frontend)" ]]; then
+  echo "build-release: the archive holds HEAD's files, and these have changes git sees; commit or stash them:" >&2
+  git status --short -- "${files[@]}" page frontend >&2
+  exit 1
+fi
+(cd page && npm ci --no-audit --no-fund && npm run build)
+[[ -f "$entry" ]] || { echo "build-release: the build left no $entry, the page prompting-time-plugin.json names" >&2; exit 1; }
+(cd frontend && npm ci --no-audit --no-fund && npm run build)
+[[ -f frontend/dist/index.html ]] || { echo "build-release: the build left no frontend/dist/index.html" >&2; exit 1; }
+
+name="monopole-$version"
+# The traps come before the stage folder, so no signal leaves it behind.
+stage=""
+trap 'rm -rf "$stage"' EXIT
+trap 'exit 130' INT TERM HUP
+stage="$(trap '' INT TERM HUP; mktemp -d)"
+git archive --format=tar --prefix="$name/" HEAD -- "${files[@]}" | tar -x -C "$stage"
+mkdir -p "$stage/$name/page" "$stage/$name/frontend"
+cp -R page/dist "$stage/$name/page/dist"
+cp -R frontend/dist "$stage/$name/frontend/dist"
+mkdir -p release
+# COPYFILE_DISABLE keeps macOS's tar from adding ._ files for extended attributes.
+COPYFILE_DISABLE=1 tar -czf "release/$name.tar.gz" -C "$stage" "$name"
+(cd release && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+echo "release/$name.tar.gz"
+echo "release/$name.tar.gz.sha256"

@@ -222,6 +222,19 @@ so stop a `serve` you started yourself before Prompting Time starts Monopole on 
 Page checks, from `page/`: `npm test`, `npm run typecheck`, and `npm run build`. `npm run dev` serves
 the page with a fake host at http://localhost:5176/dev/index.html.
 
+## Releases
+
+Pushing a tag `v<version>`, where `<version>` is `prompting-time-plugin.json`'s, runs
+`.github/workflows/release.yml`: it builds `monopole-<version>.tar.gz` with
+`scripts/build-release` and attaches it and its SHA-256 to the tag's GitHub release, which
+Prompting Time installs from, so the Mac needs only uv, not Node. The archive holds one folder,
+`monopole-<version>/`: what Prompting Time and uv need to run the plugin (the manifest, `bin/`,
+`src/`, `schemas/`, `pyproject.toml`, `uv.lock`, `README.md`, `LICENSE`) and two builds,
+`page/dist` (the plugin's page) and `frontend/dist` (the web app the plugin's server serves for
+proposal reviews). Run `scripts/build-release` to build the same archive locally in `release/`.
+Neither `page/package.json` nor `frontend/package.json` may install a `file:` package, which the
+workflow checks.
+
 ## Model-backed features
 
 Deterministic scoring and trace inspection need only W&B access. Judging and

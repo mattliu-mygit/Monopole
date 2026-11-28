@@ -16,3 +16,4 @@ smol-runtime.local.json
 .playwright-cli/
 node_modules/
 .pnpm-store/
+release/
