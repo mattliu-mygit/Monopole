@@ -491,8 +491,10 @@ tab's header carries its actions as buttons and one ⋯ menu.
   check that posts to the configured alert webhook, and shows analysis's
   subagent, judge-agreement, and segment insights as tables.
 - **Settings** edits the same settings as Prompting Time's own Settings tab for
-  Monopole: the same schema, read with `get-settings` and saved with
-  `save-settings`, which checks them; a refusal shows under the field it names.
+  Monopole: the same schema, drawn with the settings-form logic
+  `@prompting-time/ui` exports for that tab, read with `get-settings` and saved
+  with `save-settings`, which checks them; a refusal shows under the field it
+  names.
   The server reads every setting but the alert webhook when it starts, so after
   changing one the page says to restart Monopole. Monopole's prerequisites
   don't depend on settings, so a save here can't change what Prompting Time

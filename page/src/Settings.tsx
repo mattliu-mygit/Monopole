@@ -1,61 +1,25 @@
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { Button, NumberField, TextField } from "@prompting-time/ui";
+import { Button, changedSettings, fieldKey, formValue, leafFields, NumberField, settingFields, TextField, valueAt, type FormValue, type LeafField } from "@prompting-time/ui";
 import schema from "../../schemas/plugin-settings.json";
 import { PageHeader } from "./PageHeader";
-import type { Settings as SettingValues } from "./protocol";
 import type { PageStore } from "./store";
 
-/** One field of schemas/plugin-settings.json, the schema Prompting Time draws its own Settings
- * form from: text, a whole number, or a group of text fields. */
-interface SchemaField {
-  title: string;
-  description?: string;
-  type: "string" | "integer" | "object";
-  minimum?: number;
-  properties?: Record<string, SchemaField>;
-}
+// The fields of schemas/plugin-settings.json, drawn with the settings-form logic Prompting Time's
+// own Settings form uses, so both read and send the same values: text, a whole number, or a group.
+const fields = settingFields(JSON.stringify(schema));
+const leaves = leafFields(fields);
 
-/** A field the user edits, by its path in the settings: `["port"]` or `["ces", "url"]`. */
-interface Leaf {
-  path: string[];
-  key: string;
-  title: string;
-  description?: string;
-  integer: boolean;
-}
-
-/** The fields Monopole reads each time an action runs. Monopole's server reads every other field
- * when it starts, so changing one needs a restart. */
+/** The settings Monopole reads each time an action runs. Monopole's server reads every other
+ * setting when it starts, so changing one needs a restart. */
 const APPLY_NOW = new Set(["alert_webhook"]);
-
-const groups = Object.entries(schema.properties as Record<string, SchemaField>).map(([name, field]) => {
-  const leaf = (path: string[], field: SchemaField): Leaf => ({
-    path,
-    key: path.join("."),
-    title: field.title,
-    description: field.description,
-    integer: field.type === "integer",
-  });
-  return field.type === "object"
-    ? { title: field.title, description: field.description, leaves: Object.entries(field.properties ?? {}).map(([child, sub]) => leaf([name, child], sub)) }
-    : { title: null, description: undefined, leaves: [leaf([name], field)] };
-});
-const leaves = groups.flatMap((group) => group.leaves);
-
-const shown = (settings: SettingValues | null, leaf: Leaf): string => {
-  const value = leaf.path.reduce<unknown>((at, key) => (at as Record<string, unknown> | undefined)?.[key], settings ?? undefined);
-  return value === undefined || value === null ? "" : String(value);
-};
-
-/** A whole number as a number; anything else as typed, so Monopole's refusal names it. */
-const parsed = (leaf: Leaf, text: string): unknown => (leaf.integer && /^\s*\d+\s*$/.test(text) ? Number(text) : text);
 
 /** The field a refusal names: Monopole's settings errors start with the setting's key, such as
  * "port must be a whole number from 1 to 65535" or "ces.url is not a text setting". */
 function fieldOf(reason: string): { key: string; text: string } | null {
   const text = reason.replace(/^Configuration error:\s*/, "");
-  const key = /^([a-z_]+(?:\.[a-z_]+)?)\b/.exec(text)?.[1];
-  return key && leaves.some((leaf) => leaf.key === key) ? { key, text } : null;
+  const name = /^([a-z_]+(?:\.[a-z_]+)?)\b/.exec(text)?.[1];
+  const leaf = leaves.find((leaf) => leaf.path.join(".") === name);
+  return leaf ? { key: fieldKey(leaf), text } : null;
 }
 
 /**
@@ -66,36 +30,31 @@ function fieldOf(reason: string): { key: string; text: string } | null {
  */
 export function Settings(props: { store: PageStore }) {
   const store = props.store;
-  const [draft, setDraft] = createSignal<Record<string, string>>({});
+  const [draft, setDraft] = createSignal<Record<string, FormValue>>({});
   const [saving, setSaving] = createSignal(false);
   const [refusal, setRefusal] = createSignal<{ key: string | null; text: string } | null>(null);
   const [saved, setSaved] = createSignal<{ restart: boolean } | null>(null);
-  const value = (leaf: Leaf) => draft()[leaf.key] ?? shown(store.state.settings, leaf);
-  const changed = createMemo(() => leaves.filter((leaf) => leaf.key in draft() && draft()[leaf.key] !== shown(store.state.settings, leaf)));
+  const value = (leaf: LeafField) => draft()[fieldKey(leaf)] ?? formValue(leaf, valueAt(store.state.settings, leaf.path));
+  const changes = createMemo(() => changedSettings(fields, store.state.settings, draft()));
+  const dirty = () => Object.keys(changes()).length > 0;
 
-  function edit(leaf: Leaf, text: string) {
-    setDraft((all) => ({ ...all, [leaf.key]: text }));
+  function edit(leaf: LeafField, text: string) {
+    setDraft((all) => ({ ...all, [fieldKey(leaf)]: text }));
     setSaved(null);
-    if (refusal()?.key === leaf.key || refusal()?.key === null) setRefusal(null);
+    if (refusal()?.key === fieldKey(leaf) || refusal()?.key === null) setRefusal(null);
   }
 
   async function save(event: SubmitEvent) {
     event.preventDefault();
-    const fields = changed();
-    if (fields.length === 0 || saving()) return;
-    const changes: Record<string, unknown> = {};
-    for (const leaf of fields) {
-      const [first, second] = leaf.path;
-      if (second === undefined) changes[first] = parsed(leaf, draft()[leaf.key]);
-      else changes[first] = { ...(changes[first] as Record<string, unknown> | undefined), [second]: parsed(leaf, draft()[leaf.key]) };
-    }
+    const sent = changes();
+    if (!dirty() || saving()) return;
     setSaving(true);
     setRefusal(null);
     setSaved(null);
     try {
-      await store.saveSettings(changes);
+      await store.saveSettings(sent);
       setDraft({});
-      setSaved({ restart: fields.some((leaf) => !APPLY_NOW.has(leaf.key)) });
+      setSaved({ restart: Object.keys(sent).some((key) => !APPLY_NOW.has(key)) });
     } catch (failure) {
       const reason = failure instanceof Error ? failure.message : String(failure);
       setRefusal(fieldOf(reason) ?? { key: null, text: reason });
@@ -105,12 +64,12 @@ export function Settings(props: { store: PageStore }) {
   }
 
   // Each prop is read in JSX, so the field follows the draft, the refusal, and saving.
-  const error = (leaf: Leaf) => (refusal()?.key === leaf.key ? refusal()!.text : undefined);
-  const field = (leaf: Leaf) =>
-    leaf.integer ? (
-      <NumberField label={leaf.title} hint={leaf.description} error={error(leaf)} value={value(leaf)} disabled={saving()} step={1} onInput={(event) => edit(leaf, event.currentTarget.value)} />
+  const error = (leaf: LeafField) => (refusal()?.key === fieldKey(leaf) ? refusal()!.text : undefined);
+  const field = (leaf: LeafField) =>
+    leaf.kind === "integer" ? (
+      <NumberField label={leaf.title} hint={leaf.description ?? undefined} error={error(leaf)} value={value(leaf) as string} disabled={saving()} step={1} onInput={(event) => edit(leaf, event.currentTarget.value)} />
     ) : (
-      <TextField label={leaf.title} hint={leaf.description} error={error(leaf)} value={value(leaf)} disabled={saving()} onInput={(event) => edit(leaf, event.currentTarget.value)} />
+      <TextField label={leaf.title} hint={leaf.description ?? undefined} error={error(leaf)} value={value(leaf) as string} disabled={saving()} onInput={(event) => edit(leaf, event.currentTarget.value)} />
     );
 
   return (
@@ -128,16 +87,18 @@ export function Settings(props: { store: PageStore }) {
           {/* novalidate: Monopole checks the values, so its refusal shows under the field. */}
           <form class="m-settings-form" aria-label="Monopole settings" novalidate onSubmit={(event) => void save(event)}>
             <p class="m-quiet">{schema.description}</p>
-            <For each={groups}>
-              {(group) => (
-                <Show when={group.title} fallback={<For each={group.leaves}>{field}</For>}>
+            <For each={fields}>
+              {(group) =>
+                group.kind === "group" ? (
                   <fieldset class="m-panel">
                     <legend>{group.title}</legend>
                     <Show when={group.description}>{(text) => <p class="m-quiet">{text()}</p>}</Show>
-                    <For each={group.leaves}>{field}</For>
+                    <For each={leafFields(group.fields)}>{field}</For>
                   </fieldset>
-                </Show>
-              )}
+                ) : (
+                  field(group)
+                )
+              }
             </For>
             <Show when={refusal()?.key === null}>
               <p class="m-error" role="alert">
@@ -152,10 +113,10 @@ export function Settings(props: { store: PageStore }) {
               )}
             </Show>
             <div class="m-actions">
-              <Button disabled={changed().length === 0 || saving()} onClick={() => (setDraft({}), setRefusal(null))}>
+              <Button disabled={!dirty() || saving()} onClick={() => (setDraft({}), setRefusal(null))}>
                 Revert
               </Button>
-              <Button type="submit" variant="primary" disabled={changed().length === 0 || saving()}>
+              <Button type="submit" variant="primary" disabled={!dirty() || saving()}>
                 {saving() ? "Saving…" : "Save"}
               </Button>
             </div>

@@ -66,23 +66,14 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
   const known = new Set(models.available_models.map((model) => model.id));
   type Role = ModelDescriptor["supported_roles"][number];
   const withRole = (role: Role) => models.available_models.filter((model) => model.supported_roles.includes(role));
-  // Built once, so the select keeps its option elements and the shown choice: a select whose
-  // options were rebuilt would show its first option while the form still held another model.
-  // Each label reads the fit, so it changes in place as the estimates do.
+  // Each label says whether the model fits the selected sessions, so the options follow the estimates.
   const options = (role: Role, blank?: string): SelectOption[] => [
     ...(blank ? [{ value: NONE, label: blank }] : []),
-    ...withRole(role).map((model) => ({
-      value: model.id,
-      get label() {
-        const fit = fitWords(catalog, model, role, sized());
-        return fit ? `${model.label} · ${fit}` : model.label;
-      },
-    })),
+    ...withRole(role).map((model) => {
+      const fit = fitWords(catalog, model, role, sized());
+      return { value: model.id, label: fit ? `${model.label} · ${fit}` : model.label };
+    }),
   ];
-  const firstJudgeOptions = options("judge");
-  const otherJudgeOptions = options("judge", "None");
-  const writerOptions = options("proposal_writer");
-  const evaluatorOptions = options("proposal_evaluator");
 
   // The web app's starting recommendations, before any session is sized.
   const blankState = initializeRunConfigState(models, catalog.rubrics, null);
@@ -253,7 +244,7 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
             {(index) => (
               <Select
                 label={`Judge ${index + 1}`}
-                options={index === 0 ? firstJudgeOptions : otherJudgeOptions}
+                options={options("judge", index === 0 ? undefined : "None")}
                 value={judges()[index]}
                 onChange={(event) => setJudge(index, event.currentTarget.value)}
               />
@@ -261,7 +252,7 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
           </Repeat>
           <Select
             label="Proposal writer"
-            options={writerOptions}
+            options={options("proposal_writer")}
             value={writer()}
             onChange={(event) => {
               picked = true;
@@ -270,7 +261,7 @@ function NewRunForm(props: { store: PageStore; data: NewRunData }) {
           />
           <Select
             label="Evaluator"
-            options={evaluatorOptions}
+            options={options("proposal_evaluator")}
             value={evaluator()}
             onChange={(event) => {
               picked = true;
